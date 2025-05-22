@@ -29,14 +29,14 @@ The bot operates with a simple, serverless architecture on Google Cloud:
 
 ```mermaid
 graph TD
-    A[Cloud Scheduler (Every minute)] --> B(Cloud Run: Go Application);
-    B --> C{Fetch RFD RSS Feed};
-    C --> D{Check Firestore for last processed deal};
-    D --> E{Identify new deals};
-    E --> F{Process & Format Deals};
-    F --> G[Send to Discord Webhook];
-    G --> H{Update Firestore with new last processed deal timestamp};
-    B <--> I[Firestore (Stores last_processed_deal timestamp)];
+    A[Cloud Scheduler (Every minute)] --> B(Cloud Run: Go Application)
+    B --> C{Fetch RFD RSS Feed}
+    C --> D{Check Firestore for last processed deal}
+    D --> E{Identify new deals}
+    E --> F{Process & Format Deals}
+    F --> G[Send to Discord Webhook]
+    G --> H{Update Firestore with new last processed deal timestamp}
+    B <--> I[Firestore (Stores last_processed_deal timestamp)]
 ```
 
 ## Local Development
