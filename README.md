@@ -28,7 +28,7 @@ The bot operates with a simple, serverless architecture on Google Cloud:
 *   **Firestore:** Stores the timestamp of the last successfully processed deal, ensuring deals are not sent multiple times.
 
 ```mermaid
-graph TD
+graph TD;
     A[Cloud Scheduler (Every minute)] --> B(Cloud Run: Go Application)
     B --> C{Fetch RFD RSS Feed}
     C --> D{Check Firestore for last processed deal}
