@@ -223,6 +223,7 @@ gcloud run deploy rfd-discord-bot \
 *   `--platform managed`: Specifies using the fully managed Cloud Run environment.
 *   `--allow-unauthenticated`: This makes your Cloud Run service publicly accessible. This is used here to allow Cloud Scheduler to invoke it easily without complex authentication setup for this simple use case. For sensitive services, you should use IAM-based invocation (i.e., remove this flag and configure IAM permissions for Cloud Scheduler to invoke the service).
 *   `--set-env-vars`: Sets environment variables for the Cloud Run service.
+*   For multiple variables, provide them as a comma-separated list (e.g., `KEY1=VALUE1,KEY2=VALUE2`). Each `KEY=VALUE` pair will be set as a distinct environment variable.
 
 **PowerShell Line Continuation:** If you are using PowerShell and copying the multi-line `gcloud run deploy` command, remember that PowerShell uses a backtick (`` ` ``) for line continuation, not a backslash (`\`).
 
@@ -237,6 +238,7 @@ You can create a Cloud Scheduler job via the GCP Console or using `gcloud`.
 **Using `gcloud` (Recommended):**
 ```bash
 gcloud scheduler jobs create http rfd-bot-trigger \
+    --location=YOUR_CHOSEN_REGION \
     --schedule="*/5 * * * *" \
     --uri=YOUR_CLOUD_RUN_SERVICE_URL \
     --http-method=GET \
@@ -247,6 +249,7 @@ gcloud scheduler jobs create http rfd-bot-trigger \
 
 **Explanation:**
 *   `rfd-bot-trigger`: A name for your scheduler job.
+*   `--location=YOUR_CHOSEN_REGION`: **Replace this with the same region you used for your Cloud Run service** (e.g., `us-central1`). This specifies the region where the Cloud Scheduler job will run.
 *   `--schedule="*/5 * * * *"`: Sets the job to run every 5 minutes using cron syntax. You can adjust this (e.g., `* * * * *` for every minute, but be mindful of RSS feed politeness and potential rate limits).
 *   `--uri=YOUR_CLOUD_RUN_SERVICE_URL`: **Replace this with the Service URL** you obtained after deploying your Cloud Run service.
 *   `--http-method=GET`: The HTTP method to use. `GET` is fine for this bot's main handler.

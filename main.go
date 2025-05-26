@@ -110,6 +110,7 @@ func formatDealToEmbed(deal ProcessedDeal) DiscordEmbed {
 }
 
 // sendEmbedsToDiscord sends a list of embeds to the specified Discord webhook URL.
+// Embeds are sent in chunks of up to 10 to comply with Discord API limits.
 func sendEmbedsToDiscord(webhookURL string, embeds []DiscordEmbed) error {
 	if webhookURL == "" {
 		return fmt.Errorf("discord webhook URL is empty. Skipping sending embeds")
@@ -119,35 +120,70 @@ func sendEmbedsToDiscord(webhookURL string, embeds []DiscordEmbed) error {
 		return nil
 	}
 
-	payload := DiscordWebhookPayload{
-		Embeds: embeds,
+	const maxEmbedsPerRequest = 10
+	totalEmbeds := len(embeds)
+	sentEmbedsCount := 0
+
+	for i := 0; i < totalEmbeds; i += maxEmbedsPerRequest {
+		end := i + maxEmbedsPerRequest
+		if end > totalEmbeds {
+			end = totalEmbeds
+		}
+		chunk := embeds[i:end]
+
+		if len(chunk) == 0 {
+			continue // Should not happen if logic is correct, but good for safety
+		}
+
+		payload := DiscordWebhookPayload{
+			Embeds: chunk,
+		}
+
+		payloadBytes, err := json.Marshal(payload)
+		if err != nil {
+			// Log the error and continue to try sending other chunks if any
+			log.Printf("Failed to marshal Discord payload for a chunk: %v. Skipping this chunk.", err)
+			// Optionally, accumulate errors and return a summary error at the end
+			// For now, we'll return the first critical error or nil if all chunks (attempted) are fine.
+			// If marshalling fails, it's a significant issue with the data itself.
+			return fmt.Errorf("failed to marshal Discord payload for chunk starting at index %d: %w", i, err)
+		}
+
+		req, err := http.NewRequest("POST", webhookURL, bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			log.Printf("Failed to create Discord webhook request for a chunk: %v. Skipping this chunk.", err)
+			return fmt.Errorf("failed to create Discord webhook request for chunk starting at index %d: %w", i, err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("Failed to send Discord webhook request for a chunk: %v. Skipping this chunk.", err)
+			// Consider if we should retry or accumulate errors. For now, return on first send error.
+			return fmt.Errorf("failed to send Discord webhook request for chunk starting at index %d: %w", i, err)
+		}
+		defer resp.Body.Close() // Defer inside loop is okay as Body is typically small or read immediately
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			log.Printf("Successfully sent chunk of %d embed(s) to Discord (Total sent so far: %d/%d). Status: %s", len(chunk), sentEmbedsCount+len(chunk), totalEmbeds, resp.Status)
+			sentEmbedsCount += len(chunk)
+		} else {
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				log.Printf("Failed to read error response body from Discord for a chunk: %v", readErr)
+				return fmt.Errorf("failed to send Discord webhook for chunk (status: %s), and also failed to read response body: %w", resp.Status, readErr)
+			}
+			log.Printf("Failed to send Discord webhook for a chunk, status: %s, response: %s", resp.Status, string(bodyBytes))
+			// Return an error indicating which chunk failed.
+			return fmt.Errorf("failed to send Discord webhook for chunk starting at index %d, status: %s, response: %s", i, resp.Status, string(bodyBytes))
+		}
+
+		// Optional: Add a small delay between requests if rate limiting becomes an issue, though Discord's webhook limits are usually per second.
+		// time.Sleep(500 * time.Millisecond)
 	}
 
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal Discord payload: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", webhookURL, bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		return fmt.Errorf("failed to create Discord webhook request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send Discord webhook request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		log.Printf("Successfully sent %d embed(s) to Discord. Status: %s", len(embeds), resp.Status)
-	} else {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to send Discord webhook, status: %s, response: %s", resp.Status, string(bodyBytes))
-	}
-
+	log.Printf("Finished sending all embeds. Total successfully sent: %d/%d.", sentEmbedsCount, totalEmbeds)
 	return nil
 }
 
