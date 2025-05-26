@@ -129,21 +129,67 @@ The bot requires several Google Cloud APIs to be enabled for your project:
 *   Cloud Run API: For deploying and running the serverless application.
 *   Cloud Firestore API: For database storage.
 *   Cloud Scheduler API: For triggering the bot periodically.
+*   Cloud Build API: For building container images when deploying from source.
 
 Enable them using the following `gcloud` command:
 ```bash
-gcloud services enable run.googleapis.com firestore.googleapis.com cloudscheduler.googleapis.com --project YOUR_PROJECT_ID
+gcloud services enable run.googleapis.com firestore.googleapis.com cloudscheduler.googleapis.com cloudbuild.googleapis.com --project YOUR_PROJECT_ID
 ```
 Replace `YOUR_PROJECT_ID` with your project ID.
 
+### Configure Cloud Build Service Account Permissions
+
+When deploying to Cloud Run from source (using the `--source .` flag), Google Cloud Build is utilized to build your container image and push it to Artifact Registry. The Cloud Build service account requires specific IAM permissions to perform these actions. If these permissions are missing, the deployment will likely fail with a `PERMISSION_DENIED` error during the build process.
+
+**1. Identify Your Project Number:**
+You'll need your Google Cloud Project Number (distinct from the Project ID) to correctly identify the Cloud Build service account. You can retrieve it using the following command:
+```bash
+gcloud projects describe YOUR_PROJECT_ID --format='value(projectNumber)'
+```
+Replace `YOUR_PROJECT_ID` with your actual Project ID. Make a note of the outputted project number (e.g., `123456789012`).
+
+**2. Grant `roles/run.builder` to the Cloud Build Service Account:**
+The Cloud Build service account, which typically has an email address like `YOUR_PROJECT_NUMBER@cloudbuild.gserviceaccount.com`, needs the `roles/run.builder` role on your project to successfully build and deploy to Cloud Run. Grant this role using the command below, ensuring you replace `YOUR_PROJECT_ID` and `YOUR_PROJECT_NUMBER` (the value obtained in the previous step):
+```bash
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+    --member="serviceAccount:YOUR_PROJECT_NUMBER@cloudbuild.gserviceaccount.com" \
+    --role="roles/run.builder"
+```
+This step is crucial for deployments from source to succeed.
+
+**Artifact Registry Note:**
+Additionally, when deploying from source for the first time, `gcloud run deploy` might prompt you to enable the Artifact Registry API (`artifactregistry.googleapis.com`) and offer to create a default Docker repository (e.g., `cloud-run-source-deploy`) in your chosen region. You should allow these operations when prompted, as Artifact Registry is used to store the container images built by Cloud Build.
+
 ### Create Firestore Instance
 
-1.  Go to the [Firestore section](https://console.cloud.google.com/firestore) in the Google Cloud Console.
-2.  If prompted, click **"Select Native Mode"** for your database.
-3.  Choose a **location** for your Firestore database (e.g., `nam5 (United States)` or a region close to you/your users). This choice is permanent.
-4.  Click **"Create Database"**.
+To set up Firestore for the bot, follow these steps in the [Google Cloud Console](https://console.cloud.google.com/firestore):
 
-The bot will automatically create the necessary collection (`bot_state`) and document (`last_processed_deal`) within Firestore when it runs for the first time.
+1.  **Navigate to Firestore:** Go to the Firestore section of the Google Cloud Console.
+2.  **Create Database:** If you don't have a Firestore database in your project, click **"Create Database"**.
+3.  **Select Database ID:**
+    *   You'll be prompted to name your database (Database ID).
+    *   **Recommendation:** Use the default ID, which is typically `(default)`.
+    *   *Justification:* The application code ([`firestore_client.go`](firestore_client.go:1)) is configured to use the default database and does not specify a custom ID.
+4.  **Choose Edition:**
+    *   Select the **"Standard"** edition.
+    *   *Justification:* This edition is cost-effective for applications with minimal data and low-frequency operations, suitable for this bot.
+5.  **Select Mode:**
+    *   Choose **"Native Mode"**.
+    *   *Justification:* This is required by the Go client library used in the application and aligns with existing project documentation.
+6.  **Set Up Security Rules:**
+    *   You will be asked to configure security rules.
+    *   **Recommendation:** Start with **Restrictive rules** (e.g., the default option that denies all client access).
+    *   *Justification:* The bot accesses Firestore using server-side authentication (IAM roles for the Cloud Run service account), not client-side SDKs, so client access can be denied for better security.
+7.  **Choose Location Type:**
+    *   Select **"Region"** for the location type.
+    *   *Justification:* A regional location offers lower latency and cost compared to multi-region, and is suitable when your Cloud Run service is deployed to a specific region.
+8.  **Select Region:**
+    *   Choose a specific **region** (e.g., `us-central1`, `europe-west1`).
+    *   **Recommendation:** Select the same region where you plan to deploy your Cloud Run service.
+    *   *Justification:* Co-locating Firestore and your Cloud Run service minimizes network latency and potential egress costs. This choice is permanent.
+9.  **Finalize Creation:** Click **"Create Database"**.
+
+The bot will automatically create the necessary collection (`bot_state`) and document (`last_processed_deal`) within Firestore when it runs for the first time after successful deployment and configuration.
 
 ### Configure Discord Webhook URL (as Environment Variable)
 
@@ -177,6 +223,8 @@ gcloud run deploy rfd-discord-bot \
 *   `--platform managed`: Specifies using the fully managed Cloud Run environment.
 *   `--allow-unauthenticated`: This makes your Cloud Run service publicly accessible. This is used here to allow Cloud Scheduler to invoke it easily without complex authentication setup for this simple use case. For sensitive services, you should use IAM-based invocation (i.e., remove this flag and configure IAM permissions for Cloud Scheduler to invoke the service).
 *   `--set-env-vars`: Sets environment variables for the Cloud Run service.
+
+**PowerShell Line Continuation:** If you are using PowerShell and copying the multi-line `gcloud run deploy` command, remember that PowerShell uses a backtick (`` ` ``) for line continuation, not a backslash (`\`).
 
 After the deployment is successful, the command will output the **Service URL**. Copy this URL, as you'll need it for setting up Cloud Scheduler.
 
