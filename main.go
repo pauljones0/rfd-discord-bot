@@ -338,29 +338,46 @@ func scrapeDealDetailPage(dealURL string) (string, error) {
 		return "", fmt.Errorf("failed to fetch or parse deal detail page %s: %w", dealURL, err)
 	}
 
-	var actualDealURL string
+	var urlA, urlB string
+	var existsA, existsB bool
+
+	// Selector A: .get-deal-button
 	getDealButton := doc.Find(".get-deal-button")
 	if getDealButton.Length() > 0 {
-		href, exists := getDealButton.Attr("href")
-		if exists && strings.TrimSpace(href) != "" {
-			actualDealURL = strings.TrimSpace(href)
-			log.Printf("Found actual deal URL via .get-deal-button: %s for %s", actualDealURL, dealURL)
-			return actualDealURL, nil
+		href, found := getDealButton.Attr("href")
+		if found && strings.TrimSpace(href) != "" {
+			urlA = strings.TrimSpace(href)
+			existsA = true
 		}
 	}
 
-	autolinkerLink := doc.Find("a.autolinker_link").First()
+	// Selector B: a.autolinker_link:nth-child(1)
+	autolinkerLink := doc.Find("a.autolinker_link:nth-child(1)")
 	if autolinkerLink.Length() > 0 {
-		href, exists := autolinkerLink.Attr("href")
-		if exists && strings.TrimSpace(href) != "" {
-			if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
-				if !strings.Contains(href, "redflagdeals.com") {
-					actualDealURL = strings.TrimSpace(href)
-					log.Printf("Found potential actual deal URL via a.autolinker_link: %s for %s", actualDealURL, dealURL)
-					return actualDealURL, nil
-				}
+		href, found := autolinkerLink.Attr("href")
+		if found && strings.TrimSpace(href) != "" {
+			trimmedHref := strings.TrimSpace(href)
+			if (strings.HasPrefix(trimmedHref, "http://") || strings.HasPrefix(trimmedHref, "https://")) &&
+				!strings.Contains(trimmedHref, "redflagdeals.com") {
+				urlB = trimmedHref
+				existsB = true
 			}
 		}
+	}
+
+	if existsA && existsB {
+		if urlA == urlB {
+			log.Printf("Found actual deal URL with both selectors (match): %s for %s", urlA, dealURL)
+			return urlA, nil
+		}
+		log.Printf("Deal link mismatch for post %s. Selector A: %s, Selector B: %s. Using Selector A.", dealURL, urlA, urlB)
+		return urlA, nil // Use URL from Selector A in case of mismatch
+	} else if existsA {
+		log.Printf("Found actual deal URL with Selector A only: %s for %s (Selector B not found or invalid)", urlA, dealURL)
+		return urlA, nil
+	} else if existsB {
+		log.Printf("Found actual deal URL with Selector B only: %s for %s (Selector A not found)", urlB, dealURL)
+		return urlB, nil
 	}
 
 	log.Printf("No actual deal URL found for %s using specified selectors.", dealURL)
@@ -375,7 +392,6 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 		return nil, fmt.Errorf("failed to fetch or parse hot deals page %s: %w", url, err)
 	}
 
-	// Requirement 1: Blocked Detection
 	if doc.Find("li.topic").Length() == 0 {
 		bodyHTML, _ := doc.Find("body").Html()
 		var snippet string
@@ -389,27 +405,36 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 	}
 
 	var deals []DealInfo
-	log.Printf("DEBUG: Found %d 'li.topic' elements.", doc.Find("li.topic").Length())
-	doc.Find("li.topic").Each(func(i int, s *goquery.Selection) {
-		classAttr, _ := s.Attr("class")
-		log.Printf("DEBUG: Processing topic item %d with classes: '%s'", i, classAttr)
-		if i == 0 {
-			topicHTML, _ := s.Html()
-			log.Printf("DEBUG: HTML of first 'li.topic' element: %s", topicHTML)
+	var allTopics []*goquery.Selection
+	doc.Find("li.topic").Each(func(_ int, s *goquery.Selection) {
+		allTopics = append(allTopics, s)
+	})
+
+	var nonStickyTopics []*goquery.Selection
+	for _, s := range allTopics {
+		if !(s.HasClass("sticky")) {
+			nonStickyTopics = append(nonStickyTopics, s)
 		}
-		if s.HasClass("sticky") || s.HasClass("sponsored_topic") {
-			log.Printf("Skipping sticky/sponsored topic: %s", s.Find("h3.topic_title a").Text())
-			return
+	}
+	log.Printf("DEBUG: Found %d total 'li.topic' elements, %d non-sticky/non-sponsored.", len(allTopics), len(nonStickyTopics))
+
+	for i, s := range nonStickyTopics {
+		if i < 2 { // Skip the first two non-sticky topics
+			title := strings.TrimSpace(s.Find("div:nth-child(2) > div:nth-child(1) > h3:nth-child(2) > a").Text())
+			log.Printf("Skipping early non-sticky topic (index %d): %s", i, title)
+			continue
 		}
 
 		var deal DealInfo
 		var parseErrors []string
 
-		timeSelection := s.Find(".thread_meta .first_poster_time time")
+		// 1. Posted Time: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(1) > time
+		timeSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(1) > time")
 		if timeSelection.Length() > 0 {
+			deal.PostedTime = strings.TrimSpace(timeSelection.Text()) // Text content
 			datetimeStr, exists := timeSelection.Attr("datetime")
 			if exists {
-				deal.PostedTime = datetimeStr
+				deal.PostedTime = datetimeStr // Prefer datetime attribute for parsing
 				parsedTime, err := time.Parse(time.RFC3339, datetimeStr)
 				if err == nil {
 					deal.PublishedTimestamp = parsedTime
@@ -417,16 +442,14 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 					parseErrors = append(parseErrors, fmt.Sprintf("failed to parse datetime string '%s': %v", datetimeStr, err))
 				}
 			} else {
-				deal.PostedTime = strings.TrimSpace(timeSelection.Text())
-				parseErrors = append(parseErrors, "time element found but 'datetime' attribute missing")
+				parseErrors = append(parseErrors, "time element 'datetime' attribute missing")
 			}
 		} else {
-			topicHTML, _ := s.Html()
-			log.Printf("DEBUG: Failed to find posted time. Selector: '%s'. HTML snippet for topic: %s", ".thread_meta .first_poster_time time", topicHTML)
-			parseErrors = append(parseErrors, "posted time element not found")
+			parseErrors = append(parseErrors, "posted time element not found with selector")
 		}
 
-		titleLinkSelection := s.Find("h3.topic_title a.topic_title_link")
+		// 2. Thread Title Link & Text: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > h3:nth-child(2) > a
+		titleLinkSelection := s.Find("div:nth-child(2) > div:nth-child(1) > h3:nth-child(2) > a")
 		if titleLinkSelection.Length() > 0 {
 			deal.Title = strings.TrimSpace(titleLinkSelection.Text())
 			postURL, exists := titleLinkSelection.Attr("href")
@@ -440,12 +463,11 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 				parseErrors = append(parseErrors, "post URL href attribute missing")
 			}
 		} else {
-			topicHTML, _ := s.Html()
-			log.Printf("DEBUG: Failed to find title/post URL. Selector: '%s'. HTML snippet for topic: %s", "h3.topic_title a.topic_title_link", topicHTML)
-			parseErrors = append(parseErrors, "title/post URL element not found")
+			parseErrors = append(parseErrors, "title/post URL element not found with selector")
 		}
 
-		authorLinkSelection := s.Find(".thread_meta .thread_author a.username")
+		// 3. Author Profile Link: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(1) > a:nth-child(1)
+		authorLinkSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(1) > a:nth-child(1)")
 		if authorLinkSelection.Length() > 0 {
 			authorURL, exists := authorLinkSelection.Attr("href")
 			if exists {
@@ -457,17 +479,25 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 			} else {
 				parseErrors = append(parseErrors, "author URL href attribute missing")
 			}
-			deal.AuthorName = strings.TrimSpace(authorLinkSelection.Text())
-			if deal.AuthorName == "" {
-				parseErrors = append(parseErrors, "author name text missing")
+			// 4. Author Name: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(1) > a:nth-child(1) > span:nth-child(2)
+			authorNameSelection := authorLinkSelection.Find("span:nth-child(2)")
+			if authorNameSelection.Length() > 0 {
+				deal.AuthorName = strings.TrimSpace(authorNameSelection.Text())
+			} else {
+				// Fallback if specific span not found, try text of link itself (though less precise)
+				deal.AuthorName = strings.TrimSpace(authorLinkSelection.Text())
+				if deal.AuthorName == "" {
+					parseErrors = append(parseErrors, "author name text missing from span and link")
+				} else {
+					parseErrors = append(parseErrors, "author name span not found, used link text as fallback")
+				}
 			}
 		} else {
-			topicHTML, _ := s.Html()
-			log.Printf("DEBUG: Failed to find author link. Selector: '%s'. HTML snippet for topic: %s", ".thread_meta .thread_author a.username", topicHTML)
-			parseErrors = append(parseErrors, "author link element not found")
+			parseErrors = append(parseErrors, "author link element not found with selector")
 		}
 
-		imgSelection := s.Find(".thread_thumbnail img")
+		// 5. Thread Image URL (Optional): li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(2) > img
+		imgSelection := s.Find("div:nth-child(2) > div:nth-child(2) > img")
 		if imgSelection.Length() > 0 {
 			src, exists := imgSelection.Attr("src")
 			if exists {
@@ -475,34 +505,50 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 			}
 		}
 
-		likeCountStr := strings.TrimSpace(s.Find("div.post_voting_control span.value").First().Text())
-		if likeCountStr != "" {
-			deal.LikeCount = safeAtoi(likeCountStr)
+		// 6. Like Count: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span
+		likeCountSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span")
+		if likeCountSelection.Length() > 0 {
+			deal.LikeCount = safeAtoi(cleanNumericString(likeCountSelection.Text()))
 		} else {
 			deal.LikeCount = 0
+			parseErrors = append(parseErrors, "like count element not found with selector")
 		}
 
-		commentCountStr := strings.TrimSpace(s.Find(".posts").Text())
-		deal.CommentCount = safeAtoi(cleanNumericString(commentCountStr))
+		// 7. Comment Count: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(5) > span:nth-child(2)
+		commentCountSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(5) > span:nth-child(2)")
+		if commentCountSelection.Length() > 0 {
+			deal.CommentCount = safeAtoi(cleanNumericString(commentCountSelection.Text()))
+		} else {
+			deal.CommentCount = 0
+			parseErrors = append(parseErrors, "comment count element not found with selector")
+		}
 
-		viewCountStr := strings.TrimSpace(s.Find(".views").Text())
-		deal.ViewCount = safeAtoi(cleanNumericString(viewCountStr))
+		// 8. View Count: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(7)
+		viewCountSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(7)")
+		if viewCountSelection.Length() > 0 {
+			deal.ViewCount = safeAtoi(cleanNumericString(viewCountSelection.Text())) // " views" suffix handled by cleanNumericString
+		} else {
+			deal.ViewCount = 0
+			parseErrors = append(parseErrors, "view count element not found with selector")
+		}
 
 		if deal.PostURL != "" {
-			actualURL, err := scrapeDealDetailPage(deal.PostURL)
-			if err != nil {
-				log.Printf("Error scraping detail page for %s: %v. Continuing without actual deal URL.", deal.PostURL, err)
+			actualURL, detailErr := scrapeDealDetailPage(deal.PostURL)
+			if detailErr != nil {
+				log.Printf("Error scraping detail page for %s: %v. Continuing without actual deal URL.", deal.PostURL, detailErr)
+				// parseErrors = append(parseErrors, fmt.Sprintf("detail page scrape error: %v", detailErr)) // Optionally log as parse error
 			}
 			deal.ActualDealURL = actualURL
 		}
 
 		if len(parseErrors) > 0 {
-			log.Printf("Encountered %d parsing issues for deal '%s' (URL: %s): %s", len(parseErrors), deal.Title, deal.PostURL, strings.Join(parseErrors, "; "))
+			topicHTML, _ := s.Html()
+			log.Printf("Encountered %d parsing issues for deal '%s' (URL: %s): %s. HTML Snippet (max 500 chars): %.500s", len(parseErrors), deal.Title, deal.PostURL, strings.Join(parseErrors, "; "), topicHTML)
 		}
 		deals = append(deals, deal)
-	})
+	}
 
-	log.Printf("Successfully scraped %d deals from %s", len(deals), url)
+	log.Printf("Successfully processed %d non-sticky deals (after skipping first 2) from %s", len(deals), url)
 	return deals, nil
 }
 
