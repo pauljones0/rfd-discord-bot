@@ -9,7 +9,6 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
-	firestorepb "google.golang.org/genproto/googleapis/firestore/v1"
 )
 
 const (
@@ -149,17 +148,17 @@ func TrimOldDeals(ctx context.Context, client *firestore.Client, maxDeals int) e
 		log.Printf("Error getting count of deals for trimming: %v", err)
 		return fmt.Errorf("failed to get deal count for trimming: %w", err)
 	}
-	count, ok := countSnapshot["all"]
-	if !ok || count == nil {
-		log.Printf("Error: 'all' key not found or nil in count aggregation result for trimming.")
-		return fmt.Errorf("count aggregation result for trimming was invalid")
+	countValue, ok := countSnapshot["all"]
+	if !ok {
+		log.Printf("Error: 'all' key not found in count aggregation result for trimming.")
+		return fmt.Errorf("count aggregation result for trimming was invalid: 'all' key missing")
 	}
-	valuePb, okAssert := count.(*firestorepb.Value)
+	currentDealCountInt64, okAssert := countValue.(int64)
 	if !okAssert {
-		log.Printf("Error: count is not of type *firestorepb.Value for trimming. Actual type: %T", count)
-		return fmt.Errorf("count aggregation result for trimming has unexpected type: %T", count)
+		log.Printf("Error: count is not of type int64 for trimming. Actual type: %T, Value: %v", countValue, countValue)
+		return fmt.Errorf("count aggregation result for trimming has unexpected type: %T", countValue)
 	}
-	currentDealCount := int(valuePb.GetIntegerValue())
+	currentDealCount := int(currentDealCountInt64)
 
 	if currentDealCount <= maxDeals {
 		log.Printf("No trimming needed. Current deals: %d, Max deals: %d", currentDealCount, maxDeals)

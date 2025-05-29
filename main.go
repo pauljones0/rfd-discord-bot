@@ -19,9 +19,18 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-const hotDealsURL = "https://forums.redflagdeals.com/hot-deals-f9/"
-const discordPurpleColor = 10181046 // #9B59B6
+const hotDealsURL = "https://forums.redflagdeals.com/hot-deals-f9/?sk=tt&rfd_sk=tt&sd=d"
 const discordUpdateInterval = 10 * time.Minute
+
+// Heat ranking and color constants
+const (
+	colorColdDeal = 3092790  // #2F3136 (Dark Grey)
+	colorWarmDeal = 16753920 // #FFA500 (Orange)
+	colorHotDeal  = 16711680 // #FF0000 (Red)
+
+	heatScoreThresholdCold = 0.01
+	heatScoreThresholdWarm = 0.05
+)
 
 // DealInfo represents the structured information for a deal.
 type DealInfo struct {
@@ -128,6 +137,25 @@ func cleanReferralLink(rawUrl string) (string, bool) {
 	return cleanedURL, initialChange
 }
 
+// calculateHeatScore calculates the "heat" of a deal.
+// (Likes + Comments) / Views. Returns 0 if Views is 0.
+func calculateHeatScore(likes, comments, views int) float64 {
+	if views == 0 {
+		return 0.0
+	}
+	return float64(likes+comments) / float64(views)
+}
+
+// getHeatColor determines the embed color based on the heat score.
+func getHeatColor(heatScore float64) int {
+	if heatScore > heatScoreThresholdWarm {
+		return colorHotDeal
+	} else if heatScore > heatScoreThresholdCold {
+		return colorWarmDeal
+	}
+	return colorColdDeal
+}
+
 // formatDealToEmbed converts a DealInfo into a DiscordEmbed object.
 // isUpdate flag determines the description.
 func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
@@ -149,7 +177,7 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 	if deal.ActualDealURL != "" {
 		fields = append(fields, DiscordEmbedField{
 			Name:   "Item Link",
-			Value:  deal.ActualDealURL,
+			Value:  fmt.Sprintf("[Click Here](%s)", deal.ActualDealURL),
 			Inline: true,
 		})
 	}
@@ -158,7 +186,7 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 	if deal.PostURL != "" {
 		fields = append(fields, DiscordEmbedField{
 			Name:   "RFD Post URL",
-			Value:  deal.PostURL,
+			Value:  fmt.Sprintf("[Click Here](%s)", deal.PostURL),
 			Inline: true,
 		})
 	}
@@ -166,8 +194,8 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 	// Field 3 & 4 combined: Poster Name and Profile URL
 	if deal.AuthorName != "" && deal.AuthorURL != "" {
 		fields = append(fields, DiscordEmbedField{
-			Name:   fmt.Sprintf("Poster %s Profile", deal.AuthorName),
-			Value:  deal.AuthorURL,
+			Name:   "Poster",
+			Value:  fmt.Sprintf("[%s](%s)", deal.AuthorName, deal.AuthorURL),
 			Inline: true,
 		})
 	}
@@ -204,12 +232,15 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 		isoTimestamp = deal.PublishedTimestamp.Format(time.RFC3339) // ISO8601
 	}
 
+	heatScore := calculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
+	embedColor := getHeatColor(heatScore)
+
 	return DiscordEmbed{
 		Title:       deal.Title,
 		Description: description,
 		URL:         embedURL,
 		Timestamp:   isoTimestamp,
-		Color:       discordPurpleColor,
+		Color:       embedColor,
 		Thumbnail:   thumbnail,
 		Fields:      fields,
 	}
