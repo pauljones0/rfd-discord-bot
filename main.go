@@ -257,6 +257,11 @@ func getHomeDomain(rawURL string) string {
 		return "Link"
 	}
 
+	// Specific check for bestbuyca.o93x.net, so that it doesn't show up as o93x.net
+	if hostname == "bestbuyca.o93x.net" {
+		return hostname
+	}
+
 	parts := strings.Split(hostname, ".")
 	numParts := len(parts)
 
@@ -544,6 +549,15 @@ func cleanNumericString(s string) string {
 	return nonNumericRegex.ReplaceAllString(s, "")
 }
 
+// Regex to find the first occurrence of a number, possibly with a leading sign.
+var extractSignedNumberRegex = regexp.MustCompile(`-?\d+`)
+
+// parseSignedNumericString extracts the first numeric string that might have a leading hyphen.
+func parseSignedNumericString(s string) string {
+	match := extractSignedNumberRegex.FindString(s)
+	return match // If no match, returns empty string, which safeAtoi handles as 0
+}
+
 // scrapeDealDetailPage fetches the deal's detail page and extracts the actual deal URL.
 func scrapeDealDetailPage(dealURL string) (string, error) {
 	log.Printf("Scraping deal detail page: %s", dealURL)
@@ -729,7 +743,7 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 		// 6. Like Count: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span
 		likeCountSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span")
 		if likeCountSelection.Length() > 0 {
-			deal.LikeCount = safeAtoi(cleanNumericString(likeCountSelection.Text()))
+			deal.LikeCount = safeAtoi(parseSignedNumericString(likeCountSelection.Text()))
 		} else {
 			deal.LikeCount = 0
 			parseErrors = append(parseErrors, "like count element not found with selector")
