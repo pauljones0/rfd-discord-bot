@@ -167,6 +167,71 @@ func cleanReferralLink(rawUrl string) (string, bool) {
 	}
 }
 
+// normalizePostURL ensures a consistent format for PostURLs.
+// It converts scheme to https, standardizes the host, removes trailing slashes,
+// and removes common UTM tracking parameters.
+func normalizePostURL(rawURL string) (string, error) {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL, fmt.Errorf("failed to parse URL '%s': %w", rawURL, err)
+	}
+
+	// 1. Ensure scheme is https
+	parsedURL.Scheme = "https"
+
+	// 2. Ensure host is consistent (e.g., forums.redflagdeals.com)
+	//    Remove www. if present for forums.redflagdeals.com
+	if strings.HasPrefix(parsedURL.Host, "www.") {
+		if parsedURL.Host == "www.forums.redflagdeals.com" || parsedURL.Host == "www.redflagdeals.com" {
+			parsedURL.Host = strings.TrimPrefix(parsedURL.Host, "www.")
+		}
+		// Add other www. removal cases if necessary, or make it more generic
+	}
+	// Ensure it's the canonical host if known (e.g. always forums.redflagdeals.com)
+	if parsedURL.Host == "redflagdeals.com" { // Assuming forum links might sometimes miss the subdomain
+		parsedURL.Host = "forums.redflagdeals.com"
+	}
+
+	// 3. Remove trailing slashes from path
+	if len(parsedURL.Path) > 1 && strings.HasSuffix(parsedURL.Path, "/") {
+		parsedURL.Path = parsedURL.Path[:len(parsedURL.Path)-1]
+	}
+
+	// 4. Remove common UTM tracking parameters
+	queryParams := parsedURL.Query()
+	utmParams := []string{"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "rfd_sk", "sd", "sk"} // Added RFD specific params
+	for _, param := range utmParams {
+		if queryParams.Has(param) {
+			queryParams.Del(param)
+		}
+	}
+	parsedURL.RawQuery = queryParams.Encode()
+
+	return parsedURL.String(), nil
+}
+
+// getHomeDomain extracts the home domain from a URL string.
+// e.g., "https://walmart.ca/path" -> "walmart.ca"
+// Returns "Link" if the URL is malformed or the host is empty.
+func getHomeDomain(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		log.Printf("Failed to parse URL '%s' for home domain extraction: %v. Returning default.", rawURL, err)
+		return "Link" // Default for malformed URL
+	}
+
+	host := parsedURL.Host
+	if host == "" {
+		log.Printf("URL '%s' has an empty host. Returning default.", rawURL)
+		return "Link" // Default for empty host
+	}
+
+	// Remove "www." prefix if present
+	host = strings.TrimPrefix(host, "www.")
+
+	return host
+}
+
 // calculateHeatScore calculates the "heat" of a deal.
 // (Likes + Comments) / Views. Returns 0 if Views is 0.
 func calculateHeatScore(likes, comments, views int) float64 {
@@ -209,7 +274,7 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 	if deal.ActualDealURL != "" {
 		fields = append(fields, DiscordEmbedField{
 			Name:   "Item Link",
-			Value:  fmt.Sprintf("[Click Here](%s)", deal.ActualDealURL),
+			Value:  fmt.Sprintf("[%s](%s)", getHomeDomain(deal.ActualDealURL), deal.ActualDealURL),
 			Inline: true,
 		})
 	}
@@ -553,6 +618,19 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 				} else {
 					deal.PostURL = postURL
 				}
+				// Normalize the PostURL
+				if deal.PostURL != "" {
+					normalizedURL, normErr := normalizePostURL(deal.PostURL)
+					if normErr != nil {
+						log.Printf("Warning: Failed to normalize PostURL '%s': %v. Using original.", deal.PostURL, normErr)
+						// Optionally add to parseErrors: parseErrors = append(parseErrors, fmt.Sprintf("PostURL normalization error: %v", normErr))
+					} else {
+						if deal.PostURL != normalizedURL {
+							log.Printf("Normalized PostURL from '%s' to '%s'", deal.PostURL, normalizedURL)
+						}
+						deal.PostURL = normalizedURL
+					}
+				}
 			} else {
 				parseErrors = append(parseErrors, "post URL href attribute missing")
 			}
@@ -691,9 +769,29 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 		dealToProcess := currentScrapedDeal // Make a mutable copy
 		log.Printf("Processing deal: %s (URL: %s)", dealToProcess.Title, dealToProcess.PostURL)
 
-		existingDeal, err := GetDealByPostURL(ctx, fsClient, dealToProcess.PostURL)
+		// Ensure the PostURL used for lookup is normalized.
+		// dealToProcess.PostURL should already be normalized from scrapeHotDealsPage.
+		// If there's any doubt or if it could be sourced elsewhere unnormalized,
+		// re-normalizing here would be safest, though potentially redundant.
+		// For now, we trust it's normalized from the scraping stage.
+		// If GetDealByPostURL needs to be absolutely certain, it could normalize its input.
+		// However, the instruction is to normalize it *before* passing to GetDealByPostURL.
+		// Since dealToProcess.PostURL is already the result of normalization from the scrape,
+		// we can use it directly.
+
+		lookupURL := dealToProcess.PostURL // This should be the normalized URL from scraping.
+		// If we wanted to be absolutely sure and re-normalize (as per a strict reading of "applied to the scraped dealToProcess.PostURL"):
+		// normalizedLookupURL, normErr := normalizePostURL(dealToProcess.PostURL)
+		// if normErr != nil {
+		// 	log.Printf("Error normalizing lookup PostURL '%s': %v. Using original for lookup.", dealToProcess.PostURL, normErr)
+		// 	lookupURL = dealToProcess.PostURL // Fallback to potentially unnormalized if re-normalization fails
+		// } else {
+		// 	lookupURL = normalizedLookupURL
+		// }
+
+		existingDeal, err := GetDealByPostURL(ctx, fsClient, lookupURL)
 		if err != nil {
-			errMsg := fmt.Sprintf("Error checking Firestore for deal %s: %v", dealToProcess.PostURL, err)
+			errMsg := fmt.Sprintf("Error checking Firestore for deal %s: %v", lookupURL, err)
 			log.Println(errMsg)
 			errorMessages = append(errorMessages, errMsg)
 			continue // Skip this deal and process others
