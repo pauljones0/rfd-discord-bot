@@ -253,20 +253,19 @@ Navigate to your project's root directory (`rfd-discord-bot`) in your terminal. 
 
 ```bash
 # For Linux/macOS (ensure PROJECT_ID and REGION are set):
-gcloud run deploy rfd-discord-bot --source . --platform managed --region "$REGION" --allow-unauthenticated --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE,PORT=8080" --project "$PROJECT_ID"
+gcloud run deploy rfd-discord-bot --source . --platform managed --region "$REGION" --allow-unauthenticated --set-env-vars GOOGLE_CLOUD_PROJECT=$PROJECT_ID --set-env-vars DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE --project "$PROJECT_ID"
 
 # For Windows CMD (ensure PROJECT_ID_VAL and REGION_VAL are set):
-# gcloud run deploy rfd-discord-bot --source . --platform managed --region "%REGION_VAL%" --allow-unauthenticated --set-env-vars "GOOGLE_CLOUD_PROJECT=%PROJECT_ID_VAL%,DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE,PORT=8080" --project "%PROJECT_ID_VAL%"
+# gcloud run deploy rfd-discord-bot --source . --platform managed --region "%REGION_VAL%" --allow-unauthenticated --set-env-vars GOOGLE_CLOUD_PROJECT=%PROJECT_ID_VAL% --set-env-vars DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE --project "%PROJECT_ID_VAL%"
 
 # For PowerShell (ensure $env:PROJECT_ID and $env:REGION are set):
-# gcloud run deploy rfd-discord-bot --source . --platform managed --region "$env:REGION" --allow-unauthenticated --set-env-vars "GOOGLE_CLOUD_PROJECT=$env:PROJECT_ID,DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE,PORT=8080" --project "$env:PROJECT_ID"
+# gcloud run deploy rfd-discord-bot --source . --platform managed --region "$env:REGION" --allow-unauthenticated --set-env-vars GOOGLE_CLOUD_PROJECT=$env:PROJECT_ID --set-env-vars DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE --project "$env:PROJECT_ID"
 ```
 
 **Explanation of variables and placeholders:**
 *   `$REGION` (or `%REGION_VAL%` / `$env:REGION`): This should be the Google Cloud region you set up earlier (e.g., `us-central1`). It's used for the `--region` flag.
 *   `$PROJECT_ID` (or `%PROJECT_ID_VAL%` / `$env:PROJECT_ID`): This is your Google Cloud Project ID, set up earlier. It's used for the `GOOGLE_CLOUD_PROJECT` environment variable and the `--project` flag.
 *   `YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE`: **Crucially, you MUST replace this placeholder with your actual Discord webhook URL.**
-*   `PORT=8080`: This environment variable tells your Go application which port to listen on inside the container. Cloud Run automatically handles external traffic to this port.
 
 **Notes on the command flags:**
 *   `--source .`: Deploys the code from the current directory. Cloud Build will build the container image.

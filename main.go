@@ -389,7 +389,14 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 	}
 
 	var deals []DealInfo
+	log.Printf("DEBUG: Found %d 'li.topic' elements.", doc.Find("li.topic").Length())
 	doc.Find("li.topic").Each(func(i int, s *goquery.Selection) {
+		classAttr, _ := s.Attr("class")
+		log.Printf("DEBUG: Processing topic item %d with classes: '%s'", i, classAttr)
+		if i == 0 {
+			topicHTML, _ := s.Html()
+			log.Printf("DEBUG: HTML of first 'li.topic' element: %s", topicHTML)
+		}
 		if s.HasClass("sticky") || s.HasClass("sponsored_topic") {
 			log.Printf("Skipping sticky/sponsored topic: %s", s.Find("h3.topic_title a").Text())
 			return
@@ -414,6 +421,8 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 				parseErrors = append(parseErrors, "time element found but 'datetime' attribute missing")
 			}
 		} else {
+			topicHTML, _ := s.Html()
+			log.Printf("DEBUG: Failed to find posted time. Selector: '%s'. HTML snippet for topic: %s", ".thread_meta .first_poster_time time", topicHTML)
 			parseErrors = append(parseErrors, "posted time element not found")
 		}
 
@@ -431,6 +440,8 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 				parseErrors = append(parseErrors, "post URL href attribute missing")
 			}
 		} else {
+			topicHTML, _ := s.Html()
+			log.Printf("DEBUG: Failed to find title/post URL. Selector: '%s'. HTML snippet for topic: %s", "h3.topic_title a.topic_title_link", topicHTML)
 			parseErrors = append(parseErrors, "title/post URL element not found")
 		}
 
@@ -451,6 +462,8 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 				parseErrors = append(parseErrors, "author name text missing")
 			}
 		} else {
+			topicHTML, _ := s.Html()
+			log.Printf("DEBUG: Failed to find author link. Selector: '%s'. HTML snippet for topic: %s", ".thread_meta .thread_author a.username", topicHTML)
 			parseErrors = append(parseErrors, "author link element not found")
 		}
 
