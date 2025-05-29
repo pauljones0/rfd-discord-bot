@@ -10,6 +10,7 @@ TLDR; Watches RFD hot deals forum, runs on google cloud, posts to discord.
 *   Designed for lightweight, serverless deployment on Google Cloud Run (free tier).
 *   Color of embeds changes with how good a deal is
 *   Embeds are updated every X minutes to keep the likes, comments and views up to date
+*   Item Links default to Rick Rolling if no link is provided
 
 ## Simplified Architecture
 
