@@ -58,12 +58,6 @@ type DiscordEmbedField struct {
 	Inline bool   `json:"inline,omitempty"`
 }
 
-// DiscordEmbedFooter represents the footer of a Discord embed.
-type DiscordEmbedFooter struct {
-	Text    string `json:"text"`
-	IconURL string `json:"icon_url,omitempty"`
-}
-
 // DiscordEmbed represents a single embed object in a Discord message.
 type DiscordEmbed struct {
 	Title       string                `json:"title,omitempty"`
@@ -71,7 +65,6 @@ type DiscordEmbed struct {
 	URL         string                `json:"url,omitempty"`       // URL for the title
 	Timestamp   string                `json:"timestamp,omitempty"` // ISO8601 timestamp
 	Color       int                   `json:"color,omitempty"`     // Decimal color code
-	Footer      DiscordEmbedFooter    `json:"footer,omitempty"`
 	Thumbnail   DiscordEmbedThumbnail `json:"thumbnail,omitempty"`
 	Fields      []DiscordEmbedField   `json:"fields,omitempty"`
 }
@@ -93,6 +86,22 @@ func cleanReferralLink(rawUrl string) (string, bool) {
 		// If parsing fails, return the URL as is from transparent.Clear()
 		// and false, as per instruction 4.
 		return cleanedURL, false
+	}
+
+	// Handle go.redirectingat.com links
+	if parsedUrl.Host == "go.redirectingat.com" {
+		urlQueryParam := parsedUrl.Query().Get("url")
+		if urlQueryParam != "" {
+			decodedDestURL, decodeErr := url.QueryUnescape(urlQueryParam)
+			if decodeErr == nil {
+				// Successfully decoded, this is our new URL.
+				// A change was made by this specific handler.
+				return decodedDestURL, true
+			}
+			// Log error if decoding fails, then fall through to allow other rules or default return.
+			log.Printf("Failed to URL-decode 'url' query parameter from %s for host %s: %v. Proceeding.", rawUrl, parsedUrl.Host, decodeErr)
+		}
+		// If 'url' param is missing, or decoding failed, fall through to other rules.
 	}
 
 	if strings.Contains(parsedUrl.Host, "amazon.") {
@@ -189,12 +198,8 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 
 	// Ensure PublishedTimestamp is not zero before formatting
 	var isoTimestamp string
-	var footerText string
 	if !deal.PublishedTimestamp.IsZero() {
 		isoTimestamp = deal.PublishedTimestamp.Format(time.RFC3339) // ISO8601
-		footerText = fmt.Sprintf("RFD Bot | <t:%d:R>", deal.PublishedTimestamp.Unix())
-	} else {
-		footerText = "RFD Bot | Timestamp not available"
 	}
 
 	return DiscordEmbed{
@@ -203,11 +208,8 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 		URL:         embedURL,
 		Timestamp:   isoTimestamp,
 		Color:       discordPurpleColor,
-		Footer: DiscordEmbedFooter{
-			Text: footerText,
-		},
-		Thumbnail: thumbnail,
-		Fields:    fields,
+		Thumbnail:   thumbnail,
+		Fields:      fields,
 	}
 }
 
