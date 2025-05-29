@@ -1,18 +1,12 @@
 # RFD Hot Deals Discord Bot
 
-A brief overview of the bot's purpose (scrapes RFD Hot Deals RSS, posts new deals to Discord via webhook) and its Google Cloud Run architecture.
+TLDR; Watches RFD hot deals forum, runs on google cloud, posts to discord.
 
 ## Features
 
-*   Monitors RFD Hot Deals RSS feed.
-*   Identifies new deals using Firestore for state management.
-*   Extracts deal title, RFD link, author, published date, and attempts to find a direct item link.
-*   Filters out "Sponsored" posts.
-*   Includes a stub for future province-based filtering.
-*   Formats deals as rich Discord embeds.
+*   Identifies RFD Hot Deals using Firestore for state management.
 *   Sends notifications to a configurable Discord webhook.
 *   Designed for lightweight, serverless deployment on Google Cloud Run (free tier).
-*   Robust error handling and logging to Google Cloud Logging.
 
 ## Simplified Architecture
 
@@ -20,23 +14,22 @@ The bot operates with a simple, serverless architecture on Google Cloud:
 
 *   **Cloud Scheduler:** Triggers the bot every minute (or as configured).
 *   **Cloud Run:** Hosts the Go application. When triggered, it:
-    1.  Fetches the latest deals from the RFD Hot Deals RSS feed.
-    2.  Checks Firestore to determine which deals are new since the last run.
-    3.  Processes new deals (extracts info, filters, formats).
-    4.  Sends formatted deal notifications to the configured Discord webhook.
-    5.  Updates Firestore with the timestamp of the last processed deal.
-*   **Firestore:** Stores the timestamp of the last successfully processed deal, ensuring deals are not sent multiple times.
+    1.  Fetches the latest deals from the RFD Hot Deals.
+    2.  Checks Firestore to determine if the deal is fresh, updating as needed.
+    3.  Processes new deals (extracts info, filters, formats) or prepares to update likes/views/comments if it's an old deal.
+    4.  Sends formatted deal notifications to the configured Discord webhook and updates firestore with the returned message id.
+*   **Firestore:** Stores the deal data and state, ensuring deals are not sent multiple times.
 
 ```mermaid
 graph LR
     A[Cloud Scheduler: Runs every minute] --> B(Cloud Run: Go Application)
-    B --> C{Fetch RFD RSS Feed}
-    C --> D{Check Firestore for last processed deal}
-    D --> E{Identify new deals}
+    B --> C{Fetch RFD page}
+    C --> D{Fetch from Firestore, updating as needed}
+    D --> E{Identify new deals and deals that need to be updated}
     E --> F{Process & Format Deals}
     F --> G[Send to Discord Webhook]
-    G --> H{Update Firestore with new last processed deal timestamp}
-    B <--> I[Firestore: Stores last_processed_deal timestamp]
+    G --> H{Update Firestore with new discord message ids}
+    H <--> I[Firestore: Stores last_processed_deal timestamp]
 ```
 
 ## Local Development
@@ -116,12 +109,48 @@ These instructions will guide you through deploying the bot to Google Cloud Run.
 1.  **Google Cloud Project:** You need an active Google Cloud Project. If you don't have one, create one at the [Google Cloud Console](https://console.cloud.google.com/).
 2.  **`gcloud` CLI:** Install and initialize the Google Cloud CLI.
     *   Installation instructions: [Google Cloud SDK](https://cloud.google.com/sdk/docs/install)
-    *   Authenticate and set your project:
+    *   Authenticate and initialize `gcloud`:
         ```bash
         gcloud auth login
-        gcloud config set project YOUR_PROJECT_ID
+        gcloud init
         ```
-        Replace `YOUR_PROJECT_ID` with your actual project ID.
+        During `gcloud init`, you will be prompted to pick a project and can set a default region. This is the recommended first step.
+
+    *   **Set Environment Variables for `gcloud` commands:**
+        For convenience, and to avoid repeatedly typing your project ID and region, set the following environment variables in your shell. These will be used in subsequent `gcloud` commands.
+
+        **For Linux/macOS (bash/zsh):**
+        ```bash
+        export PROJECT_ID=$(gcloud config get-value project)
+        export REGION="us-central1" # Or your preferred region, e.g., us-east1, europe-west1
+        echo "PROJECT_ID set to: $PROJECT_ID"
+        echo "REGION set to: $REGION (Ensure this is a valid region for your services and that it supports Cloud Run, Firestore, and Cloud Scheduler)"
+        ```
+
+        **For Windows (Command Prompt):**
+        ```bash
+        for /f "tokens=*" %i in ('gcloud config get-value project') do set PROJECT_ID_VAL=%i
+        set REGION_VAL=us-central1
+        echo PROJECT_ID_VAL is set to: %PROJECT_ID_VAL%
+        echo REGION_VAL is set to: %REGION_VAL% (Ensure this is a valid region for your services)
+        ```
+        Then use `%PROJECT_ID_VAL%` and `%REGION_VAL%` in the `gcloud` commands where indicated.
+
+        **For Windows (PowerShell):**
+        ```powershell
+        $env:PROJECT_ID = $(gcloud config get-value project)
+        $env:REGION = "us-central1" # Or your preferred region
+        Write-Host "PROJECT_ID set to: $env:PROJECT_ID"
+        Write-Host "REGION set to: $env:REGION (Ensure this is a valid region for your services)"
+        ```
+        Then use `$env:PROJECT_ID` and `$env:REGION` in the `gcloud` commands where indicated.
+
+        **Note on Region Selection:**
+        While `us-central1` is suggested as a common, cost-effective default, it's crucial to:
+        1.  Verify that your chosen region supports all necessary services (Cloud Run, Firestore, Cloud Scheduler).
+        2.  Consider factors like latency to your users or the source of data (e.g., RFD servers).
+        3.  Check current pricing for services in that region.
+        You can list available compute regions using `gcloud compute regions list`. The region for Firestore is chosen during its setup and should ideally match your Cloud Run and Cloud Scheduler region.
 
 ### Enable APIs
 
@@ -133,9 +162,16 @@ The bot requires several Google Cloud APIs to be enabled for your project:
 
 Enable them using the following `gcloud` command:
 ```bash
-gcloud services enable run.googleapis.com firestore.googleapis.com cloudscheduler.googleapis.com cloudbuild.googleapis.com --project YOUR_PROJECT_ID
+# For Linux/macOS (ensure PROJECT_ID is set as shown above):
+gcloud services enable run.googleapis.com firestore.googleapis.com cloudscheduler.googleapis.com cloudbuild.googleapis.com --project "$PROJECT_ID"
+
+# For Windows CMD (ensure PROJECT_ID_VAL is set):
+# gcloud services enable run.googleapis.com firestore.googleapis.com cloudscheduler.googleapis.com cloudbuild.googleapis.com --project "%PROJECT_ID_VAL%"
+
+# For PowerShell (ensure $env:PROJECT_ID is set):
+# gcloud services enable run.googleapis.com firestore.googleapis.com cloudscheduler.googleapis.com cloudbuild.googleapis.com --project "$env:PROJECT_ID"
 ```
-Replace `YOUR_PROJECT_ID` with your project ID.
+Ensure you use the correct variable (`$PROJECT_ID`, `%PROJECT_ID_VAL%`, or `$env:PROJECT_ID`) based on your shell and the setup instructions above.
 
 ### Configure Cloud Build Service Account Permissions
 
@@ -144,16 +180,28 @@ When deploying to Cloud Run from source (using the `--source .` flag), Google Cl
 **1. Identify Your Project Number:**
 You'll need your Google Cloud Project Number (distinct from the Project ID) to correctly identify the Cloud Build service account. You can retrieve it using the following command:
 ```bash
-gcloud projects describe YOUR_PROJECT_ID --format='value(projectNumber)'
+# For Linux/macOS:
+gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)'
+
+# For Windows CMD:
+# gcloud projects describe "%PROJECT_ID_VAL%" --format='value(projectNumber)'
+
+# For PowerShell:
+# gcloud projects describe "$env:PROJECT_ID" --format='value(projectNumber)'
 ```
-Replace `YOUR_PROJECT_ID` with your actual Project ID. Make a note of the outputted project number (e.g., `123456789012`).
+Make a note of the outputted project number (e.g., `123456789012`), as you'll need it in the next step.
 
 **2. Grant `roles/run.builder` to the Cloud Build Service Account:**
 The Cloud Build service account, which typically has an email address like `YOUR_PROJECT_NUMBER@cloudbuild.gserviceaccount.com`, needs the `roles/run.builder` role on your project to successfully build and deploy to Cloud Run. Grant this role using the command below, ensuring you replace `YOUR_PROJECT_ID` and `YOUR_PROJECT_NUMBER` (the value obtained in the previous step):
 ```bash
-gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
-    --member="serviceAccount:YOUR_PROJECT_NUMBER@cloudbuild.gserviceaccount.com" \
-    --role="roles/run.builder"
+# For Linux/macOS (replace YOUR_PROJECT_NUMBER with the value from the previous step):
+gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:YOUR_PROJECT_NUMBER@cloudbuild.gserviceaccount.com" --role="roles/run.builder"
+
+# For Windows CMD (replace YOUR_PROJECT_NUMBER):
+# gcloud projects add-iam-policy-binding "%PROJECT_ID_VAL%" --member="serviceAccount:YOUR_PROJECT_NUMBER@cloudbuild.gserviceaccount.com" --role="roles/run.builder"
+
+# For PowerShell (replace YOUR_PROJECT_NUMBER):
+# gcloud projects add-iam-policy-binding "$env:PROJECT_ID" --member="serviceAccount:YOUR_PROJECT_NUMBER@cloudbuild.gserviceaccount.com" --role="roles/run.builder"
 ```
 This step is crucial for deployments from source to succeed.
 
@@ -204,28 +252,30 @@ You will provide this URL in the deployment command below.
 Navigate to your project's root directory (`rfd-discord-bot`) in your terminal. Run the following command to deploy the service:
 
 ```bash
-gcloud run deploy rfd-discord-bot \
-    --source . \
-    --platform managed \
-    --region YOUR_CHOSEN_REGION \
-    --allow-unauthenticated \
-    --set-env-vars GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID,DISCORD_WEBHOOK_URL=YOUR_DISCORD_WEBHOOK_URL \
-    --project YOUR_PROJECT_ID
+# For Linux/macOS (ensure PROJECT_ID and REGION are set):
+gcloud run deploy rfd-discord-bot --source . --platform managed --region "$REGION" --allow-unauthenticated --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE,PORT=8080" --project "$PROJECT_ID"
+
+# For Windows CMD (ensure PROJECT_ID_VAL and REGION_VAL are set):
+# gcloud run deploy rfd-discord-bot --source . --platform managed --region "%REGION_VAL%" --allow-unauthenticated --set-env-vars "GOOGLE_CLOUD_PROJECT=%PROJECT_ID_VAL%,DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE,PORT=8080" --project "%PROJECT_ID_VAL%"
+
+# For PowerShell (ensure $env:PROJECT_ID and $env:REGION are set):
+# gcloud run deploy rfd-discord-bot --source . --platform managed --region "$env:REGION" --allow-unauthenticated --set-env-vars "GOOGLE_CLOUD_PROJECT=$env:PROJECT_ID,DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE,PORT=8080" --project "$env:PROJECT_ID"
 ```
 
-**Explanation of placeholders:**
-*   `YOUR_CHOSEN_REGION`: The Google Cloud region where you want to deploy your service (e.g., `us-central1`, `europe-west1`). Choose a region that supports Cloud Run and Firestore, and ideally is close to your users or the RFD servers.
-*   `YOUR_PROJECT_ID`: Your Google Cloud Project ID.
-*   `YOUR_DISCORD_WEBHOOK_URL`: Your actual Discord webhook URL. **Remember to replace this placeholder with your real URL when running the command.**
+**Explanation of variables and placeholders:**
+*   `$REGION` (or `%REGION_VAL%` / `$env:REGION`): This should be the Google Cloud region you set up earlier (e.g., `us-central1`). It's used for the `--region` flag.
+*   `$PROJECT_ID` (or `%PROJECT_ID_VAL%` / `$env:PROJECT_ID`): This is your Google Cloud Project ID, set up earlier. It's used for the `GOOGLE_CLOUD_PROJECT` environment variable and the `--project` flag.
+*   `YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE`: **Crucially, you MUST replace this placeholder with your actual Discord webhook URL.**
+*   `PORT=8080`: This environment variable tells your Go application which port to listen on inside the container. Cloud Run automatically handles external traffic to this port.
 
-**Notes on the command:**
-*   `--source .`: Tells Cloud Run to build and deploy the code from the current directory.
-*   `--platform managed`: Specifies using the fully managed Cloud Run environment.
-*   `--allow-unauthenticated`: This makes your Cloud Run service publicly accessible. This is used here to allow Cloud Scheduler to invoke it easily without complex authentication setup for this simple use case. For sensitive services, you should use IAM-based invocation (i.e., remove this flag and configure IAM permissions for Cloud Scheduler to invoke the service).
-*   `--set-env-vars`: Sets environment variables for the Cloud Run service.
-*   For multiple variables, provide them as a comma-separated list (e.g., `KEY1=VALUE1,KEY2=VALUE2`). Each `KEY=VALUE` pair will be set as a distinct environment variable.
+**Notes on the command flags:**
+*   `--source .`: Deploys the code from the current directory. Cloud Build will build the container image.
+*   `--platform managed`: Specifies the fully managed Cloud Run environment.
+*   `--allow-unauthenticated`: Makes the Cloud Run service publicly accessible. This simplifies invocation by Cloud Scheduler. For production or sensitive services, consider removing this and setting up IAM-based authentication ("private" service).
+*   `--set-env-vars`: Sets environment variables for the running service. Variables are comma-separated: `KEY1=VALUE1,KEY2=VALUE2`.
+*   `--project "$PROJECT_ID"`: Explicitly specifies the project for the deployment, which is a good practice.
 
-**PowerShell Line Continuation:** If you are using PowerShell and copying the multi-line `gcloud run deploy` command, remember that PowerShell uses a backtick (`` ` ``) for line continuation, not a backslash (`\`).
+**PowerShell Note:** The PowerShell example command is already a single line. If you were to break it across multiple lines in a script for readability, PowerShell uses a backtick (`` ` ``) as the line continuation character.
 
 After the deployment is successful, the command will output the **Service URL**. Copy this URL, as you'll need it for setting up Cloud Scheduler.
 
@@ -237,24 +287,24 @@ You can create a Cloud Scheduler job via the GCP Console or using `gcloud`.
 
 **Using `gcloud` (Recommended):**
 ```bash
-gcloud scheduler jobs create http rfd-bot-trigger \
-    --location=YOUR_CHOSEN_REGION \
-    --schedule="*/5 * * * *" \
-    --uri=YOUR_CLOUD_RUN_SERVICE_URL \
-    --http-method=GET \
-    --time-zone="America/Toronto" \
-    --description="Triggers the RFD Discord Bot every 5 minutes" \
-    --project YOUR_PROJECT_ID
+# For Linux/macOS (ensure PROJECT_ID and REGION are set, replace YOUR_CLOUD_RUN_SERVICE_URL):
+gcloud scheduler jobs create http rfd-bot-trigger --location "$REGION" --schedule "* * * * *" --uri YOUR_CLOUD_RUN_SERVICE_URL --http-method GET --time-zone "America/Toronto" --description "Triggers the RFD Discord Bot every minute" --project "$PROJECT_ID"
+
+# For Windows CMD (ensure PROJECT_ID_VAL and REGION_VAL are set, replace YOUR_CLOUD_RUN_SERVICE_URL):
+# gcloud scheduler jobs create http rfd-bot-trigger --location "%REGION_VAL%" --schedule "* * * * *" --uri YOUR_CLOUD_RUN_SERVICE_URL --http-method GET --time-zone "America/Toronto" --description "Triggers the RFD Discord Bot every minute" --project "%PROJECT_ID_VAL%"
+
+# For PowerShell (ensure $env:PROJECT_ID and $env:REGION are set, replace YOUR_CLOUD_RUN_SERVICE_URL):
+# gcloud scheduler jobs create http rfd-bot-trigger --location "$env:REGION" --schedule "* * * * *" --uri YOUR_CLOUD_RUN_SERVICE_URL --http-method GET --time-zone "America/Toronto" --description "Triggers the RFD Discord Bot every minute" --project "$env:PROJECT_ID"
 ```
 
-**Explanation:**
-*   `rfd-bot-trigger`: A name for your scheduler job.
-*   `--location=YOUR_CHOSEN_REGION`: **Replace this with the same region you used for your Cloud Run service** (e.g., `us-central1`). This specifies the region where the Cloud Scheduler job will run.
-*   `--schedule="*/5 * * * *"`: Sets the job to run every 5 minutes using cron syntax. You can adjust this (e.g., `* * * * *` for every minute, but be mindful of RSS feed politeness and potential rate limits).
-*   `--uri=YOUR_CLOUD_RUN_SERVICE_URL`: **Replace this with the Service URL** you obtained after deploying your Cloud Run service.
-*   `--http-method=GET`: The HTTP method to use. `GET` is fine for this bot's main handler.
-*   `--time-zone="America/Toronto"`: Set this to your preferred timezone. This affects how the schedule is interpreted.
-*   `--project YOUR_PROJECT_ID`: Your Google Cloud Project ID.
+**Explanation of variables and placeholders:**
+*   `rfd-bot-trigger`: A descriptive name for your Cloud Scheduler job.
+*   `--location "$REGION"`: Specifies the region for the Cloud Scheduler job. **This MUST be the same region where your Cloud Run service is deployed.**
+*   `--schedule "* * * * *"`: Cron syntax for running the job every minute. Adjust as needed (e.g., `/2 * * * *` for every two minutes, be polite).
+*   `--uri YOUR_CLOUD_RUN_SERVICE_URL`: **Replace this placeholder with the actual Service URL** outputted by the `gcloud run deploy` command.
+*   `--http-method GET`: The HTTP method used to invoke your Cloud Run service.
+*   `--time-zone "America/Toronto"`: Sets the timezone for interpreting the schedule. Adjust to your local timezone if preferred.
+*   `--project "$PROJECT_ID"`: Specifies the project for the scheduler job.
 
 **Using GCP Console:**
 1.  Go to [Cloud Scheduler](https://console.cloud.google.com/cloudscheduler) in the GCP Console.
@@ -281,11 +331,16 @@ The Cloud Run service needs permission to read from and write to Firestore.
 *   **Grant Role:** Grant this service account the "Cloud Datastore User" role (which includes Firestore permissions) or the more specific "Firestore User" (`roles/firestore.user`) role.
 
 ```bash
-gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
-    --member="serviceAccount:YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL" \
-    --role="roles/datastore.user"
+# For Linux/macOS (replace YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL with the actual email):
+gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL" --role="roles/datastore.user"
+
+# For Windows CMD (replace YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL):
+# gcloud projects add-iam-policy-binding "%PROJECT_ID_VAL%" --member="serviceAccount:YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL" --role="roles/datastore.user"
+
+# For PowerShell (replace YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL):
+# gcloud projects add-iam-policy-binding "$env:PROJECT_ID" --member="serviceAccount:YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL" --role="roles/datastore.user"
 ```
-Replace `YOUR_PROJECT_ID` with your project ID and `YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL` with the email of the service account your Cloud Run service uses.
+Replace `YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL` with the email of the service account your Cloud Run service uses. This is often `PROJECT_NUMBER-compute@developer.gserviceaccount.com` by default, or a custom one if you configured it. You can find it in the Cloud Run service details in the GCP Console.
 
 **2. Cloud Scheduler Service Account to Invoke Cloud Run:**
 *   If you used `--allow-unauthenticated` when deploying your Cloud Run service, this step is **generally not needed** for the invocation itself, as the service is public.
@@ -295,18 +350,20 @@ Replace `YOUR_PROJECT_ID` with your project ID and `YOUR_CLOUD_RUN_SERVICE_ACCOU
 For a private service, the command would look like:
 ```bash
 # Example for a private service - not strictly needed if --allow-unauthenticated was used
-gcloud run services add-iam-policy-binding rfd-discord-bot \
-    --member="serviceAccount:YOUR_SCHEDULER_SERVICE_ACCOUNT_EMAIL" \
-    --role="roles/run.invoker" \
-    --region=YOUR_CHOSEN_REGION \
-    --platform=managed \
-    --project=YOUR_PROJECT_ID
+# For Linux/macOS (replace YOUR_SCHEDULER_SERVICE_ACCOUNT_EMAIL):
+gcloud run services add-iam-policy-binding rfd-discord-bot --member="serviceAccount:YOUR_SCHEDULER_SERVICE_ACCOUNT_EMAIL" --role="roles/run.invoker" --region="$REGION" --platform=managed --project="$PROJECT_ID"
+
+# For Windows CMD (replace YOUR_SCHEDULER_SERVICE_ACCOUNT_EMAIL):
+# gcloud run services add-iam-policy-binding rfd-discord-bot --member="serviceAccount:YOUR_SCHEDULER_SERVICE_ACCOUNT_EMAIL" --role="roles/run.invoker" --region="%REGION_VAL%" --platform=managed --project="%PROJECT_ID_VAL%"
+
+# For PowerShell (replace YOUR_SCHEDULER_SERVICE_ACCOUNT_EMAIL):
+# gcloud run services add-iam-policy-binding rfd-discord-bot --member="serviceAccount:YOUR_SCHEDULER_SERVICE_ACCOUNT_EMAIL" --role="roles/run.invoker" --region="$env:REGION" --platform=managed --project="$env:PROJECT_ID"
 ```
-Replace placeholders accordingly. For simplicity with `--allow-unauthenticated`, this is more of an FYI.
+Replace `YOUR_SCHEDULER_SERVICE_ACCOUNT_EMAIL` with the service account Cloud Scheduler uses (often `YOUR_PROJECT_ID@appspot.gserviceaccount.com` by default). This step is only necessary if you deployed Cloud Run as a private service (without `--allow-unauthenticated`).
 
 ## Usage
 
-Once deployed and Cloud Scheduler is active (it might take a minute for the first scheduled run after creation), the bot runs automatically. New deals from the RFD Hot Deals RSS feed will be processed and posted to your configured Discord channel.
+Once deployed and Cloud Scheduler is active (it might take a minute for the first scheduled run after creation), the bot runs automatically. New deals from the RFD Hot Deals feed will be processed and posted to your configured Discord channel.
 
 ## Error Logging & Alerting
 
@@ -331,8 +388,8 @@ For proactive monitoring, you can set up alerts in [Google Cloud Monitoring](htt
 2.  **Create Log-Based Metrics (Optional but Recommended for Specific Errors):**
     *   Go to "Logging" > "Log-based Metrics".
     *   Click "Create Metric".
-    *   Define a filter for specific error messages you want to track (e.g., `resource.type="cloud_run_revision" AND resource.labels.service_name="rfd-discord-bot" AND severity=ERROR AND textPayload:"Failed to fetch RSS feed"`).
-    *   Give the metric a name (e.g., `rfd-bot-rss-fetch-errors`).
+    *   Define a filter for specific error messages you want to track (e.g., `resource.type="cloud_run_revision" AND resource.labels.service_name="rfd-discord-bot" AND severity=ERROR AND textPayload:"Failed to fetch feed"`).
+    *   Give the metric a name (e.g., `rfd-bot-fetch-errors`).
 3.  **Create an Alert Policy:**
     *   In "Monitoring" > "Alerting", click "+ Create Policy".
     *   **Add Condition:**
@@ -349,7 +406,7 @@ For proactive monitoring, you can set up alerts in [Google Cloud Monitoring](htt
     *   **Name and Save:** Give your alert policy a descriptive name.
 
 **Specific Error Types to Consider Alerting On:**
-*   Persistent "Failed to fetch RSS feed" errors.
+*   Persistent "Failed to fetch RFD feed" errors.
 *   "Discord webhook failed" errors (could indicate an invalid URL or Discord API issues).
 *   "Firestore operation error" (read/write failures).
 *   Any unhandled panics or critical errors logged by the application.
@@ -362,7 +419,7 @@ Cloud Logging automatically manages log retention according to configured polici
 
 *   **Deals Not Appearing in Discord:**
     1.  **Check Cloud Scheduler:** Go to Cloud Scheduler in the GCP Console. Verify the job (`rfd-bot-trigger`) status. Look at "Last run" and "Result". If it's failing, check its logs.
-    2.  **Check Cloud Run Logs:** Go to Cloud Logging and filter for your `rfd-discord-bot` service. Look for any errors related to RSS fetching, Firestore operations, or sending messages to Discord.
+    2.  **Check Cloud Run Logs:** Go to Cloud Logging and filter for your `rfd-discord-bot` service. Look for any errors related to the RFD site, Firestore operations, or sending messages to Discord.
     3.  **Discord Webhook URL:** Ensure the `DISCORD_WEBHOOK_URL` environment variable in your Cloud Run service configuration is correct and the webhook is still valid in Discord.
     4.  **Firestore Data:** Check Firestore to see if the `last_processed_deal` document in the `bot_state` collection is being updated. If it's stuck, it might indicate an issue processing a specific deal.
 
@@ -384,4 +441,4 @@ Cloud Logging automatically manages log retention according to configured polici
 
 This README provides a comprehensive guide for developers to understand, set up, deploy, and manage the RFD Hot Deals Discord Bot on Google Cloud.
 ## Future Improvements
-Ideally, webhook management could be enhanced by using a Google Form for submissions. These submissions would automatically populate a Google Cloud Firestore database. The bot, running in a single container instance, would then fetch all webhooks from Firestore. When a new deal is found, it would notify all registered webhooks. This approach centralizes webhook management and scales more effectively than manually editing a YAML file, requiring only one running container.
+Ideally, webhook management could be enhanced by using a Google Form for submissions. These submissions would automatically populate a Google Cloud Firestore database. The bot, running in a single container instance, would then fetch all webhooks from Firestore. When a new deal is found, it would notify all registered webhooks. This approach centralizes webhook management and scales more effectively than manually editing a YAML file, requiring only one running container. On the flipside, this would be impossible due to Discords 50 requests per minute limitations.
