@@ -846,20 +846,19 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 		// However, the instruction is to normalize it *before* passing to GetDealByPostURL.
 		// Since dealToProcess.PostURL is already the result of normalization from the scrape,
 		// we can use it directly.
+		//
+		// The lookupURL variable and associated normalization logic below are no longer needed
+		// as we are now using PublishedTimestamp for Firestore lookups.
 
-		lookupURL := dealToProcess.PostURL // This should be the normalized URL from scraping.
-		// If we wanted to be absolutely sure and re-normalize (as per a strict reading of "applied to the scraped dealToProcess.PostURL"):
-		// normalizedLookupURL, normErr := normalizePostURL(dealToProcess.PostURL)
-		// if normErr != nil {
-		// 	log.Printf("Error normalizing lookup PostURL '%s': %v. Using original for lookup.", dealToProcess.PostURL, normErr)
-		// 	lookupURL = dealToProcess.PostURL // Fallback to potentially unnormalized if re-normalization fails
-		// } else {
-		// 	lookupURL = normalizedLookupURL
-		// }
+		// Check if PublishedTimestamp is valid
+		if dealToProcess.PublishedTimestamp.IsZero() {
+			log.Printf("Warning: PublishedTimestamp is missing or invalid for deal: %s (URL: %s). Skipping deal.", dealToProcess.Title, dealToProcess.PostURL)
+			continue // Skip this deal
+		}
 
-		existingDeal, err := GetDealByPostURL(ctx, fsClient, lookupURL)
+		existingDeal, err := GetDealByPublishedTimestamp(ctx, fsClient, dealToProcess.PublishedTimestamp)
 		if err != nil {
-			errMsg := fmt.Sprintf("Error checking Firestore for deal %s: %v", lookupURL, err)
+			errMsg := fmt.Sprintf("Error checking Firestore for deal with PublishedTimestamp %s: %v", dealToProcess.PublishedTimestamp.String(), err)
 			log.Println(errMsg)
 			errorMessages = append(errorMessages, errMsg)
 			continue // Skip this deal and process others
@@ -873,7 +872,8 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 				existingDeal.CommentCount != dealToProcess.CommentCount ||
 				existingDeal.ViewCount != dealToProcess.ViewCount ||
 				existingDeal.Title != dealToProcess.Title ||
-				existingDeal.ActualDealURL != dealToProcess.ActualDealURL ||
+				//we don't check actualDealURL for updates since it only matters for new deals
+				existingDeal.PostURL != dealToProcess.PostURL || // Added PostURL check
 				existingDeal.ThreadImageURL != dealToProcess.ThreadImageURL {
 				updateNeeded = true
 			}
@@ -886,7 +886,7 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 			updatedFirestoreDeal.LikeCount = dealToProcess.LikeCount
 			updatedFirestoreDeal.CommentCount = dealToProcess.CommentCount
 			updatedFirestoreDeal.ViewCount = dealToProcess.ViewCount
-			updatedFirestoreDeal.ActualDealURL = dealToProcess.ActualDealURL
+			updatedFirestoreDeal.PostURL = dealToProcess.PostURL
 			// Ensure PublishedTimestamp is from the current scrape if valid
 			if !dealToProcess.PublishedTimestamp.IsZero() {
 				updatedFirestoreDeal.PublishedTimestamp = dealToProcess.PublishedTimestamp
@@ -907,13 +907,14 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 				log.Printf("Successfully updated existing deal '%s' (ID: %s) in Firestore.", updatedFirestoreDeal.Title, updatedFirestoreDeal.FirestoreID)
 				if updateNeeded {
 					updatedDealsCount++
-					log.Printf("Deal '%s' had data changes. Likes: %d->%d, Comments: %d->%d, Views: %d->%d, Title: '%s'->'%s', ActualURL: '%s'->'%s', ImageURL: '%s'->'%s'",
+					log.Printf("Deal '%s' had data changes. Likes: %d->%d, Comments: %d->%d, Views: %d->%d, Title: '%s'->'%s', PostURL: '%s'->'%s', ImageURL: '%s'->'%s'",
 						updatedFirestoreDeal.Title,
 						existingDeal.LikeCount, updatedFirestoreDeal.LikeCount,
 						existingDeal.CommentCount, updatedFirestoreDeal.CommentCount,
 						existingDeal.ViewCount, updatedFirestoreDeal.ViewCount,
 						existingDeal.Title, updatedFirestoreDeal.Title,
-						existingDeal.ActualDealURL, updatedFirestoreDeal.ActualDealURL,
+						//we don't check actualDealURL since it only matters for new deals
+						existingDeal.PostURL, updatedFirestoreDeal.PostURL,
 						existingDeal.ThreadImageURL, updatedFirestoreDeal.ThreadImageURL)
 
 					if discordWebhookURL != "" && updatedFirestoreDeal.DiscordMessageID != "" {

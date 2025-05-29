@@ -109,32 +109,32 @@ func ReadRecentDeals(ctx context.Context, client *firestore.Client, limit int) (
 	return deals, nil
 }
 
-// GetDealByPostURL queries for a deal with a matching PostURL.
+// GetDealByPublishedTimestamp queries for a deal with a matching PublishedTimestamp.
 // Returns the DealInfo (with FirestoreID populated) or nil, nil if not found.
-func GetDealByPostURL(ctx context.Context, client *firestore.Client, postURL string) (*DealInfo, error) {
+func GetDealByPublishedTimestamp(ctx context.Context, client *firestore.Client, publishedTimestamp time.Time) (*DealInfo, error) {
 	iter := client.Collection(firestoreCollection).
-		Where("postURL", "==", postURL).
+		Where("publishedTimestamp", "==", publishedTimestamp).
 		Limit(1).
 		Documents(ctx)
 	defer iter.Stop()
 
 	doc, err := iter.Next()
 	if err == iterator.Done {
-		log.Printf("No deal found in Firestore with PostURL: %s", postURL)
+		log.Printf("No deal found in Firestore with PublishedTimestamp: %s", publishedTimestamp.String())
 		return nil, nil // Not found
 	}
 	if err != nil {
-		log.Printf("Error querying deal by PostURL from Firestore (URL: %s): %v", postURL, err)
-		return nil, fmt.Errorf("failed to query deal by PostURL (URL: %s): %w", postURL, err)
+		log.Printf("Error querying deal by PublishedTimestamp from Firestore (Timestamp: %s): %v", publishedTimestamp.String(), err)
+		return nil, fmt.Errorf("failed to query deal by PublishedTimestamp (Timestamp: %s): %w", publishedTimestamp.String(), err)
 	}
 
 	var deal DealInfo
 	if err := doc.DataTo(&deal); err != nil {
-		log.Printf("Error unmarshaling deal data from Firestore (ID: %s, PostURL: %s): %v", doc.Ref.ID, postURL, err)
-		return nil, fmt.Errorf("failed to unmarshal deal data (ID: %s, PostURL: %s): %w", doc.Ref.ID, postURL, err)
+		log.Printf("Error unmarshaling deal data from Firestore (ID: %s, PublishedTimestamp: %s): %v", doc.Ref.ID, publishedTimestamp.String(), err)
+		return nil, fmt.Errorf("failed to unmarshal deal data (ID: %s, PublishedTimestamp: %s): %w", doc.Ref.ID, publishedTimestamp.String(), err)
 	}
 	deal.FirestoreID = doc.Ref.ID // Populate FirestoreID
-	log.Printf("Successfully found deal by PostURL: %s (ID: %s, Title: %s)", postURL, deal.FirestoreID, deal.Title)
+	log.Printf("Successfully found deal by PublishedTimestamp: %s (ID: %s, Title: %s)", publishedTimestamp.String(), deal.FirestoreID, deal.Title)
 	return &deal, nil
 }
 
