@@ -747,10 +747,10 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 		} else {
 			deal.LikeCount = 0
 			parseErrors = append(parseErrors, "like count element not found with selector")
-		}
 
-		// 7. Comment Count: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(5) > span:nth-child(2)
-		commentCountSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(5) > span:nth-child(2)")
+
+		// 7. Comment Count: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span
+		commentCountSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span")
 		if commentCountSelection.Length() > 0 {
 			deal.CommentCount = safeAtoi(cleanNumericString(commentCountSelection.Text()))
 		} else {
