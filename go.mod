@@ -4,7 +4,6 @@ go 1.24.1
 
 require (
 	cloud.google.com/go/firestore v1.18.0
-	deedles.dev/transparent v0.0.0-20240902031257-2effd52ca17e
 	github.com/PuerkitoBio/goquery v1.10.3
 	google.golang.org/api v0.235.0
 )

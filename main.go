@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"deedles.dev/transparent"
 	"github.com/PuerkitoBio/goquery"
 )
 
@@ -92,51 +91,80 @@ type DiscordMessageResponse struct {
 // specifically modifies Amazon links to use a standard affiliate tag.
 // It returns the cleaned URL and a boolean indicating if any change was made.
 func cleanReferralLink(rawUrl string) (string, bool) {
-	cleanedURL, initialChange := transparent.Clear(rawUrl)
-
-	parsedUrl, err := url.Parse(cleanedURL)
+	parsedUrl, err := url.Parse(rawUrl)
 	if err != nil {
-		// If parsing fails, return the URL as is from transparent.Clear()
-		// and false, as per instruction 4.
-		return cleanedURL, false
+		log.Printf("Failed to parse URL '%s': %v. Returning as is.", rawUrl, err)
+		return rawUrl, false
 	}
 
-	// Handle go.redirectingat.com links
-	if parsedUrl.Host == "go.redirectingat.com" {
-		urlQueryParam := parsedUrl.Query().Get("url")
-		if urlQueryParam != "" {
-			decodedDestURL, decodeErr := url.QueryUnescape(urlQueryParam)
+	switch {
+	case parsedUrl.Host == "click.linksynergy.com":
+		murlParam := parsedUrl.Query().Get("murl")
+		if murlParam != "" {
+			decodedMURL, decodeErr := url.QueryUnescape(murlParam)
 			if decodeErr == nil {
-				// Successfully decoded, this is our new URL.
-				// A change was made by this specific handler.
+				return decodedMURL, true
+			}
+			log.Printf("Failed to process linksynergy URL: murl parameter decode error for %s: %v", rawUrl, decodeErr)
+			return rawUrl, false
+		}
+		log.Printf("Failed to process linksynergy URL: murl parameter missing for %s", rawUrl)
+		return rawUrl, false
+
+	case parsedUrl.Host == "go.redirectingat.com":
+		urlParam := parsedUrl.Query().Get("url")
+		if urlParam != "" {
+			decodedDestURL, decodeErr := url.QueryUnescape(urlParam)
+			if decodeErr == nil {
 				return decodedDestURL, true
 			}
-			// Log error if decoding fails, then fall through to allow other rules or default return.
-			log.Printf("Failed to URL-decode 'url' query parameter from %s for host %s: %v. Proceeding.", rawUrl, parsedUrl.Host, decodeErr)
+			log.Printf("Failed to process redirectingat URL: url parameter decode error for %s: %v", rawUrl, decodeErr)
+			return rawUrl, false
 		}
-		// If 'url' param is missing, or decoding failed, fall through to other rules.
-	}
+		log.Printf("Failed to process redirectingat URL: url parameter missing for %s", rawUrl)
+		return rawUrl, false
 
-	if strings.Contains(parsedUrl.Host, "amazon.") {
+	case strings.Contains(parsedUrl.Host, "amazon."):
 		queryParams := parsedUrl.Query()
 		originalTag := queryParams.Get("tag")
-		newTag := "beauahrens0d-20"
+		const newTag = "beauahrens0d-20"
+		tagModified := false
 
-		// Check if a change is needed for the tag
-		tagChanged := false
 		if originalTag != newTag {
-			queryParams.Del("tag")
-			queryParams.Set("tag", newTag)
-			parsedUrl.RawQuery = queryParams.Encode()
-			tagChanged = true
-		}
-		// Return true if either transparent.Clear made a change or the tag was changed.
-		return parsedUrl.String(), initialChange || tagChanged
-	}
+			// If there was an old tag and it's different, or if there was no tag, we set the new one.
+			// If there was no tag, Get("tag") returns "", so originalTag != newTag will be true.
+			// We only consider it a modification if the tag was present and different, or if it was absent.
+			// If the tag was already correct, no modification.
 
-	// For non-Amazon links, return the URL from transparent.Clear()
-	// and its change status.
-	return cleanedURL, initialChange
+			// Check if a "tag" parameter actually existed.
+			// If it didn't exist, adding it is a modification.
+			// If it existed and was different, changing it is a modification.
+			if queryParams.Has("tag") { // Tag existed
+				if originalTag != newTag { // And it was different
+					queryParams.Del("tag")
+					queryParams.Set("tag", newTag)
+					tagModified = true
+				}
+				// If originalTag == newTag, tagModified remains false, no change.
+			} else { // Tag did not exist
+				queryParams.Set("tag", newTag)
+				tagModified = true
+			}
+		}
+		// If tagModified is true, then we update RawQuery and return.
+		if tagModified {
+			parsedUrl.RawQuery = queryParams.Encode()
+			return parsedUrl.String(), true
+		}
+		// If no modification was made (tag was already correct, or no tag existed and we didn't add one - though this case is covered by the logic above)
+		// The instruction: "Return parsedUrl.String(), false (if no change was made to the tag) or parsedUrl.String(), true (if the tag was added/changed)."
+		// The boolean `tagModified` correctly captures this.
+		return parsedUrl.String(), tagModified // If tagModified is false, it means no change.
+
+	default:
+		// No specific domain matched, or no cleaning rules applied that resulted in a change.
+		return rawUrl, false
+	}
 }
 
 // calculateHeatScore calculates the "heat" of a deal.
