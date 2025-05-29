@@ -9,6 +9,7 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
+	firestorepb "google.golang.org/genproto/googleapis/firestore/v1"
 )
 
 const (
@@ -57,7 +58,7 @@ func WriteDealInfo(ctx context.Context, client *firestore.Client, deal DealInfo)
 		}
 		log.Printf("Successfully added new deal to Firestore with ID %s. Title: %s", docRef.ID, deal.Title)
 		// After adding, trim old deals if necessary
-		if trimErr := TrimOldDeals(ctx, client, 30); trimErr != nil {
+		if trimErr := TrimOldDeals(ctx, client, 28); trimErr != nil {
 			log.Printf("Error trimming old deals after adding new one: %v", trimErr)
 			// Continue, as the main operation (adding deal) was successful
 		}
@@ -153,7 +154,12 @@ func TrimOldDeals(ctx context.Context, client *firestore.Client, maxDeals int) e
 		log.Printf("Error: 'all' key not found or nil in count aggregation result for trimming.")
 		return fmt.Errorf("count aggregation result for trimming was invalid")
 	}
-	currentDealCount := int(count.(int64))
+	valuePb, okAssert := count.(*firestorepb.Value)
+	if !okAssert {
+		log.Printf("Error: count is not of type *firestorepb.Value for trimming. Actual type: %T", count)
+		return fmt.Errorf("count aggregation result for trimming has unexpected type: %T", count)
+	}
+	currentDealCount := int(valuePb.GetIntegerValue())
 
 	if currentDealCount <= maxDeals {
 		log.Printf("No trimming needed. Current deals: %d, Max deals: %d", currentDealCount, maxDeals)

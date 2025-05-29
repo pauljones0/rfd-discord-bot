@@ -21,23 +21,25 @@ import (
 
 const hotDealsURL = "https://forums.redflagdeals.com/hot-deals-f9/"
 const discordPurpleColor = 10181046 // #9B59B6
+const discordUpdateInterval = 10 * time.Minute
 
 // DealInfo represents the structured information for a deal.
 type DealInfo struct {
-	PostedTime         string    `firestore:"postedTime"`
-	Title              string    `firestore:"title"`
-	PostURL            string    `firestore:"postURL"`
-	AuthorName         string    `firestore:"authorName"`
-	AuthorURL          string    `firestore:"authorURL"`
-	ThreadImageURL     string    `firestore:"threadImageURL,omitempty"`
-	LikeCount          int       `firestore:"likeCount"`
-	CommentCount       int       `firestore:"commentCount"`
-	ViewCount          int       `firestore:"viewCount"`
-	ActualDealURL      string    `firestore:"actualDealURL,omitempty"`
-	FirestoreID        string    `firestore:"-"` // To store the Firestore document ID, not stored in Firestore itself
-	DiscordMessageID   string    `firestore:"discordMessageID,omitempty"`
-	LastUpdated        time.Time `firestore:"lastUpdated"`
-	PublishedTimestamp time.Time `firestore:"publishedTimestamp"` // Parsed from PostedTime
+	PostedTime             string    `firestore:"postedTime"`
+	Title                  string    `firestore:"title"`
+	PostURL                string    `firestore:"postURL"`
+	AuthorName             string    `firestore:"authorName"`
+	AuthorURL              string    `firestore:"authorURL"`
+	ThreadImageURL         string    `firestore:"threadImageURL,omitempty"`
+	LikeCount              int       `firestore:"likeCount"`
+	CommentCount           int       `firestore:"commentCount"`
+	ViewCount              int       `firestore:"viewCount"`
+	ActualDealURL          string    `firestore:"actualDealURL,omitempty"`
+	FirestoreID            string    `firestore:"-"` // To store the Firestore document ID, not stored in Firestore itself
+	DiscordMessageID       string    `firestore:"discordMessageID,omitempty"`
+	LastUpdated            time.Time `firestore:"lastUpdated"`
+	PublishedTimestamp     time.Time `firestore:"publishedTimestamp"` // Parsed from PostedTime
+	DiscordLastUpdatedTime time.Time `firestore:"discordLastUpdatedTime,omitempty"`
 }
 
 // DiscordWebhookPayload represents the JSON payload for sending a message via Discord webhook.
@@ -148,7 +150,7 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 		fields = append(fields, DiscordEmbedField{
 			Name:   "Item Link",
 			Value:  deal.ActualDealURL,
-			Inline: false,
+			Inline: true,
 		})
 	}
 
@@ -686,14 +688,30 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 						existingDeal.ThreadImageURL, updatedFirestoreDeal.ThreadImageURL)
 
 					if discordWebhookURL != "" && updatedFirestoreDeal.DiscordMessageID != "" {
-						log.Printf("Preparing to send Discord update for deal '%s', MessageID: %s", updatedFirestoreDeal.Title, updatedFirestoreDeal.DiscordMessageID)
-						embedToUpdate := formatDealToEmbed(updatedFirestoreDeal, true) // true for isUpdate
-						if err := updateDiscordMessage(discordWebhookURL, updatedFirestoreDeal.DiscordMessageID, embedToUpdate); err != nil {
-							errMsg := fmt.Sprintf("Error updating Discord message for deal '%s' (MsgID: %s): %v", updatedFirestoreDeal.Title, updatedFirestoreDeal.DiscordMessageID, err)
-							log.Println(errMsg)
-							errorMessages = append(errorMessages, errMsg)
+						if time.Since(existingDeal.DiscordLastUpdatedTime) >= discordUpdateInterval {
+							log.Printf("Preparing to send Discord update for deal '%s', MessageID: %s. Interval passed.", updatedFirestoreDeal.Title, updatedFirestoreDeal.DiscordMessageID)
+							embedToUpdate := formatDealToEmbed(updatedFirestoreDeal, true) // true for isUpdate
+							if err := updateDiscordMessage(discordWebhookURL, updatedFirestoreDeal.DiscordMessageID, embedToUpdate); err != nil {
+								errMsg := fmt.Sprintf("Error updating Discord message for deal '%s' (MsgID: %s): %v", updatedFirestoreDeal.Title, updatedFirestoreDeal.DiscordMessageID, err)
+								log.Println(errMsg)
+								errorMessages = append(errorMessages, errMsg)
+							} else {
+								log.Printf("Successfully sent Discord update for deal '%s'", updatedFirestoreDeal.Title)
+								updatedFirestoreDeal.DiscordLastUpdatedTime = time.Now() // Update timestamp after successful Discord update
+								// Re-write to Firestore to save the DiscordLastUpdatedTime
+								if _, err := WriteDealInfo(ctx, fsClient, updatedFirestoreDeal); err != nil {
+									errMsg := fmt.Sprintf("Error updating deal '%s' (ID: %s) in Firestore after Discord update: %v", updatedFirestoreDeal.Title, updatedFirestoreDeal.FirestoreID, err)
+									log.Println(errMsg)
+									errorMessages = append(errorMessages, errMsg)
+									// Note: The main WriteDealInfo earlier in the loop still runs, this is an additional one for the timestamp.
+									// Consider if this needs to be merged or if the main one should be conditional / delayed.
+									// For now, this ensures DiscordLastUpdatedTime is saved if the Discord update was successful.
+								} else {
+									log.Printf("Successfully updated DiscordLastUpdatedTime for deal '%s' (ID: %s) in Firestore.", updatedFirestoreDeal.Title, updatedFirestoreDeal.FirestoreID)
+								}
+							}
 						} else {
-							log.Printf("Successfully sent Discord update for deal '%s'", updatedFirestoreDeal.Title)
+							log.Printf("Skipping Discord update for deal '%s' (MsgID: %s) due to 10-minute interval. Last updated: %s", updatedFirestoreDeal.Title, updatedFirestoreDeal.DiscordMessageID, existingDeal.DiscordLastUpdatedTime.Format(time.RFC3339))
 						}
 					} else if discordWebhookURL == "" {
 						log.Println("DISCORD_WEBHOOK_URL not set, skipping Discord update for existing deal.")
@@ -721,7 +739,8 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 				} else {
 					log.Printf("New deal '%s' sent to Discord. Message ID: %s", dealToProcess.Title, messageID)
 					dealToProcess.DiscordMessageID = messageID
-					dealToProcess.LastUpdated = time.Now() // Update LastUpdated again after successful send
+					dealToProcess.DiscordLastUpdatedTime = time.Now() // Set initial Discord update timestamp
+					// dealToProcess.LastUpdated = time.Now() // This is already set before this block, and again if Discord send is successful. Redundant here.
 				}
 			} else {
 				log.Println("DISCORD_WEBHOOK_URL not set, skipping Discord notification for new deal.")
