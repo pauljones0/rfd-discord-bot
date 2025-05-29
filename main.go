@@ -24,12 +24,14 @@ const discordUpdateInterval = 10 * time.Minute
 
 // Heat ranking and color constants
 const (
-	colorColdDeal = 3092790  // #2F3136 (Dark Grey)
-	colorWarmDeal = 16753920 // #FFA500 (Orange)
-	colorHotDeal  = 16711680 // #FF0000 (Red)
+	colorColdDeal    = 3092790  // #2F3136 (Dark Grey)
+	colorWarmDeal    = 16753920 // #FFA500 (Orange)
+	colorHotDeal     = 16711680 // #FF0000 (Red)
+	colorVeryHotDeal = 16776960 // #FFFFFF (White)
 
-	heatScoreThresholdCold = 0.01
-	heatScoreThresholdWarm = 0.05
+	heatScoreThresholdCold = 0.05
+	heatScoreThresholdWarm = 0.1
+	heatScoreThresholdHot  = 0.25
 )
 
 // DealInfo represents the structured information for a deal.
@@ -148,7 +150,9 @@ func calculateHeatScore(likes, comments, views int) float64 {
 
 // getHeatColor determines the embed color based on the heat score.
 func getHeatColor(heatScore float64) int {
-	if heatScore > heatScoreThresholdWarm {
+	if heatScore > heatScoreThresholdHot {
+		return colorVeryHotDeal
+	} else if heatScore > heatScoreThresholdWarm {
 		return colorHotDeal
 	} else if heatScore > heatScoreThresholdCold {
 		return colorWarmDeal

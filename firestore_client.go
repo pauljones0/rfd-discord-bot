@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	"cloud.google.com/go/firestore/apiv1/firestorepb" // Added import
 	"google.golang.org/api/iterator"
 )
 
@@ -153,11 +154,15 @@ func TrimOldDeals(ctx context.Context, client *firestore.Client, maxDeals int) e
 		log.Printf("Error: 'all' key not found in count aggregation result for trimming.")
 		return fmt.Errorf("count aggregation result for trimming was invalid: 'all' key missing")
 	}
-	currentDealCountInt64, okAssert := countValue.(int64)
+
+	var currentDealCountInt64 int64
+	pbValue, okAssert := countValue.(*firestorepb.Value)
 	if !okAssert {
-		log.Printf("Error: count is not of type int64 for trimming. Actual type: %T, Value: %v", countValue, countValue)
-		return fmt.Errorf("count aggregation result for trimming has unexpected type: %T", countValue)
+		log.Printf("Error: count is not of type *firestorepb.Value for trimming. Actual type: %T, Value: %v", countValue, countValue)
+		return fmt.Errorf("count aggregation result for trimming has unexpected type %T, expected *firestorepb.Value", countValue)
 	}
+	currentDealCountInt64 = pbValue.GetIntegerValue()
+
 	currentDealCount := int(currentDealCountInt64)
 
 	if currentDealCount <= maxDeals {
