@@ -632,13 +632,7 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 	}
 	log.Printf("DEBUG: Found %d total 'li.topic' elements, %d non-sticky/non-sponsored.", len(allTopics), len(nonStickyTopics))
 
-	for i, s := range nonStickyTopics {
-		if i < 2 { // Skip the first two non-sticky topics
-			title := strings.TrimSpace(s.Find("div:nth-child(2) > div:nth-child(1) > h3:nth-child(2) > a").Text())
-			log.Printf("Skipping early non-sticky topic (index %d): %s", i, title)
-			continue
-		}
-
+	for _, s := range nonStickyTopics {
 		var deal DealInfo
 		var parseErrors []string
 
@@ -787,7 +781,7 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 		deals = append(deals, deal)
 	}
 
-	log.Printf("Successfully processed %d non-sticky deals (after skipping first 2) from %s", len(deals), url)
+	log.Printf("Successfully processed %d non-sticky deals from %s", len(deals), url)
 	return deals, nil
 }
 
