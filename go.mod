@@ -40,4 +40,4 @@ require (
 	google.golang.org/protobuf v1.35.2 // indirect
 )
 
-require deedles.dev/transparent v0.0.0-20240902001820-bd58e9ae4efe // indirect
+require deedles.dev/transparent v0.0.0-20240902001820-bd58e9ae4efe //direct
