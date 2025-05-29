@@ -558,6 +558,27 @@ func parseSignedNumericString(s string) string {
 	return match // If no match, returns empty string, which safeAtoi handles as 0
 }
 
+// progressivelyFindParentHTML attempts to find HTML for a series of selectors within the given selection 's',
+// returning the outer HTML of the first element matched by any of the selectors.
+// It tries selectors in the provided order.
+func progressivelyFindParentHTML(s *goquery.Selection, parentSelectors []string) string {
+	for _, sel := range parentSelectors {
+		// Find within the context of 's' (which is the current 'li.topic')
+		targetSelection := s.Find(sel)
+		if targetSelection.Length() > 0 {
+			// goquery.OuterHtml gets the outer HTML of the first node in the selection.
+			html, err := goquery.OuterHtml(targetSelection)
+			if err == nil {
+				trimmedHTML := strings.TrimSpace(html)
+				if trimmedHTML != "" {
+					return trimmedHTML // Return the HTML of the first successfully found parent
+				}
+			}
+		}
+	}
+	return "" // No parent HTML found for any of the selectors
+}
+
 // scrapeDealDetailPage fetches the deal's detail page and extracts the actual deal URL.
 func scrapeDealDetailPage(dealURL string) (string, error) {
 	log.Printf("Scraping deal detail page: %s", dealURL)
@@ -747,15 +768,66 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 		} else {
 			deal.LikeCount = 0
 			parseErrors = append(parseErrors, "like count element not found with selector")
+		}
 
+		// 7. Comment Count
+		primaryCommentSelector := "div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span"
+		fallbackCommentSelector := "div:nth-child(3) > div:nth-child(3) > span:nth-child(2)"
+		var primaryParentHTML string
 
-		// 7. Comment Count: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span
-		commentCountSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span")
+		commentCountSelection := s.Find(primaryCommentSelector)
 		if commentCountSelection.Length() > 0 {
 			deal.CommentCount = safeAtoi(cleanNumericString(commentCountSelection.Text()))
 		} else {
-			deal.CommentCount = 0
-			parseErrors = append(parseErrors, "comment count element not found with selector")
+			// Primary selector failed
+			primaryParentSelectors := []string{
+				"div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3)",
+				"div:nth-child(2) > div:nth-child(1) > div:nth-child(3)",
+				"div:nth-child(2) > div:nth-child(1)",
+				"div:nth-child(2)",
+			}
+			primaryParentHTML = progressivelyFindParentHTML(s, primaryParentSelectors)
+
+			// Try fallback selector
+			fallbackCommentCountSelection := s.Find(fallbackCommentSelector)
+			if fallbackCommentCountSelection.Length() > 0 {
+				deal.CommentCount = safeAtoi(cleanNumericString(fallbackCommentCountSelection.Text()))
+
+				// Primary failed, but fallback succeeded. Log primary failure with its context.
+				primaryFailureMsg := fmt.Sprintf("Primary comment selector '%s' failed.", primaryCommentSelector)
+				if primaryParentHTML != "" {
+					primaryFailureMsg += fmt.Sprintf(" Found parent HTML (max 100 chars): %.100s", primaryParentHTML)
+				} else {
+					primaryFailureMsg += " No parent HTML found for primary selector."
+				}
+				parseErrors = append(parseErrors, primaryFailureMsg)
+				log.Printf("Used fallback selector for comment count for deal '%s'. %s", deal.Title, primaryFailureMsg)
+			} else {
+				// Both primary and fallback failed
+				deal.CommentCount = 0
+
+				var fallbackParentHTML string
+				fallbackParentSelectors := []string{
+					"div:nth-child(3) > div:nth-child(3)",
+					"div:nth-child(3)",
+				}
+				fallbackParentHTML = progressivelyFindParentHTML(s, fallbackParentSelectors)
+
+				primaryFailureContext := "No parent HTML found for primary."
+				if primaryParentHTML != "" {
+					primaryFailureContext = fmt.Sprintf("Primary Parent HTML (max 100 chars): %.100s", primaryParentHTML)
+				}
+
+				fallbackFailureContext := "No parent HTML found for fallback."
+				if fallbackParentHTML != "" {
+					fallbackFailureContext = fmt.Sprintf("Fallback Parent HTML (max 100 chars): %.100s", fallbackParentHTML)
+				}
+
+				errorMsg := fmt.Sprintf("Comment count not found. Primary selector '%s' failed (%s). Fallback selector '%s' failed (%s).",
+					primaryCommentSelector, primaryFailureContext,
+					fallbackCommentSelector, fallbackFailureContext)
+				parseErrors = append(parseErrors, errorMsg)
+			}
 		}
 
 		// 8. View Count: li.topic:nth-child(n+3) > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(7)
