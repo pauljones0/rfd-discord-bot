@@ -152,20 +152,11 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 		})
 	}
 
-	// Field 3: Poster
-	if deal.AuthorName != "" {
+	// Field 3 & 4 combined: Poster Name and Profile URL
+	if deal.AuthorName != "" && deal.AuthorURL != "" {
 		fields = append(fields, DiscordEmbedField{
-			Name:   "Poster",
-			Value:  deal.AuthorName,
-			Inline: true,
-		})
-	}
-
-	// Field 4: Poster URL
-	if deal.AuthorURL != "" {
-		fields = append(fields, DiscordEmbedField{
-			Name:   "Poster URL",
-			Value:  deal.AuthorURL, // Clickable URL text
+			Name:   fmt.Sprintf("Poster %s Profile", deal.AuthorName),
+			Value:  deal.AuthorURL,
 			Inline: true,
 		})
 	}
