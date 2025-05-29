@@ -141,39 +141,47 @@ func GetDealByPostURL(ctx context.Context, client *firestore.Client, postURL str
 // TrimOldDeals deletes the oldest deals (by PublishedTimestamp) from the "deals" collection
 // if the total number of deals exceeds maxDeals.
 func TrimOldDeals(ctx context.Context, client *firestore.Client, maxDeals int) error {
+	log.Printf("TrimOldDeals: Entered function with maxDeals = %d", maxDeals)
 	collectionRef := client.Collection(firestoreCollection)
 
 	// Get current count
+	log.Printf("TrimOldDeals: Attempting to get deal count aggregation.")
 	countSnapshot, err := collectionRef.NewAggregationQuery().WithCount("all").Get(ctx)
 	if err != nil {
-		log.Printf("Error getting count of deals for trimming: %v", err)
+		log.Printf("TrimOldDeals: Error getting count of deals: %v", err)
 		return fmt.Errorf("failed to get deal count for trimming: %w", err)
 	}
+	log.Printf("TrimOldDeals: Deal count aggregation result: %+v", countSnapshot)
+
 	countValue, ok := countSnapshot["all"]
 	if !ok {
-		log.Printf("Error: 'all' key not found in count aggregation result for trimming.")
+		log.Printf("TrimOldDeals: Error - 'all' key not found in count aggregation result. Snapshot: %+v", countSnapshot)
 		return fmt.Errorf("count aggregation result for trimming was invalid: 'all' key missing")
 	}
+	log.Printf("TrimOldDeals: Extracted countValue from snapshot: %v (type: %T)", countValue, countValue)
 
 	var currentDealCountInt64 int64
 	pbValue, okAssert := countValue.(*firestorepb.Value)
 	if !okAssert {
-		log.Printf("Error: count is not of type *firestorepb.Value for trimming. Actual type: %T, Value: %v", countValue, countValue)
+		log.Printf("TrimOldDeals: Error - countValue is not of type *firestorepb.Value. Actual type: %T, Value: %v", countValue, countValue)
 		return fmt.Errorf("count aggregation result for trimming has unexpected type %T, expected *firestorepb.Value", countValue)
 	}
 	currentDealCountInt64 = pbValue.GetIntegerValue()
+	log.Printf("TrimOldDeals: Asserted countValue to *firestorepb.Value and got integer value: %d", currentDealCountInt64)
 
 	currentDealCount := int(currentDealCountInt64)
+	log.Printf("TrimOldDeals: Calculated currentDealCount as %d", currentDealCount)
 
 	if currentDealCount <= maxDeals {
-		log.Printf("No trimming needed. Current deals: %d, Max deals: %d", currentDealCount, maxDeals)
+		log.Printf("TrimOldDeals: No trimming needed. Current deals: %d, Max deals: %d. Exiting.", currentDealCount, maxDeals)
 		return nil
 	}
 
 	numToDelete := currentDealCount - maxDeals
-	log.Printf("Trimming needed. Current deals: %d, Max deals: %d. Will delete %d oldest deals.", currentDealCount, maxDeals, numToDelete)
+	log.Printf("TrimOldDeals: Trimming needed. Current deals: %d, Max deals: %d. Calculated numToDelete: %d.", currentDealCount, maxDeals, numToDelete)
 
 	// Query for the oldest deals to delete
+	log.Printf("TrimOldDeals: Querying for %d oldest deals to delete.", numToDelete)
 	iter := collectionRef.
 		OrderBy("publishedTimestamp", firestore.Asc). // Ascending to get oldest first
 		Limit(numToDelete).
@@ -181,31 +189,57 @@ func TrimOldDeals(ctx context.Context, client *firestore.Client, maxDeals int) e
 	defer iter.Stop()
 
 	deletedCount := 0
-	batch := client.Batch()
+	bulkWriter := client.BulkWriter(ctx)
+	// Defer End() to ensure it's called. According to Go SDK, End() does not return an error.
+	defer bulkWriter.End()
+
+	log.Printf("TrimOldDeals: Starting iteration to mark deals for deletion using BulkWriter.")
 	for {
-		doc, err := iter.Next()
+		doc, err := iter.Next() // Changed iterErr back to err for consistency
 		if err == iterator.Done {
+			log.Printf("TrimOldDeals: Finished iterating through deals to delete.")
 			break
 		}
 		if err != nil {
-			log.Printf("Error iterating deals to delete for trimming: %v", err)
+			log.Printf("TrimOldDeals: Error iterating deals to delete: %v", err)
+			// bulkWriter.End() will be called by defer.
+			// No need to explicitly call bulkWriter.End() here as it was in the original pre-edit code.
 			return fmt.Errorf("failed to iterate deals for trimming: %w", err)
 		}
-		batch.Delete(doc.Ref)
-		deletedCount++
-		log.Printf("Marked deal for deletion (trimming): ID %s, Published: %s", doc.Ref.ID, doc.Data()["publishedTimestamp"])
-	}
 
-	if deletedCount > 0 {
-		_, err := batch.Commit(ctx)
-		if err != nil {
-			log.Printf("Error committing batch delete for trimming: %v", err)
-			return fmt.Errorf("failed to commit batch delete for trimming: %w", err)
+		// Extract publishedTimestamp safely
+		var publishedTimestamp interface{}
+		data := doc.Data()
+		if ts, exists := data["publishedTimestamp"]; exists {
+			publishedTimestamp = ts
+		} else {
+			publishedTimestamp = "N/A" // Or handle as an error/default
 		}
-		log.Printf("Successfully trimmed %d old deals from Firestore.", deletedCount)
-	} else {
-		log.Println("No deals were marked for deletion during trimming (this might be unexpected if numToDelete > 0).")
+
+		// Attempt to delete the document using BulkWriter.
+		// BulkWriter.Delete() returns an error, which we log.
+		// BulkWriter.Flush() and BulkWriter.End() do not return errors in this SDK.
+		_, delErr := bulkWriter.Delete(doc.Ref)
+		if delErr != nil {
+			// Log the error from the Delete call itself.
+			log.Printf("TrimOldDeals: Error during BulkWriter.Delete for ID %s: %v. Continuing to queue other operations.", doc.Ref.ID, delErr)
+			// Continue, as per original logic, to attempt other deletes.
+		}
+		deletedCount++
+		log.Printf("TrimOldDeals: Queued deal for deletion with BulkWriter. ID: %s, PublishedTimestamp: %v. Total queued: %d", doc.Ref.ID, publishedTimestamp, deletedCount)
 	}
 
+	// Operations are queued. Now flush them.
+	// Flush() does not return an error.
+	if deletedCount > 0 {
+		log.Printf("TrimOldDeals: Attempting to flush BulkWriter operations for %d deals.", deletedCount)
+		bulkWriter.Flush()
+		log.Printf("TrimOldDeals: BulkWriter flush initiated for %d delete operations. Individual errors during Delete calls were logged if any.", deletedCount)
+	} else {
+		log.Printf("TrimOldDeals: No deals were queued for deletion. numToDelete was %d.", numToDelete)
+	}
+
+	// End() will be called by defer. It does not return an error.
+	log.Printf("TrimOldDeals: Exiting function. BulkWriter.End() will be called by defer.")
 	return nil
 }

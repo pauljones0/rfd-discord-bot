@@ -2,11 +2,14 @@
 
 TLDR; Watches RFD hot deals forum, runs on google cloud, posts to discord.
 
+![example.png](example.png)
 ## Features
 
 *   Identifies RFD Hot Deals using Firestore for state management.
 *   Sends notifications to a configurable Discord webhook.
 *   Designed for lightweight, serverless deployment on Google Cloud Run (free tier).
+*   Color of embeds changes with how good a deal is
+*   Embeds are updated every X minutes to keep the likes, comments and views up to date
 
 ## Simplified Architecture
 
