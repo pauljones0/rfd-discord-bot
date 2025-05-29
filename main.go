@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"deedles.dev/transparent"
 	"github.com/PuerkitoBio/goquery"
 )
 
@@ -81,6 +82,41 @@ type DiscordMessageResponse struct {
 	ChannelID string `json:"channel_id"`
 }
 
+// cleanReferralLink attempts to clean a URL by removing tracking parameters and
+// specifically modifies Amazon links to use a standard affiliate tag.
+// It returns the cleaned URL and a boolean indicating if any change was made.
+func cleanReferralLink(rawUrl string) (string, bool) {
+	cleanedURL, initialChange := transparent.Clear(rawUrl)
+
+	parsedUrl, err := url.Parse(cleanedURL)
+	if err != nil {
+		// If parsing fails, return the URL as is from transparent.Clear()
+		// and false, as per instruction 4.
+		return cleanedURL, false
+	}
+
+	if strings.Contains(parsedUrl.Host, "amazon.") {
+		queryParams := parsedUrl.Query()
+		originalTag := queryParams.Get("tag")
+		newTag := "beauahrens0d-20"
+
+		// Check if a change is needed for the tag
+		tagChanged := false
+		if originalTag != newTag {
+			queryParams.Del("tag")
+			queryParams.Set("tag", newTag)
+			parsedUrl.RawQuery = queryParams.Encode()
+			tagChanged = true
+		}
+		// Return true if either transparent.Clear made a change or the tag was changed.
+		return parsedUrl.String(), initialChange || tagChanged
+	}
+
+	// For non-Amazon links, return the URL from transparent.Clear()
+	// and its change status.
+	return cleanedURL, initialChange
+}
+
 // formatDealToEmbed converts a DealInfo into a DiscordEmbed object.
 // isUpdate flag determines the description.
 func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
@@ -102,7 +138,7 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 	if deal.ActualDealURL != "" {
 		fields = append(fields, DiscordEmbedField{
 			Name:   "Item Link",
-			Value:  fmt.Sprintf("[%s](%s)", deal.ActualDealURL, deal.ActualDealURL),
+			Value:  deal.ActualDealURL,
 			Inline: false,
 		})
 	}
@@ -111,7 +147,7 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 	if deal.PostURL != "" {
 		fields = append(fields, DiscordEmbedField{
 			Name:   "RFD Post URL",
-			Value:  fmt.Sprintf("[%s](%s)", deal.PostURL, deal.PostURL),
+			Value:  deal.PostURL,
 			Inline: true,
 		})
 	}
@@ -129,7 +165,7 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 	if deal.AuthorURL != "" {
 		fields = append(fields, DiscordEmbedField{
 			Name:   "Poster URL",
-			Value:  fmt.Sprintf("[%s](%s)", deal.AuthorURL, deal.AuthorURL), // Clickable URL text
+			Value:  deal.AuthorURL, // Clickable URL text
 			Inline: true,
 		})
 	}
@@ -539,6 +575,13 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 				// parseErrors = append(parseErrors, fmt.Sprintf("detail page scrape error: %v", detailErr)) // Optionally log as parse error
 			}
 			deal.ActualDealURL = actualURL
+			if deal.ActualDealURL != "" {
+				cleanedURL, changed := cleanReferralLink(deal.ActualDealURL)
+				if changed {
+					log.Printf("Cleaned referral link for %s (original: %s, cleaned: %s)", deal.PostURL, deal.ActualDealURL, cleanedURL)
+				}
+				deal.ActualDealURL = cleanedURL
+			}
 		}
 
 		if len(parseErrors) > 0 {
