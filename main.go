@@ -661,7 +661,7 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Finished processing loop for scraped deals. New deals found: %d, Existing deals that had data changes: %d.", newDealsCount, updatedDealsCount)
 
 	if len(errorMessages) > 0 {
-		handlerProcessingError = fmt.Errorf(strings.Join(errorMessages, "; "))
+		handlerProcessingError = fmt.Errorf("%s", strings.Join(errorMessages, "; "))
 	}
 
 	if handlerProcessingError != nil {
