@@ -18,6 +18,18 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
+// knownTwoPartTLDs is a set of common two-part TLDs.
+// This list is not exhaustive and for a truly robust solution,
+// a library based on the Public Suffix List (PSL) would be preferable.
+var knownTwoPartTLDs = map[string]bool{
+	"co.uk": true, "com.au": true, "co.jp": true, "co.nz": true, "com.br": true,
+	"org.uk": true, "gov.uk": true, "ac.uk": true, "com.cn": true, "net.cn": true,
+	"org.cn": true, "co.za": true, "com.es": true, "com.mx": true, "com.sg": true,
+	"co.in": true, "ltd.uk": true, "plc.uk": true, "net.au": true, "org.au": true,
+	"com.pa": true, "net.pa": true, "org.pa": true, "edu.pa": true, "gob.pa": true,
+	"com.py": true, "net.py": true, "org.py": true, "edu.py": true, "gov.py": true,
+}
+
 const hotDealsURL = "https://forums.redflagdeals.com/hot-deals-f9/?sk=tt&rfd_sk=tt&sd=d"
 const discordUpdateInterval = 10 * time.Minute
 
@@ -97,6 +109,10 @@ func cleanReferralLink(rawUrl string) (string, bool) {
 		return rawUrl, false
 	}
 
+	// Best Buy specific constants
+	const newBestBuyPrefix = "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
+	bestBuyRegex := regexp.MustCompile(`^https://bestbuyca\.o93x\.net/c/\d+/\d+/\d+\?u=`)
+
 	switch {
 	case parsedUrl.Host == "click.linksynergy.com":
 		murlParam := parsedUrl.Query().Get("murl")
@@ -123,6 +139,19 @@ func cleanReferralLink(rawUrl string) (string, bool) {
 		}
 		log.Printf("Failed to process redirectingat URL: url parameter missing for %s", rawUrl)
 		return rawUrl, false
+
+	case parsedUrl.Host == "bestbuyca.o93x.net" && bestBuyRegex.MatchString(rawUrl):
+		// Find the part of the URL after "?u="
+		uIndex := strings.Index(rawUrl, "?u=")
+		if uIndex == -1 {
+			// This case should ideally not be hit if the regex matched, but as a safeguard:
+			log.Printf("Best Buy URL matched regex but '?u=' not found: %s", rawUrl)
+			return rawUrl, false
+		}
+		productURLPart := rawUrl[uIndex+len("?u="):]
+		cleanedURL := newBestBuyPrefix + productURLPart
+		log.Printf("Cleaned Best Buy referral link. Original: %s, New: %s", rawUrl, cleanedURL)
+		return cleanedURL, true
 
 	case strings.Contains(parsedUrl.Host, "amazon."):
 		queryParams := parsedUrl.Query()
@@ -210,26 +239,52 @@ func normalizePostURL(rawURL string) (string, error) {
 	return parsedURL.String(), nil
 }
 
-// getHomeDomain extracts the home domain from a URL string.
-// e.g., "https://walmart.ca/path" -> "walmart.ca"
+// getHomeDomain extracts the effective top-level domain plus one label (e.g., "example.com", "example.co.uk").
+// It attempts to remove subdomains.
+// e.g., "https://forums.redflagdeals.com/path" -> "redflagdeals.com"
+// e.g., "https://www.example.co.uk/path" -> "example.co.uk"
 // Returns "Link" if the URL is malformed or the host is empty.
 func getHomeDomain(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		log.Printf("Failed to parse URL '%s' for home domain extraction: %v. Returning default.", rawURL, err)
-		return "Link" // Default for malformed URL
+		return "Link"
 	}
 
-	host := parsedURL.Host
-	if host == "" {
-		log.Printf("URL '%s' has an empty host. Returning default.", rawURL)
-		return "Link" // Default for empty host
+	hostname := parsedURL.Hostname() // Use Hostname() to get host without port
+	if hostname == "" {
+		log.Printf("URL '%s' has an empty hostname. Returning default.", rawURL)
+		return "Link"
 	}
 
-	// Remove "www." prefix if present
-	host = strings.TrimPrefix(host, "www.")
+	parts := strings.Split(hostname, ".")
+	numParts := len(parts)
 
-	return host
+	if numParts <= 1 { // e.g., "localhost", or an empty string if hostname was just "."
+		return hostname // Return hostname as is (e.g., "localhost")
+	}
+
+	// Check for known two-part TLDs
+	// Example: "example.co.uk" (3 parts), "sub.example.co.uk" (4 parts)
+	if numParts >= 3 {
+		// Candidate for a two-part TLD is the last two parts
+		tldCandidate := parts[numParts-2] + "." + parts[numParts-1]
+		if knownTwoPartTLDs[tldCandidate] {
+			// The domain part is the one before the two-part TLD
+			// parts[numParts-3] is the domain name itself (e.g., "example" from "example.co.uk")
+			return parts[numParts-3] + "." + tldCandidate // e.g., "example.co.uk"
+		}
+	}
+
+	// Default: assume a single-part TLD (e.g., .com, .net, .ca)
+	// This will also handle cases like "sub.example.com" or "example.com"
+	if numParts >= 2 {
+		// The domain part is parts[numParts-2], TLD is parts[numParts-1]
+		return parts[numParts-2] + "." + parts[numParts-1] // e.g., "example.com"
+	}
+
+	// Fallback: Should ideally not be reached if numParts > 1.
+	return hostname // Return the original hostname if logic doesn't simplify it
 }
 
 // calculateHeatScore calculates the "heat" of a deal.
@@ -270,20 +325,20 @@ func formatDealToEmbed(deal DealInfo, isUpdate bool) DiscordEmbed {
 
 	var fields []DiscordEmbedField
 
-	// Field 1: Item Link (ActualDealURL)
+	// Field 1: Item (ActualDealURL)
 	if deal.ActualDealURL != "" {
 		fields = append(fields, DiscordEmbedField{
-			Name:   "Item Link",
+			Name:   "Item",
 			Value:  fmt.Sprintf("[%s](%s)", getHomeDomain(deal.ActualDealURL), deal.ActualDealURL),
 			Inline: true,
 		})
 	}
 
-	// Field 2: RFD Post URL
+	// Field 2: Post (RFD Post URL)
 	if deal.PostURL != "" {
 		fields = append(fields, DiscordEmbedField{
-			Name:   "RFD Post URL",
-			Value:  fmt.Sprintf("[Click Here](%s)", deal.PostURL),
+			Name:   "Post",
+			Value:  fmt.Sprintf("[%s](%s)", getHomeDomain(deal.PostURL), deal.PostURL),
 			Inline: true,
 		})
 	}
@@ -717,6 +772,11 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 					log.Printf("Cleaned referral link for %s (original: %s, cleaned: %s)", deal.PostURL, deal.ActualDealURL, cleanedURL)
 				}
 				deal.ActualDealURL = cleanedURL
+			}
+			// If ActualDealURL is still empty after parsing and cleaning, set a default, so that the Field shows up in the Embed and looks nice. Get Rick Roll'd.
+			if deal.ActualDealURL == "" {
+				log.Printf("ActualDealURL for %s was empty after parsing, setting default URL.", deal.PostURL)
+				deal.ActualDealURL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 			}
 		}
 
