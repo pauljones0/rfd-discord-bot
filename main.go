@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -872,10 +874,30 @@ func scrapeHotDealsPage(url string) ([]DealInfo, error) {
 }
 
 // ProcessDealsHandler is the HTTP handler for processing RFD deals.
+// generateDealID creates a deterministic ID based on the deal URL.
+func generateDealID(url string) string {
+	hash := sha256.Sum256([]byte(url))
+	return hex.EncodeToString(hash[:])
+}
+
+// validateDeal ensures the deal has the minimum required information.
+func validateDeal(deal *DealInfo) error {
+	if strings.TrimSpace(deal.Title) == "" {
+		return fmt.Errorf("title is empty")
+	}
+	if strings.TrimSpace(deal.PostURL) == "" {
+		return fmt.Errorf("post URL is empty")
+	}
+	if deal.PublishedTimestamp.IsZero() {
+		return fmt.Errorf("published timestamp is zero")
+	}
+	return nil
+}
+
+// ProcessDealsHandler is the HTTP handler for processing RFD deals.
 func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("ProcessDealsHandler invoked.")
-	var handlerProcessingError error
-	var errorMessages []string // To collect multiple error messages for a final summary
+	var errorMessages []string
 
 	ctx := context.Background()
 	discordWebhookURL := os.Getenv("DISCORD_WEBHOOK_URL")
@@ -883,7 +905,7 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println("Warning: DISCORD_WEBHOOK_URL environment variable not set. Discord notifications will be skipped.")
 	}
 
-	log.Println("Initializing Firestore client...")
+	// 1. Initialize Firestore
 	fsClient, err := initFirestoreClient(ctx)
 	if err != nil {
 		log.Printf("Critical error initializing Firestore client: %v", err)
@@ -891,8 +913,8 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer fsClient.Close()
-	log.Println("Successfully initialized Firestore client.")
 
+	// 2. Scrape Deals
 	log.Println("Fetching RFD Hot Deals page via scraping...")
 	scrapedDeals, err := scrapeHotDealsPage(hotDealsURL)
 	if err != nil {
@@ -904,177 +926,156 @@ func ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var newDealsCount, updatedDealsCount int
 
-	log.Println("Processing scraped deals...")
+	// 3. Process Each Deal
 	for _, currentScrapedDeal := range scrapedDeals {
-		dealToProcess := currentScrapedDeal // Make a mutable copy
-		log.Printf("Processing deal: %s (URL: %s)", dealToProcess.Title, dealToProcess.PostURL)
+		dealToProcess := currentScrapedDeal
 
-		// Ensure the PostURL used for lookup is normalized.
-		// dealToProcess.PostURL should already be normalized from scrapeHotDealsPage.
-		// If there's any doubt or if it could be sourced elsewhere unnormalized,
-		// re-normalizing here would be safest, though potentially redundant.
-		// For now, we trust it's normalized from the scraping stage.
-		// If GetDealByPostURL needs to be absolutely certain, it could normalize its input.
-		// However, the instruction is to normalize it *before* passing to GetDealByPostURL.
-		// Since dealToProcess.PostURL is already the result of normalization from the scrape,
-		// we can use it directly.
-		//
-		// The lookupURL variable and associated normalization logic below are no longer needed
-		// as we are now using PublishedTimestamp for Firestore lookups.
-
-		// Check if PublishedTimestamp is valid
-		if dealToProcess.PublishedTimestamp.IsZero() {
-			log.Printf("Warning: PublishedTimestamp is missing or invalid for deal: %s (URL: %s). Skipping deal.", dealToProcess.Title, dealToProcess.PostURL)
-			continue // Skip this deal
+		// A. Validate
+		if err := validateDeal(&dealToProcess); err != nil {
+			log.Printf("Skipping invalid deal '%s': %v", dealToProcess.Title, err)
+			continue
 		}
 
-		existingDeal, err := GetDealByPublishedTimestamp(ctx, fsClient, dealToProcess.PublishedTimestamp)
+		// B. Generate Deterministic ID
+		dealToProcess.FirestoreID = generateDealID(dealToProcess.PostURL)
+		dealToProcess.LastUpdated = time.Now()
+
+		// C. Retrieve Existing State (Check)
+		existingDeal, err := GetDealByID(ctx, fsClient, dealToProcess.FirestoreID)
 		if err != nil {
-			errMsg := fmt.Sprintf("Error checking Firestore for deal with PublishedTimestamp %s: %v", dealToProcess.PublishedTimestamp.String(), err)
+			errMsg := fmt.Sprintf("Error checking Firestore for deal %s: %v", dealToProcess.FirestoreID, err)
 			log.Println(errMsg)
 			errorMessages = append(errorMessages, errMsg)
-			continue // Skip this deal and process others
+			continue
 		}
 
-		if existingDeal != nil { // Deal Exists in Firestore
-			log.Printf("Deal '%s' (ID: %s) already exists. DiscordMsgID: '%s'. Checking for updates.", existingDeal.Title, existingDeal.FirestoreID, existingDeal.DiscordMessageID)
+		if existingDeal == nil {
+			// D. New Deal Logic (Act)
+			// Attempt to create. This will fail if another instance created it concurrently.
+			err := TryCreateDeal(ctx, fsClient, dealToProcess)
+			if err != nil {
+				if err.Error() == "deal already exists" {
+					log.Printf("Race condition detected for deal '%s'. Treating as existing.", dealToProcess.Title)
+					// Fetch the deal that was just created by another process
+					existingDeal, err = GetDealByID(ctx, fsClient, dealToProcess.FirestoreID)
+					if err != nil || existingDeal == nil {
+						log.Printf("Error recovering from race condition for deal %s: %v", dealToProcess.FirestoreID, err)
+						continue
+					}
+					// Fall through to existing deal logic
+				} else {
+					errMsg := fmt.Sprintf("Failed to create new deal '%s' in Firestore: %v", dealToProcess.Title, err)
+					log.Println(errMsg)
+					errorMessages = append(errorMessages, errMsg)
+					continue
+				}
+			} else {
+				// Successfully created in DB. Now we own the notification responsibility.
+				log.Printf("New deal '%s' (ID: %s) added to Firestore. Sending to Discord.", dealToProcess.Title, dealToProcess.FirestoreID)
+				newDealsCount++
 
+				// Trim old deals to keep database size manageable
+				if trimErr := TrimOldDeals(ctx, fsClient, 50); trimErr != nil {
+					log.Printf("Warning: Failed to trim old deals: %v", trimErr)
+				}
+
+				if discordWebhookURL != "" {
+					newDealEmbed := formatDealToEmbed(dealToProcess, false)
+					msgID, sendErr := sendAndGetMessageID(discordWebhookURL, newDealEmbed)
+					if sendErr != nil {
+						log.Printf("Error sending new deal to Discord: %v", sendErr)
+						// We created the deal but failed to notify.
+						// We don't delete the deal, to prevent infinite loops of failing notifications.
+						// Optionally: Set a "PendingNotification" flag in DB.
+						// For now, we accept the risk of missed notification for stability.
+					} else {
+						log.Printf("New deal sent to Discord. Message ID: %s", msgID)
+						dealToProcess.DiscordMessageID = msgID
+						dealToProcess.DiscordLastUpdatedTime = time.Now()
+						// Update the DB with the Discord info
+						if updateErr := UpdateDeal(ctx, fsClient, dealToProcess); updateErr != nil {
+							log.Printf("Error updating deal with Discord ID: %v", updateErr)
+						}
+					}
+				}
+				continue // Done with new deal
+			}
+		}
+
+		// E. Existing Deal Logic (Update)
+		// If we are here, existingDeal is not nil.
+		if existingDeal != nil {
+			// Check if we missed sending the initial notification (Recovery)
+			if discordWebhookURL != "" && existingDeal.DiscordMessageID == "" {
+				log.Printf("Deal '%s' exists but has no Discord ID. Attempting to send as new.", existingDeal.Title)
+				newDealEmbed := formatDealToEmbed(*existingDeal, false)
+				msgID, sendErr := sendAndGetMessageID(discordWebhookURL, newDealEmbed)
+				if sendErr == nil {
+					existingDeal.DiscordMessageID = msgID
+					existingDeal.DiscordLastUpdatedTime = time.Now()
+					if updateErr := UpdateDeal(ctx, fsClient, *existingDeal); updateErr != nil {
+						log.Printf("Error updating deal with recovered Discord ID: %v", updateErr)
+					}
+					log.Printf("Recovered Discord notification for deal '%s'.", existingDeal.Title)
+				} else {
+					log.Printf("Failed to recover Discord notification: %v", sendErr)
+				}
+			}
+
+			// Check for Content Updates
 			updateNeeded := false
 			if existingDeal.LikeCount != dealToProcess.LikeCount ||
 				existingDeal.CommentCount != dealToProcess.CommentCount ||
 				existingDeal.ViewCount != dealToProcess.ViewCount ||
 				existingDeal.Title != dealToProcess.Title ||
-				//we don't check actualDealURL for updates since it only matters for new deals
-				existingDeal.PostURL != dealToProcess.PostURL || // Added PostURL check
 				existingDeal.ThreadImageURL != dealToProcess.ThreadImageURL {
 				updateNeeded = true
 			}
 
-			// Prepare the deal for Firestore update by copying new data from scrape over existing
-			// This ensures we preserve FirestoreID and DiscordMessageID from existingDeal
-			updatedFirestoreDeal := *existingDeal
-			updatedFirestoreDeal.Title = dealToProcess.Title
-			updatedFirestoreDeal.ThreadImageURL = dealToProcess.ThreadImageURL
-			updatedFirestoreDeal.LikeCount = dealToProcess.LikeCount
-			updatedFirestoreDeal.CommentCount = dealToProcess.CommentCount
-			updatedFirestoreDeal.ViewCount = dealToProcess.ViewCount
-			updatedFirestoreDeal.PostURL = dealToProcess.PostURL
-			// Ensure PublishedTimestamp is from the current scrape if valid
-			if !dealToProcess.PublishedTimestamp.IsZero() {
-				updatedFirestoreDeal.PublishedTimestamp = dealToProcess.PublishedTimestamp
-			}
-			// AuthorName, AuthorURL, PostURL are also updated from scrape if they changed
-			updatedFirestoreDeal.AuthorName = dealToProcess.AuthorName
-			updatedFirestoreDeal.AuthorURL = dealToProcess.AuthorURL
-			// PostedTime is also from scrape
-			updatedFirestoreDeal.PostedTime = dealToProcess.PostedTime
+			// Update mutable fields in local object
+			existingDeal.Title = dealToProcess.Title
+			existingDeal.LikeCount = dealToProcess.LikeCount
+			existingDeal.CommentCount = dealToProcess.CommentCount
+			existingDeal.ViewCount = dealToProcess.ViewCount
+			existingDeal.ThreadImageURL = dealToProcess.ThreadImageURL
+			existingDeal.AuthorName = dealToProcess.AuthorName
+			existingDeal.AuthorURL = dealToProcess.AuthorURL
+			existingDeal.PostedTime = dealToProcess.PostedTime // Update original string too
+			// PublishedTimestamp should theoretically match, but we can sync it
+			existingDeal.PublishedTimestamp = dealToProcess.PublishedTimestamp
+			existingDeal.LastUpdated = time.Now()
 
-			updatedFirestoreDeal.LastUpdated = time.Now()
-
-			if _, err := WriteDealInfo(ctx, fsClient, updatedFirestoreDeal); err != nil {
-				errMsg := fmt.Sprintf("Error updating existing deal '%s' (ID: %s) in Firestore: %v", updatedFirestoreDeal.Title, updatedFirestoreDeal.FirestoreID, err)
-				log.Println(errMsg)
-				errorMessages = append(errorMessages, errMsg)
+			// Write updates to DB
+			if err := UpdateDeal(ctx, fsClient, *existingDeal); err != nil {
+				log.Printf("Error updating deal '%s': %v", existingDeal.Title, err)
 			} else {
-				log.Printf("Successfully updated existing deal '%s' (ID: %s) in Firestore.", updatedFirestoreDeal.Title, updatedFirestoreDeal.FirestoreID)
 				if updateNeeded {
 					updatedDealsCount++
-					log.Printf("Deal '%s' had data changes. Likes: %d->%d, Comments: %d->%d, Views: %d->%d, Title: '%s'->'%s', PostURL: '%s'->'%s', ImageURL: '%s'->'%s'",
-						updatedFirestoreDeal.Title,
-						existingDeal.LikeCount, updatedFirestoreDeal.LikeCount,
-						existingDeal.CommentCount, updatedFirestoreDeal.CommentCount,
-						existingDeal.ViewCount, updatedFirestoreDeal.ViewCount,
-						existingDeal.Title, updatedFirestoreDeal.Title,
-						//we don't check actualDealURL since it only matters for new deals
-						existingDeal.PostURL, updatedFirestoreDeal.PostURL,
-						existingDeal.ThreadImageURL, updatedFirestoreDeal.ThreadImageURL)
-
-					if discordWebhookURL != "" && updatedFirestoreDeal.DiscordMessageID != "" {
+					// Send Discord Update if needed
+					if discordWebhookURL != "" && existingDeal.DiscordMessageID != "" {
 						if time.Since(existingDeal.DiscordLastUpdatedTime) >= discordUpdateInterval {
-							log.Printf("Preparing to send Discord update for deal '%s', MessageID: %s. Interval passed.", updatedFirestoreDeal.Title, updatedFirestoreDeal.DiscordMessageID)
-							embedToUpdate := formatDealToEmbed(updatedFirestoreDeal, true) // true for isUpdate
-							if err := updateDiscordMessage(discordWebhookURL, updatedFirestoreDeal.DiscordMessageID, embedToUpdate); err != nil {
-								errMsg := fmt.Sprintf("Error updating Discord message for deal '%s' (MsgID: %s): %v", updatedFirestoreDeal.Title, updatedFirestoreDeal.DiscordMessageID, err)
-								log.Println(errMsg)
-								errorMessages = append(errorMessages, errMsg)
+							log.Printf("Sending Discord update for '%s'", existingDeal.Title)
+							embedToUpdate := formatDealToEmbed(*existingDeal, true)
+							if err := updateDiscordMessage(discordWebhookURL, existingDeal.DiscordMessageID, embedToUpdate); err == nil {
+								existingDeal.DiscordLastUpdatedTime = time.Now()
+								UpdateDeal(ctx, fsClient, *existingDeal) // Update timestamp in DB
 							} else {
-								log.Printf("Successfully sent Discord update for deal '%s'", updatedFirestoreDeal.Title)
-								updatedFirestoreDeal.DiscordLastUpdatedTime = time.Now() // Update timestamp after successful Discord update
-								// Re-write to Firestore to save the DiscordLastUpdatedTime
-								if _, err := WriteDealInfo(ctx, fsClient, updatedFirestoreDeal); err != nil {
-									errMsg := fmt.Sprintf("Error updating deal '%s' (ID: %s) in Firestore after Discord update: %v", updatedFirestoreDeal.Title, updatedFirestoreDeal.FirestoreID, err)
-									log.Println(errMsg)
-									errorMessages = append(errorMessages, errMsg)
-									// Note: The main WriteDealInfo earlier in the loop still runs, this is an additional one for the timestamp.
-									// Consider if this needs to be merged or if the main one should be conditional / delayed.
-									// For now, this ensures DiscordLastUpdatedTime is saved if the Discord update was successful.
-								} else {
-									log.Printf("Successfully updated DiscordLastUpdatedTime for deal '%s' (ID: %s) in Firestore.", updatedFirestoreDeal.Title, updatedFirestoreDeal.FirestoreID)
-								}
+								log.Printf("Failed to send Discord update: %v", err)
 							}
-						} else {
-							log.Printf("Skipping Discord update for deal '%s' (MsgID: %s) due to 10-minute interval. Last updated: %s", updatedFirestoreDeal.Title, updatedFirestoreDeal.DiscordMessageID, existingDeal.DiscordLastUpdatedTime.Format(time.RFC3339))
 						}
-					} else if discordWebhookURL == "" {
-						log.Println("DISCORD_WEBHOOK_URL not set, skipping Discord update for existing deal.")
-					} else if updatedFirestoreDeal.DiscordMessageID == "" {
-						log.Printf("Deal '%s' updated in Firestore, but no DiscordMessageID found. Cannot send Discord update. Consider sending as new.", updatedFirestoreDeal.Title)
 					}
-				} else {
-					log.Printf("Deal '%s' (ID: %s) checked, no data changes, LastUpdated refreshed.", updatedFirestoreDeal.Title, updatedFirestoreDeal.FirestoreID)
 				}
-			}
-		} else { // Deal is New
-			log.Printf("Deal '%s' is new. Adding to Firestore and sending to Discord.", dealToProcess.Title)
-			dealToProcess.LastUpdated = time.Now() // Initial LastUpdated
-
-			if discordWebhookURL != "" {
-				log.Printf("Formatting and sending new deal to Discord: '%s'", dealToProcess.Title)
-				newDealEmbed := formatDealToEmbed(dealToProcess, false) // false for isUpdate
-
-				messageID, sendErr := sendAndGetMessageID(discordWebhookURL, newDealEmbed)
-				if sendErr != nil {
-					errMsg := fmt.Sprintf("Error sending new deal '%s' to Discord: %v", dealToProcess.Title, sendErr)
-					log.Println(errMsg)
-					errorMessages = append(errorMessages, errMsg)
-					// Continue to save to Firestore even if Discord send fails
-				} else {
-					log.Printf("New deal '%s' sent to Discord. Message ID: %s", dealToProcess.Title, messageID)
-					dealToProcess.DiscordMessageID = messageID
-					dealToProcess.DiscordLastUpdatedTime = time.Now() // Set initial Discord update timestamp
-					// dealToProcess.LastUpdated = time.Now() // This is already set before this block, and again if Discord send is successful. Redundant here.
-				}
-			} else {
-				log.Println("DISCORD_WEBHOOK_URL not set, skipping Discord notification for new deal.")
-			}
-
-			// Write the new deal to Firestore (with or without DiscordMessageID)
-			firestoreID, writeErr := WriteDealInfo(ctx, fsClient, dealToProcess)
-			if writeErr != nil {
-				errMsg := fmt.Sprintf("Error writing new deal '%s' to Firestore: %v", dealToProcess.Title, writeErr)
-				log.Println(errMsg)
-				errorMessages = append(errorMessages, errMsg)
-			} else {
-				// dealToProcess.FirestoreID = firestoreID // FirestoreID is already part of dealToProcess if WriteDealInfo sets it (it doesn't, it returns it)
-				log.Printf("New deal '%s' (ID: %s) added to Firestore. DiscordMessageID: '%s'.", dealToProcess.Title, firestoreID, dealToProcess.DiscordMessageID)
-				newDealsCount++
 			}
 		}
 	}
-	log.Printf("Finished processing loop for scraped deals. New deals found: %d, Existing deals that had data changes: %d.", newDealsCount, updatedDealsCount)
+
+	log.Printf("Finished processing. New: %d, Updated: %d", newDealsCount, updatedDealsCount)
 
 	if len(errorMessages) > 0 {
-		handlerProcessingError = fmt.Errorf("%s", strings.Join(errorMessages, "; "))
-	}
-
-	if handlerProcessingError != nil {
-		log.Printf("ProcessDealsHandler completed with errors: %v", handlerProcessingError)
-		http.Error(w, fmt.Sprintf("Deals processed with some errors: %v", handlerProcessingError), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Processed with errors: %s", strings.Join(errorMessages, "; ")), http.StatusInternalServerError)
 		return
 	}
-
 	fmt.Fprintln(w, "Deals processed successfully.")
-	log.Println("ProcessDealsHandler completed successfully.")
 }
 
 func main() {

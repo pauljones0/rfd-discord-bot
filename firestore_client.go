@@ -10,6 +10,8 @@ import (
 	"cloud.google.com/go/firestore"
 	"cloud.google.com/go/firestore/apiv1/firestorepb" // Added import
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -48,32 +50,82 @@ func WriteDealInfo(ctx context.Context, client *firestore.Client, deal DealInfo)
 	var docRef *firestore.DocumentRef
 	var err error
 
-	if deal.FirestoreID == "" {
-		// New deal, add to Firestore
-		docRef = collectionRef.NewDoc() // Firestore generates ID
-		_, err = docRef.Set(ctx, deal)
-		if err != nil {
-			log.Printf("Error adding new deal to Firestore: %v. Deal: %+v", err, deal)
-			return "", fmt.Errorf("failed to add new deal to Firestore: %w", err)
-		}
-		log.Printf("Successfully added new deal to Firestore with ID %s. Title: %s", docRef.ID, deal.Title)
-		// After adding, trim old deals if necessary
-		if trimErr := TrimOldDeals(ctx, client, 28); trimErr != nil {
-			log.Printf("Error trimming old deals after adding new one: %v", trimErr)
-			// Continue, as the main operation (adding deal) was successful
-		}
-		return docRef.ID, nil
+	// If FirestoreID is provided, use it as the document ID.
+	// This supports deterministic IDs.
+	if deal.FirestoreID != "" {
+		docRef = collectionRef.Doc(deal.FirestoreID)
+	} else {
+		// Fallback to auto-generated ID if none provided (legacy behavior, discourage use)
+		docRef = collectionRef.NewDoc()
 	}
 
-	// Existing deal, update
-	docRef = collectionRef.Doc(deal.FirestoreID)
-	_, err = docRef.Set(ctx, deal) // Set will overwrite or create if not exists (though ID implies exists)
+	// Use Set with MergeAll is safer for updates, but for full overwrites Set is fine.
+	// Here we want to ensure we write the struct as is.
+	_, err = docRef.Set(ctx, deal)
 	if err != nil {
-		log.Printf("Error updating deal in Firestore with ID %s: %v. Deal: %+v", deal.FirestoreID, err, deal)
-		return "", fmt.Errorf("failed to update deal in Firestore (ID: %s): %w", deal.FirestoreID, err)
+		log.Printf("Error writing deal to Firestore (ID: %s): %v. Deal: %+v", docRef.ID, err, deal)
+		return "", fmt.Errorf("failed to write deal to Firestore (ID: %s): %w", docRef.ID, err)
 	}
-	log.Printf("Successfully updated deal in Firestore with ID %s. Title: %s", deal.FirestoreID, deal.Title)
-	return deal.FirestoreID, nil
+	log.Printf("Successfully wrote deal to Firestore with ID %s. Title: %s", docRef.ID, deal.Title)
+
+	// We only trim if we think this is a new addition, but checking that is hard with upsert.
+	// We can just run trim occasionally or let the scheduler handle it.
+	// For safety, we can leave it here, or move it to the handler.
+	// To avoid excessive reads, we might want to move it, but keeping it ensures bounds.
+	if trimErr := TrimOldDeals(ctx, client, 50); trimErr != nil { // Increased limit slightly
+		log.Printf("Error trimming old deals: %v", trimErr)
+	}
+
+	return docRef.ID, nil
+}
+
+// GetDealByID retrieves a deal by its Firestore Document ID.
+func GetDealByID(ctx context.Context, client *firestore.Client, id string) (*DealInfo, error) {
+	docRef := client.Collection(firestoreCollection).Doc(id)
+	doc, err := docRef.Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get deal by ID %s: %w", id, err)
+	}
+
+	if !doc.Exists() {
+		return nil, nil
+	}
+
+	var deal DealInfo
+	if err := doc.DataTo(&deal); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal deal data: %w", err)
+	}
+	deal.FirestoreID = doc.Ref.ID
+	return &deal, nil
+}
+
+// TryCreateDeal attempts to create a new deal. Returns error if it already exists.
+// This is used to safely claim a new deal and prevent race conditions.
+func TryCreateDeal(ctx context.Context, client *firestore.Client, deal DealInfo) error {
+	collectionRef := client.Collection(firestoreCollection)
+	docRef := collectionRef.Doc(deal.FirestoreID)
+	// Create fails if the document already exists.
+	_, err := docRef.Create(ctx, deal)
+	if err != nil {
+		if status.Code(err) == codes.AlreadyExists {
+			return fmt.Errorf("deal already exists")
+		}
+		return err
+	}
+	return nil
+}
+
+// UpdateDeal updates a specific deal.
+func UpdateDeal(ctx context.Context, client *firestore.Client, deal DealInfo) error {
+	collectionRef := client.Collection(firestoreCollection)
+	docRef := collectionRef.Doc(deal.FirestoreID)
+	// Set with default options overwrites. This is fine as we pass the full struct.
+	// For partial updates we would use Update, but here we want to sync the full state.
+	_, err := docRef.Set(ctx, deal)
+	return err
 }
 
 // ReadRecentDeals queries the "deals" collection, orders by PublishedTimestamp descending,
