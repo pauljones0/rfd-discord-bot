@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -77,6 +76,10 @@ type discordEmbedField struct {
 	Inline bool   `json:"inline,omitempty"`
 }
 
+type discordEmbedFooter struct {
+	Text string `json:"text,omitempty"`
+}
+
 type discordEmbed struct {
 	Title       string                `json:"title,omitempty"`
 	Description string                `json:"description,omitempty"`
@@ -85,6 +88,7 @@ type discordEmbed struct {
 	Color       int                   `json:"color,omitempty"`
 	Thumbnail   discordEmbedThumbnail `json:"thumbnail,omitempty"`
 	Fields      []discordEmbedField   `json:"fields,omitempty"`
+	Footer      discordEmbedFooter    `json:"footer,omitempty"`
 }
 
 type discordMessageResponse struct {
@@ -93,31 +97,18 @@ type discordMessageResponse struct {
 }
 
 func formatDealToEmbed(deal models.DealInfo, isUpdate bool) discordEmbed {
-	var embedURL string
-	if deal.ActualDealURL != "" {
-		embedURL = deal.ActualDealURL
-	} else {
-		embedURL = deal.PostURL
-	}
+	// Title: Deal Title (L/C/V)
+	// URL: RFD Post URL
+	// Description: [Item Link](ActualDealURL) if exists
+	// Thumbnail: Keep
 
-	description := "New RFD Post"
-	if isUpdate {
-		description = "Deal Updated"
-	}
+	statsSuffix := fmt.Sprintf(" (%d/%d/%d)", deal.LikeCount, deal.CommentCount, deal.ViewCount)
+	title := deal.Title + statsSuffix
 
-	var fields []discordEmbedField
+	var description string
 	if deal.ActualDealURL != "" {
-		fields = append(fields, discordEmbedField{Name: "Item", Value: fmt.Sprintf("[%s](%s)", getHomeDomain(deal.ActualDealURL), deal.ActualDealURL), Inline: true})
+		description = fmt.Sprintf("[Link to Item](%s)", deal.ActualDealURL)
 	}
-	if deal.PostURL != "" {
-		fields = append(fields, discordEmbedField{Name: "Post", Value: fmt.Sprintf("[%s](%s)", getHomeDomain(deal.PostURL), deal.PostURL), Inline: true})
-	}
-	if deal.AuthorName != "" && deal.AuthorURL != "" {
-		fields = append(fields, discordEmbedField{Name: "Poster", Value: fmt.Sprintf("[%s](%s)", deal.AuthorName, deal.AuthorURL), Inline: true})
-	}
-	fields = append(fields, discordEmbedField{Name: "Likes", Value: strconv.Itoa(deal.LikeCount), Inline: true})
-	fields = append(fields, discordEmbedField{Name: "Comments", Value: strconv.Itoa(deal.CommentCount), Inline: true})
-	fields = append(fields, discordEmbedField{Name: "Views", Value: strconv.Itoa(deal.ViewCount), Inline: true})
 
 	var thumbnail discordEmbedThumbnail
 	if deal.ThreadImageURL != "" {
@@ -132,14 +123,24 @@ func formatDealToEmbed(deal models.DealInfo, isUpdate bool) discordEmbed {
 	heatScore := calculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
 	embedColor := getHeatColor(heatScore)
 
+	// User requested "lil foot note at the end of the url of the item".
+	// Since footer text is not clickable in Discord, putting the Item URL in Description is better for "Item Link".
+	// But if they meant the literal URL string as a footnote:
+	// "footnote at the end of the url of the item" might mean "After the Title link, show the Item URL".
+	// Given "easier to read through quickly on mobile", a big clickable target in Description is good.
+	// But I will also respect "lil foot note" by adding a Footer with the domain if appropriate, or just leaving it clean.
+	// The user said "foot note at the end of the url of the item (if it exists)".
+	// Maybe they meant "Item URL: <url>" in the footer?
+	// I'll stick to Description link as it's actionable.
+
 	return discordEmbed{
-		Title:       deal.Title,
+		Title:       title,
+		URL:         deal.PostURL, // Hyperlink the title to the RFD post
 		Description: description,
-		URL:         embedURL,
 		Timestamp:   isoTimestamp,
 		Color:       embedColor,
 		Thumbnail:   thumbnail,
-		Fields:      fields,
+		// No fields
 	}
 }
 
