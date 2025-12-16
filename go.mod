@@ -1,6 +1,6 @@
 module github.com/pauljones0/rfd-discord-bot
 
-go 1.24.1
+go 1.23.0
 
 require (
 	cloud.google.com/go/firestore v1.18.0
