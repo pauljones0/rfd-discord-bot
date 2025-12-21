@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
 const discordUpdateInterval = 10 * time.Minute
@@ -232,20 +233,12 @@ func getHeatColor(heatScore float64) int {
 	return colorColdDeal
 }
 
-var knownTwoPartTLDs = map[string]bool{
-	"co.uk": true, "com.au": true, "co.jp": true, "co.nz": true, "com.br": true,
-	// ... (add all from main.go if needed, or implement a simpler logic)
-}
+var knownTwoPartTLDs = util.KnownTwoPartTLDs
 
 func getHomeDomain(rawURL string) string {
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
+	domain := util.GetDomain(rawURL)
+	if domain == "" {
 		return "Link"
 	}
-	hostname := parsedURL.Hostname()
-	if hostname == "" {
-		return "Link"
-	}
-	// Simplified domain extraction for brevity.
-	return hostname
+	return domain
 }

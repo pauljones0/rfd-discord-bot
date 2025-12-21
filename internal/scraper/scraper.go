@@ -1,55 +1,58 @@
 package scraper
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
 const hotDealsURL = "https://forums.redflagdeals.com/hot-deals-f9/?sk=tt&rfd_sk=tt&sd=d"
 
-// knownTwoPartTLDs is a set of common two-part TLDs.
-var knownTwoPartTLDs = map[string]bool{
-	"co.uk": true, "com.au": true, "co.jp": true, "co.nz": true, "com.br": true,
-	"org.uk": true, "gov.uk": true, "ac.uk": true, "com.cn": true, "net.cn": true,
-	"org.cn": true, "co.za": true, "com.es": true, "com.mx": true, "com.sg": true,
-	"co.in": true, "ltd.uk": true, "plc.uk": true, "net.au": true, "org.au": true,
-	"com.pa": true, "net.pa": true, "org.pa": true, "edu.pa": true, "gob.pa": true,
-	"com.py": true, "net.py": true, "org.py": true, "edu.py": true, "gov.py": true,
+type Scraper interface {
+	ScrapeHotDealsPage(ctx context.Context) ([]models.DealInfo, error)
 }
 
-// ScrapeHotDealsPage fetches and parses the hot deals page.
-func ScrapeHotDealsPage() ([]models.DealInfo, error) {
-	log.Println("Fetching RFD Hot Deals page via scraping...")
+type Client struct {
+	httpClient *http.Client
+}
 
-	// Load selectors from config
-	_, err := LoadSelectors("config/selectors.json")
-	if err != nil {
-		log.Printf("Warning: Failed to load selectors from config: %v. Using defaults.", err)
+func New() *Client {
+	return &Client{
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
+}
+
+func (c *Client) ScrapeHotDealsPage(ctx context.Context) ([]models.DealInfo, error) {
+	log.Println("Fetching RFD Hot Deals page via scraping...")
 
 	// Retry logic with exponential backoff
 	maxRetries := 3
 	var scrapedDeals []models.DealInfo
-
+	var err error
 
 	for i := 0; i <= maxRetries; i++ {
-		scrapedDeals, err = attemptScrape(hotDealsURL)
+		scrapedDeals, err = c.attemptScrape(ctx, hotDealsURL)
 		if err == nil {
 			break
 		}
 		if i < maxRetries {
 			backoffDuration := time.Duration(1<<i) * time.Second
 			log.Printf("[ALERT] Scraping attempt %d failed: %v. Retrying in %v...", i+1, err, backoffDuration)
-			time.Sleep(backoffDuration)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoffDuration):
+			}
 		}
 	}
 
@@ -61,9 +64,9 @@ func ScrapeHotDealsPage() ([]models.DealInfo, error) {
 	return scrapedDeals, nil
 }
 
-func attemptScrape(url string) ([]models.DealInfo, error) {
+func (c *Client) attemptScrape(ctx context.Context, url string) ([]models.DealInfo, error) {
 	log.Printf("Scraping hot deals page: %s", url)
-	doc, err := fetchHTMLContent(url)
+	doc, err := c.fetchHTMLContent(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch or parse hot deals page %s: %w", url, err)
 	}
@@ -71,35 +74,22 @@ func attemptScrape(url string) ([]models.DealInfo, error) {
 	selectors := GetCurrentSelectors()
 	listSelectors := selectors.HotDealsList
 
-	// Find all topic list items on the page
-	// CSS Selector: li.topic
-	// This selects every list item with class "topic", representing a deal thread
 	if doc.Find(listSelectors.Container.Item).Length() == 0 {
 		return nil, fmt.Errorf("no '%s' elements found on %s. Potential block or page structure change", listSelectors.Container.Item, url)
 	}
 
 	var deals []models.DealInfo
-	var allTopics []*goquery.Selection
 	doc.Find(listSelectors.Container.Item).Each(func(_ int, s *goquery.Selection) {
-		allTopics = append(allTopics, s)
-	})
-
-	var nonStickyTopics []*goquery.Selection
-	for _, s := range allTopics {
-		if !s.Is(listSelectors.Container.IgnoreModifier) {
-			nonStickyTopics = append(nonStickyTopics, s)
+		if s.Is(listSelectors.Container.IgnoreModifier) {
+			return
 		}
-	}
-	// log.Printf("DEBUG: Found %d total 'li.topic' elements, %d non-sticky/non-sponsored.", len(allTopics), len(nonStickyTopics))
 
-	for _, s := range nonStickyTopics {
 		var deal models.DealInfo
 		var parseErrors []string
 
 		// 1. Posted Time
 		timeSelection := s.Find(listSelectors.Elements.PostedTime)
 		if timeSelection.Length() > 0 {
-			// Find the actual <time> element if the selector is a container
 			actualTime := timeSelection
 			if !timeSelection.Is("time") {
 				actualTime = timeSelection.Find("time").First()
@@ -127,7 +117,6 @@ func attemptScrape(url string) ([]models.DealInfo, error) {
 		// 2. Thread Title Link & Text
 		titleLinkSelection := s.Find(listSelectors.Elements.TitleLink)
 		if titleLinkSelection.Length() > 0 {
-			// Ensure we have the actual <a> tag
 			actualLink := titleLinkSelection
 			if !titleLinkSelection.Is("a") {
 				actualLink = titleLinkSelection.Find("a").First()
@@ -143,7 +132,7 @@ func attemptScrape(url string) ([]models.DealInfo, error) {
 						deal.PostURL = postURL
 					}
 					if deal.PostURL != "" {
-						normalizedURL, normErr := normalizePostURL(deal.PostURL)
+						normalizedURL, normErr := util.NormalizeURL(deal.PostURL)
 						if normErr == nil {
 							deal.PostURL = normalizedURL
 						}
@@ -159,7 +148,6 @@ func attemptScrape(url string) ([]models.DealInfo, error) {
 		// 3. Author Profile Link
 		authorSelection := s.Find(listSelectors.Elements.AuthorLink)
 		if authorSelection.Length() > 0 {
-			// Handle cases where selector is the link or a container
 			actualLink := authorSelection
 			if !authorSelection.Is("a") {
 				actualLink = authorSelection.Find("a").First()
@@ -196,38 +184,36 @@ func attemptScrape(url string) ([]models.DealInfo, error) {
 		// 6. Like Count
 		likeCountSelection := s.Find(listSelectors.Elements.LikeCount)
 		if likeCountSelection.Length() > 0 {
-			deal.LikeCount = safeAtoi(parseSignedNumericString(likeCountSelection.Text()))
+			deal.LikeCount = util.SafeAtoi(util.ParseSignedNumericString(likeCountSelection.Text()))
 		}
 
 		// 7. Comment Count
 		commentCountSelection := s.Find(listSelectors.Elements.CommentCount)
 		if commentCountSelection.Length() > 0 {
-			deal.CommentCount = safeAtoi(cleanNumericString(commentCountSelection.Text()))
+			deal.CommentCount = util.SafeAtoi(util.CleanNumericString(commentCountSelection.Text()))
 		} else {
-			// Try fallback
 			fallbackCommentCountSelection := s.Find(listSelectors.Elements.CommentCountFallback)
 			if fallbackCommentCountSelection.Length() > 0 {
-				deal.CommentCount = safeAtoi(cleanNumericString(fallbackCommentCountSelection.Text()))
+				deal.CommentCount = util.SafeAtoi(util.CleanNumericString(fallbackCommentCountSelection.Text()))
 			}
 		}
 
 		// 8. View Count
 		viewCountSelection := s.Find(listSelectors.Elements.ViewCount)
 		if viewCountSelection.Length() > 0 {
-			deal.ViewCount = safeAtoi(cleanNumericString(viewCountSelection.Text()))
+			deal.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.Text()))
 		}
 
 		if deal.PostURL != "" {
-			actualURL, detailErr := scrapeDealDetailPage(deal.PostURL)
+			actualURL, detailErr := c.scrapeDealDetailPage(ctx, deal.PostURL)
 			if detailErr == nil {
 				deal.ActualDealURL = actualURL
 				if deal.ActualDealURL != "" {
-					cleanedURL, changed := cleanReferralLink(deal.ActualDealURL)
+					cleanedURL, changed := util.CleanReferralLink(deal.ActualDealURL)
 					if changed {
 						deal.ActualDealURL = cleanedURL
 					}
 				}
-				// NOTE: Rick Roll fallback removed here as per user request
 				if deal.ActualDealURL == "" {
 					log.Printf("ActualDealURL for %s was empty after parsing.", deal.PostURL)
 				}
@@ -238,13 +224,13 @@ func attemptScrape(url string) ([]models.DealInfo, error) {
 			log.Printf("Encountered %d parsing issues for deal '%s' (URL: %s): %s", len(parseErrors), deal.Title, deal.PostURL, strings.Join(parseErrors, "; "))
 		}
 		deals = append(deals, deal)
-	}
+	})
 
 	return deals, nil
 }
 
-func scrapeDealDetailPage(dealURL string) (string, error) {
-	doc, err := fetchHTMLContent(dealURL)
+func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, error) {
+	doc, err := c.fetchHTMLContent(ctx, dealURL)
 	if err != nil {
 		return "", err
 	}
@@ -255,9 +241,6 @@ func scrapeDealDetailPage(dealURL string) (string, error) {
 	var urlA, urlB string
 	var existsA, existsB bool
 
-	// Selector A
-	// CSS Selector: .get-deal-button
-	// Looks for the explicit "Get Deal" button class
 	getDealButton := doc.Find(detailSelectors.PrimaryLink)
 	if getDealButton.Length() > 0 {
 		href, found := getDealButton.Attr("href")
@@ -267,9 +250,6 @@ func scrapeDealDetailPage(dealURL string) (string, error) {
 		}
 	}
 
-	// Selector B
-	// CSS Selector: a.autolinker_link:nth-child(1)
-	// Fallback looking for auto-linked URLs if the button is missing
 	autolinkerLink := doc.Find(detailSelectors.FallbackLink)
 	if autolinkerLink.Length() > 0 {
 		href, found := autolinkerLink.Attr("href")
@@ -283,12 +263,7 @@ func scrapeDealDetailPage(dealURL string) (string, error) {
 		}
 	}
 
-	if existsA && existsB {
-		if urlA == urlB {
-			return urlA, nil
-		}
-		return urlA, nil // Prefer A
-	} else if existsA {
+	if existsA {
 		return urlA, nil
 	} else if existsB {
 		return urlB, nil
@@ -297,7 +272,7 @@ func scrapeDealDetailPage(dealURL string) (string, error) {
 	return "", nil
 }
 
-func fetchHTMLContent(urlStr string) (*goquery.Document, error) {
+func (c *Client) fetchHTMLContent(ctx context.Context, urlStr string) (*goquery.Document, error) {
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse URL %s: %w", urlStr, err)
@@ -320,11 +295,12 @@ func fetchHTMLContent(urlStr string) (*goquery.Document, error) {
 		return nil, fmt.Errorf("security violation: URL hostname %s is not in allowlist", hostname)
 	}
 
-	client := &http.Client{
-		Timeout: 30 * time.Second,
+	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request for URL %s: %w", urlStr, err)
 	}
 
-	res, err := client.Get(urlStr)
+	res, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch URL %s: %w", urlStr, err)
 	}
@@ -335,120 +311,4 @@ func fetchHTMLContent(urlStr string) (*goquery.Document, error) {
 	}
 
 	return goquery.NewDocumentFromReader(res.Body)
-}
-
-func normalizePostURL(rawURL string) (string, error) {
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL, err
-	}
-	parsedURL.Scheme = "https"
-	if strings.HasPrefix(parsedURL.Host, "www.") {
-		if parsedURL.Host == "www.forums.redflagdeals.com" || parsedURL.Host == "www.redflagdeals.com" {
-			parsedURL.Host = strings.TrimPrefix(parsedURL.Host, "www.")
-		}
-	}
-	if parsedURL.Host == "redflagdeals.com" {
-		parsedURL.Host = "forums.redflagdeals.com"
-	}
-	if len(parsedURL.Path) > 1 && strings.HasSuffix(parsedURL.Path, "/") {
-		parsedURL.Path = parsedURL.Path[:len(parsedURL.Path)-1]
-	}
-	queryParams := parsedURL.Query()
-	utmParams := []string{"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "rfd_sk", "sd", "sk"}
-	for _, param := range utmParams {
-		if queryParams.Has(param) {
-			queryParams.Del(param)
-		}
-	}
-	parsedURL.RawQuery = queryParams.Encode()
-	return parsedURL.String(), nil
-}
-
-func cleanReferralLink(rawUrl string) (string, bool) {
-	parsedUrl, err := url.Parse(rawUrl)
-	if err != nil {
-		return rawUrl, false
-	}
-	// Simplified logic for brevity, copying the robust one is better
-	// Best Buy specific constants
-	const newBestBuyPrefix = "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
-	bestBuyRegex := regexp.MustCompile(`^https://bestbuyca\.o93x\.net/c/\d+/\d+/\d+\?u=`)
-
-	switch {
-	case parsedUrl.Host == "click.linksynergy.com":
-		murlParam := parsedUrl.Query().Get("murl")
-		if murlParam != "" {
-			decodedMURL, decodeErr := url.QueryUnescape(murlParam)
-			if decodeErr == nil {
-				return decodedMURL, true
-			}
-		}
-		return rawUrl, false
-
-	case parsedUrl.Host == "go.redirectingat.com":
-		urlParam := parsedUrl.Query().Get("url")
-		if urlParam != "" {
-			decodedDestURL, decodeErr := url.QueryUnescape(urlParam)
-			if decodeErr == nil {
-				return decodedDestURL, true
-			}
-		}
-		return rawUrl, false
-
-	case parsedUrl.Host == "bestbuyca.o93x.net" && bestBuyRegex.MatchString(rawUrl):
-		uIndex := strings.Index(rawUrl, "?u=")
-		if uIndex == -1 {
-			return rawUrl, false
-		}
-		productURLPart := rawUrl[uIndex+len("?u="):]
-		cleanedURL := newBestBuyPrefix + productURLPart
-		return cleanedURL, true
-
-	case strings.Contains(parsedUrl.Host, "amazon."):
-		queryParams := parsedUrl.Query()
-		originalTag := queryParams.Get("tag")
-		const newTag = "beauahrens0d-20"
-		tagModified := false
-
-		if queryParams.Has("tag") {
-			if originalTag != newTag {
-				queryParams.Del("tag")
-				queryParams.Set("tag", newTag)
-				tagModified = true
-			}
-		} else {
-			queryParams.Set("tag", newTag)
-			tagModified = true
-		}
-		if tagModified {
-			parsedUrl.RawQuery = queryParams.Encode()
-			return parsedUrl.String(), true
-		}
-		return parsedUrl.String(), tagModified
-
-	default:
-		return rawUrl, false
-	}
-}
-
-func safeAtoi(s string) int {
-	s = strings.ReplaceAll(s, ",", "")
-	i, err := strconv.Atoi(strings.TrimSpace(s))
-	if err != nil {
-		return 0
-	}
-	return i
-}
-
-var nonNumericRegex = regexp.MustCompile(`[^\d]`)
-
-func cleanNumericString(s string) string {
-	return nonNumericRegex.ReplaceAllString(s, "")
-}
-
-var extractSignedNumberRegex = regexp.MustCompile(`-?\d+`)
-
-func parseSignedNumericString(s string) string {
-	return extractSignedNumberRegex.FindString(s)
 }
