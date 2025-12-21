@@ -30,10 +30,16 @@ var knownTwoPartTLDs = map[string]bool{
 func ScrapeHotDealsPage() ([]models.DealInfo, error) {
 	log.Println("Fetching RFD Hot Deals page via scraping...")
 
+	// Load selectors from config
+	_, err := LoadSelectors("config/selectors.json")
+	if err != nil {
+		log.Printf("Warning: Failed to load selectors from config: %v. Using defaults.", err)
+	}
+
 	// Retry logic with exponential backoff
 	maxRetries := 3
 	var scrapedDeals []models.DealInfo
-	var err error
+
 
 	for i := 0; i <= maxRetries; i++ {
 		scrapedDeals, err = attemptScrape(hotDealsURL)
@@ -62,19 +68,25 @@ func attemptScrape(url string) ([]models.DealInfo, error) {
 		return nil, fmt.Errorf("failed to fetch or parse hot deals page %s: %w", url, err)
 	}
 
-	if doc.Find("li.topic").Length() == 0 {
-		return nil, fmt.Errorf("no 'li.topic' elements found on %s. Potential block or page structure change", url)
+	selectors := GetCurrentSelectors()
+	listSelectors := selectors.HotDealsList
+
+	// Find all topic list items on the page
+	// CSS Selector: li.topic
+	// This selects every list item with class "topic", representing a deal thread
+	if doc.Find(listSelectors.Container.Item).Length() == 0 {
+		return nil, fmt.Errorf("no '%s' elements found on %s. Potential block or page structure change", listSelectors.Container.Item, url)
 	}
 
 	var deals []models.DealInfo
 	var allTopics []*goquery.Selection
-	doc.Find("li.topic").Each(func(_ int, s *goquery.Selection) {
+	doc.Find(listSelectors.Container.Item).Each(func(_ int, s *goquery.Selection) {
 		allTopics = append(allTopics, s)
 	})
 
 	var nonStickyTopics []*goquery.Selection
 	for _, s := range allTopics {
-		if !(s.HasClass("sticky")) {
+		if !s.Is(listSelectors.Container.IgnoreModifier) {
 			nonStickyTopics = append(nonStickyTopics, s)
 		}
 	}
@@ -85,66 +97,95 @@ func attemptScrape(url string) ([]models.DealInfo, error) {
 		var parseErrors []string
 
 		// 1. Posted Time
-		timeSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(1) > time")
+		timeSelection := s.Find(listSelectors.Elements.PostedTime)
 		if timeSelection.Length() > 0 {
-			deal.PostedTime = strings.TrimSpace(timeSelection.Text()) // Text content
-			datetimeStr, exists := timeSelection.Attr("datetime")
-			if exists {
-				deal.PostedTime = datetimeStr // Prefer datetime attribute for parsing
-				parsedTime, err := time.Parse(time.RFC3339, datetimeStr)
-				if err == nil {
-					deal.PublishedTimestamp = parsedTime
-				} else {
-					parseErrors = append(parseErrors, fmt.Sprintf("failed to parse datetime string '%s': %v", datetimeStr, err))
+			// Find the actual <time> element if the selector is a container
+			actualTime := timeSelection
+			if !timeSelection.Is("time") {
+				actualTime = timeSelection.Find("time").First()
+			}
+
+			if actualTime.Length() > 0 {
+				deal.PostedTime = strings.TrimSpace(actualTime.Text())
+				datetimeStr, exists := actualTime.Attr("datetime")
+				if exists {
+					deal.PostedTime = datetimeStr
+					parsedTime, err := time.Parse(time.RFC3339, datetimeStr)
+					if err == nil {
+						deal.PublishedTimestamp = parsedTime
+					} else {
+						parseErrors = append(parseErrors, fmt.Sprintf("failed to parse datetime string '%s': %v", datetimeStr, err))
+					}
 				}
+			} else {
+				deal.PostedTime = strings.TrimSpace(timeSelection.Text())
 			}
 		} else {
 			parseErrors = append(parseErrors, "posted time element not found")
 		}
 
 		// 2. Thread Title Link & Text
-		titleLinkSelection := s.Find("div:nth-child(2) > div:nth-child(1) > h3:nth-child(2) > a")
+		titleLinkSelection := s.Find(listSelectors.Elements.TitleLink)
 		if titleLinkSelection.Length() > 0 {
-			deal.Title = strings.TrimSpace(titleLinkSelection.Text())
-			postURL, exists := titleLinkSelection.Attr("href")
-			if exists {
-				if strings.HasPrefix(postURL, "/") {
-					deal.PostURL = "https://forums.redflagdeals.com" + postURL
-				} else {
-					deal.PostURL = postURL
-				}
-				if deal.PostURL != "" {
-					normalizedURL, normErr := normalizePostURL(deal.PostURL)
-					if normErr == nil {
-						deal.PostURL = normalizedURL
+			// Ensure we have the actual <a> tag
+			actualLink := titleLinkSelection
+			if !titleLinkSelection.Is("a") {
+				actualLink = titleLinkSelection.Find("a").First()
+			}
+
+			if actualLink.Length() > 0 {
+				deal.Title = strings.TrimSpace(actualLink.Text())
+				postURL, exists := actualLink.Attr("href")
+				if exists {
+					if strings.HasPrefix(postURL, "/") {
+						deal.PostURL = "https://forums.redflagdeals.com" + postURL
+					} else {
+						deal.PostURL = postURL
+					}
+					if deal.PostURL != "" {
+						normalizedURL, normErr := normalizePostURL(deal.PostURL)
+						if normErr == nil {
+							deal.PostURL = normalizedURL
+						}
 					}
 				}
+			} else {
+				parseErrors = append(parseErrors, "title link <a> not found within title selection")
 			}
 		} else {
 			parseErrors = append(parseErrors, "title/post URL element not found")
 		}
 
 		// 3. Author Profile Link
-		authorLinkSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(1) > a:nth-child(1)")
-		if authorLinkSelection.Length() > 0 {
-			authorURL, exists := authorLinkSelection.Attr("href")
-			if exists {
-				if strings.HasPrefix(authorURL, "/") {
-					deal.AuthorURL = "https://forums.redflagdeals.com" + authorURL
-				} else {
-					deal.AuthorURL = authorURL
-				}
+		authorSelection := s.Find(listSelectors.Elements.AuthorLink)
+		if authorSelection.Length() > 0 {
+			// Handle cases where selector is the link or a container
+			actualLink := authorSelection
+			if !authorSelection.Is("a") {
+				actualLink = authorSelection.Find("a").First()
 			}
-			authorNameSelection := authorLinkSelection.Find("span:nth-child(2)")
-			if authorNameSelection.Length() > 0 {
-				deal.AuthorName = strings.TrimSpace(authorNameSelection.Text())
-			} else {
-				deal.AuthorName = strings.TrimSpace(authorLinkSelection.Text())
+
+			if actualLink.Length() > 0 {
+				authorURL, exists := actualLink.Attr("href")
+				if exists {
+					if strings.HasPrefix(authorURL, "/") {
+						deal.AuthorURL = "https://forums.redflagdeals.com" + authorURL
+					} else {
+						deal.AuthorURL = authorURL
+					}
+				}
+
+				authorNameSelection := actualLink.Find(listSelectors.Elements.AuthorName)
+				if authorNameSelection.Length() > 0 {
+					deal.AuthorName = strings.TrimSpace(authorNameSelection.Text())
+				} else {
+					deal.AuthorName = strings.TrimSpace(actualLink.Text())
+				}
 			}
 		}
 
 		// 5. Thread Image URL
-		imgSelection := s.Find("div:nth-child(2) > div:nth-child(2) > img")
+		imgSelection := s.Find(listSelectors.Elements.ThreadImage)
 		if imgSelection.Length() > 0 {
 			src, exists := imgSelection.Attr("src")
 			if exists {
@@ -153,25 +194,25 @@ func attemptScrape(url string) ([]models.DealInfo, error) {
 		}
 
 		// 6. Like Count
-		likeCountSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span")
+		likeCountSelection := s.Find(listSelectors.Elements.LikeCount)
 		if likeCountSelection.Length() > 0 {
 			deal.LikeCount = safeAtoi(parseSignedNumericString(likeCountSelection.Text()))
 		}
 
 		// 7. Comment Count
-		commentCountSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(3) > span")
+		commentCountSelection := s.Find(listSelectors.Elements.CommentCount)
 		if commentCountSelection.Length() > 0 {
 			deal.CommentCount = safeAtoi(cleanNumericString(commentCountSelection.Text()))
 		} else {
 			// Try fallback
-			fallbackCommentCountSelection := s.Find("div:nth-child(3) > div:nth-child(3) > span:nth-child(2)")
+			fallbackCommentCountSelection := s.Find(listSelectors.Elements.CommentCountFallback)
 			if fallbackCommentCountSelection.Length() > 0 {
 				deal.CommentCount = safeAtoi(cleanNumericString(fallbackCommentCountSelection.Text()))
 			}
 		}
 
 		// 8. View Count
-		viewCountSelection := s.Find("div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div:nth-child(7)")
+		viewCountSelection := s.Find(listSelectors.Elements.ViewCount)
 		if viewCountSelection.Length() > 0 {
 			deal.ViewCount = safeAtoi(cleanNumericString(viewCountSelection.Text()))
 		}
@@ -208,11 +249,16 @@ func scrapeDealDetailPage(dealURL string) (string, error) {
 		return "", err
 	}
 
+	selectors := GetCurrentSelectors()
+	detailSelectors := selectors.DealDetails
+
 	var urlA, urlB string
 	var existsA, existsB bool
 
 	// Selector A
-	getDealButton := doc.Find(".get-deal-button")
+	// CSS Selector: .get-deal-button
+	// Looks for the explicit "Get Deal" button class
+	getDealButton := doc.Find(detailSelectors.PrimaryLink)
 	if getDealButton.Length() > 0 {
 		href, found := getDealButton.Attr("href")
 		if found && strings.TrimSpace(href) != "" {
@@ -222,7 +268,9 @@ func scrapeDealDetailPage(dealURL string) (string, error) {
 	}
 
 	// Selector B
-	autolinkerLink := doc.Find("a.autolinker_link:nth-child(1)")
+	// CSS Selector: a.autolinker_link:nth-child(1)
+	// Fallback looking for auto-linked URLs if the button is missing
+	autolinkerLink := doc.Find(detailSelectors.FallbackLink)
 	if autolinkerLink.Length() > 0 {
 		href, found := autolinkerLink.Attr("href")
 		if found && strings.TrimSpace(href) != "" {
