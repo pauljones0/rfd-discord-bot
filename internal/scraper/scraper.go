@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
@@ -22,13 +23,15 @@ type Scraper interface {
 
 type Client struct {
 	httpClient *http.Client
+	config     *config.Config
 }
 
-func New() *Client {
+func New(cfg *config.Config) *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		config: cfg,
 	}
 }
 
@@ -258,7 +261,7 @@ func (c *Client) attemptScrape(ctx context.Context, url string) ([]models.DealIn
 			}
 			deals[res.index].ActualDealURL = res.url
 			if deals[res.index].ActualDealURL != "" {
-				cleanedURL, changed := util.CleanReferralLink(deals[res.index].ActualDealURL)
+				cleanedURL, changed := util.CleanReferralLink(deals[res.index].ActualDealURL, c.config.AmazonAffiliateTag)
 				if changed {
 					deals[res.index].ActualDealURL = cleanedURL
 				}
@@ -329,8 +332,7 @@ func (c *Client) fetchHTMLContent(ctx context.Context, urlStr string) (*goquery.
 
 	hostname := parsedURL.Hostname()
 	allowed := false
-	allowedDomains := []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com"}
-	for _, domain := range allowedDomains {
+	for _, domain := range c.config.AllowedDomains {
 		if hostname == domain {
 			allowed = true
 			break

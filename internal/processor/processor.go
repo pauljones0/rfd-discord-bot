@@ -9,12 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
 	"github.com/pauljones0/rfd-discord-bot/internal/storage"
 )
-
-const discordUpdateInterval = 10 * time.Minute
 
 type Processor interface {
 	ProcessDeals(ctx context.Context) error
@@ -24,13 +23,15 @@ type DealProcessor struct {
 	store    *storage.Client
 	notifier *notifier.Client
 	scraper  scraper.Scraper
+	config   *config.Config
 }
 
-func New(store *storage.Client, n *notifier.Client, s scraper.Scraper) *DealProcessor {
+func New(store *storage.Client, n *notifier.Client, s scraper.Scraper, cfg *config.Config) *DealProcessor {
 	return &DealProcessor{
 		store:    store,
 		notifier: n,
 		scraper:  s,
+		config:   cfg,
 	}
 }
 
@@ -144,7 +145,12 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 				if updateNeeded {
 					updatedDealsCount++
 					if existingDeal.DiscordMessageID != "" {
-						if time.Since(existingDeal.DiscordLastUpdatedTime) >= discordUpdateInterval {
+						updateInterval, err := time.ParseDuration(p.config.DiscordUpdateInterval)
+						if err != nil {
+							log.Printf("Warning: Invalid update interval '%s', using 10m: %v", p.config.DiscordUpdateInterval, err)
+							updateInterval = 10 * time.Minute
+						}
+						if time.Since(existingDeal.DiscordLastUpdatedTime) >= updateInterval {
 							if err := p.notifier.Update(ctx, existingDeal.DiscordMessageID, *existingDeal); err == nil {
 								existingDeal.DiscordLastUpdatedTime = time.Now()
 								if err := p.store.UpdateDeal(ctx, *existingDeal); err != nil {

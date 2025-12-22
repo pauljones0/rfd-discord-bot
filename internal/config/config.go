@@ -11,6 +11,7 @@ type Config struct {
 	Port                  string
 	AmazonAffiliateTag    string
 	DiscordUpdateInterval string
+	AllowedDomains        []string
 }
 
 func Load() *Config {
@@ -47,5 +48,6 @@ func Load() *Config {
 		Port:                  port,
 		AmazonAffiliateTag:    amazonAffiliateTag,
 		DiscordUpdateInterval: discordUpdateInterval,
+		AllowedDomains:        []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com"},
 	}
 }

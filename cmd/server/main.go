@@ -29,14 +29,14 @@ func main() {
 	defer store.Close()
 
 	n := notifier.New(cfg.DiscordWebhookURL)
-	s := scraper.New()
+	s := scraper.New(cfg)
 
 	// Load selectors
 	if _, err := scraper.LoadSelectors("config/selectors.json"); err != nil {
 		log.Printf("Warning: Failed to load selectors: %v. Using defaults.", err)
 	}
 
-	p := processor.New(store, n, s)
+	p := processor.New(store, n, s, cfg)
 
 	srv := &Server{
 		processor: p,

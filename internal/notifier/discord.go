@@ -11,10 +11,7 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
-	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
-
-const discordUpdateInterval = 10 * time.Minute
 
 const (
 	colorColdDeal    = 3092790  // #2F3136
@@ -231,14 +228,4 @@ func getHeatColor(heatScore float64) int {
 		return colorWarmDeal
 	}
 	return colorColdDeal
-}
-
-var knownTwoPartTLDs = util.KnownTwoPartTLDs
-
-func getHomeDomain(rawURL string) string {
-	domain := util.GetDomain(rawURL)
-	if domain == "" {
-		return "Link"
-	}
-	return domain
 }

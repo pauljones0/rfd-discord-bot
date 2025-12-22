@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func CleanReferralLink(rawUrl string) (string, bool) {
+func CleanReferralLink(rawUrl string, amazonTag string) (string, bool) {
 	parsedUrl, err := url.Parse(rawUrl)
 	if err != nil {
 		return rawUrl, false
@@ -49,17 +49,16 @@ func CleanReferralLink(rawUrl string) (string, bool) {
 	case strings.Contains(parsedUrl.Host, "amazon."):
 		queryParams := parsedUrl.Query()
 		originalTag := queryParams.Get("tag")
-		const newTag = "beauahrens0d-20"
 		tagModified := false
 
 		if queryParams.Has("tag") {
-			if originalTag != newTag {
+			if originalTag != amazonTag {
 				queryParams.Del("tag")
-				queryParams.Set("tag", newTag)
+				queryParams.Set("tag", amazonTag)
 				tagModified = true
 			}
 		} else {
-			queryParams.Set("tag", newTag)
+			queryParams.Set("tag", amazonTag)
 			tagModified = true
 		}
 		if tagModified {

@@ -39,7 +39,7 @@ func TestCleanReferralLink(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, changed := CleanReferralLink(tt.input)
+			got, changed := CleanReferralLink(tt.input, "beauahrens0d-20")
 			if got != tt.expected {
 				t.Errorf("CleanReferralLink() got = %v, want %v", got, tt.expected)
 			}
