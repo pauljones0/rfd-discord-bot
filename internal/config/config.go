@@ -6,9 +6,11 @@ import (
 )
 
 type Config struct {
-	ProjectID         string
-	DiscordWebhookURL string
-	Port              string
+	ProjectID             string
+	DiscordWebhookURL     string
+	Port                  string
+	AmazonAffiliateTag    string
+	DiscordUpdateInterval string
 }
 
 func Load() *Config {
@@ -28,9 +30,22 @@ func Load() *Config {
 		log.Printf("Defaulting to port %s", port)
 	}
 
+	amazonAffiliateTag := os.Getenv("AMAZON_AFFILIATE_TAG")
+	if amazonAffiliateTag == "" {
+		// Default tag from previous hardcoded value
+		amazonAffiliateTag = "beauahrens0d-20"
+	}
+
+	discordUpdateInterval := os.Getenv("DISCORD_UPDATE_INTERVAL")
+	if discordUpdateInterval == "" {
+		discordUpdateInterval = "10m"
+	}
+
 	return &Config{
-		ProjectID:         projectID,
-		DiscordWebhookURL: discordWebhookURL,
-		Port:              port,
+		ProjectID:             projectID,
+		DiscordWebhookURL:     discordWebhookURL,
+		Port:                  port,
+		AmazonAffiliateTag:    amazonAffiliateTag,
+		DiscordUpdateInterval: discordUpdateInterval,
 	}
 }
