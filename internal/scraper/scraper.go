@@ -79,6 +79,7 @@ func (c *Client) attemptScrape(ctx context.Context, url string) ([]models.DealIn
 	}
 
 	var deals []models.DealInfo
+	// Phase 1: Parse the list page synchronously
 	doc.Find(listSelectors.Container.Item).Each(func(_ int, s *goquery.Selection) {
 		if s.Is(listSelectors.Container.IgnoreModifier) {
 			return
@@ -204,27 +205,71 @@ func (c *Client) attemptScrape(ctx context.Context, url string) ([]models.DealIn
 			deal.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.Text()))
 		}
 
-		if deal.PostURL != "" {
-			actualURL, detailErr := c.scrapeDealDetailPage(ctx, deal.PostURL)
-			if detailErr == nil {
-				deal.ActualDealURL = actualURL
-				if deal.ActualDealURL != "" {
-					cleanedURL, changed := util.CleanReferralLink(deal.ActualDealURL)
-					if changed {
-						deal.ActualDealURL = cleanedURL
-					}
-				}
-				if deal.ActualDealURL == "" {
-					log.Printf("ActualDealURL for %s was empty after parsing.", deal.PostURL)
-				}
-			}
-		}
-
 		if len(parseErrors) > 0 {
 			log.Printf("Encountered %d parsing issues for deal '%s' (URL: %s): %s", len(parseErrors), deal.Title, deal.PostURL, strings.Join(parseErrors, "; "))
 		}
 		deals = append(deals, deal)
 	})
+
+	// Phase 2: Parallelize detail fetching
+	type detailResult struct {
+		index int
+		url   string
+		err   error
+	}
+
+	// Buffered channel for semaphore pattern to limit concurrency
+	concurrencyLimit := 5
+	semaphore := make(chan struct{}, concurrencyLimit)
+	// Channel to collect results
+	results := make(chan detailResult, len(deals))
+
+	// Launch goroutines
+	activeGoroutines := 0
+	for i, d := range deals {
+		if d.PostURL == "" {
+			continue // Skip deals without URLs
+		}
+
+		activeGoroutines++
+		go func(index int, urlStr string) {
+			// Acquire semaphore
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				results <- detailResult{index: index, err: ctx.Err()}
+				return
+			}
+			defer func() { <-semaphore }() // Release
+
+			actualURL, err := c.scrapeDealDetailPage(ctx, urlStr)
+			results <- detailResult{index: index, url: actualURL, err: err}
+		}(i, d.PostURL)
+	}
+
+	// Phase 3: Collect results
+	for i := 0; i < activeGoroutines; i++ {
+		select {
+		case res := <-results:
+			if res.err != nil {
+				// Don't fail the whole batch, just log
+				log.Printf("Warning: Failed to scrape detail page for deal %s: %v", deals[res.index].PostURL, res.err)
+				continue
+			}
+			deals[res.index].ActualDealURL = res.url
+			if deals[res.index].ActualDealURL != "" {
+				cleanedURL, changed := util.CleanReferralLink(deals[res.index].ActualDealURL)
+				if changed {
+					deals[res.index].ActualDealURL = cleanedURL
+				}
+			}
+			if deals[res.index].ActualDealURL == "" {
+				log.Printf("ActualDealURL for %s was empty after parsing.", deals[res.index].PostURL)
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 
 	return deals, nil
 }
