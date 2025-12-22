@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"cloud.google.com/go/firestore"
 	"cloud.google.com/go/firestore/apiv1/firestorepb"
@@ -16,11 +17,21 @@ import (
 
 const firestoreCollection = "deals"
 
+// DefaultTimeout is the default duration for Firestore operations if the context has no deadline.
+const DefaultTimeout = 30 * time.Second
+
 type Client struct {
 	client *firestore.Client
 }
 
 func New(ctx context.Context, projectID string) (*Client, error) {
+	// Initialize client with a timeout if not present
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
 	client, err := firestore.NewClient(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("firestore.NewClient: %w", err)
@@ -34,6 +45,12 @@ func (c *Client) Close() error {
 
 // GetDealByID retrieves a deal by its Firestore Document ID.
 func (c *Client) GetDealByID(ctx context.Context, id string) (*models.DealInfo, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
 	docRef := c.client.Collection(firestoreCollection).Doc(id)
 	doc, err := docRef.Get(ctx)
 	if err != nil {
@@ -57,6 +74,12 @@ func (c *Client) GetDealByID(ctx context.Context, id string) (*models.DealInfo, 
 
 // TryCreateDeal attempts to create a new deal. Returns error if it already exists.
 func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
 	collectionRef := c.client.Collection(firestoreCollection)
 	docRef := collectionRef.Doc(deal.FirestoreID)
 	// Create fails if the document already exists.
@@ -72,6 +95,12 @@ func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error 
 
 // UpdateDeal updates a specific deal using specific fields to avoid race conditions.
 func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
 	collectionRef := c.client.Collection(firestoreCollection)
 	docRef := collectionRef.Doc(deal.FirestoreID)
 
@@ -95,6 +124,12 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 
 // TrimOldDeals deletes the oldest deals (by PublishedTimestamp) from the "deals" collection
 func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Minute) // Longer timeout for cleanup
+		defer cancel()
+	}
+
 	log.Printf("TrimOldDeals: Entered function with maxDeals = %d", maxDeals)
 	collectionRef := c.client.Collection(firestoreCollection)
 
@@ -134,7 +169,14 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 
 	deletedCount := 0
 	bulkWriter := c.client.BulkWriter(ctx)
-	defer bulkWriter.End()
+
+	// Ensure we close the bulk writer properly
+	defer func() {
+		// End doesn't return an error in this SDK version, or the signature is different.
+		// Checking the docs or source would confirm, but usually it returns void or error.
+		// If the compiler says "no value used as value", it means End() returns nothing.
+		bulkWriter.End()
+	}()
 
 	for {
 		doc, err := iter.Next()

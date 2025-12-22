@@ -67,8 +67,17 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 			err := p.store.TryCreateDeal(ctx, dealToProcess)
 			if err != nil {
 				if err.Error() == "deal already exists" {
-					existingDeal, _ = p.store.GetDealByID(ctx, dealToProcess.FirestoreID)
+					var getErr error
+					existingDeal, getErr = p.store.GetDealByID(ctx, dealToProcess.FirestoreID)
+					if getErr != nil {
+						msg := fmt.Sprintf("Error recovering from race condition for deal %s: %v", dealToProcess.FirestoreID, getErr)
+						log.Println(msg)
+						errorMessages = append(errorMessages, msg)
+						continue
+					}
 					if existingDeal == nil {
+						// Should not happen if it claimed to exist
+						log.Printf("Race condition anomaly: Deal %s claimed to exist but returned nil on refetch", dealToProcess.FirestoreID)
 						continue
 					}
 				} else {
@@ -80,13 +89,17 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 			} else {
 				log.Printf("New deal '%s' added.", dealToProcess.Title)
 				newDealsCount++
-				p.store.TrimOldDeals(ctx, 50)
+				if err := p.store.TrimOldDeals(ctx, 50); err != nil {
+					log.Printf("Warning: Failed to trim old deals: %v", err)
+				}
 
 				msgID, sendErr := p.notifier.Send(ctx, dealToProcess)
 				if sendErr == nil {
 					dealToProcess.DiscordMessageID = msgID
 					dealToProcess.DiscordLastUpdatedTime = time.Now()
-					p.store.UpdateDeal(ctx, dealToProcess)
+					if err := p.store.UpdateDeal(ctx, dealToProcess); err != nil {
+						log.Printf("Warning: Failed to update deal %s with Discord Message ID: %v", dealToProcess.FirestoreID, err)
+					}
 				} else {
 					log.Printf("Error sending to Discord: %v", sendErr)
 				}
@@ -100,7 +113,9 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 				if sendErr == nil {
 					existingDeal.DiscordMessageID = msgID
 					existingDeal.DiscordLastUpdatedTime = time.Now()
-					p.store.UpdateDeal(ctx, *existingDeal)
+					if err := p.store.UpdateDeal(ctx, *existingDeal); err != nil {
+						log.Printf("Warning: Failed to update existing deal %s with Discord Message ID: %v", existingDeal.FirestoreID, err)
+					}
 				}
 			}
 
@@ -132,11 +147,15 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 						if time.Since(existingDeal.DiscordLastUpdatedTime) >= discordUpdateInterval {
 							if err := p.notifier.Update(ctx, existingDeal.DiscordMessageID, *existingDeal); err == nil {
 								existingDeal.DiscordLastUpdatedTime = time.Now()
-								p.store.UpdateDeal(ctx, *existingDeal)
+								if err := p.store.UpdateDeal(ctx, *existingDeal); err != nil {
+									log.Printf("Warning: Failed to update deal timestamp after Discord update: %v", err)
+								}
 							}
 						}
 					}
 				}
+			} else {
+				log.Printf("Warning: Failed to update existing deal %s: %v", existingDeal.FirestoreID, err)
 			}
 		}
 	}

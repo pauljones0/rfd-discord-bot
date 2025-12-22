@@ -45,7 +45,7 @@ func (c *Client) Send(ctx context.Context, deal models.DealInfo) (string, error)
 		return "", nil // Or error? Original code just skipped if empty.
 	}
 	embed := formatDealToEmbed(deal, false)
-	return c.sendAndGetMessageID(embed)
+	return c.sendAndGetMessageID(ctx, embed)
 }
 
 // Update updates an existing notification.
@@ -58,7 +58,7 @@ func (c *Client) Update(ctx context.Context, messageID string, deal models.DealI
 	// We'll assume the caller decides WHEN to update.
 
 	embed := formatDealToEmbed(deal, true)
-	return c.updateDiscordMessage(messageID, embed)
+	return c.updateDiscordMessage(ctx, messageID, embed)
 }
 
 // Internal structures
@@ -145,7 +145,7 @@ func formatDealToEmbed(deal models.DealInfo, isUpdate bool) discordEmbed {
 	}
 }
 
-func (c *Client) sendAndGetMessageID(embed discordEmbed) (string, error) {
+func (c *Client) sendAndGetMessageID(ctx context.Context, embed discordEmbed) (string, error) {
 	payload := discordWebhookPayload{Embeds: []discordEmbed{embed}}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -160,7 +160,7 @@ func (c *Client) sendAndGetMessageID(embed discordEmbed) (string, error) {
 	q.Set("wait", "true")
 	parsedURL.RawQuery = q.Encode()
 
-	req, err := http.NewRequest("POST", parsedURL.String(), bytes.NewBuffer(payloadBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", parsedURL.String(), bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return "", err
 	}
@@ -183,7 +183,7 @@ func (c *Client) sendAndGetMessageID(embed discordEmbed) (string, error) {
 	return "", fmt.Errorf("discord status: %s, body: %s", resp.Status, string(bodyBytes))
 }
 
-func (c *Client) updateDiscordMessage(messageID string, embed discordEmbed) error {
+func (c *Client) updateDiscordMessage(ctx context.Context, messageID string, embed discordEmbed) error {
 	payload := discordWebhookPayload{Embeds: []discordEmbed{embed}, Content: ""}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -196,7 +196,7 @@ func (c *Client) updateDiscordMessage(messageID string, embed discordEmbed) erro
 	}
 	finalPatchURL := fmt.Sprintf("%s://%s%s/messages/%s", parsedBaseURL.Scheme, parsedBaseURL.Host, parsedBaseURL.Path, messageID)
 
-	req, err := http.NewRequest("PATCH", finalPatchURL, bytes.NewBuffer(payloadBytes))
+	req, err := http.NewRequestWithContext(ctx, "PATCH", finalPatchURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
 	}
