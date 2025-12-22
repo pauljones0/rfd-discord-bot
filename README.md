@@ -2,7 +2,7 @@
 
 TLDR; Watches RFD hot deals forum, runs on google cloud, posts to discord.
 
-![example.png](example.png)
+![example.png](docs/assets/example.png)
 ## Features
 
 *   Identifies RFD Hot Deals using Firestore for state management.

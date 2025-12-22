@@ -32,6 +32,7 @@ Thumbs.db
 
 # Compiled binary
 main
+server
 rfd-discord-bot
 
 # Python cache
