@@ -14,7 +14,8 @@ func CleanReferralLink(rawUrl string, amazonTag string) (string, bool) {
 
 	// Best Buy specific constants
 	const newBestBuyPrefix = "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
-	bestBuyRegex := regexp.MustCompile(`^https://bestbuyca\.o93x\.net/c/\d+/\d+/\d+\?u=`)
+	// Relaxed regex to match base URL structure, query params handled by logic
+	bestBuyRegex := regexp.MustCompile(`^https://bestbuyca\.o93x\.net/c/\d+/\d+/\d+`)
 
 	switch {
 	case parsedUrl.Host == "click.linksynergy.com":
@@ -38,11 +39,17 @@ func CleanReferralLink(rawUrl string, amazonTag string) (string, bool) {
 		return rawUrl, false
 
 	case parsedUrl.Host == "bestbuyca.o93x.net" && bestBuyRegex.MatchString(rawUrl):
+		// Support both ?u= and &u= parameters
 		uIndex := strings.Index(rawUrl, "?u=")
+		if uIndex == -1 {
+			uIndex = strings.Index(rawUrl, "&u=")
+		}
 		if uIndex == -1 {
 			return rawUrl, false
 		}
-		productURLPart := rawUrl[uIndex+len("?u="):]
+
+		// Skip past the "?u=" or "&u=" (length 3)
+		productURLPart := rawUrl[uIndex+3:]
 		cleanedURL := newBestBuyPrefix + productURLPart
 		return cleanedURL, true
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -67,7 +68,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 		if existingDeal == nil {
 			err := p.store.TryCreateDeal(ctx, dealToProcess)
 			if err != nil {
-				if err.Error() == "deal already exists" {
+				if errors.Is(err, storage.ErrDealExists) {
 					var getErr error
 					existingDeal, getErr = p.store.GetDealByID(ctx, dealToProcess.FirestoreID)
 					if getErr != nil {

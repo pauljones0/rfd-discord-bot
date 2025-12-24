@@ -3,6 +3,8 @@ package util
 import (
 	"net/url"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 func NormalizeURL(rawURL string) (string, error) {
@@ -21,6 +23,8 @@ func NormalizeURL(rawURL string) (string, error) {
 	}
 	if len(parsedURL.Path) > 1 && strings.HasSuffix(parsedURL.Path, "/") {
 		parsedURL.Path = parsedURL.Path[:len(parsedURL.Path)-1]
+		// Clear RawPath to ensure String() regenerates the URL path without the trailing slash
+		parsedURL.RawPath = ""
 	}
 	queryParams := parsedURL.Query()
 	utmParams := []string{"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "rfd_sk", "sd", "sk"}
@@ -38,20 +42,12 @@ func GetDomain(urlStr string) string {
 	if err != nil {
 		return ""
 	}
-	hostname := strings.TrimPrefix(parsedURL.Hostname(), "www.")
-	parts := strings.Split(hostname, ".")
-	if len(parts) <= 2 {
-		return hostname
-	}
 
-	// Check for two-part TLDs (e.g., co.uk)
-	lastTwo := parts[len(parts)-2] + "." + parts[len(parts)-1]
-	if KnownTwoPartTLDs[lastTwo] {
-		if len(parts) >= 3 {
-			return parts[len(parts)-3] + "." + lastTwo
-		}
-		return hostname
+	// Use publicsuffix library for robust TLD handling (handles co.uk, co.kr, etc.)
+	domain, err := publicsuffix.EffectiveTLDPlusOne(parsedURL.Hostname())
+	if err != nil {
+		// Fallback to simple hostname if publicsuffix fails (e.g. localhost or IP)
+		return strings.TrimPrefix(parsedURL.Hostname(), "www.")
 	}
-
-	return parts[len(parts)-2] + "." + parts[len(parts)-1]
+	return domain
 }

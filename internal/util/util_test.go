@@ -35,6 +35,12 @@ func TestCleanReferralLink(t *testing.T) {
 			expected: "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u=https://bestbuy.ca/product",
 			changed:  true,
 		},
+		{
+			name:     "BestBuy redirect secondary param",
+			input:    "https://bestbuyca.o93x.net/c/123/456/789?subId1=foo&u=https://bestbuy.ca/product",
+			expected: "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u=https://bestbuy.ca/product",
+			changed:  true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -123,6 +129,11 @@ func TestGetDomain(t *testing.T) {
 			name:  "No www",
 			input: "https://www.bestbuy.ca",
 			want:  "bestbuy.ca",
+		},
+		{
+			name:  "Complex TLD (co.kr)",
+			input: "https://www.samsung.co.kr",
+			want:  "samsung.co.kr",
 		},
 	}
 

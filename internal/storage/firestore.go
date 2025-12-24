@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -19,6 +20,8 @@ const firestoreCollection = "deals"
 
 // DefaultTimeout is the default duration for Firestore operations if the context has no deadline.
 const DefaultTimeout = 30 * time.Second
+
+var ErrDealExists = errors.New("deal already exists")
 
 type Client struct {
 	client *firestore.Client
@@ -86,7 +89,7 @@ func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error 
 	_, err := docRef.Create(ctx, deal)
 	if err != nil {
 		if status.Code(err) == codes.AlreadyExists {
-			return fmt.Errorf("deal already exists")
+			return ErrDealExists
 		}
 		return err
 	}
@@ -145,11 +148,15 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 	}
 
 	var currentDealCountInt64 int64
-	pbValue, okAssert := countValue.(*firestorepb.Value)
-	if !okAssert {
+
+	// Handle multiple potential return types for robustness across SDK versions
+	if val, ok := countValue.(int64); ok {
+		currentDealCountInt64 = val
+	} else if val, ok := countValue.(*firestorepb.Value); ok {
+		currentDealCountInt64 = val.GetIntegerValue()
+	} else {
 		return fmt.Errorf("count aggregation result for trimming has unexpected type %T", countValue)
 	}
-	currentDealCountInt64 = pbValue.GetIntegerValue()
 
 	currentDealCount := int(currentDealCountInt64)
 
