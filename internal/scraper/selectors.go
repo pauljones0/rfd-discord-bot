@@ -97,7 +97,7 @@ var defaultSelectors = SelectorConfig{
 		},
 	},
 	DealDetails: DetailSelectors{
-		PrimaryLink:  ".get-deal-button",
-		FallbackLink: "a.autolinker_link:nth-child(1)",
+		PrimaryLink:  ".deal_link a",
+		FallbackLink: ".postlink",
 	},
 }
