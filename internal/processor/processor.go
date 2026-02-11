@@ -91,7 +91,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 			} else {
 				log.Printf("New deal '%s' added.", dealToProcess.Title)
 				newDealsCount++
-				if err := p.store.TrimOldDeals(ctx, 50); err != nil {
+				if err := p.store.TrimOldDeals(ctx, 500); err != nil {
 					log.Printf("Warning: Failed to trim old deals: %v", err)
 				}
 
@@ -126,43 +126,48 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 				existingDeal.CommentCount != dealToProcess.CommentCount ||
 				existingDeal.ViewCount != dealToProcess.ViewCount ||
 				existingDeal.Title != dealToProcess.Title ||
-				existingDeal.ThreadImageURL != dealToProcess.ThreadImageURL {
+				existingDeal.ThreadImageURL != dealToProcess.ThreadImageURL ||
+				existingDeal.ActualDealURL != dealToProcess.ActualDealURL {
 				updateNeeded = true
 			}
 
-			existingDeal.Title = dealToProcess.Title
-			existingDeal.LikeCount = dealToProcess.LikeCount
-			existingDeal.CommentCount = dealToProcess.CommentCount
-			existingDeal.ViewCount = dealToProcess.ViewCount
-			existingDeal.ThreadImageURL = dealToProcess.ThreadImageURL
-			existingDeal.AuthorName = dealToProcess.AuthorName
-			existingDeal.AuthorURL = dealToProcess.AuthorURL
-			existingDeal.PostedTime = dealToProcess.PostedTime
-			existingDeal.PublishedTimestamp = dealToProcess.PublishedTimestamp
-			existingDeal.ActualDealURL = dealToProcess.ActualDealURL
-			existingDeal.LastUpdated = time.Now()
+			if updateNeeded {
+				existingDeal.Title = dealToProcess.Title
+				existingDeal.LikeCount = dealToProcess.LikeCount
+				existingDeal.CommentCount = dealToProcess.CommentCount
+				existingDeal.ViewCount = dealToProcess.ViewCount
+				existingDeal.ThreadImageURL = dealToProcess.ThreadImageURL
+				existingDeal.AuthorName = dealToProcess.AuthorName
+				existingDeal.AuthorURL = dealToProcess.AuthorURL
+				existingDeal.PostedTime = dealToProcess.PostedTime
+				existingDeal.PublishedTimestamp = dealToProcess.PublishedTimestamp
+				existingDeal.ActualDealURL = dealToProcess.ActualDealURL
+				existingDeal.LastUpdated = time.Now()
 
-			if err := p.store.UpdateDeal(ctx, *existingDeal); err == nil {
-				if updateNeeded {
+				if err := p.store.UpdateDeal(ctx, *existingDeal); err == nil {
 					updatedDealsCount++
+					log.Printf("Updated deal: %s", existingDeal.Title)
+
 					if existingDeal.DiscordMessageID != "" {
 						updateInterval, err := time.ParseDuration(p.config.DiscordUpdateInterval)
 						if err != nil {
 							log.Printf("Warning: Invalid update interval '%s', using 10m: %v", p.config.DiscordUpdateInterval, err)
 							updateInterval = 10 * time.Minute
 						}
+						// Only update Discord if enough time has passed since the last Discord update
 						if time.Since(existingDeal.DiscordLastUpdatedTime) >= updateInterval {
 							if err := p.notifier.Update(ctx, existingDeal.DiscordMessageID, *existingDeal); err == nil {
 								existingDeal.DiscordLastUpdatedTime = time.Now()
+								// Update the specific timestamp in Firestore
 								if err := p.store.UpdateDeal(ctx, *existingDeal); err != nil {
 									log.Printf("Warning: Failed to update deal timestamp after Discord update: %v", err)
 								}
 							}
 						}
 					}
+				} else {
+					log.Printf("Warning: Failed to update existing deal %s: %v", existingDeal.FirestoreID, err)
 				}
-			} else {
-				log.Printf("Warning: Failed to update existing deal %s: %v", existingDeal.FirestoreID, err)
 			}
 		}
 	}
