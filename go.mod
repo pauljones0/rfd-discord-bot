@@ -1,6 +1,6 @@
 module github.com/pauljones0/rfd-discord-bot
 
-go 1.24.0
+go 1.26.0
 
 toolchain go1.24.11
 
