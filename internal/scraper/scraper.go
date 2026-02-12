@@ -15,7 +15,10 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
-const hotDealsURL = "https://forums.redflagdeals.com/hot-deals-f9/?sk=tt&rfd_sk=tt&sd=d"
+const (
+	hotDealsURL = "https://forums.redflagdeals.com/hot-deals-f9/?sk=tt&rfd_sk=tt&sd=d"
+	rfdBase     = "https://forums.redflagdeals.com"
+)
 
 type Scraper interface {
 	ScrapeHotDealsPage(ctx context.Context) ([]models.DealInfo, error)
@@ -24,21 +27,20 @@ type Scraper interface {
 type Client struct {
 	httpClient *http.Client
 	config     *config.Config
+	selectors  SelectorConfig
 }
 
-func New(cfg *config.Config) *Client {
+func New(cfg *config.Config, selectors SelectorConfig) *Client {
 	return &Client{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		config: cfg,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+		config:     cfg,
+		selectors:  selectors,
 	}
 }
 
 func (c *Client) ScrapeHotDealsPage(ctx context.Context) ([]models.DealInfo, error) {
 	log.Println("Fetching RFD Hot Deals page via scraping...")
 
-	// Retry logic with exponential backoff
 	maxRetries := 3
 	var scrapedDeals []models.DealInfo
 	var err error
@@ -49,12 +51,12 @@ func (c *Client) ScrapeHotDealsPage(ctx context.Context) ([]models.DealInfo, err
 			break
 		}
 		if i < maxRetries {
-			backoffDuration := time.Duration(1<<i) * time.Second
-			log.Printf("[ALERT] Scraping attempt %d failed: %v. Retrying in %v...", i+1, err, backoffDuration)
+			backoff := time.Duration(1<<i) * time.Second
+			log.Printf("[ALERT] Scraping attempt %d failed: %v. Retrying in %v...", i+1, err, backoff)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(backoffDuration):
+			case <-time.After(backoff):
 			}
 		}
 	}
@@ -67,196 +69,200 @@ func (c *Client) ScrapeHotDealsPage(ctx context.Context) ([]models.DealInfo, err
 	return scrapedDeals, nil
 }
 
-func (c *Client) attemptScrape(ctx context.Context, url string) ([]models.DealInfo, error) {
-	log.Printf("Scraping hot deals page: %s", url)
-	doc, err := c.fetchHTMLContent(ctx, url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch or parse hot deals page %s: %w", url, err)
+// resolveLink finds an <a> element within the selection (or the selection itself),
+// returning the href (resolved to absolute if relative) and text content.
+func resolveLink(s *goquery.Selection, selector string) (href, text string) {
+	sel := s.Find(selector)
+	if sel.Length() == 0 {
+		return "", ""
 	}
 
-	selectors := GetCurrentSelectors()
-	listSelectors := selectors.HotDealsList
+	link := sel
+	if !sel.Is("a") {
+		link = sel.Find("a").First()
+	}
+	if link.Length() == 0 {
+		return "", ""
+	}
 
-	if doc.Find(listSelectors.Container.Item).Length() == 0 {
-		return nil, fmt.Errorf("no '%s' elements found on %s. Potential block or page structure change", listSelectors.Container.Item, url)
+	text = strings.TrimSpace(link.Text())
+	rawHref, exists := link.Attr("href")
+	if !exists {
+		return "", text
+	}
+
+	href = rawHref
+	if strings.HasPrefix(href, "/") {
+		href = rfdBase + href
+	}
+	return href, text
+}
+
+func (c *Client) attemptScrape(ctx context.Context, targetURL string) ([]models.DealInfo, error) {
+	log.Printf("Scraping hot deals page: %s", targetURL)
+	doc, err := c.fetchHTMLContent(ctx, targetURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch or parse hot deals page %s: %w", targetURL, err)
+	}
+
+	ls := c.selectors.HotDealsList
+
+	if doc.Find(ls.Container.Item).Length() == 0 {
+		return nil, fmt.Errorf("no '%s' elements found on %s. Potential block or page structure change", ls.Container.Item, targetURL)
 	}
 
 	var deals []models.DealInfo
-	// Phase 1: Parse the list page synchronously
-	doc.Find(listSelectors.Container.Item).Each(func(_ int, s *goquery.Selection) {
-		if s.Is(listSelectors.Container.IgnoreModifier) {
+	doc.Find(ls.Container.Item).Each(func(_ int, s *goquery.Selection) {
+		if s.Is(ls.Container.IgnoreModifier) {
 			return
 		}
 
-		var deal models.DealInfo
-		var parseErrors []string
-
-		// 1. Posted Time
-		timeSelection := s.Find(listSelectors.Elements.PostedTime)
-		if timeSelection.Length() > 0 {
-			actualTime := timeSelection
-			if !timeSelection.Is("time") {
-				actualTime = timeSelection.Find("time").First()
-			}
-
-			if actualTime.Length() > 0 {
-				deal.PostedTime = strings.TrimSpace(actualTime.Text())
-				datetimeStr, exists := actualTime.Attr("datetime")
-				if exists {
-					deal.PostedTime = datetimeStr
-					parsedTime, err := time.Parse(time.RFC3339, datetimeStr)
-					if err == nil {
-						deal.PublishedTimestamp = parsedTime
-					} else {
-						parseErrors = append(parseErrors, fmt.Sprintf("failed to parse datetime string '%s': %v", datetimeStr, err))
-					}
-				}
-			} else {
-				deal.PostedTime = strings.TrimSpace(timeSelection.Text())
-			}
-		} else {
-			parseErrors = append(parseErrors, "posted time element not found")
-		}
-
-		// 2. Thread Title Link & Text
-		titleLinkSelection := s.Find(listSelectors.Elements.TitleLink)
-		if titleLinkSelection.Length() > 0 {
-			actualLink := titleLinkSelection
-			if !titleLinkSelection.Is("a") {
-				actualLink = titleLinkSelection.Find("a").First()
-			}
-
-			if actualLink.Length() > 0 {
-				deal.Title = strings.TrimSpace(actualLink.Text())
-				postURL, exists := actualLink.Attr("href")
-				if exists {
-					if strings.HasPrefix(postURL, "/") {
-						deal.PostURL = "https://forums.redflagdeals.com" + postURL
-					} else {
-						deal.PostURL = postURL
-					}
-					if deal.PostURL != "" {
-						normalizedURL, normErr := util.NormalizeURL(deal.PostURL)
-						if normErr == nil {
-							deal.PostURL = normalizedURL
-						}
-					}
-				}
-			} else {
-				parseErrors = append(parseErrors, "title link <a> not found within title selection")
-			}
-		} else {
-			parseErrors = append(parseErrors, "title/post URL element not found")
-		}
-
-		// 3. Author Profile Link
-		authorSelection := s.Find(listSelectors.Elements.AuthorLink)
-		if authorSelection.Length() > 0 {
-			actualLink := authorSelection
-			if !authorSelection.Is("a") {
-				actualLink = authorSelection.Find("a").First()
-			}
-
-			if actualLink.Length() > 0 {
-				authorURL, exists := actualLink.Attr("href")
-				if exists {
-					if strings.HasPrefix(authorURL, "/") {
-						deal.AuthorURL = "https://forums.redflagdeals.com" + authorURL
-					} else {
-						deal.AuthorURL = authorURL
-					}
-				}
-
-				authorNameSelection := actualLink.Find(listSelectors.Elements.AuthorName)
-				if authorNameSelection.Length() > 0 {
-					deal.AuthorName = strings.TrimSpace(authorNameSelection.Text())
-				} else {
-					deal.AuthorName = strings.TrimSpace(actualLink.Text())
-				}
-			}
-		}
-
-		// 5. Thread Image URL
-		imgSelection := s.Find(listSelectors.Elements.ThreadImage)
-		if imgSelection.Length() > 0 {
-			src, exists := imgSelection.Attr("src")
-			if exists {
-				deal.ThreadImageURL = src
-			}
-		}
-
-		// 6. Like Count
-		likeCountSelection := s.Find(listSelectors.Elements.LikeCount)
-		if likeCountSelection.Length() > 0 {
-			deal.LikeCount = util.SafeAtoi(util.ParseSignedNumericString(likeCountSelection.First().Text()))
-		}
-
-		// 7. Comment Count
-		commentCountSelection := s.Find(listSelectors.Elements.CommentCount)
-		if commentCountSelection.Length() > 0 {
-			deal.CommentCount = util.SafeAtoi(util.CleanNumericString(commentCountSelection.First().Text()))
-		} else {
-			fallbackCommentCountSelection := s.Find(listSelectors.Elements.CommentCountFallback)
-			if fallbackCommentCountSelection.Length() > 0 {
-				deal.CommentCount = util.SafeAtoi(util.CleanNumericString(fallbackCommentCountSelection.First().Text()))
-			}
-		}
-
-		// 8. View Count
-		viewCountSelection := s.Find(listSelectors.Elements.ViewCount)
-		if viewCountSelection.Length() > 0 {
-			deal.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.First().Text()))
-		}
-
-		if len(parseErrors) > 0 {
-			log.Printf("Encountered %d parsing issues for deal '%s' (URL: %s): %s", len(parseErrors), deal.Title, deal.PostURL, strings.Join(parseErrors, "; "))
-		}
+		deal := c.parseDealFromSelection(s, ls.Elements)
 		deals = append(deals, deal)
 	})
 
-	// Phase 2: Parallelize detail fetching
+	// Fetch detail pages concurrently
+	c.fetchDealDetails(ctx, deals)
+
+	return deals, nil
+}
+
+func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements) models.DealInfo {
+	var deal models.DealInfo
+	var parseErrors []string
+
+	// Posted Time
+	timeSelection := s.Find(elems.PostedTime)
+	if timeSelection.Length() > 0 {
+		actualTime := timeSelection
+		if !timeSelection.Is("time") {
+			actualTime = timeSelection.Find("time").First()
+		}
+		if actualTime.Length() > 0 {
+			deal.PostedTime = strings.TrimSpace(actualTime.Text())
+			if datetimeStr, exists := actualTime.Attr("datetime"); exists {
+				deal.PostedTime = datetimeStr
+				if parsed, err := time.Parse(time.RFC3339, datetimeStr); err == nil {
+					deal.PublishedTimestamp = parsed
+				} else {
+					parseErrors = append(parseErrors, fmt.Sprintf("failed to parse datetime '%s': %v", datetimeStr, err))
+				}
+			}
+		} else {
+			deal.PostedTime = strings.TrimSpace(timeSelection.Text())
+		}
+	} else {
+		parseErrors = append(parseErrors, "posted time element not found")
+	}
+
+	// Title & Post URL
+	postURL, title := resolveLink(s, elems.TitleLink)
+	if title != "" {
+		deal.Title = title
+		if postURL != "" {
+			normalized, err := util.NormalizeURL(postURL)
+			if err == nil {
+				postURL = normalized
+			}
+		}
+		deal.PostURL = postURL
+	} else {
+		parseErrors = append(parseErrors, "title/post URL element not found")
+	}
+
+	// Author
+	authorURL, _ := resolveLink(s, elems.AuthorLink)
+	deal.AuthorURL = authorURL
+	if authorURL != "" {
+		// Try to find specific author name element within the author link
+		authorSel := s.Find(elems.AuthorLink)
+		if !authorSel.Is("a") {
+			authorSel = authorSel.Find("a").First()
+		}
+		if authorSel.Length() > 0 {
+			nameSel := authorSel.Find(elems.AuthorName)
+			if nameSel.Length() > 0 {
+				deal.AuthorName = strings.TrimSpace(nameSel.Text())
+			} else {
+				deal.AuthorName = strings.TrimSpace(authorSel.Text())
+			}
+		}
+	}
+
+	// Thread Image
+	imgSelection := s.Find(elems.ThreadImage)
+	if imgSelection.Length() > 0 {
+		if src, exists := imgSelection.Attr("src"); exists {
+			deal.ThreadImageURL = src
+		}
+	}
+
+	// Like Count
+	likeCountSelection := s.Find(elems.LikeCount)
+	if likeCountSelection.Length() > 0 {
+		deal.LikeCount = util.SafeAtoi(util.ParseSignedNumericString(likeCountSelection.First().Text()))
+	}
+
+	// Comment Count (with fallback)
+	commentCountSelection := s.Find(elems.CommentCount)
+	if commentCountSelection.Length() > 0 {
+		deal.CommentCount = util.SafeAtoi(util.CleanNumericString(commentCountSelection.First().Text()))
+	} else {
+		fallback := s.Find(elems.CommentCountFallback)
+		if fallback.Length() > 0 {
+			deal.CommentCount = util.SafeAtoi(util.CleanNumericString(fallback.First().Text()))
+		}
+	}
+
+	// View Count
+	viewCountSelection := s.Find(elems.ViewCount)
+	if viewCountSelection.Length() > 0 {
+		deal.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.First().Text()))
+	}
+
+	if len(parseErrors) > 0 {
+		log.Printf("Parsing issues for deal '%s' (URL: %s): %s", deal.Title, deal.PostURL, strings.Join(parseErrors, "; "))
+	}
+	return deal
+}
+
+func (c *Client) fetchDealDetails(ctx context.Context, deals []models.DealInfo) {
 	type detailResult struct {
 		index int
 		url   string
 		err   error
 	}
 
-	// Buffered channel for semaphore pattern to limit concurrency
 	concurrencyLimit := 5
 	semaphore := make(chan struct{}, concurrencyLimit)
-	// Channel to collect results
 	results := make(chan detailResult, len(deals))
 
-	// Launch goroutines
 	activeGoroutines := 0
 	for i, d := range deals {
 		if d.PostURL == "" {
-			continue // Skip deals without URLs
+			continue
 		}
 
 		activeGoroutines++
 		go func(index int, urlStr string) {
-			// Acquire semaphore
 			select {
 			case semaphore <- struct{}{}:
 			case <-ctx.Done():
 				results <- detailResult{index: index, err: ctx.Err()}
 				return
 			}
-			defer func() { <-semaphore }() // Release
+			defer func() { <-semaphore }()
 
 			actualURL, err := c.scrapeDealDetailPage(ctx, urlStr)
 			results <- detailResult{index: index, url: actualURL, err: err}
 		}(i, d.PostURL)
 	}
 
-	// Phase 3: Collect results
 	for i := 0; i < activeGoroutines; i++ {
 		select {
 		case res := <-results:
 			if res.err != nil {
-				// Don't fail the whole batch, just log
-				log.Printf("Warning: Failed to scrape detail page for deal %s: %v", deals[res.index].PostURL, res.err)
+				log.Printf("Warning: Failed to scrape detail page for %s: %v", deals[res.index].PostURL, res.err)
 				continue
 			}
 			deals[res.index].ActualDealURL = res.url
@@ -270,11 +276,9 @@ func (c *Client) attemptScrape(ctx context.Context, url string) ([]models.DealIn
 				log.Printf("ActualDealURL for %s was empty after parsing.", deals[res.index].PostURL)
 			}
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return
 		}
 	}
-
-	return deals, nil
 }
 
 func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, error) {
@@ -283,38 +287,24 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		return "", err
 	}
 
-	selectors := GetCurrentSelectors()
-	detailSelectors := selectors.DealDetails
+	ds := c.selectors.DealDetails
 
-	var urlA, urlB string
-	var existsA, existsB bool
-
-	getDealButton := doc.Find(detailSelectors.PrimaryLink)
-	if getDealButton.Length() > 0 {
-		href, found := getDealButton.Attr("href")
-		if found && strings.TrimSpace(href) != "" {
-			urlA = strings.TrimSpace(href)
-			existsA = true
+	// Try primary link first
+	if btn := doc.Find(ds.PrimaryLink); btn.Length() > 0 {
+		if href, found := btn.Attr("href"); found && strings.TrimSpace(href) != "" {
+			return strings.TrimSpace(href), nil
 		}
 	}
 
-	autolinkerLink := doc.Find(detailSelectors.FallbackLink)
-	if autolinkerLink.Length() > 0 {
-		href, found := autolinkerLink.Attr("href")
-		if found && strings.TrimSpace(href) != "" {
-			trimmedHref := strings.TrimSpace(href)
-			if (strings.HasPrefix(trimmedHref, "http://") || strings.HasPrefix(trimmedHref, "https://")) &&
-				!strings.Contains(trimmedHref, "redflagdeals.com") {
-				urlB = trimmedHref
-				existsB = true
+	// Fallback link
+	if link := doc.Find(ds.FallbackLink); link.Length() > 0 {
+		if href, found := link.Attr("href"); found {
+			trimmed := strings.TrimSpace(href)
+			if (strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://")) &&
+				!strings.Contains(trimmed, "redflagdeals.com") {
+				return trimmed, nil
 			}
 		}
-	}
-
-	if existsA {
-		return urlA, nil
-	} else if existsB {
-		return urlB, nil
 	}
 
 	return "", nil

@@ -19,7 +19,7 @@ func TestFormatDealToEmbed(t *testing.T) {
 		PublishedTimestamp: time.Now(),
 	}
 
-	embed := formatDealToEmbed(deal, false)
+	embed := formatDealToEmbed(deal)
 
 	// Check Title format: "Title (L/C/V)"
 	expectedTitleSuffix := " (10/5/100)"

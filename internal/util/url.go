@@ -3,8 +3,6 @@ package util
 import (
 	"net/url"
 	"strings"
-
-	"golang.org/x/net/publicsuffix"
 )
 
 func NormalizeURL(rawURL string) (string, error) {
@@ -35,19 +33,4 @@ func NormalizeURL(rawURL string) (string, error) {
 	}
 	parsedURL.RawQuery = queryParams.Encode()
 	return parsedURL.String(), nil
-}
-
-func GetDomain(urlStr string) string {
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return ""
-	}
-
-	// Use publicsuffix library for robust TLD handling (handles co.uk, co.kr, etc.)
-	domain, err := publicsuffix.EffectiveTLDPlusOne(parsedURL.Hostname())
-	if err != nil {
-		// Fallback to simple hostname if publicsuffix fails (e.g. localhost or IP)
-		return strings.TrimPrefix(parsedURL.Hostname(), "www.")
-	}
-	return domain
 }

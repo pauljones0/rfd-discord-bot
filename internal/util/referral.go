@@ -6,16 +6,16 @@ import (
 	"strings"
 )
 
+// Best Buy specific constants
+const newBestBuyPrefix = "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
+
+var bestBuyRegex = regexp.MustCompile(`^https://bestbuyca\.o93x\.net/c/\d+/\d+/\d+`)
+
 func CleanReferralLink(rawUrl string, amazonTag string) (string, bool) {
 	parsedUrl, err := url.Parse(rawUrl)
 	if err != nil {
 		return rawUrl, false
 	}
-
-	// Best Buy specific constants
-	const newBestBuyPrefix = "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
-	// Relaxed regex to match base URL structure, query params handled by logic
-	bestBuyRegex := regexp.MustCompile(`^https://bestbuyca\.o93x\.net/c/\d+/\d+/\d+`)
 
 	switch {
 	case parsedUrl.Host == "click.linksynergy.com":

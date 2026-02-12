@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sync"
 )
 
 type SelectorConfig struct {
@@ -39,46 +38,23 @@ type DetailSelectors struct {
 	FallbackLink string `json:"fallback_link"`
 }
 
-var (
-	currentConfig *SelectorConfig
-	configMutex   sync.RWMutex
-)
-
 // LoadSelectors loads the selector configuration from the specified JSON file.
-// If the file cannot be read or parsed, it returns an error.
-func LoadSelectors(path string) (*SelectorConfig, error) {
+func LoadSelectors(path string) (SelectorConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read selector config file: %w", err)
+		return DefaultSelectors, fmt.Errorf("failed to read selector config file: %w", err)
 	}
 
 	var config SelectorConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse selector config JSON: %w", err)
+		return DefaultSelectors, fmt.Errorf("failed to parse selector config JSON: %w", err)
 	}
 
-	configMutex.Lock()
-	currentConfig = &config
-	configMutex.Unlock()
-
-	return &config, nil
+	return config, nil
 }
 
-// GetCurrentSelectors returns the currently loaded selectors.
-// It returns a default configuration if LoadSelectors hasn't been called successfully yet.
-func GetCurrentSelectors() SelectorConfig {
-	configMutex.RLock()
-	defer configMutex.RUnlock()
-
-	if currentConfig != nil {
-		return *currentConfig
-	}
-
-	// Fallback to hardcoded defaults if config isn't loaded
-	return defaultSelectors
-}
-
-var defaultSelectors = SelectorConfig{
+// DefaultSelectors is the fallback configuration if no JSON file is loaded.
+var DefaultSelectors = SelectorConfig{
 	HotDealsList: ListSelectors{
 		Container: ListContainer{
 			Item:           "li.topic",

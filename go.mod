@@ -2,12 +2,9 @@ module github.com/pauljones0/rfd-discord-bot
 
 go 1.26.0
 
-toolchain go1.24.11
-
 require (
 	cloud.google.com/go/firestore v1.18.0
 	github.com/PuerkitoBio/goquery v1.10.3
-	golang.org/x/net v0.48.0
 	google.golang.org/api v0.235.0
 	google.golang.org/grpc v1.72.1
 )
@@ -32,6 +29,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.35.0 // indirect
 	go.opentelemetry.io/otel/trace v1.35.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
+	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect

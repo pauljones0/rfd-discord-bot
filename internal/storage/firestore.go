@@ -148,14 +148,13 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 	}
 
 	var currentDealCountInt64 int64
-
-	// Handle multiple potential return types for robustness across SDK versions
-	if val, ok := countValue.(int64); ok {
+	switch val := countValue.(type) {
+	case int64:
 		currentDealCountInt64 = val
-	} else if val, ok := countValue.(*firestorepb.Value); ok {
+	case *firestorepb.Value:
 		currentDealCountInt64 = val.GetIntegerValue()
-	} else {
-		return fmt.Errorf("count aggregation result for trimming has unexpected type %T", countValue)
+	default:
+		return fmt.Errorf("count aggregation result has unexpected type %T", countValue)
 	}
 
 	currentDealCount := int(currentDealCountInt64)

@@ -41,7 +41,7 @@ func (c *Client) Send(ctx context.Context, deal models.DealInfo) (string, error)
 	if c.webhookURL == "" {
 		return "", nil // Or error? Original code just skipped if empty.
 	}
-	embed := formatDealToEmbed(deal, false)
+	embed := formatDealToEmbed(deal)
 	return c.sendAndGetMessageID(ctx, embed)
 }
 
@@ -54,7 +54,7 @@ func (c *Client) Update(ctx context.Context, messageID string, deal models.DealI
 	// The original code checked time.Since(DiscordLastUpdatedTime).
 	// We'll assume the caller decides WHEN to update.
 
-	embed := formatDealToEmbed(deal, true)
+	embed := formatDealToEmbed(deal)
 	return c.updateDiscordMessage(ctx, messageID, embed)
 }
 
@@ -94,7 +94,7 @@ type discordMessageResponse struct {
 	ChannelID string `json:"channel_id"`
 }
 
-func formatDealToEmbed(deal models.DealInfo, isUpdate bool) discordEmbed {
+func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	// Title: Deal Title (L/C/V)
 	// URL: RFD Post URL
 	// Description: [Item Link](ActualDealURL) if exists
