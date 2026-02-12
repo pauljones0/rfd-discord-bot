@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -21,7 +20,6 @@ const firestoreCollection = "deals"
 // DefaultTimeout is the default duration for Firestore operations if the context has no deadline.
 const DefaultTimeout = 30 * time.Second
 
-var ErrDealExists = errors.New("deal already exists")
 
 type Client struct {
 	client *firestore.Client
@@ -125,7 +123,7 @@ func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error 
 	_, err := docRef.Create(ctx, deal)
 	if err != nil {
 		if status.Code(err) == codes.AlreadyExists {
-			return ErrDealExists
+			return models.ErrDealExists
 		}
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -81,7 +82,8 @@ func TestIntegration_FullPipeline(t *testing.T) {
 	defer srv.Close()
 
 	cfg := &config.Config{
-		DiscordUpdateInterval: "10m",
+		DiscordUpdateInterval: 10 * time.Minute,
+		MaxStoredDeals:        500,
 		AmazonAffiliateTag:    "test-affiliate-20",
 		AllowedDomains:        []string{"127.0.0.1"},
 	}

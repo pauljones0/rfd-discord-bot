@@ -5,31 +5,24 @@ import (
 	"strings"
 )
 
-// rfdDomains lists domains where NormalizeURL should force HTTPS and apply RFD-specific normalization.
-var rfdDomains = []string{
-	"redflagdeals.com",
-	"forums.redflagdeals.com",
-	"www.redflagdeals.com",
-	"www.forums.redflagdeals.com",
-}
-
-func isRFDDomain(host string) bool {
-	for _, d := range rfdDomains {
-		if host == d {
-			return true
-		}
-	}
-	return false
-}
-
-func NormalizeURL(rawURL string) (string, error) {
+// NormalizeURL applies RFD-specific normalization (force HTTPS, strip tracking params, etc.)
+// only if the URL's hostname is in the provided allowedDomains list.
+func NormalizeURL(rawURL string, allowedDomains []string) (string, error) {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return rawURL, err
 	}
 
-	// Only apply RFD-specific normalization to known RFD domains
-	if !isRFDDomain(parsedURL.Hostname()) {
+	// Only apply RFD-specific normalization to known domains
+	hostname := parsedURL.Hostname()
+	allowed := false
+	for _, d := range allowedDomains {
+		if hostname == d {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
 		return rawURL, nil
 	}
 
@@ -53,3 +46,4 @@ func NormalizeURL(rawURL string) (string, error) {
 	parsedURL.RawQuery = queryParams.Encode()
 	return parsedURL.String(), nil
 }
+

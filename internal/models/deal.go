@@ -1,6 +1,12 @@
 package models
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrDealExists is returned when attempting to create a deal that already exists.
+var ErrDealExists = errors.New("deal already exists")
 
 // DealInfo represents the structured information for a deal.
 type DealInfo struct {

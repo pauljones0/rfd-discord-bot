@@ -8,7 +8,6 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
-	"github.com/pauljones0/rfd-discord-bot/internal/storage"
 )
 
 // --- Mock implementations ---
@@ -39,7 +38,7 @@ func (m *mockStore) TryCreateDeal(_ context.Context, deal models.DealInfo) error
 		return m.createErr
 	}
 	if _, exists := m.deals[deal.FirestoreID]; exists {
-		return storage.ErrDealExists
+		return models.ErrDealExists
 	}
 	copy := deal
 	m.deals[deal.FirestoreID] = &copy
@@ -115,7 +114,8 @@ func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealIn
 
 func newTestProcessor(store DealStore, notifier DealNotifier, scraper *mockScraper) *DealProcessor {
 	cfg := &config.Config{
-		DiscordUpdateInterval: "10m",
+		DiscordUpdateInterval: 10 * time.Minute,
+		MaxStoredDeals:        500,
 		AmazonAffiliateTag:    "test-tag",
 	}
 	return New(store, notifier, scraper, cfg)
@@ -385,7 +385,7 @@ func TestProcessDeals_TrimOnlyOnNewDeals(t *testing.T) {
 
 func TestProcessDeals_RaceConditionHandling(t *testing.T) {
 	store := newMockStore()
-	store.createErr = storage.ErrDealExists
+	store.createErr = models.ErrDealExists
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{

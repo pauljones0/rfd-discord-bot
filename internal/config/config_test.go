@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 )
 
 func TestLoad(t *testing.T) {
@@ -28,8 +29,11 @@ func TestLoad(t *testing.T) {
 	if cfg.AmazonAffiliateTag != "test-tag-20" {
 		t.Errorf("Expected test-tag-20, got %s", cfg.AmazonAffiliateTag)
 	}
-	if cfg.DiscordUpdateInterval != "10m" {
+	if cfg.DiscordUpdateInterval != 10*time.Minute {
 		t.Errorf("Expected default 10m, got %s", cfg.DiscordUpdateInterval)
+	}
+	if cfg.MaxStoredDeals != 500 {
+		t.Errorf("Expected default MaxStoredDeals 500, got %d", cfg.MaxStoredDeals)
 	}
 }
 
@@ -52,8 +56,18 @@ func TestLoad_CustomUpdateInterval(t *testing.T) {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
 
-	if cfg.DiscordUpdateInterval != "5m" {
+	if cfg.DiscordUpdateInterval != 5*time.Minute {
 		t.Errorf("Expected 5m, got %s", cfg.DiscordUpdateInterval)
+	}
+}
+
+func TestLoad_InvalidUpdateInterval(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	t.Setenv("DISCORD_UPDATE_INTERVAL", "not-a-duration")
+
+	_, err := Load()
+	if err == nil {
+		t.Error("Load() should return error for invalid DISCORD_UPDATE_INTERVAL")
 	}
 }
 

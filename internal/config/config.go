@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"time"
 )
 
 type Config struct {
@@ -11,7 +13,8 @@ type Config struct {
 	DiscordWebhookURL     string
 	Port                  string
 	AmazonAffiliateTag    string
-	DiscordUpdateInterval string
+	DiscordUpdateInterval time.Duration
+	MaxStoredDeals        int
 	AllowedDomains        []string
 }
 
@@ -38,9 +41,22 @@ func Load() (*Config, error) {
 		amazonAffiliateTag = "beauahrens0d-20"
 	}
 
-	discordUpdateInterval := os.Getenv("DISCORD_UPDATE_INTERVAL")
-	if discordUpdateInterval == "" {
-		discordUpdateInterval = "10m"
+	discordUpdateIntervalStr := os.Getenv("DISCORD_UPDATE_INTERVAL")
+	if discordUpdateIntervalStr == "" {
+		discordUpdateIntervalStr = "10m"
+	}
+	discordUpdateInterval, err := time.ParseDuration(discordUpdateIntervalStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid DISCORD_UPDATE_INTERVAL %q: %w", discordUpdateIntervalStr, err)
+	}
+
+	maxStoredDeals := 500
+	if v := os.Getenv("MAX_STORED_DEALS"); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MAX_STORED_DEALS %q: %w", v, err)
+		}
+		maxStoredDeals = parsed
 	}
 
 	return &Config{
@@ -49,6 +65,7 @@ func Load() (*Config, error) {
 		Port:                  port,
 		AmazonAffiliateTag:    amazonAffiliateTag,
 		DiscordUpdateInterval: discordUpdateInterval,
+		MaxStoredDeals:        maxStoredDeals,
 		AllowedDomains:        []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com"},
 	}, nil
 }

@@ -248,3 +248,15 @@ func TestRetryBackoff(t *testing.T) {
 		})
 	}
 }
+
+func TestClient_Send_EmptyWebhookURL(t *testing.T) {
+	c := New("")
+	id, err := c.Send(context.Background(), models.DealInfo{Title: "Test Deal"})
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if id != "" {
+		t.Errorf("Send() with empty webhook should return empty ID, got %q", id)
+	}
+}
+

@@ -118,6 +118,11 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 	// Run processing asynchronously so the HTTP response isn't blocked
 	// by scraping, Firestore, and Discord operations that may exceed timeouts.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Panic in ProcessDeals", "panic", r)
+			}
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 		if err := s.processor.ProcessDeals(ctx); err != nil {

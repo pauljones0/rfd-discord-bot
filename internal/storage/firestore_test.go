@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"cloud.google.com/go/firestore/apiv1/firestorepb"
+
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
 func TestTrimOldDeals_CountTypeAssertions(t *testing.T) {
@@ -64,11 +66,11 @@ func TestTrimOldDeals_CountTypeAssertions(t *testing.T) {
 
 func TestErrDealExists(t *testing.T) {
 	// Verify the sentinel error is usable
-	if ErrDealExists == nil {
+	if models.ErrDealExists == nil {
 		t.Fatal("ErrDealExists should not be nil")
 	}
-	if ErrDealExists.Error() != "deal already exists" {
-		t.Errorf("ErrDealExists message = %q, want %q", ErrDealExists.Error(), "deal already exists")
+	if models.ErrDealExists.Error() != "deal already exists" {
+		t.Errorf("ErrDealExists message = %q, want %q", models.ErrDealExists.Error(), "deal already exists")
 	}
 }
 

@@ -65,12 +65,19 @@ func (c *Client) ScrapeDealList(ctx context.Context) ([]models.DealInfo, error) 
 	var scrapedDeals []models.DealInfo
 	var err error
 
+	start := time.Now()
 	maxRetries := 3
 	for i := 0; i <= maxRetries; i++ {
 		scrapedDeals, err = c.attemptScrapeList(ctx, targetURL)
 		if err == nil {
 			break
 		}
+
+		// Don't retry if the context is cancelled
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
 		if i < maxRetries {
 			backoff := time.Duration(1<<i) * time.Second
 			slog.Warn("Scraping list attempt failed, retrying", "attempt", i+1, "error", err, "backoff", backoff)
@@ -87,6 +94,7 @@ func (c *Client) ScrapeDealList(ctx context.Context) ([]models.DealInfo, error) 
 		return nil, fmt.Errorf("failed to scrape hot deals list: %w", err)
 	}
 
+	slog.Info("Scrape completed", "duration", time.Since(start), "deals", len(scrapedDeals))
 	return scrapedDeals, nil
 }
 
@@ -178,7 +186,7 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 	if title != "" {
 		deal.Title = title
 		if postURL != "" {
-			normalized, err := util.NormalizeURL(postURL)
+			normalized, err := util.NormalizeURL(postURL, c.config.AllowedDomains)
 			if err == nil {
 				postURL = normalized
 			}
@@ -255,27 +263,26 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 			continue
 		}
 
-		idx := i
 		g.Go(func() error {
-			actualURL, err := c.scrapeDealDetailPage(ctx, deals[idx].PostURL)
+			actualURL, err := c.scrapeDealDetailPage(ctx, deals[i].PostURL)
 			if err != nil {
 				if errors.Is(err, ErrDealLinkNotFound) {
-					slog.Info("No external deal link found", "postURL", deals[idx].PostURL)
+					slog.Info("No external deal link found", "postURL", deals[i].PostURL)
 				} else {
-					slog.Warn("Failed to scrape detail page", "url", deals[idx].PostURL, "error", err)
+					slog.Warn("Failed to scrape detail page", "url", deals[i].PostURL, "error", err)
 				}
 				return nil // Don't fail the group for individual deal errors
 			}
 
-			deals[idx].ActualDealURL = actualURL
-			if deals[idx].ActualDealURL != "" {
-				cleanedURL, changed := util.CleanReferralLink(deals[idx].ActualDealURL, c.config.AmazonAffiliateTag)
+			deals[i].ActualDealURL = actualURL
+			if deals[i].ActualDealURL != "" {
+				cleanedURL, changed := util.CleanReferralLink(deals[i].ActualDealURL, c.config.AmazonAffiliateTag)
 				if changed {
-					deals[idx].ActualDealURL = cleanedURL
+					deals[i].ActualDealURL = cleanedURL
 				}
 			}
-			if deals[idx].ActualDealURL == "" {
-				slog.Warn("ActualDealURL was empty after parsing", "postURL", deals[idx].PostURL)
+			if deals[i].ActualDealURL == "" {
+				slog.Warn("ActualDealURL was empty after parsing", "postURL", deals[i].PostURL)
 			}
 			return nil
 		})

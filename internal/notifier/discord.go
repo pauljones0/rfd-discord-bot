@@ -50,7 +50,25 @@ func (c *Client) Send(ctx context.Context, deal models.DealInfo) (string, error)
 		return "", nil
 	}
 	embed := formatDealToEmbed(deal)
-	return c.sendAndGetMessageID(ctx, embed)
+
+	parsedURL, err := url.Parse(c.webhookURL)
+	if err != nil {
+		return "", err
+	}
+	q := parsedURL.Query()
+	q.Set("wait", "true")
+	parsedURL.RawQuery = q.Encode()
+
+	body, err := c.doRequest(ctx, "POST", parsedURL.String(), embed)
+	if err != nil {
+		return "", err
+	}
+
+	var msgResponse discordMessageResponse
+	if err := json.Unmarshal(body, &msgResponse); err != nil {
+		return "", err
+	}
+	return msgResponse.ID, nil
 }
 
 // Update updates an existing notification.
@@ -59,7 +77,15 @@ func (c *Client) Update(ctx context.Context, messageID string, deal models.DealI
 		return nil
 	}
 	embed := formatDealToEmbed(deal)
-	return c.updateDiscordMessage(ctx, messageID, embed)
+
+	parsedBaseURL, err := url.Parse(c.webhookURL)
+	if err != nil {
+		return err
+	}
+	patchURL := fmt.Sprintf("%s://%s%s/messages/%s", parsedBaseURL.Scheme, parsedBaseURL.Host, parsedBaseURL.Path, messageID)
+
+	_, err = c.doRequest(ctx, "PATCH", patchURL, embed)
+	return err
 }
 
 // Internal structures
@@ -131,36 +157,29 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	}
 }
 
-func (c *Client) sendAndGetMessageID(ctx context.Context, embed discordEmbed) (string, error) {
+// doRequest handles the shared retry/rate-limit/backoff loop for Discord API calls.
+// It returns the response body on success.
+func (c *Client) doRequest(ctx context.Context, method, targetURL string, embed discordEmbed) ([]byte, error) {
 	payload := discordWebhookPayload{Embeds: []discordEmbed{embed}}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-
-	parsedURL, err := url.Parse(c.webhookURL)
-	if err != nil {
-		return "", err
-	}
-	q := parsedURL.Query()
-	q.Set("wait", "true")
-	parsedURL.RawQuery = q.Encode()
-	targetURL := parsedURL.String()
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			slog.Warn("Retrying Discord send", "attempt", attempt, "error", lastErr)
+			slog.Warn("Retrying Discord request", "method", method, "attempt", attempt, "error", lastErr)
 		}
 
 		// Rate limit to avoid hitting Discord's webhook rate limits.
 		if err := c.rateLimiter.Wait(ctx); err != nil {
-			return "", fmt.Errorf("rate limiter wait: %w", err)
+			return nil, fmt.Errorf("rate limiter wait: %w", err)
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewBuffer(payloadBytes))
+		req, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewBuffer(payloadBytes))
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 
@@ -179,94 +198,25 @@ func (c *Client) sendAndGetMessageID(ctx context.Context, embed discordEmbed) (s
 		}
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			var msgResponse discordMessageResponse
-			if err := json.Unmarshal(bodyBytes, &msgResponse); err != nil {
-				return "", err
-			}
-			return msgResponse.ID, nil
+			return bodyBytes, nil
 		}
 
-		lastErr = fmt.Errorf("discord status: %s, body: %s", resp.Status, string(bodyBytes))
+		lastErr = fmt.Errorf("discord %s failed: %s, body: %s", method, resp.Status, string(bodyBytes))
 
 		if backoff := retryBackoff(resp, attempt); backoff > 0 {
 			select {
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return nil, ctx.Err()
 			case <-time.After(backoff):
 			}
 			continue
 		}
 
 		// Non-retryable status code
-		return "", lastErr
+		return nil, lastErr
 	}
 
-	return "", fmt.Errorf("discord send failed after %d retries: %w", maxRetries, lastErr)
-}
-
-func (c *Client) updateDiscordMessage(ctx context.Context, messageID string, embed discordEmbed) error {
-	payload := discordWebhookPayload{Embeds: []discordEmbed{embed}, Content: ""}
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-
-	parsedBaseURL, err := url.Parse(c.webhookURL)
-	if err != nil {
-		return err
-	}
-	finalPatchURL := fmt.Sprintf("%s://%s%s/messages/%s", parsedBaseURL.Scheme, parsedBaseURL.Host, parsedBaseURL.Path, messageID)
-
-	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			slog.Warn("Retrying Discord update", "attempt", attempt, "messageID", messageID, "error", lastErr)
-		}
-
-		// Rate limit to avoid hitting Discord's webhook rate limits.
-		if err := c.rateLimiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limiter wait: %w", err)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, "PATCH", finalPatchURL, bytes.NewBuffer(payloadBytes))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := c.client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		bodyBytes, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return nil
-		}
-
-		if readErr != nil {
-			lastErr = fmt.Errorf("discord update failed: %s (could not read body: %v)", resp.Status, readErr)
-		} else {
-			lastErr = fmt.Errorf("discord update failed: %s, body: %s", resp.Status, string(bodyBytes))
-		}
-
-		if backoff := retryBackoff(resp, attempt); backoff > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
-			}
-			continue
-		}
-
-		// Non-retryable status code
-		return lastErr
-	}
-
-	return fmt.Errorf("discord update failed after %d retries: %w", maxRetries, lastErr)
+	return nil, fmt.Errorf("discord %s failed after %d retries: %w", method, maxRetries, lastErr)
 }
 
 // retryBackoff returns a backoff duration if the response is retryable (429 or 5xx).
@@ -298,10 +248,13 @@ func calculateHeatScore(likes, comments, views int) float64 {
 func getHeatColor(heatScore float64) int {
 	if heatScore > heatScoreThresholdHot {
 		return colorVeryHotDeal
-	} else if heatScore > heatScoreThresholdWarm {
+	}
+	if heatScore > heatScoreThresholdWarm {
 		return colorHotDeal
-	} else if heatScore > heatScoreThresholdCold {
+	}
+	if heatScore > heatScoreThresholdCold {
 		return colorWarmDeal
 	}
 	return colorColdDeal
 }
+

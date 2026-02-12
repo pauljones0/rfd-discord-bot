@@ -57,6 +57,8 @@ func TestCleanReferralLink(t *testing.T) {
 }
 
 func TestNormalizeURL(t *testing.T) {
+	allowedDomains := []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com", "www.forums.redflagdeals.com"}
+
 	tests := []struct {
 		name    string
 		input   string
@@ -97,7 +99,7 @@ func TestNormalizeURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := NormalizeURL(tt.input)
+			got, err := NormalizeURL(tt.input, allowedDomains)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NormalizeURL() error = %v, wantErr %v", err, tt.wantErr)
 				return

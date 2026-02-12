@@ -13,7 +13,6 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
-	"github.com/pauljones0/rfd-discord-bot/internal/storage"
 )
 
 type Processor interface {
@@ -29,18 +28,12 @@ type DealProcessor struct {
 }
 
 func New(store DealStore, n DealNotifier, s scraper.Scraper, cfg *config.Config) *DealProcessor {
-	interval, err := time.ParseDuration(cfg.DiscordUpdateInterval)
-	if err != nil {
-		slog.Warn("Invalid update interval, using default", "interval", cfg.DiscordUpdateInterval, "error", err, "default", "10m")
-		interval = 10 * time.Minute
-	}
-
 	return &DealProcessor{
 		store:          store,
 		notifier:       n,
 		scraper:        s,
 		config:         cfg,
-		updateInterval: interval,
+		updateInterval: cfg.DiscordUpdateInterval,
 	}
 }
 
@@ -91,15 +84,8 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 			continue
 		}
 
-		// Check if any list-visible fields changed
-		listChanged := existing.Title != deal.Title ||
-			existing.PostURL != deal.PostURL ||
-			existing.LikeCount != deal.LikeCount ||
-			existing.CommentCount != deal.CommentCount ||
-			existing.ViewCount != deal.ViewCount ||
-			existing.AuthorName != deal.AuthorName
-
-		if listChanged {
+		// Check if any tracked fields changed
+		if p.dealChanged(existing, deal) {
 			dealsToDetail = append(dealsToDetail, deal)
 		} else {
 			// Unchanged — copy details from existing so processSingleDeal doesn't see a diff
@@ -135,7 +121,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 
 	// Trim old deals once per processing run instead of per-deal
 	if newCount > 0 {
-		if err := p.store.TrimOldDeals(ctx, 500); err != nil {
+		if err := p.store.TrimOldDeals(ctx, p.config.MaxStoredDeals); err != nil {
 			slog.Warn("Failed to trim old deals", "error", err)
 		}
 	}
@@ -164,7 +150,7 @@ func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealI
 		}
 
 		// Race condition: another instance created it first
-		if !errors.Is(createErr, storage.ErrDealExists) {
+		if !errors.Is(createErr, models.ErrDealExists) {
 			return false, false, fmt.Errorf("failed to create deal %s: %v", deal.Title, createErr)
 		}
 
@@ -244,6 +230,7 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 		existing.ViewCount != scraped.ViewCount ||
 		existing.Title != scraped.Title ||
 		existing.PostURL != scraped.PostURL ||
+		existing.AuthorName != scraped.AuthorName ||
 		existing.ThreadImageURL != scraped.ThreadImageURL ||
 		existing.ActualDealURL != scraped.ActualDealURL
 }

@@ -1,10 +1,16 @@
 package scraper
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/PuerkitoBio/goquery"
+
+	"github.com/pauljones0/rfd-discord-bot/internal/config"
 )
 
 func TestParseDealFromSelection_FullDeal(t *testing.T) {
@@ -28,7 +34,7 @@ func TestParseDealFromSelection_FullDeal(t *testing.T) {
 	}
 
 	defaults := DefaultSelectors()
-	c := &Client{selectors: defaults}
+	c := &Client{selectors: defaults, config: &config.Config{AllowedDomains: []string{"forums.redflagdeals.com"}}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.Title != "Great Deal Title" {
@@ -71,7 +77,7 @@ func TestParseDealFromSelection_MinimalDeal(t *testing.T) {
 	}
 
 	defaults := DefaultSelectors()
-	c := &Client{selectors: defaults}
+	c := &Client{selectors: defaults, config: &config.Config{AllowedDomains: []string{"forums.redflagdeals.com"}}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.Title != "Minimal Deal" {
@@ -102,7 +108,7 @@ func TestParseDealFromSelection_NegativeLikes(t *testing.T) {
 	}
 
 	defaults := DefaultSelectors()
-	c := &Client{selectors: defaults}
+	c := &Client{selectors: defaults, config: &config.Config{AllowedDomains: []string{"forums.redflagdeals.com"}}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.LikeCount != -5 {
@@ -122,7 +128,7 @@ func TestParseDealFromSelection_DataURIImageFiltered(t *testing.T) {
 	}
 
 	defaults := DefaultSelectors()
-	c := &Client{selectors: defaults}
+	c := &Client{selectors: defaults, config: &config.Config{AllowedDomains: []string{"forums.redflagdeals.com"}}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.ThreadImageURL != "" {
@@ -142,7 +148,7 @@ func TestParseDealFromSelection_RelativeImageFiltered(t *testing.T) {
 	}
 
 	defaults := DefaultSelectors()
-	c := &Client{selectors: defaults}
+	c := &Client{selectors: defaults, config: &config.Config{AllowedDomains: []string{"forums.redflagdeals.com"}}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.ThreadImageURL != "" {
@@ -249,3 +255,92 @@ func TestDefaultSelectors(t *testing.T) {
 		t.Errorf("Default PrimaryLink = %q, want %q", sel.DealDetails.PrimaryLink, ".deal_link a")
 	}
 }
+
+func TestScrapeDealDetailPage_PrimaryLink(t *testing.T) {
+	html := `<!DOCTYPE html>
+<html><body>
+	<div class="deal_link"><a href="https://amazon.ca/dp/B001">Get Deal</a></div>
+</body></html>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	url, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if url != "https://amazon.ca/dp/B001" {
+		t.Errorf("url = %q, want %q", url, "https://amazon.ca/dp/B001")
+	}
+}
+
+func TestScrapeDealDetailPage_FallbackLink(t *testing.T) {
+	html := `<!DOCTYPE html>
+<html><body>
+	<a class="postlink" href="https://bestbuy.ca/product">Buy Now</a>
+</body></html>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	url, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if url != "https://bestbuy.ca/product" {
+		t.Errorf("url = %q, want %q", url, "https://bestbuy.ca/product")
+	}
+}
+
+func TestScrapeDealDetailPage_NoLink(t *testing.T) {
+	html := `<!DOCTYPE html>
+<html><body>
+	<p>No deal link on this page</p>
+</body></html>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	_, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != ErrDealLinkNotFound {
+		t.Errorf("Expected ErrDealLinkNotFound, got %v", err)
+	}
+}
+
+func TestFetchHTMLContent_DomainAllowlist(t *testing.T) {
+	cfg := &config.Config{
+		AllowedDomains: []string{"redflagdeals.com"},
+	}
+	c := New(cfg, DefaultSelectors())
+
+	// Disallowed domain should be rejected
+	_, err := c.fetchHTMLContent(context.Background(), "https://evil.com/page")
+	if err == nil {
+		t.Fatal("Expected error for disallowed domain")
+	}
+	if !strings.Contains(err.Error(), "not in allowlist") {
+		t.Errorf("Expected allowlist error, got: %v", err)
+	}
+}
+
