@@ -42,7 +42,7 @@ type DetailSelectors struct {
 func LoadSelectors(path string) (SelectorConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return DefaultSelectors, fmt.Errorf("failed to read selector config file: %w", err)
+		return SelectorConfig{}, fmt.Errorf("failed to read selector config file: %w", err)
 	}
 
 	return LoadSelectorsFromBytes(data)
@@ -53,33 +53,36 @@ func LoadSelectors(path string) (SelectorConfig, error) {
 func LoadSelectorsFromBytes(data []byte) (SelectorConfig, error) {
 	var config SelectorConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		return DefaultSelectors, fmt.Errorf("failed to parse selector config JSON: %w", err)
+		return SelectorConfig{}, fmt.Errorf("failed to parse selector config JSON: %w", err)
 	}
 
 	return config, nil
 }
 
-// DefaultSelectors is the fallback configuration if no JSON file is loaded.
-var DefaultSelectors = SelectorConfig{
-	HotDealsList: ListSelectors{
-		Container: ListContainer{
-			Item:           "li.topic",
-			IgnoreModifier: ".sticky",
+// DefaultSelectors returns the fallback configuration if no JSON file is loaded.
+// This is the single source of truth — the embedded selectors.json should be preferred.
+func DefaultSelectors() SelectorConfig {
+	return SelectorConfig{
+		HotDealsList: ListSelectors{
+			Container: ListContainer{
+				Item:           "li.topic",
+				IgnoreModifier: ".sticky",
+			},
+			Elements: ListElements{
+				TitleLink:            ".thread_title_link",
+				PostedTime:           ".thread_inner_footer .author_info time",
+				AuthorLink:           ".thread_inner_footer .author_info .author",
+				AuthorName:           ".author_name",
+				ThreadImage:          ".thread_image img",
+				LikeCount:            ".thread_inner_footer .votes",
+				CommentCount:         ".thread_inner_footer .posts",
+				CommentCountFallback: ".posts_count",
+				ViewCount:            ".thread_inner_footer .views",
+			},
 		},
-		Elements: ListElements{
-			TitleLink:            ".thread_title_link",
-			PostedTime:           ".thread_inner_footer .author_info time",
-			AuthorLink:           ".thread_inner_footer .author_info .author",
-			AuthorName:           ".author_name",
-			ThreadImage:          ".thread_image img",
-			LikeCount:            ".thread_inner_footer .votes",
-			CommentCount:         ".thread_inner_footer .posts",
-			CommentCountFallback: ".posts_count",
-			ViewCount:            ".thread_inner_footer .views",
+		DealDetails: DetailSelectors{
+			PrimaryLink:  ".deal_link a",
+			FallbackLink: ".postlink",
 		},
-	},
-	DealDetails: DetailSelectors{
-		PrimaryLink:  ".deal_link a",
-		FallbackLink: ".postlink",
-	},
+	}
 }

@@ -56,6 +56,17 @@ func (m *mockStore) UpdateDeal(_ context.Context, deal models.DealInfo) error {
 	return nil
 }
 
+func (m *mockStore) GetDealsByIDs(_ context.Context, ids []string) (map[string]*models.DealInfo, error) {
+	result := make(map[string]*models.DealInfo)
+	for _, id := range ids {
+		if deal, ok := m.deals[id]; ok {
+			copy := *deal
+			result[id] = &copy
+		}
+	}
+	return result, nil
+}
+
 func (m *mockStore) TrimOldDeals(_ context.Context, _ int) error {
 	m.trimCalled = true
 	return nil

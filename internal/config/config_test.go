@@ -42,3 +42,31 @@ func TestLoad_MissingProjectID(t *testing.T) {
 		t.Error("Load() should return an error when GOOGLE_CLOUD_PROJECT is not set")
 	}
 }
+
+func TestLoad_CustomUpdateInterval(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	t.Setenv("DISCORD_UPDATE_INTERVAL", "5m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.DiscordUpdateInterval != "5m" {
+		t.Errorf("Expected 5m, got %s", cfg.DiscordUpdateInterval)
+	}
+}
+
+func TestLoad_DefaultAffiliateTag(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	t.Setenv("AMAZON_AFFILIATE_TAG", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.AmazonAffiliateTag != "beauahrens0d-20" {
+		t.Errorf("Expected default affiliate tag 'beauahrens0d-20', got %s", cfg.AmazonAffiliateTag)
+	}
+}

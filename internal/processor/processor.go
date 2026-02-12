@@ -58,36 +58,38 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	}
 	slog.Info("Successfully scraped deal list", "count", len(scrapedDeals))
 
-	// Filter deals that need detail scraping
-	var dealsToDetail []*models.DealInfo
-
-	// Cache existing deals so processSingleDeal doesn't re-read them
-	existingDeals := make(map[string]*models.DealInfo)
+	// Assign IDs and filter invalid deals upfront
+	var validDeals []models.DealInfo
+	var idsToLookup []string
 
 	for i := range scrapedDeals {
 		deal := &scrapedDeals[i]
-
-		// Skip deals missing required fields
 		if strings.TrimSpace(deal.Title) == "" || strings.TrimSpace(deal.PostURL) == "" || deal.PublishedTimestamp.IsZero() {
 			continue
 		}
 		deal.FirestoreID = generateDealID(deal.PublishedTimestamp)
+		validDeals = append(validDeals, *deal)
+		idsToLookup = append(idsToLookup, deal.FirestoreID)
+	}
 
-		existing, err := p.store.GetDealByID(ctx, deal.FirestoreID)
-		if err != nil {
-			slog.Warn("Failed to check deal existence, will scrape details", "id", deal.FirestoreID, "error", err)
-			dealsToDetail = append(dealsToDetail, deal)
-			continue
-		}
+	// Batch read all existing deals in one Firestore call
+	existingDeals, err := p.store.GetDealsByIDs(ctx, idsToLookup)
+	if err != nil {
+		slog.Warn("Batch read failed, falling back to individual reads", "error", err)
+		existingDeals = make(map[string]*models.DealInfo)
+	}
+
+	// Determine which deals need detail scraping
+	var dealsToDetail []*models.DealInfo
+	for i := range validDeals {
+		deal := &validDeals[i]
+		existing := existingDeals[deal.FirestoreID]
 
 		if existing == nil {
 			// New deal — needs details
 			dealsToDetail = append(dealsToDetail, deal)
 			continue
 		}
-
-		// Cache the existing deal so processSingleDeal skips re-reading
-		existingDeals[deal.FirestoreID] = existing
 
 		// Check if any list-visible fields changed
 		listChanged := existing.Title != deal.Title ||
@@ -98,10 +100,9 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 			existing.AuthorName != deal.AuthorName
 
 		if listChanged {
-			// Re-scrape details when list data changed
 			dealsToDetail = append(dealsToDetail, deal)
 		} else {
-			// Unchanged. Copy details from existing so processSingleDeal doesn't see a diff.
+			// Unchanged — copy details from existing so processSingleDeal doesn't see a diff
 			deal.ActualDealURL = existing.ActualDealURL
 			deal.ThreadImageURL = existing.ThreadImageURL
 		}
@@ -117,7 +118,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	var newCount, updatedCount int
 	var errorMessages []string
 
-	for _, deal := range scrapedDeals {
+	for _, deal := range validDeals {
 		existing := existingDeals[deal.FirestoreID] // may be nil for new deals
 		isNew, isUpdated, err := p.processSingleDeal(ctx, deal, existing)
 		if err != nil {
@@ -147,11 +148,6 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 }
 
 func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealInfo, existing *models.DealInfo) (isNew, isUpdated bool, err error) {
-	if strings.TrimSpace(deal.Title) == "" || strings.TrimSpace(deal.PostURL) == "" || deal.PublishedTimestamp.IsZero() {
-		slog.Info("Skipping invalid deal", "title", deal.Title)
-		return false, false, nil
-	}
-
 	// ID was already computed in ProcessDeals; ensure it's set
 	if deal.FirestoreID == "" {
 		deal.FirestoreID = generateDealID(deal.PublishedTimestamp)

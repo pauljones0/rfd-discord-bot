@@ -71,6 +71,46 @@ func (c *Client) GetDealByID(ctx context.Context, id string) (*models.DealInfo, 
 	return &deal, nil
 }
 
+// GetDealsByIDs retrieves multiple deals by their Firestore Document IDs in a single batch read.
+// Returns a map of ID -> DealInfo. Missing documents are omitted from the map (no error).
+func (c *Client) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*models.DealInfo, error) {
+	if len(ids) == 0 {
+		return make(map[string]*models.DealInfo), nil
+	}
+
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
+	refs := make([]*firestore.DocumentRef, len(ids))
+	for i, id := range ids {
+		refs[i] = c.client.Collection(firestoreCollection).Doc(id)
+	}
+
+	docs, err := c.client.GetAll(ctx, refs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch get deals: %w", err)
+	}
+
+	result := make(map[string]*models.DealInfo, len(docs))
+	for _, doc := range docs {
+		if !doc.Exists() {
+			continue
+		}
+		var deal models.DealInfo
+		if err := doc.DataTo(&deal); err != nil {
+			slog.Warn("Failed to unmarshal deal in batch read", "id", doc.Ref.ID, "error", err)
+			continue
+		}
+		deal.FirestoreID = doc.Ref.ID
+		result[doc.Ref.ID] = &deal
+	}
+
+	return result, nil
+}
+
 // TryCreateDeal attempts to create a new deal. Returns error if it already exists.
 func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error {
 	if _, ok := ctx.Deadline(); !ok {
@@ -172,11 +212,7 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 	deletedCount := 0
 	bulkWriter := c.client.BulkWriter(ctx)
 
-	// Ensure we close the bulk writer properly
 	defer func() {
-		// End doesn't return an error in this SDK version, or the signature is different.
-		// Checking the docs or source would confirm, but usually it returns void or error.
-		// If the compiler says "no value used as value", it means End() returns nothing.
 		bulkWriter.End()
 	}()
 
@@ -192,6 +228,7 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 		_, delErr := bulkWriter.Delete(doc.Ref)
 		if delErr != nil {
 			slog.Error("TrimOldDeals: Error queueing delete", "id", doc.Ref.ID, "error", delErr)
+			continue
 		}
 		deletedCount++
 	}

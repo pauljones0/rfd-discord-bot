@@ -9,6 +9,7 @@ import (
 // DealStore abstracts the storage layer for deal data.
 type DealStore interface {
 	GetDealByID(ctx context.Context, id string) (*models.DealInfo, error)
+	GetDealsByIDs(ctx context.Context, ids []string) (map[string]*models.DealInfo, error)
 	TryCreateDeal(ctx context.Context, deal models.DealInfo) error
 	UpdateDeal(ctx context.Context, deal models.DealInfo) error
 	TrimOldDeals(ctx context.Context, maxDeals int) error

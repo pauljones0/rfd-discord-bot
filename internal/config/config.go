@@ -2,7 +2,7 @@ package config
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 )
 
@@ -23,13 +23,13 @@ func Load() (*Config, error) {
 
 	discordWebhookURL := os.Getenv("DISCORD_WEBHOOK_URL")
 	if discordWebhookURL == "" {
-		log.Println("Warning: DISCORD_WEBHOOK_URL environment variable not set. Discord notifications will be skipped.")
+		slog.Warn("DISCORD_WEBHOOK_URL not set, Discord notifications will be skipped")
 	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
-		log.Printf("Defaulting to port %s", port)
+		slog.Info("Defaulting to port", "port", port)
 	}
 
 	amazonAffiliateTag := os.Getenv("AMAZON_AFFILIATE_TAG")

@@ -27,8 +27,9 @@ func TestParseDealFromSelection_FullDeal(t *testing.T) {
 		t.Fatalf("Failed to parse test HTML: %v", err)
 	}
 
-	c := &Client{selectors: DefaultSelectors}
-	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), DefaultSelectors.HotDealsList.Elements)
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults}
+	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.Title != "Great Deal Title" {
 		t.Errorf("Title = %q, want %q", deal.Title, "Great Deal Title")
@@ -69,8 +70,9 @@ func TestParseDealFromSelection_MinimalDeal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := &Client{selectors: DefaultSelectors}
-	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), DefaultSelectors.HotDealsList.Elements)
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults}
+	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.Title != "Minimal Deal" {
 		t.Errorf("Title = %q, want %q", deal.Title, "Minimal Deal")
@@ -99,11 +101,52 @@ func TestParseDealFromSelection_NegativeLikes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := &Client{selectors: DefaultSelectors}
-	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), DefaultSelectors.HotDealsList.Elements)
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults}
+	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.LikeCount != -5 {
 		t.Errorf("LikeCount = %d, want -5", deal.LikeCount)
+	}
+}
+
+func TestParseDealFromSelection_DataURIImageFiltered(t *testing.T) {
+	html := `<li class="topic">
+		<a class="thread_title_link" href="/deal-with-data-uri">Deal With Data URI</a>
+		<div class="thread_image"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" /></div>
+	</li>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults}
+	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
+
+	if deal.ThreadImageURL != "" {
+		t.Errorf("ThreadImageURL should be empty for data: URI, got %q", deal.ThreadImageURL)
+	}
+}
+
+func TestParseDealFromSelection_RelativeImageFiltered(t *testing.T) {
+	html := `<li class="topic">
+		<a class="thread_title_link" href="/deal-relative-img">Deal With Relative Image</a>
+		<div class="thread_image"><img src="/images/placeholder.jpg" /></div>
+	</li>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults}
+	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
+
+	if deal.ThreadImageURL != "" {
+		t.Errorf("ThreadImageURL should be empty for relative URL, got %q", deal.ThreadImageURL)
 	}
 }
 
@@ -194,5 +237,15 @@ func TestLoadSelectorsFromBytes_InvalidJSON(t *testing.T) {
 	_, err := LoadSelectorsFromBytes([]byte(`{invalid`))
 	if err == nil {
 		t.Error("Expected error from invalid JSON")
+	}
+}
+
+func TestDefaultSelectors(t *testing.T) {
+	sel := DefaultSelectors()
+	if sel.HotDealsList.Container.Item != "li.topic" {
+		t.Errorf("Default Container.Item = %q, want %q", sel.HotDealsList.Container.Item, "li.topic")
+	}
+	if sel.DealDetails.PrimaryLink != ".deal_link a" {
+		t.Errorf("Default PrimaryLink = %q, want %q", sel.DealDetails.PrimaryLink, ".deal_link a")
 	}
 }

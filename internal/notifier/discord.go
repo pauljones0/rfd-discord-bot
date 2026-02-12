@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -24,6 +26,8 @@ const (
 	heatScoreThresholdCold = 0.05
 	heatScoreThresholdWarm = 0.1
 	heatScoreThresholdHot  = 0.25
+
+	maxRetries = 3
 )
 
 type Client struct {
@@ -43,7 +47,7 @@ func New(webhookURL string) *Client {
 // Send sends a new deal notification and returns the message ID.
 func (c *Client) Send(ctx context.Context, deal models.DealInfo) (string, error) {
 	if c.webhookURL == "" {
-		return "", nil // Or error? Original code just skipped if empty.
+		return "", nil
 	}
 	embed := formatDealToEmbed(deal)
 	return c.sendAndGetMessageID(ctx, embed)
@@ -54,10 +58,6 @@ func (c *Client) Update(ctx context.Context, messageID string, deal models.DealI
 	if c.webhookURL == "" || messageID == "" {
 		return nil
 	}
-	// Check interval logic is usually done by the caller, but here we can just update if asked.
-	// The original code checked time.Since(DiscordLastUpdatedTime).
-	// We'll assume the caller decides WHEN to update.
-
 	embed := formatDealToEmbed(deal)
 	return c.updateDiscordMessage(ctx, messageID, embed)
 }
@@ -99,11 +99,6 @@ type discordMessageResponse struct {
 }
 
 func formatDealToEmbed(deal models.DealInfo) discordEmbed {
-	// Title: Deal Title (L/C/V)
-	// URL: RFD Post URL
-	// Description: [Item Link](ActualDealURL) if exists
-	// Thumbnail: Keep
-
 	statsSuffix := fmt.Sprintf(" (%d/%d/%d)", deal.LikeCount, deal.CommentCount, deal.ViewCount)
 	title := deal.Title + statsSuffix
 
@@ -125,24 +120,14 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	heatScore := calculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
 	embedColor := getHeatColor(heatScore)
 
-	// User requested "lil foot note at the end of the url of the item".
-	// Since footer text is not clickable in Discord, putting the Item URL in Description is better for "Item Link".
-	// But if they meant the literal URL string as a footnote:
-	// "footnote at the end of the url of the item" might mean "After the Title link, show the Item URL".
-	// Given "easier to read through quickly on mobile", a big clickable target in Description is good.
-	// But I will also respect "lil foot note" by adding a Footer with the domain if appropriate, or just leaving it clean.
-	// The user said "foot note at the end of the url of the item (if it exists)".
-	// Maybe they meant "Item URL: <url>" in the footer?
-	// I'll stick to Description link as it's actionable.
-
+	// Item link in Description for a clickable mobile-friendly target.
 	return discordEmbed{
 		Title:       title,
-		URL:         deal.PostURL, // Hyperlink the title to the RFD post
+		URL:         deal.PostURL,
 		Description: description,
 		Timestamp:   isoTimestamp,
 		Color:       embedColor,
 		Thumbnail:   thumbnail,
-		// No fields
 	}
 }
 
@@ -160,36 +145,63 @@ func (c *Client) sendAndGetMessageID(ctx context.Context, embed discordEmbed) (s
 	q := parsedURL.Query()
 	q.Set("wait", "true")
 	parsedURL.RawQuery = q.Encode()
+	targetURL := parsedURL.String()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", parsedURL.String(), bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			slog.Warn("Retrying Discord send", "attempt", attempt, "error", lastErr)
+		}
 
-	// Rate limit to avoid hitting Discord's webhook rate limits.
-	if err := c.rateLimiter.Wait(ctx); err != nil {
-		return "", fmt.Errorf("rate limiter wait: %w", err)
-	}
+		// Rate limit to avoid hitting Discord's webhook rate limits.
+		if err := c.rateLimiter.Wait(ctx); err != nil {
+			return "", fmt.Errorf("rate limiter wait: %w", err)
+		}
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		return "", fmt.Errorf("failed to read discord response body: %w", readErr)
-	}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		var msgResponse discordMessageResponse
-		if err := json.Unmarshal(bodyBytes, &msgResponse); err != nil {
+		req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewBuffer(payloadBytes))
+		if err != nil {
 			return "", err
 		}
-		return msgResponse.ID, nil
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if readErr != nil {
+			lastErr = fmt.Errorf("failed to read discord response body: %w", readErr)
+			continue
+		}
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			var msgResponse discordMessageResponse
+			if err := json.Unmarshal(bodyBytes, &msgResponse); err != nil {
+				return "", err
+			}
+			return msgResponse.ID, nil
+		}
+
+		lastErr = fmt.Errorf("discord status: %s, body: %s", resp.Status, string(bodyBytes))
+
+		if backoff := retryBackoff(resp, attempt); backoff > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(backoff):
+			}
+			continue
+		}
+
+		// Non-retryable status code
+		return "", lastErr
 	}
-	return "", fmt.Errorf("discord status: %s, body: %s", resp.Status, string(bodyBytes))
+
+	return "", fmt.Errorf("discord send failed after %d retries: %w", maxRetries, lastErr)
 }
 
 func (c *Client) updateDiscordMessage(ctx context.Context, messageID string, embed discordEmbed) error {
@@ -205,31 +217,75 @@ func (c *Client) updateDiscordMessage(ctx context.Context, messageID string, emb
 	}
 	finalPatchURL := fmt.Sprintf("%s://%s%s/messages/%s", parsedBaseURL.Scheme, parsedBaseURL.Host, parsedBaseURL.Path, messageID)
 
-	req, err := http.NewRequestWithContext(ctx, "PATCH", finalPatchURL, bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			slog.Warn("Retrying Discord update", "attempt", attempt, "messageID", messageID, "error", lastErr)
+		}
 
-	// Rate limit to avoid hitting Discord's webhook rate limits.
-	if err := c.rateLimiter.Wait(ctx); err != nil {
-		return fmt.Errorf("rate limiter wait: %w", err)
+		// Rate limit to avoid hitting Discord's webhook rate limits.
+		if err := c.rateLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("rate limiter wait: %w", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "PATCH", finalPatchURL, bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+
+		if readErr != nil {
+			lastErr = fmt.Errorf("discord update failed: %s (could not read body: %v)", resp.Status, readErr)
+		} else {
+			lastErr = fmt.Errorf("discord update failed: %s, body: %s", resp.Status, string(bodyBytes))
+		}
+
+		if backoff := retryBackoff(resp, attempt); backoff > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			continue
+		}
+
+		// Non-retryable status code
+		return lastErr
 	}
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	return fmt.Errorf("discord update failed after %d retries: %w", maxRetries, lastErr)
+}
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
+// retryBackoff returns a backoff duration if the response is retryable (429 or 5xx).
+// Returns 0 if the response should not be retried.
+func retryBackoff(resp *http.Response, attempt int) time.Duration {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
+			if seconds, err := strconv.Atoi(retryAfter); err == nil {
+				return time.Duration(seconds) * time.Second
+			}
+		}
+		return time.Duration(1<<attempt) * time.Second
 	}
-	bodyBytes, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		return fmt.Errorf("discord update failed: %s (could not read body: %v)", resp.Status, readErr)
+
+	if resp.StatusCode >= 500 {
+		return time.Duration(1<<attempt) * time.Second
 	}
-	return fmt.Errorf("discord update failed: %s, body: %s", resp.Status, string(bodyBytes))
+
+	return 0
 }
 
 func calculateHeatScore(likes, comments, views int) float64 {

@@ -83,6 +83,16 @@ func TestNormalizeURL(t *testing.T) {
 			input: "https://forums.redflagdeals.com/deal?rfd_sk=tt&sd=d",
 			want:  "https://forums.redflagdeals.com/deal",
 		},
+		{
+			name:  "Non-RFD URL unchanged",
+			input: "http://amazon.ca/some-product?utm_source=foo",
+			want:  "http://amazon.ca/some-product?utm_source=foo",
+		},
+		{
+			name:  "HTTP RFD URL forced to HTTPS",
+			input: "http://forums.redflagdeals.com/deal-123/",
+			want:  "https://forums.redflagdeals.com/deal-123",
+		},
 	}
 
 	for _, tt := range tests {

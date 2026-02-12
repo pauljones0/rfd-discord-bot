@@ -42,6 +42,9 @@ func TestIntegration_FullPipeline(t *testing.T) {
 	<li class="topic">
 		<a class="thread_title_link" href="/integration-deal-002">Second Deal</a>
 		<div class="thread_inner_footer">
+			<span class="author_info">
+				<time datetime="2025-06-02T14:00:00Z">Jun 2, 2025</time>
+			</span>
 			<span class="votes">-3</span>
 			<span class="posts">2</span>
 			<span class="views">100</span>
@@ -84,7 +87,7 @@ func TestIntegration_FullPipeline(t *testing.T) {
 	}
 
 	// Create a real scraper pointed at our test server
-	s := scraper.NewWithBaseURL(cfg, scraper.DefaultSelectors, srv.URL)
+	s := scraper.NewWithBaseURL(cfg, scraper.DefaultSelectors(), srv.URL)
 
 	store := newMockStore()
 	notif := newMockNotifier()

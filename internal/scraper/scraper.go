@@ -8,10 +8,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
@@ -119,7 +120,7 @@ func resolveLink(s *goquery.Selection, selector string) (href, text string) {
 }
 
 func (c *Client) attemptScrapeList(ctx context.Context, targetURL string) ([]models.DealInfo, error) {
-	slog.Warn("Scraping hot deals page", "url", targetURL)
+	slog.Info("Scraping hot deals page", "url", targetURL)
 	doc, err := c.fetchHTMLContent(ctx, targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch or parse hot deals page %s: %w", targetURL, err)
@@ -206,11 +207,13 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 		}
 	}
 
-	// Thread Image
+	// Thread Image — only accept http/https URLs
 	imgSelection := s.Find(elems.ThreadImage)
 	if imgSelection.Length() > 0 {
 		if src, exists := imgSelection.Attr("src"); exists {
-			deal.ThreadImageURL = src
+			if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+				deal.ThreadImageURL = src
+			}
 		}
 	}
 
@@ -244,66 +247,42 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 }
 
 func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo) {
-	type detailResult struct {
-		index int
-		url   string
-		err   error
-	}
-
-	results := make(chan detailResult, len(deals))
-	var wg sync.WaitGroup
-
-	// Limit concurrency
-	sem := make(chan struct{}, 5)
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(5) // Limit concurrency
 
 	for i := range deals {
-		// Skip if PostURL is empty
 		if deals[i].PostURL == "" {
 			continue
 		}
 
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				results <- detailResult{index: idx, err: ctx.Err()}
-				return
-			}
-			defer func() { <-sem }()
-
-			// Use the pointer directly
+		idx := i
+		g.Go(func() error {
 			actualURL, err := c.scrapeDealDetailPage(ctx, deals[idx].PostURL)
-			results <- detailResult{index: idx, url: actualURL, err: err}
-		}(i)
+			if err != nil {
+				if errors.Is(err, ErrDealLinkNotFound) {
+					slog.Info("No external deal link found", "postURL", deals[idx].PostURL)
+				} else {
+					slog.Warn("Failed to scrape detail page", "url", deals[idx].PostURL, "error", err)
+				}
+				return nil // Don't fail the group for individual deal errors
+			}
+
+			deals[idx].ActualDealURL = actualURL
+			if deals[idx].ActualDealURL != "" {
+				cleanedURL, changed := util.CleanReferralLink(deals[idx].ActualDealURL, c.config.AmazonAffiliateTag)
+				if changed {
+					deals[idx].ActualDealURL = cleanedURL
+				}
+			}
+			if deals[idx].ActualDealURL == "" {
+				slog.Warn("ActualDealURL was empty after parsing", "postURL", deals[idx].PostURL)
+			}
+			return nil
+		})
 	}
 
-	// Close results channel once all goroutines are done
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	for res := range results {
-		if res.err != nil {
-			if errors.Is(res.err, ErrDealLinkNotFound) {
-				slog.Info("No external deal link found", "postURL", deals[res.index].PostURL)
-			} else {
-				slog.Warn("Failed to scrape detail page", "url", deals[res.index].PostURL, "error", res.err)
-			}
-			continue
-		}
-		deals[res.index].ActualDealURL = res.url
-		if deals[res.index].ActualDealURL != "" {
-			cleanedURL, changed := util.CleanReferralLink(deals[res.index].ActualDealURL, c.config.AmazonAffiliateTag)
-			if changed {
-				deals[res.index].ActualDealURL = cleanedURL
-			}
-		}
-		if deals[res.index].ActualDealURL == "" {
-			slog.Warn("ActualDealURL was empty after parsing", "postURL", deals[res.index].PostURL)
-		}
+	if err := g.Wait(); err != nil {
+		slog.Error("FetchDealDetails: errgroup error", "error", err)
 	}
 }
 

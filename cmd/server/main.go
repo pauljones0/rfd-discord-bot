@@ -44,7 +44,7 @@ func main() {
 	selectors, err := loadSelectorsWithFallback()
 	if err != nil {
 		slog.Warn("Failed to load selectors. Using defaults.", "error", err)
-		selectors = scraper.DefaultSelectors
+		selectors = scraper.DefaultSelectors()
 	}
 
 	n := notifier.New(cfg.DiscordWebhookURL)
@@ -66,7 +66,7 @@ func main() {
 		Addr:         ":" + cfg.Port,
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -115,10 +115,16 @@ func loadSelectorsWithFallback() (scraper.SelectorConfig, error) {
 }
 
 func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
-	if err := s.processor.ProcessDeals(r.Context()); err != nil {
-		slog.Error("Error processing deals", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	fmt.Fprintln(w, "Deals processed successfully.")
+	// Run processing asynchronously so the HTTP response isn't blocked
+	// by scraping, Firestore, and Discord operations that may exceed timeouts.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		if err := s.processor.ProcessDeals(ctx); err != nil {
+			slog.Error("Error processing deals", "error", err)
+		}
+	}()
+
+	w.WriteHeader(http.StatusAccepted)
+	fmt.Fprintln(w, "Deal processing started.")
 }

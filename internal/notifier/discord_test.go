@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,5 +118,133 @@ func TestClient_Update(t *testing.T) {
 	err := client.Update(ctx, messageID, deal)
 	if err != nil {
 		t.Fatalf("Update() returned error: %v", err)
+	}
+}
+
+func TestClient_Send_RetriesOn5xx(t *testing.T) {
+	var attempts int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&attempts, 1)
+		if attempt <= 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"message": "server error"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "retry-success", "channel_id": "67890"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+
+	deal := models.DealInfo{Title: "Retry Deal", PostURL: "http://example.com"}
+	ctx := context.Background()
+
+	id, err := client.Send(ctx, deal)
+	if err != nil {
+		t.Fatalf("Send() should have succeeded after retries, got error: %v", err)
+	}
+	if id != "retry-success" {
+		t.Errorf("Expected ID 'retry-success', got %s", id)
+	}
+	if atomic.LoadInt32(&attempts) != 3 {
+		t.Errorf("Expected 3 attempts (2 failures + 1 success), got %d", atomic.LoadInt32(&attempts))
+	}
+}
+
+func TestClient_Send_RetriesOn429(t *testing.T) {
+	var attempts int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&attempts, 1)
+		if attempt == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"message": "rate limited"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "429-success", "channel_id": "67890"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+
+	deal := models.DealInfo{Title: "Rate Limited Deal", PostURL: "http://example.com"}
+	ctx := context.Background()
+
+	id, err := client.Send(ctx, deal)
+	if err != nil {
+		t.Fatalf("Send() should have succeeded after 429 retry, got error: %v", err)
+	}
+	if id != "429-success" {
+		t.Errorf("Expected ID '429-success', got %s", id)
+	}
+}
+
+func TestClient_Send_NoRetryOn4xx(t *testing.T) {
+	var attempts int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"message": "bad request"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+
+	deal := models.DealInfo{Title: "Bad Deal", PostURL: "http://example.com"}
+	ctx := context.Background()
+
+	_, err := client.Send(ctx, deal)
+	if err == nil {
+		t.Fatal("Send() should have returned error for 400 response")
+	}
+	if atomic.LoadInt32(&attempts) != 1 {
+		t.Errorf("Expected 1 attempt (no retry for 400), got %d", atomic.LoadInt32(&attempts))
+	}
+}
+
+func TestRetryBackoff(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		retryAfter string
+		attempt    int
+		wantZero   bool
+	}{
+		{"429 with Retry-After", 429, "2", 0, false},
+		{"429 without Retry-After", 429, "", 0, false},
+		{"500 error", 500, "", 0, false},
+		{"503 error", 503, "", 1, false},
+		{"400 error", 400, "", 0, true},
+		{"404 error", 404, "", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{
+				StatusCode: tt.statusCode,
+				Header:     http.Header{},
+			}
+			if tt.retryAfter != "" {
+				resp.Header.Set("Retry-After", tt.retryAfter)
+			}
+
+			backoff := retryBackoff(resp, tt.attempt)
+			if tt.wantZero && backoff != 0 {
+				t.Errorf("Expected zero backoff for status %d, got %v", tt.statusCode, backoff)
+			}
+			if !tt.wantZero && backoff == 0 {
+				t.Errorf("Expected non-zero backoff for status %d, got 0", tt.statusCode)
+			}
+		})
 	}
 }
