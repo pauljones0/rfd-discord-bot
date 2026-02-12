@@ -20,3 +20,9 @@ type DealNotifier interface {
 	Send(ctx context.Context, deal models.DealInfo) (string, error)
 	Update(ctx context.Context, messageID string, deal models.DealInfo) error
 }
+
+// DealScraper abstracts the web scraping layer.
+type DealScraper interface {
+	ScrapeDealList(ctx context.Context) ([]models.DealInfo, error)
+	FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
+}

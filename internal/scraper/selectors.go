@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 type SelectorConfig struct {
@@ -56,7 +57,29 @@ func LoadSelectorsFromBytes(data []byte) (SelectorConfig, error) {
 		return SelectorConfig{}, fmt.Errorf("failed to parse selector config JSON: %w", err)
 	}
 
+	if err := config.Validate(); err != nil {
+		return SelectorConfig{}, fmt.Errorf("invalid selector config: %w", err)
+	}
+
 	return config, nil
+}
+
+// Validate checks that critical selector fields are non-empty.
+func (c SelectorConfig) Validate() error {
+	var missing []string
+	if c.HotDealsList.Container.Item == "" {
+		missing = append(missing, "hot_deals_list.container.item")
+	}
+	if c.HotDealsList.Elements.TitleLink == "" {
+		missing = append(missing, "hot_deals_list.elements.title_link")
+	}
+	if c.HotDealsList.Elements.PostedTime == "" {
+		missing = append(missing, "hot_deals_list.elements.posted_time")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required selectors: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // DefaultSelectors returns the fallback configuration if no JSON file is loaded.

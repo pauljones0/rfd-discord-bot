@@ -153,7 +153,7 @@ func TestIntegration_FullPipeline(t *testing.T) {
 // Verify that the mock types satisfy the interfaces.
 var _ DealStore = (*mockStore)(nil)
 var _ DealNotifier = (*mockNotifier)(nil)
-var _ scraper.Scraper = (*mockScraper)(nil)
+var _ DealScraper = (*mockScraper)(nil)
 
 // Dummy test to verify mock DealInfo fields.
 func TestIntegration_MockStoreRoundtrip(t *testing.T) {

@@ -2,16 +2,12 @@ package util
 
 import (
 	"net/url"
-	"regexp"
 	"strings"
 )
 
-// Best Buy affiliate constants — swaps any existing Best Buy affiliate link to ours.
-const newBestBuyPrefix = "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
-
-var bestBuyRegex = regexp.MustCompile(`^https://bestbuyca\.o93x\.net/c/\d+/\d+/\d+`)
-
-func CleanReferralLink(rawUrl string, amazonTag string) (string, bool) {
+// CleanReferralLink processes deal URLs to strip/replace affiliate tracking.
+// bestBuyPrefix is the affiliate redirect prefix for Best Buy links.
+func CleanReferralLink(rawUrl string, amazonTag string, bestBuyPrefix string) (string, bool) {
 	parsedUrl, err := url.Parse(rawUrl)
 	if err != nil {
 		return rawUrl, false
@@ -22,7 +18,7 @@ func CleanReferralLink(rawUrl string, amazonTag string) (string, bool) {
 		murlParam := parsedUrl.Query().Get("murl")
 		if murlParam != "" {
 			decodedMURL, decodeErr := url.QueryUnescape(murlParam)
-			if decodeErr == nil {
+			if decodeErr == nil && isHTTPURL(decodedMURL) {
 				return decodedMURL, true
 			}
 		}
@@ -32,19 +28,19 @@ func CleanReferralLink(rawUrl string, amazonTag string) (string, bool) {
 		urlParam := parsedUrl.Query().Get("url")
 		if urlParam != "" {
 			decodedDestURL, decodeErr := url.QueryUnescape(urlParam)
-			if decodeErr == nil {
+			if decodeErr == nil && isHTTPURL(decodedDestURL) {
 				return decodedDestURL, true
 			}
 		}
 		return rawUrl, false
 
-	case parsedUrl.Host == "bestbuyca.o93x.net" && bestBuyRegex.MatchString(rawUrl):
+	case parsedUrl.Host == "bestbuyca.o93x.net" && strings.HasPrefix(parsedUrl.Path, "/c/"):
 		// Swap to our Best Buy affiliate link, preserving the destination product URL.
 		productURL := parsedUrl.Query().Get("u")
 		if productURL == "" {
 			return rawUrl, false
 		}
-		cleanedURL := newBestBuyPrefix + url.QueryEscape(productURL)
+		cleanedURL := bestBuyPrefix + url.QueryEscape(productURL)
 		return cleanedURL, true
 
 	case strings.Contains(parsedUrl.Host, "amazon."):
@@ -71,4 +67,9 @@ func CleanReferralLink(rawUrl string, amazonTag string) (string, bool) {
 	default:
 		return rawUrl, false
 	}
+}
+
+// isHTTPURL validates that a URL string has an http or https scheme.
+func isHTTPURL(rawURL string) bool {
+	return strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://")
 }

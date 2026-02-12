@@ -84,3 +84,32 @@ func TestLoad_DefaultAffiliateTag(t *testing.T) {
 		t.Errorf("Expected default affiliate tag 'beauahrens0d-20', got %s", cfg.AmazonAffiliateTag)
 	}
 }
+
+func TestLoad_DefaultBestBuyPrefix(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	t.Setenv("BESTBUY_AFFILIATE_PREFIX", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	expected := "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
+	if cfg.BestBuyAffiliatePrefix != expected {
+		t.Errorf("Expected default BestBuyAffiliatePrefix %q, got %q", expected, cfg.BestBuyAffiliatePrefix)
+	}
+}
+
+func TestLoad_CustomBestBuyPrefix(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	t.Setenv("BESTBUY_AFFILIATE_PREFIX", "https://custom.prefix/c/1/2/3?u=")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.BestBuyAffiliatePrefix != "https://custom.prefix/c/1/2/3?u=" {
+		t.Errorf("Expected custom prefix, got %q", cfg.BestBuyAffiliatePrefix)
+	}
+}

@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
-	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
 )
 
 type Processor interface {
@@ -22,12 +22,13 @@ type Processor interface {
 type DealProcessor struct {
 	store          DealStore
 	notifier       DealNotifier
-	scraper        scraper.Scraper
+	scraper        DealScraper
 	config         *config.Config
 	updateInterval time.Duration
+	mu             sync.Mutex // prevents overlapping ProcessDeals runs
 }
 
-func New(store DealStore, n DealNotifier, s scraper.Scraper, cfg *config.Config) *DealProcessor {
+func New(store DealStore, n DealNotifier, s DealScraper, cfg *config.Config) *DealProcessor {
 	return &DealProcessor{
 		store:          store,
 		notifier:       n,
@@ -45,6 +46,13 @@ func generateDealID(published time.Time) string {
 }
 
 func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
+	// Prevent overlapping processing runs
+	if !p.mu.TryLock() {
+		slog.Info("ProcessDeals: already in progress, skipping")
+		return nil
+	}
+	defer p.mu.Unlock()
+
 	scrapedDeals, err := p.scraper.ScrapeDealList(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to scrape hot deals list: %w", err)
@@ -183,7 +191,6 @@ func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealI
 	existing.ThreadImageURL = deal.ThreadImageURL
 	existing.AuthorName = deal.AuthorName
 	existing.AuthorURL = deal.AuthorURL
-	existing.PostedTime = deal.PostedTime
 	existing.PublishedTimestamp = deal.PublishedTimestamp
 	existing.ActualDealURL = deal.ActualDealURL
 	existing.LastUpdated = time.Now()

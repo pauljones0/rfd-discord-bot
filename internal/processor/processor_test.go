@@ -112,7 +112,7 @@ func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealIn
 	// No-op for mock
 }
 
-func newTestProcessor(store DealStore, notifier DealNotifier, scraper *mockScraper) *DealProcessor {
+func newTestProcessor(store DealStore, notifier DealNotifier, scraper DealScraper) *DealProcessor {
 	cfg := &config.Config{
 		DiscordUpdateInterval: 10 * time.Minute,
 		MaxStoredDeals:        500,

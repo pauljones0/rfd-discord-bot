@@ -233,7 +233,7 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 
 	if deletedCount > 0 {
 		bulkWriter.Flush()
-		slog.Info("TrimOldDeals: Flushed delete operations", "count", deletedCount)
+		slog.Info("TrimOldDeals: Flushed delete operations", "queued", deletedCount)
 	}
 
 	return nil

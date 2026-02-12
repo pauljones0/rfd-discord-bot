@@ -10,7 +10,6 @@ var ErrDealExists = errors.New("deal already exists")
 
 // DealInfo represents the structured information for a deal.
 type DealInfo struct {
-	PostedTime             string    `firestore:"postedTime"`
 	Title                  string    `firestore:"title"`
 	PostURL                string    `firestore:"postURL"`
 	AuthorName             string    `firestore:"authorName"`

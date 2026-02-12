@@ -9,13 +9,14 @@ import (
 )
 
 type Config struct {
-	ProjectID             string
-	DiscordWebhookURL     string
-	Port                  string
-	AmazonAffiliateTag    string
-	DiscordUpdateInterval time.Duration
-	MaxStoredDeals        int
-	AllowedDomains        []string
+	ProjectID              string
+	DiscordWebhookURL      string
+	Port                   string
+	AmazonAffiliateTag     string
+	BestBuyAffiliatePrefix string
+	DiscordUpdateInterval  time.Duration
+	MaxStoredDeals         int
+	AllowedDomains         []string
 }
 
 func Load() (*Config, error) {
@@ -41,6 +42,11 @@ func Load() (*Config, error) {
 		amazonAffiliateTag = "beauahrens0d-20"
 	}
 
+	bestBuyAffiliatePrefix := os.Getenv("BESTBUY_AFFILIATE_PREFIX")
+	if bestBuyAffiliatePrefix == "" {
+		bestBuyAffiliatePrefix = "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
+	}
+
 	discordUpdateIntervalStr := os.Getenv("DISCORD_UPDATE_INTERVAL")
 	if discordUpdateIntervalStr == "" {
 		discordUpdateIntervalStr = "10m"
@@ -60,12 +66,13 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		ProjectID:             projectID,
-		DiscordWebhookURL:     discordWebhookURL,
-		Port:                  port,
-		AmazonAffiliateTag:    amazonAffiliateTag,
-		DiscordUpdateInterval: discordUpdateInterval,
-		MaxStoredDeals:        maxStoredDeals,
-		AllowedDomains:        []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com"},
+		ProjectID:              projectID,
+		DiscordWebhookURL:      discordWebhookURL,
+		Port:                   port,
+		AmazonAffiliateTag:     amazonAffiliateTag,
+		BestBuyAffiliatePrefix: bestBuyAffiliatePrefix,
+		DiscordUpdateInterval:  discordUpdateInterval,
+		MaxStoredDeals:         maxStoredDeals,
+		AllowedDomains:         []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com"},
 	}, nil
 }

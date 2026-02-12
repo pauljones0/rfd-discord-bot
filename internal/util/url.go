@@ -27,9 +27,15 @@ func NormalizeURL(rawURL string, allowedDomains []string) (string, error) {
 	}
 
 	parsedURL.Scheme = "https"
-	parsedURL.Host = strings.TrimPrefix(parsedURL.Host, "www.")
-	if parsedURL.Host == "redflagdeals.com" {
-		parsedURL.Host = "forums.redflagdeals.com"
+	hostOnly := strings.TrimPrefix(parsedURL.Hostname(), "www.")
+	if hostOnly == "redflagdeals.com" {
+		hostOnly = "forums.redflagdeals.com"
+	}
+	// Preserve port if present
+	if port := parsedURL.Port(); port != "" {
+		parsedURL.Host = hostOnly + ":" + port
+	} else {
+		parsedURL.Host = hostOnly
 	}
 	if len(parsedURL.Path) > 1 && strings.HasSuffix(parsedURL.Path, "/") {
 		parsedURL.Path = parsedURL.Path[:len(parsedURL.Path)-1]

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ var embeddedSelectors embed.FS
 
 type Server struct {
 	processor processor.Processor
+	wg        sync.WaitGroup
 }
 
 func main() {
@@ -83,6 +85,11 @@ func main() {
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			slog.Error("HTTP server shutdown error", "error", err)
 		}
+
+		// Wait for any in-flight ProcessDeals goroutines to finish
+		slog.Info("Waiting for in-flight deal processing to complete...")
+		srv.wg.Wait()
+		slog.Info("All in-flight processing completed.")
 	}()
 
 	slog.Info("Listening on port", "port", cfg.Port)
@@ -117,7 +124,9 @@ func loadSelectorsWithFallback() (scraper.SelectorConfig, error) {
 func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 	// Run processing asynchronously so the HTTP response isn't blocked
 	// by scraping, Firestore, and Discord operations that may exceed timeouts.
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("Panic in ProcessDeals", "panic", r)

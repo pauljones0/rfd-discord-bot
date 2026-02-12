@@ -58,9 +58,6 @@ func TestParseDealFromSelection_FullDeal(t *testing.T) {
 	if deal.AuthorName != "TestUser" {
 		t.Errorf("AuthorName = %q, want %q", deal.AuthorName, "TestUser")
 	}
-	if deal.PostedTime != "2025-01-15T10:30:00Z" {
-		t.Errorf("PostedTime = %q, want %q", deal.PostedTime, "2025-01-15T10:30:00Z")
-	}
 	if deal.PublishedTimestamp.IsZero() {
 		t.Error("PublishedTimestamp should be parsed, but was zero")
 	}

@@ -5,6 +5,7 @@ import (
 )
 
 func TestCleanReferralLink(t *testing.T) {
+	bestBuyPrefix := "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
 	tests := []struct {
 		name     string
 		input    string
@@ -41,11 +42,35 @@ func TestCleanReferralLink(t *testing.T) {
 			expected: "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u=https%3A%2F%2Fbestbuy.ca%2Fproduct",
 			changed:  true,
 		},
+		{
+			name:     "Linksynergy with valid MURL",
+			input:    "https://click.linksynergy.com/link?murl=https%3A%2F%2Fexample.com%2Fproduct",
+			expected: "https://example.com/product",
+			changed:  true,
+		},
+		{
+			name:     "Linksynergy with non-HTTP MURL rejected",
+			input:    "https://click.linksynergy.com/link?murl=javascript%3Aalert(1)",
+			expected: "https://click.linksynergy.com/link?murl=javascript%3Aalert(1)",
+			changed:  false,
+		},
+		{
+			name:     "Redirectingat with valid URL",
+			input:    "https://go.redirectingat.com/?url=https%3A%2F%2Fexample.com%2Fdeal",
+			expected: "https://example.com/deal",
+			changed:  true,
+		},
+		{
+			name:     "Redirectingat with non-HTTP URL rejected",
+			input:    "https://go.redirectingat.com/?url=ftp%3A%2F%2Fexample.com%2Ffile",
+			expected: "https://go.redirectingat.com/?url=ftp%3A%2F%2Fexample.com%2Ffile",
+			changed:  false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, changed := CleanReferralLink(tt.input, "beauahrens0d-20")
+			got, changed := CleanReferralLink(tt.input, "beauahrens0d-20", bestBuyPrefix)
 			if got != tt.expected {
 				t.Errorf("CleanReferralLink() got = %v, want %v", got, tt.expected)
 			}

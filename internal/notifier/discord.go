@@ -242,7 +242,12 @@ func calculateHeatScore(likes, comments, views int) float64 {
 	if views == 0 {
 		return 0.0
 	}
-	return float64(likes+comments) / float64(views)
+	// Clamp negatives — downvoted deals shouldn't generate heat
+	effectiveLikes := max(likes, 0)
+	effectiveComments := max(comments, 0)
+	// Comments are weighted 2x since they represent deeper engagement
+	engagement := float64(effectiveLikes) + 2.0*float64(effectiveComments)
+	return engagement / float64(views)
 }
 
 func getHeatColor(heatScore float64) int {
