@@ -62,11 +62,11 @@ func (m *mockStore) TrimOldDeals(_ context.Context, _ int) error {
 }
 
 type mockNotifier struct {
-	sentDeals   []models.DealInfo
-	updatedIDs  []string
-	sendErr     error
-	nextMsgID   string
-	updateErr   error
+	sentDeals  []models.DealInfo
+	updatedIDs []string
+	sendErr    error
+	nextMsgID  string
+	updateErr  error
 }
 
 func newMockNotifier() *mockNotifier {
@@ -99,8 +99,7 @@ func (m *mockScraper) ScrapeDealList(_ context.Context) ([]models.DealInfo, erro
 }
 
 func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealInfo) {
-	// No-op for mock, or we could update deals if needed.
-	// For basic tests, the deals struct already contains what we need.
+	// No-op for mock
 }
 
 func newTestProcessor(store DealStore, notifier DealNotifier, scraper *mockScraper) *DealProcessor {
@@ -111,6 +110,10 @@ func newTestProcessor(store DealStore, notifier DealNotifier, scraper *mockScrap
 	return New(store, notifier, scraper, cfg)
 }
 
+// Helper: fixed timestamp for test deals
+var testTime1 = time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
+var testTime2 = time.Date(2025, 1, 16, 12, 0, 0, 0, time.UTC)
+
 // --- Tests ---
 
 func TestProcessDeals_NewDeal(t *testing.T) {
@@ -118,7 +121,7 @@ func TestProcessDeals_NewDeal(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-1"},
+			{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1},
 		},
 	}
 
@@ -144,9 +147,9 @@ func TestProcessDeals_SkipsInvalidDeal(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "", PostURL: ""},                  // empty title and URL
-			{Title: "   ", PostURL: "  "},             // whitespace only
-			{Title: "Valid", PostURL: "https://rfd.com/deal"},
+			{Title: "", PostURL: "", PublishedTimestamp: testTime1},                  // empty title and URL
+			{Title: "   ", PostURL: "  ", PublishedTimestamp: testTime2},             // whitespace only
+			{Title: "Valid", PostURL: "https://rfd.com/deal", PublishedTimestamp: testTime1},
 		},
 	}
 
@@ -161,49 +164,48 @@ func TestProcessDeals_SkipsInvalidDeal(t *testing.T) {
 	}
 }
 
+func TestProcessDeals_SkipsZeroTimestamp(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "No Timestamp", PostURL: "https://rfd.com/deal-no-ts"},
+			{Title: "Has Timestamp", PostURL: "https://rfd.com/deal-ts", PublishedTimestamp: testTime1},
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+	err := p.ProcessDeals(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessDeals() error = %v", err)
+	}
+
+	if len(store.deals) != 1 {
+		t.Errorf("Expected 1 deal (zero timestamp skipped), got %d", len(store.deals))
+	}
+}
+
 func TestProcessDeals_UpdateExistingDeal(t *testing.T) {
 	store := newMockStore()
 	notif := newMockNotifier()
 
-	// Pre-populate store with existing deal
-	existingDeal := models.DealInfo{
-		Title:            "Old Title",
-		PostURL:          "https://forums.redflagdeals.com/deal-1",
-		FirestoreID:      "abc123",
-		LikeCount:        5,
-		DiscordMessageID: "msg-old",
-		// Set last updated long ago so Discord update would trigger
-		DiscordLastUpdatedTime: time.Now().Add(-1 * time.Hour),
-	}
-	store.deals["abc123"] = &existingDeal
-
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "New Title", PostURL: "https://forums.redflagdeals.com/deal-1", LikeCount: 10},
+			{Title: "Original Title", PostURL: "https://forums.redflagdeals.com/deal-1", LikeCount: 10, PublishedTimestamp: testTime1},
 		},
 	}
 
-	// Override the FirestoreID to match by hashing the same PostURL
 	p := newTestProcessor(store, notif, scraper)
 
-	// Manually compute what the processor will compute as the FirestoreID
-	// The processor hashes the PostURL, so we need to pre-set with that hash
-	import_deal := models.DealInfo{PostURL: "https://forums.redflagdeals.com/deal-1"}
-	_ = import_deal // We need to set the proper hash in the store
-
-	// Actually, let's just test the full flow — hash will be computed
-	// Clear and re-add with proper hash
-	store.deals = make(map[string]*models.DealInfo)
-
-	// Re-run: first time creates it
+	// First run: creates the deal
 	err := p.ProcessDeals(context.Background())
 	if err != nil {
 		t.Fatalf("First ProcessDeals() error = %v", err)
 	}
 
-	// Now update the scraper with changed data
+	// Now update the scraper with changed data (same timestamp = same deal)
 	scraper.deals = []models.DealInfo{
-		{Title: "Updated Title", PostURL: "https://forums.redflagdeals.com/deal-1", LikeCount: 20},
+		{Title: "Updated Title", PostURL: "https://forums.redflagdeals.com/deal-1", LikeCount: 20, PublishedTimestamp: testTime1},
 	}
 	store.updateCount = 0
 
@@ -212,9 +214,92 @@ func TestProcessDeals_UpdateExistingDeal(t *testing.T) {
 		t.Fatalf("Second ProcessDeals() error = %v", err)
 	}
 
-	// Should have updated (at least one UpdateDeal call for the changed deal)
 	if store.updateCount == 0 {
 		t.Error("Expected UpdateDeal to be called for changed deal")
+	}
+}
+
+func TestProcessDeals_URLChangedDealsUpdated(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+
+	// First run: create the deal
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-old-url", PublishedTimestamp: testTime1},
+		},
+	}
+	p := newTestProcessor(store, notif, scraper)
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify 1 deal created
+	if len(store.deals) != 1 {
+		t.Fatalf("Expected 1 deal, got %d", len(store.deals))
+	}
+
+	// Second run: same timestamp but URL changed (user edited the post)
+	scraper.deals = []models.DealInfo{
+		{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-new-url", PublishedTimestamp: testTime1},
+	}
+	store.updateCount = 0
+
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should still be 1 deal (updated, not duplicated)
+	if len(store.deals) != 1 {
+		t.Errorf("Expected 1 deal (URL change should update, not duplicate), got %d", len(store.deals))
+	}
+	if store.updateCount == 0 {
+		t.Error("Expected UpdateDeal to be called when PostURL changed")
+	}
+
+	// Verify the stored deal has the new URL
+	for _, deal := range store.deals {
+		if deal.PostURL != "https://forums.redflagdeals.com/deal-new-url" {
+			t.Errorf("Expected PostURL to be updated, got %q", deal.PostURL)
+		}
+	}
+}
+
+func TestProcessDeals_TitleChangedDealsUpdated(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Original Title", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1},
+		},
+	}
+	p := newTestProcessor(store, notif, scraper)
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second run: same timestamp but title changed
+	scraper.deals = []models.DealInfo{
+		{Title: "Updated Title - Price Drop!", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1},
+	}
+	store.updateCount = 0
+
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(store.deals) != 1 {
+		t.Errorf("Expected 1 deal (title change should update, not duplicate), got %d", len(store.deals))
+	}
+	if store.updateCount == 0 {
+		t.Error("Expected UpdateDeal to be called when Title changed")
+	}
+
+	for _, deal := range store.deals {
+		if deal.Title != "Updated Title - Price Drop!" {
+			t.Errorf("Expected Title to be updated, got %q", deal.Title)
+		}
 	}
 }
 
@@ -223,7 +308,7 @@ func TestProcessDeals_UnchangedDealSkipped(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Same Deal", PostURL: "https://forums.redflagdeals.com/deal-1", LikeCount: 5},
+			{Title: "Same Deal", PostURL: "https://forums.redflagdeals.com/deal-1", LikeCount: 5, PublishedTimestamp: testTime1},
 		},
 	}
 
@@ -263,7 +348,7 @@ func TestProcessDeals_TrimOnlyOnNewDeals(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Deal", PostURL: "https://forums.redflagdeals.com/deal-1"},
+			{Title: "Deal", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1},
 		},
 	}
 
@@ -293,7 +378,7 @@ func TestProcessDeals_RaceConditionHandling(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Race Deal", PostURL: "https://forums.redflagdeals.com/race-1"},
+			{Title: "Race Deal", PostURL: "https://forums.redflagdeals.com/race-1", PublishedTimestamp: testTime1},
 		},
 	}
 
@@ -313,7 +398,7 @@ func TestConsolidatedFirestoreWrite(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Deal", PostURL: "https://forums.redflagdeals.com/deal-fw"},
+			{Title: "Deal", PostURL: "https://forums.redflagdeals.com/deal-fw", PublishedTimestamp: testTime1},
 		},
 	}
 
@@ -327,7 +412,7 @@ func TestConsolidatedFirestoreWrite(t *testing.T) {
 	// Now update with changed data — the deal has a DiscordMessageID and old timestamp,
 	// so both data update and Discord update should happen in a SINGLE write.
 	scraper.deals = []models.DealInfo{
-		{Title: "Deal Updated", PostURL: "https://forums.redflagdeals.com/deal-fw", LikeCount: 99},
+		{Title: "Deal Updated", PostURL: "https://forums.redflagdeals.com/deal-fw", LikeCount: 99, PublishedTimestamp: testTime1},
 	}
 
 	// Set DiscordLastUpdatedTime to long ago in the stored deal
@@ -343,5 +428,21 @@ func TestConsolidatedFirestoreWrite(t *testing.T) {
 	// Should be exactly 1 UpdateDeal call (consolidated), not 2
 	if store.updateCount != 1 {
 		t.Errorf("Expected 1 UpdateDeal call (consolidated), got %d", store.updateCount)
+	}
+}
+
+func TestGenerateDealID_Stable(t *testing.T) {
+	ts := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	id1 := generateDealID(ts)
+	id2 := generateDealID(ts)
+	if id1 != id2 {
+		t.Errorf("generateDealID should be deterministic: %q != %q", id1, id2)
+	}
+
+	// Different timestamps should produce different IDs
+	ts2 := time.Date(2025, 6, 1, 12, 0, 1, 0, time.UTC)
+	id3 := generateDealID(ts2)
+	if id1 == id3 {
+		t.Errorf("Different timestamps should produce different IDs")
 	}
 }

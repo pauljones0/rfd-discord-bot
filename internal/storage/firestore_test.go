@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"cloud.google.com/go/firestore/apiv1/firestorepb"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func TestTrimOldDeals_CountTypeAssertions(t *testing.T) {
@@ -73,5 +72,3 @@ func TestErrDealExists(t *testing.T) {
 	}
 }
 
-// Verify unused import doesn't cause issues
-var _ = &structpb.Value{}

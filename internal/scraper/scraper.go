@@ -54,12 +54,12 @@ func NewWithBaseURL(cfg *config.Config, selectors SelectorConfig, baseURL string
 }
 
 func (c *Client) ScrapeDealList(ctx context.Context) ([]models.DealInfo, error) {
-	slog.Info("Scraping RFD Hot Deals list...", "url", hotDealsURL)
-
 	targetURL := hotDealsURL
 	if c.baseURL != "" {
 		targetURL = c.baseURL + "/hot-deals"
 	}
+
+	slog.Info("Scraping RFD Hot Deals list...", "url", targetURL)
 
 	var scrapedDeals []models.DealInfo
 	var err error

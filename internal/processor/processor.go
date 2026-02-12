@@ -44,6 +44,13 @@ func New(store DealStore, n DealNotifier, s scraper.Scraper, cfg *config.Config)
 	}
 }
 
+// generateDealID creates a stable deal identity based on PublishedTimestamp.
+// This survives title and URL edits by the post author.
+func generateDealID(published time.Time) string {
+	hash := sha256.Sum256([]byte(published.Format(time.RFC3339Nano)))
+	return hex.EncodeToString(hash[:])
+}
+
 func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	scrapedDeals, err := p.scraper.ScrapeDealList(ctx)
 	if err != nil {
@@ -53,16 +60,18 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 
 	// Filter deals that need detail scraping
 	var dealsToDetail []*models.DealInfo
-	
+
+	// Cache existing deals so processSingleDeal doesn't re-read them
+	existingDeals := make(map[string]*models.DealInfo)
+
 	for i := range scrapedDeals {
 		deal := &scrapedDeals[i]
-		
-		// Pre-calculate ID to check DB
-		if strings.TrimSpace(deal.Title) == "" || strings.TrimSpace(deal.PostURL) == "" {
+
+		// Skip deals missing required fields
+		if strings.TrimSpace(deal.Title) == "" || strings.TrimSpace(deal.PostURL) == "" || deal.PublishedTimestamp.IsZero() {
 			continue
 		}
-		hash := sha256.Sum256([]byte(deal.PostURL))
-		deal.FirestoreID = hex.EncodeToString(hash[:])
+		deal.FirestoreID = generateDealID(deal.PublishedTimestamp)
 
 		existing, err := p.store.GetDealByID(ctx, deal.FirestoreID)
 		if err != nil {
@@ -77,25 +86,22 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 			continue
 		}
 
-		// Existing deal — check if basic attributes changed.
-		// If basic attributes (Title, Author, Counts) are same, we assume details (URL, Image) are same.
-		// `basicStatsChanged` is a helper we need to ensure exists or logic here.
-		// Let's implement the logic inline or check if `dealChanged` is sufficient?
-		// `dealChanged` checks ALL fields including ActualDealURL.
-		// We want to check ONLY the fields we have from the list.
-		
+		// Cache the existing deal so processSingleDeal skips re-reading
+		existingDeals[deal.FirestoreID] = existing
+
+		// Check if any list-visible fields changed
 		listChanged := existing.Title != deal.Title ||
+			existing.PostURL != deal.PostURL ||
 			existing.LikeCount != deal.LikeCount ||
 			existing.CommentCount != deal.CommentCount ||
 			existing.ViewCount != deal.ViewCount ||
 			existing.AuthorName != deal.AuthorName
 
 		if listChanged {
-			// List info changed, so we should re-scrape details to be safe (or just update stats).
-			// Usually if stats change, details *might* change (e.g. update OP), but simpler to just re-scrape.
+			// Re-scrape details when list data changed
 			dealsToDetail = append(dealsToDetail, deal)
 		} else {
-			// Unchanged. Copy details from existing to deal so processSingleDeal doesn't see a diff/blank.
+			// Unchanged. Copy details from existing so processSingleDeal doesn't see a diff.
 			deal.ActualDealURL = existing.ActualDealURL
 			deal.ThreadImageURL = existing.ThreadImageURL
 		}
@@ -112,7 +118,8 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	var errorMessages []string
 
 	for _, deal := range scrapedDeals {
-		isNew, isUpdated, err := p.processSingleDeal(ctx, deal)
+		existing := existingDeals[deal.FirestoreID] // may be nil for new deals
+		isNew, isUpdated, err := p.processSingleDeal(ctx, deal, existing)
 		if err != nil {
 			errorMessages = append(errorMessages, err.Error())
 			continue
@@ -139,21 +146,17 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	return nil
 }
 
-func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealInfo) (isNew, isUpdated bool, err error) {
-	if strings.TrimSpace(deal.Title) == "" || strings.TrimSpace(deal.PostURL) == "" {
+func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealInfo, existing *models.DealInfo) (isNew, isUpdated bool, err error) {
+	if strings.TrimSpace(deal.Title) == "" || strings.TrimSpace(deal.PostURL) == "" || deal.PublishedTimestamp.IsZero() {
 		slog.Info("Skipping invalid deal", "title", deal.Title)
 		return false, false, nil
 	}
 
-	hash := sha256.Sum256([]byte(deal.PostURL))
-	deal.FirestoreID = hex.EncodeToString(hash[:])
-	deal.LastUpdated = time.Now()
-
-	// Try to find existing deal
-	existing, err := p.store.GetDealByID(ctx, deal.FirestoreID)
-	if err != nil {
-		return false, false, fmt.Errorf("error checking Firestore for deal %s: %v", deal.FirestoreID, err)
+	// ID was already computed in ProcessDeals; ensure it's set
+	if deal.FirestoreID == "" {
+		deal.FirestoreID = generateDealID(deal.PublishedTimestamp)
 	}
+	deal.LastUpdated = time.Now()
 
 	// New deal — try to create it
 	if existing == nil {
@@ -189,8 +192,9 @@ func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealI
 		return false, false, nil
 	}
 
-	// Apply updates
+	// Apply updates (including PostURL which may have changed)
 	existing.Title = deal.Title
+	existing.PostURL = deal.PostURL
 	existing.LikeCount = deal.LikeCount
 	existing.CommentCount = deal.CommentCount
 	existing.ViewCount = deal.ViewCount
@@ -243,6 +247,7 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 		existing.CommentCount != scraped.CommentCount ||
 		existing.ViewCount != scraped.ViewCount ||
 		existing.Title != scraped.Title ||
+		existing.PostURL != scraped.PostURL ||
 		existing.ThreadImageURL != scraped.ThreadImageURL ||
 		existing.ActualDealURL != scraped.ActualDealURL
 }
