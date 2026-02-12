@@ -10,10 +10,10 @@
       "author_link": ".thread_author",
       "author_name": "a",
       "thread_image": ".thread_image_container img",
-      "like_count": ".count_total",
-      "comment_count": ".posts",
+      "like_count": ".thread_inner_footer .votes",
+      "comment_count": ".thread_inner_footer .posts",
       "comment_count_fallback": ".posts_count",
-      "view_count": ".views"
+      "view_count": ".thread_inner_footer .views"
     }
   },
   "deal_details": {

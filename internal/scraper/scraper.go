@@ -188,24 +188,24 @@ func (c *Client) attemptScrape(ctx context.Context, url string) ([]models.DealIn
 		// 6. Like Count
 		likeCountSelection := s.Find(listSelectors.Elements.LikeCount)
 		if likeCountSelection.Length() > 0 {
-			deal.LikeCount = util.SafeAtoi(util.ParseSignedNumericString(likeCountSelection.Text()))
+			deal.LikeCount = util.SafeAtoi(util.ParseSignedNumericString(likeCountSelection.First().Text()))
 		}
 
 		// 7. Comment Count
 		commentCountSelection := s.Find(listSelectors.Elements.CommentCount)
 		if commentCountSelection.Length() > 0 {
-			deal.CommentCount = util.SafeAtoi(util.CleanNumericString(commentCountSelection.Text()))
+			deal.CommentCount = util.SafeAtoi(util.CleanNumericString(commentCountSelection.First().Text()))
 		} else {
 			fallbackCommentCountSelection := s.Find(listSelectors.Elements.CommentCountFallback)
 			if fallbackCommentCountSelection.Length() > 0 {
-				deal.CommentCount = util.SafeAtoi(util.CleanNumericString(fallbackCommentCountSelection.Text()))
+				deal.CommentCount = util.SafeAtoi(util.CleanNumericString(fallbackCommentCountSelection.First().Text()))
 			}
 		}
 
 		// 8. View Count
 		viewCountSelection := s.Find(listSelectors.Elements.ViewCount)
 		if viewCountSelection.Length() > 0 {
-			deal.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.Text()))
+			deal.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.First().Text()))
 		}
 
 		if len(parseErrors) > 0 {
