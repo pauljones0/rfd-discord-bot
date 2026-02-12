@@ -12,7 +12,6 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
-	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
 	"github.com/pauljones0/rfd-discord-bot/internal/storage"
 )
@@ -22,14 +21,14 @@ type Processor interface {
 }
 
 type DealProcessor struct {
-	store          *storage.Client
-	notifier       *notifier.Client
+	store          DealStore
+	notifier       DealNotifier
 	scraper        scraper.Scraper
 	config         *config.Config
 	updateInterval time.Duration
 }
 
-func New(store *storage.Client, n *notifier.Client, s scraper.Scraper, cfg *config.Config) *DealProcessor {
+func New(store DealStore, n DealNotifier, s scraper.Scraper, cfg *config.Config) *DealProcessor {
 	interval, err := time.ParseDuration(cfg.DiscordUpdateInterval)
 	if err != nil {
 		log.Printf("Warning: Invalid update interval '%s', using 10m: %v", cfg.DiscordUpdateInterval, err)
@@ -69,6 +68,13 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 		}
 	}
 
+	// Trim old deals once per processing run instead of per-deal
+	if newCount > 0 {
+		if err := p.store.TrimOldDeals(ctx, 500); err != nil {
+			log.Printf("Warning: Failed to trim old deals: %v", err)
+		}
+	}
+
 	log.Printf("Finished processing. New: %d, Updated: %d", newCount, updatedCount)
 	if len(errorMessages) > 0 {
 		return fmt.Errorf("processed with errors: %s", strings.Join(errorMessages, "; "))
@@ -97,9 +103,6 @@ func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealI
 		createErr := p.store.TryCreateDeal(ctx, deal)
 		if createErr == nil {
 			log.Printf("New deal '%s' added.", deal.Title)
-			if err := p.store.TrimOldDeals(ctx, 500); err != nil {
-				log.Printf("Warning: Failed to trim old deals: %v", err)
-			}
 			p.sendAndSaveDiscordID(ctx, &deal)
 			return true, false, nil
 		}
@@ -142,19 +145,24 @@ func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealI
 	existing.ActualDealURL = deal.ActualDealURL
 	existing.LastUpdated = time.Now()
 
+	// If a throttled Discord update will happen, set the timestamp before persisting
+	// so we only need a single Firestore write.
+	shouldUpdateDiscord := existing.DiscordMessageID != "" &&
+		time.Since(existing.DiscordLastUpdatedTime) >= p.updateInterval
+	if shouldUpdateDiscord {
+		existing.DiscordLastUpdatedTime = time.Now()
+	}
+
 	if err := p.store.UpdateDeal(ctx, *existing); err != nil {
 		log.Printf("Warning: Failed to update existing deal %s: %v", existing.FirestoreID, err)
 		return false, false, nil
 	}
 	log.Printf("Updated deal: %s", existing.Title)
 
-	// Throttle Discord updates
-	if existing.DiscordMessageID != "" && time.Since(existing.DiscordLastUpdatedTime) >= p.updateInterval {
-		if err := p.notifier.Update(ctx, existing.DiscordMessageID, *existing); err == nil {
-			existing.DiscordLastUpdatedTime = time.Now()
-			if err := p.store.UpdateDeal(ctx, *existing); err != nil {
-				log.Printf("Warning: Failed to save Discord update timestamp: %v", err)
-			}
+	// Send Discord update after persisting
+	if shouldUpdateDiscord {
+		if err := p.notifier.Update(ctx, existing.DiscordMessageID, *existing); err != nil {
+			log.Printf("Warning: Discord update failed for %s: %v", existing.FirestoreID, err)
 		}
 	}
 

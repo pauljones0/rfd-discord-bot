@@ -32,13 +32,13 @@ func TestCleanReferralLink(t *testing.T) {
 		{
 			name:     "BestBuy redirect",
 			input:    "https://bestbuyca.o93x.net/c/123/456/789?u=https://bestbuy.ca/product",
-			expected: "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u=https://bestbuy.ca/product",
+			expected: "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u=https%3A%2F%2Fbestbuy.ca%2Fproduct",
 			changed:  true,
 		},
 		{
 			name:     "BestBuy redirect secondary param",
 			input:    "https://bestbuyca.o93x.net/c/123/456/789?subId1=foo&u=https://bestbuy.ca/product",
-			expected: "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u=https://bestbuy.ca/product",
+			expected: "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u=https%3A%2F%2Fbestbuy.ca%2Fproduct",
 			changed:  true,
 		},
 	}

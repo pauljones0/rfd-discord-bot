@@ -45,6 +45,12 @@ func LoadSelectors(path string) (SelectorConfig, error) {
 		return DefaultSelectors, fmt.Errorf("failed to read selector config file: %w", err)
 	}
 
+	return LoadSelectorsFromBytes(data)
+}
+
+// LoadSelectorsFromBytes parses selector configuration from raw JSON bytes.
+// This supports loading from embedded data via go:embed.
+func LoadSelectorsFromBytes(data []byte) (SelectorConfig, error) {
 	var config SelectorConfig
 	if err := json.Unmarshal(data, &config); err != nil {
 		return DefaultSelectors, fmt.Errorf("failed to parse selector config JSON: %w", err)

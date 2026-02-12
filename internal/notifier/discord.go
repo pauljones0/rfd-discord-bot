@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
@@ -17,7 +19,7 @@ const (
 	colorColdDeal    = 3092790  // #2F3136
 	colorWarmDeal    = 16753920 // #FFA500
 	colorHotDeal     = 16711680 // #FF0000
-	colorVeryHotDeal = 16776960 // #FFFFFF
+	colorVeryHotDeal = 16776960 // #FFFF00 (yellow)
 
 	heatScoreThresholdCold = 0.05
 	heatScoreThresholdWarm = 0.1
@@ -25,14 +27,16 @@ const (
 )
 
 type Client struct {
-	webhookURL string
-	client     *http.Client
+	webhookURL  string
+	client      *http.Client
+	rateLimiter *rate.Limiter
 }
 
 func New(webhookURL string) *Client {
 	return &Client{
-		webhookURL: webhookURL,
-		client:     &http.Client{Timeout: 10 * time.Second},
+		webhookURL:  webhookURL,
+		client:      &http.Client{Timeout: 10 * time.Second},
+		rateLimiter: rate.NewLimiter(rate.Every(60*time.Second/25), 1), // 25 req/min
 	}
 }
 
@@ -163,13 +167,21 @@ func (c *Client) sendAndGetMessageID(ctx context.Context, embed discordEmbed) (s
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	// Rate limit to avoid hitting Discord's webhook rate limits.
+	if err := c.rateLimiter.Wait(ctx); err != nil {
+		return "", fmt.Errorf("rate limiter wait: %w", err)
+	}
+
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return "", fmt.Errorf("failed to read discord response body: %w", readErr)
+	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		var msgResponse discordMessageResponse
 		if err := json.Unmarshal(bodyBytes, &msgResponse); err != nil {
@@ -199,6 +211,11 @@ func (c *Client) updateDiscordMessage(ctx context.Context, messageID string, emb
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	// Rate limit to avoid hitting Discord's webhook rate limits.
+	if err := c.rateLimiter.Wait(ctx); err != nil {
+		return fmt.Errorf("rate limiter wait: %w", err)
+	}
+
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
@@ -208,7 +225,10 @@ func (c *Client) updateDiscordMessage(ctx context.Context, messageID string, emb
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("discord update failed: %s (could not read body: %v)", resp.Status, readErr)
+	}
 	return fmt.Errorf("discord update failed: %s, body: %s", resp.Status, string(bodyBytes))
 }
 

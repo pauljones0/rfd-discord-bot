@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -28,6 +29,7 @@ type Client struct {
 	httpClient *http.Client
 	config     *config.Config
 	selectors  SelectorConfig
+	baseURL    string // overrides hotDealsURL when set (used for testing)
 }
 
 func New(cfg *config.Config, selectors SelectorConfig) *Client {
@@ -38,15 +40,28 @@ func New(cfg *config.Config, selectors SelectorConfig) *Client {
 	}
 }
 
+// NewWithBaseURL creates a scraper Client that uses the given base URL
+// instead of the default RFD URL. Useful for integration tests.
+func NewWithBaseURL(cfg *config.Config, selectors SelectorConfig, baseURL string) *Client {
+	c := New(cfg, selectors)
+	c.baseURL = baseURL
+	return c
+}
+
 func (c *Client) ScrapeHotDealsPage(ctx context.Context) ([]models.DealInfo, error) {
 	log.Println("Fetching RFD Hot Deals page via scraping...")
+
+	targetURL := hotDealsURL
+	if c.baseURL != "" {
+		targetURL = c.baseURL + "/hot-deals"
+	}
 
 	maxRetries := 3
 	var scrapedDeals []models.DealInfo
 	var err error
 
 	for i := 0; i <= maxRetries; i++ {
-		scrapedDeals, err = c.attemptScrape(ctx, hotDealsURL)
+		scrapedDeals, err = c.attemptScrape(ctx, targetURL)
 		if err == nil {
 			break
 		}
@@ -237,14 +252,15 @@ func (c *Client) fetchDealDetails(ctx context.Context, deals []models.DealInfo) 
 	semaphore := make(chan struct{}, concurrencyLimit)
 	results := make(chan detailResult, len(deals))
 
-	activeGoroutines := 0
+	var wg sync.WaitGroup
 	for i, d := range deals {
 		if d.PostURL == "" {
 			continue
 		}
 
-		activeGoroutines++
+		wg.Add(1)
 		go func(index int, urlStr string) {
+			defer wg.Done()
 			select {
 			case semaphore <- struct{}{}:
 			case <-ctx.Done():
@@ -258,25 +274,26 @@ func (c *Client) fetchDealDetails(ctx context.Context, deals []models.DealInfo) 
 		}(i, d.PostURL)
 	}
 
-	for i := 0; i < activeGoroutines; i++ {
-		select {
-		case res := <-results:
-			if res.err != nil {
-				log.Printf("Warning: Failed to scrape detail page for %s: %v", deals[res.index].PostURL, res.err)
-				continue
+	// Close results channel once all goroutines are done
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for res := range results {
+		if res.err != nil {
+			log.Printf("Warning: Failed to scrape detail page for %s: %v", deals[res.index].PostURL, res.err)
+			continue
+		}
+		deals[res.index].ActualDealURL = res.url
+		if deals[res.index].ActualDealURL != "" {
+			cleanedURL, changed := util.CleanReferralLink(deals[res.index].ActualDealURL, c.config.AmazonAffiliateTag)
+			if changed {
+				deals[res.index].ActualDealURL = cleanedURL
 			}
-			deals[res.index].ActualDealURL = res.url
-			if deals[res.index].ActualDealURL != "" {
-				cleanedURL, changed := util.CleanReferralLink(deals[res.index].ActualDealURL, c.config.AmazonAffiliateTag)
-				if changed {
-					deals[res.index].ActualDealURL = cleanedURL
-				}
-			}
-			if deals[res.index].ActualDealURL == "" {
-				log.Printf("ActualDealURL for %s was empty after parsing.", deals[res.index].PostURL)
-			}
-		case <-ctx.Done():
-			return
+		}
+		if deals[res.index].ActualDealURL == "" {
+			log.Printf("ActualDealURL for %s was empty after parsing.", deals[res.index].PostURL)
 		}
 	}
 }

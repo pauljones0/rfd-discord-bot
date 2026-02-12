@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Best Buy specific constants
+// Best Buy affiliate constants — swaps any existing Best Buy affiliate link to ours.
 const newBestBuyPrefix = "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
 
 var bestBuyRegex = regexp.MustCompile(`^https://bestbuyca\.o93x\.net/c/\d+/\d+/\d+`)
@@ -39,18 +39,12 @@ func CleanReferralLink(rawUrl string, amazonTag string) (string, bool) {
 		return rawUrl, false
 
 	case parsedUrl.Host == "bestbuyca.o93x.net" && bestBuyRegex.MatchString(rawUrl):
-		// Support both ?u= and &u= parameters
-		uIndex := strings.Index(rawUrl, "?u=")
-		if uIndex == -1 {
-			uIndex = strings.Index(rawUrl, "&u=")
-		}
-		if uIndex == -1 {
+		// Swap to our Best Buy affiliate link, preserving the destination product URL.
+		productURL := parsedUrl.Query().Get("u")
+		if productURL == "" {
 			return rawUrl, false
 		}
-
-		// Skip past the "?u=" or "&u=" (length 3)
-		productURLPart := rawUrl[uIndex+3:]
-		cleanedURL := newBestBuyPrefix + productURLPart
+		cleanedURL := newBestBuyPrefix + url.QueryEscape(productURL)
 		return cleanedURL, true
 
 	case strings.Contains(parsedUrl.Host, "amazon."):
