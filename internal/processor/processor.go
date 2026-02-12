@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -31,7 +31,7 @@ type DealProcessor struct {
 func New(store DealStore, n DealNotifier, s scraper.Scraper, cfg *config.Config) *DealProcessor {
 	interval, err := time.ParseDuration(cfg.DiscordUpdateInterval)
 	if err != nil {
-		log.Printf("Warning: Invalid update interval '%s', using 10m: %v", cfg.DiscordUpdateInterval, err)
+		slog.Warn("Invalid update interval, using default", "interval", cfg.DiscordUpdateInterval, "error", err, "default", "10m")
 		interval = 10 * time.Minute
 	}
 
@@ -45,11 +45,68 @@ func New(store DealStore, n DealNotifier, s scraper.Scraper, cfg *config.Config)
 }
 
 func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
-	scrapedDeals, err := p.scraper.ScrapeHotDealsPage(ctx)
+	scrapedDeals, err := p.scraper.ScrapeDealList(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to scrape hot deals page: %w", err)
+		return fmt.Errorf("failed to scrape hot deals list: %w", err)
 	}
-	log.Printf("Successfully scraped %d deals.", len(scrapedDeals))
+	slog.Info("Successfully scraped deal list", "count", len(scrapedDeals))
+
+	// Filter deals that need detail scraping
+	var dealsToDetail []*models.DealInfo
+	
+	for i := range scrapedDeals {
+		deal := &scrapedDeals[i]
+		
+		// Pre-calculate ID to check DB
+		if strings.TrimSpace(deal.Title) == "" || strings.TrimSpace(deal.PostURL) == "" {
+			continue
+		}
+		hash := sha256.Sum256([]byte(deal.PostURL))
+		deal.FirestoreID = hex.EncodeToString(hash[:])
+
+		existing, err := p.store.GetDealByID(ctx, deal.FirestoreID)
+		if err != nil {
+			slog.Warn("Failed to check deal existence, will scrape details", "id", deal.FirestoreID, "error", err)
+			dealsToDetail = append(dealsToDetail, deal)
+			continue
+		}
+
+		if existing == nil {
+			// New deal — needs details
+			dealsToDetail = append(dealsToDetail, deal)
+			continue
+		}
+
+		// Existing deal — check if basic attributes changed.
+		// If basic attributes (Title, Author, Counts) are same, we assume details (URL, Image) are same.
+		// `basicStatsChanged` is a helper we need to ensure exists or logic here.
+		// Let's implement the logic inline or check if `dealChanged` is sufficient?
+		// `dealChanged` checks ALL fields including ActualDealURL.
+		// We want to check ONLY the fields we have from the list.
+		
+		listChanged := existing.Title != deal.Title ||
+			existing.LikeCount != deal.LikeCount ||
+			existing.CommentCount != deal.CommentCount ||
+			existing.ViewCount != deal.ViewCount ||
+			existing.AuthorName != deal.AuthorName
+
+		if listChanged {
+			// List info changed, so we should re-scrape details to be safe (or just update stats).
+			// Usually if stats change, details *might* change (e.g. update OP), but simpler to just re-scrape.
+			dealsToDetail = append(dealsToDetail, deal)
+		} else {
+			// Unchanged. Copy details from existing to deal so processSingleDeal doesn't see a diff/blank.
+			deal.ActualDealURL = existing.ActualDealURL
+			deal.ThreadImageURL = existing.ThreadImageURL
+		}
+	}
+
+	if len(dealsToDetail) > 0 {
+		slog.Info("Fetching details for deals", "count", len(dealsToDetail))
+		p.scraper.FetchDealDetails(ctx, dealsToDetail)
+	} else {
+		slog.Info("No deals needed detail scraping")
+	}
 
 	var newCount, updatedCount int
 	var errorMessages []string
@@ -71,11 +128,11 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	// Trim old deals once per processing run instead of per-deal
 	if newCount > 0 {
 		if err := p.store.TrimOldDeals(ctx, 500); err != nil {
-			log.Printf("Warning: Failed to trim old deals: %v", err)
+			slog.Warn("Failed to trim old deals", "error", err)
 		}
 	}
 
-	log.Printf("Finished processing. New: %d, Updated: %d", newCount, updatedCount)
+	slog.Info("Finished processing", "new", newCount, "updated", updatedCount)
 	if len(errorMessages) > 0 {
 		return fmt.Errorf("processed with errors: %s", strings.Join(errorMessages, "; "))
 	}
@@ -84,7 +141,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 
 func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealInfo) (isNew, isUpdated bool, err error) {
 	if strings.TrimSpace(deal.Title) == "" || strings.TrimSpace(deal.PostURL) == "" {
-		log.Printf("Skipping invalid deal: %s", deal.Title)
+		slog.Info("Skipping invalid deal", "title", deal.Title)
 		return false, false, nil
 	}
 
@@ -102,7 +159,7 @@ func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealI
 	if existing == nil {
 		createErr := p.store.TryCreateDeal(ctx, deal)
 		if createErr == nil {
-			log.Printf("New deal '%s' added.", deal.Title)
+			slog.Info("New deal added", "title", deal.Title)
 			p.sendAndSaveDiscordID(ctx, &deal)
 			return true, false, nil
 		}
@@ -117,7 +174,7 @@ func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealI
 			return false, false, fmt.Errorf("error recovering from race for deal %s: %v", deal.FirestoreID, err)
 		}
 		if existing == nil {
-			log.Printf("Race condition anomaly: deal %s claimed to exist but returned nil", deal.FirestoreID)
+			slog.Warn("Race condition anomaly: deal claimed to exist but returned nil", "id", deal.FirestoreID)
 			return false, false, nil
 		}
 	}
@@ -154,15 +211,14 @@ func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealI
 	}
 
 	if err := p.store.UpdateDeal(ctx, *existing); err != nil {
-		log.Printf("Warning: Failed to update existing deal %s: %v", existing.FirestoreID, err)
-		return false, false, nil
+		return false, false, fmt.Errorf("failed to update deal %s: %w", existing.FirestoreID, err)
 	}
-	log.Printf("Updated deal: %s", existing.Title)
+	slog.Info("Updated deal", "title", existing.Title)
 
 	// Send Discord update after persisting
 	if shouldUpdateDiscord {
 		if err := p.notifier.Update(ctx, existing.DiscordMessageID, *existing); err != nil {
-			log.Printf("Warning: Discord update failed for %s: %v", existing.FirestoreID, err)
+			slog.Warn("Discord update failed", "id", existing.FirestoreID, "error", err)
 		}
 	}
 
@@ -172,13 +228,13 @@ func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealI
 func (p *DealProcessor) sendAndSaveDiscordID(ctx context.Context, deal *models.DealInfo) {
 	msgID, err := p.notifier.Send(ctx, *deal)
 	if err != nil {
-		log.Printf("Error sending to Discord: %v", err)
+		slog.Error("Error sending to Discord", "error", err)
 		return
 	}
 	deal.DiscordMessageID = msgID
 	deal.DiscordLastUpdatedTime = time.Now()
 	if err := p.store.UpdateDeal(ctx, *deal); err != nil {
-		log.Printf("Warning: Failed to save Discord message ID for %s: %v", deal.FirestoreID, err)
+		slog.Warn("Failed to save Discord message ID", "id", deal.FirestoreID, "error", err)
 	}
 }
 

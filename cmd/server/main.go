@@ -4,7 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,19 +26,24 @@ type Server struct {
 }
 
 func main() {
-	log.Println("Starting RFD Hot Deals Bot server...")
-	cfg := config.Load()
+	slog.Info("Starting RFD Hot Deals Bot server...")
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("Critical error loading configuration", "error", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 	store, err := storage.New(ctx, cfg.ProjectID)
 	if err != nil {
-		log.Fatalf("Critical error initializing Firestore client: %v", err)
+		slog.Error("Critical error initializing Firestore client", "error", err)
+		os.Exit(1)
 	}
 	defer store.Close()
 
 	selectors, err := loadSelectorsWithFallback()
 	if err != nil {
-		log.Printf("Warning: Failed to load selectors: %v. Using defaults.", err)
+		slog.Warn("Failed to load selectors. Using defaults.", "error", err)
 		selectors = scraper.DefaultSelectors
 	}
 
@@ -51,10 +56,18 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", srv.ProcessDealsHandler)
 	mux.HandleFunc("/process-deals", srv.ProcessDealsHandler)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{"status":"ok"}`)
+	})
 
 	httpServer := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: mux,
+		Addr:         ":" + cfg.Port,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	// Graceful shutdown on SIGTERM/SIGINT
@@ -62,21 +75,22 @@ func main() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 		sig := <-sigCh
-		log.Printf("Received signal %v, shutting down gracefully...", sig)
+		slog.Info("Received signal, shutting down gracefully...", "signal", sig)
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("HTTP server shutdown error: %v", err)
+			slog.Error("HTTP server shutdown error", "error", err)
 		}
 	}()
 
-	log.Printf("Listening on port %s", cfg.Port)
+	slog.Info("Listening on port", "port", cfg.Port)
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Failed to listen and serve: %v", err)
+		slog.Error("Failed to listen and serve", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Server stopped.")
+	slog.Info("Server stopped.")
 }
 
 // loadSelectorsWithFallback tries the embedded selectors first,
@@ -86,10 +100,10 @@ func loadSelectorsWithFallback() (scraper.SelectorConfig, error) {
 	if err == nil {
 		sel, parseErr := scraper.LoadSelectorsFromBytes(data)
 		if parseErr == nil {
-			log.Println("Loaded selectors from embedded config.")
+			slog.Info("Loaded selectors from embedded config.")
 			return sel, nil
 		}
-		log.Printf("Warning: Embedded selectors failed to parse: %v. Trying file fallback.", parseErr)
+		slog.Warn("Embedded selectors failed to parse. Trying file fallback.", "error", parseErr)
 	}
 
 	// Fallback to external file
@@ -102,7 +116,7 @@ func loadSelectorsWithFallback() (scraper.SelectorConfig, error) {
 
 func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 	if err := s.processor.ProcessDeals(r.Context()); err != nil {
-		log.Printf("Error processing deals: %v", err)
+		slog.Error("Error processing deals", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

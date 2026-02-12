@@ -99,3 +99,77 @@ func TestNormalizeURL(t *testing.T) {
 	}
 }
 
+func TestSafeAtoi(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int
+	}{
+		{"Simple number", "42", 42},
+		{"Zero", "0", 0},
+		{"Negative", "-5", -5},
+		{"With spaces", "  123  ", 123},
+		{"Empty string", "", 0},
+		{"Non-numeric", "abc", 0},
+		{"Mixed", "12abc", 0},
+		{"Plus sign", "+42", 42},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SafeAtoi(tt.input)
+			if got != tt.want {
+				t.Errorf("SafeAtoi(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanNumericString(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"Simple number", "42", "42"},
+		{"With commas", "1,234", "1234"},
+		{"With text", "123 views", "123"},
+		{"Leading text", "+42", "42"},
+		{"Empty", "", ""},
+		{"No digits", "abc", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CleanNumericString(tt.input)
+			if got != tt.want {
+				t.Errorf("CleanNumericString(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseSignedNumericString(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"Positive", "+42", "42"},
+		{"Negative", "-5", "-5"},
+		{"With text", "Score: -12 points", "-12"},
+		{"Plain number", "123", "123"},
+		{"No number", "abc", ""},
+		{"Empty", "", ""},
+		{"Zero", "0", "0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseSignedNumericString(tt.input)
+			if got != tt.want {
+				t.Errorf("ParseSignedNumericString(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

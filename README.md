@@ -104,6 +104,18 @@ curl http://localhost:8080/
 ```
 Note: While you can trigger it via HTTP locally, in the deployed Google Cloud environment, the primary trigger is Cloud Scheduler.
 
+### Running Tests
+
+To run the standard unit tests:
+```bash
+go test ./...
+```
+
+To run the integration tests (which spin up a local mock server and test the full pipeline):
+```bash
+go test ./internal/processor/... -tags=integration -v
+```
+
 ## Google Cloud Deployment (Detailed & Hand-holding)
 
 These instructions will guide you through deploying the bot to Google Cloud Run.

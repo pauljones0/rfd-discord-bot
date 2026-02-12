@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 )
@@ -14,10 +15,10 @@ type Config struct {
 	AllowedDomains        []string
 }
 
-func Load() *Config {
+func Load() (*Config, error) {
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if projectID == "" {
-		log.Println("Warning: GOOGLE_CLOUD_PROJECT environment variable not set. Attempting to use a default project ID for local testing (this might fail).")
+		return nil, fmt.Errorf("GOOGLE_CLOUD_PROJECT environment variable is required but not set")
 	}
 
 	discordWebhookURL := os.Getenv("DISCORD_WEBHOOK_URL")
@@ -49,5 +50,5 @@ func Load() *Config {
 		AmazonAffiliateTag:    amazonAffiliateTag,
 		DiscordUpdateInterval: discordUpdateInterval,
 		AllowedDomains:        []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com"},
-	}
+	}, nil
 }

@@ -2,8 +2,9 @@ package scraper
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,8 +22,12 @@ const (
 	rfdBase     = "https://forums.redflagdeals.com"
 )
 
+// ErrDealLinkNotFound is returned when a deal detail page does not contain an external deal link.
+var ErrDealLinkNotFound = errors.New("deal link not found on detail page")
+
 type Scraper interface {
-	ScrapeHotDealsPage(ctx context.Context) ([]models.DealInfo, error)
+	ScrapeDealList(ctx context.Context) ([]models.DealInfo, error)
+	FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 }
 
 type Client struct {
@@ -48,26 +53,26 @@ func NewWithBaseURL(cfg *config.Config, selectors SelectorConfig, baseURL string
 	return c
 }
 
-func (c *Client) ScrapeHotDealsPage(ctx context.Context) ([]models.DealInfo, error) {
-	log.Println("Fetching RFD Hot Deals page via scraping...")
+func (c *Client) ScrapeDealList(ctx context.Context) ([]models.DealInfo, error) {
+	slog.Info("Scraping RFD Hot Deals list...", "url", hotDealsURL)
 
 	targetURL := hotDealsURL
 	if c.baseURL != "" {
 		targetURL = c.baseURL + "/hot-deals"
 	}
 
-	maxRetries := 3
 	var scrapedDeals []models.DealInfo
 	var err error
 
+	maxRetries := 3
 	for i := 0; i <= maxRetries; i++ {
-		scrapedDeals, err = c.attemptScrape(ctx, targetURL)
+		scrapedDeals, err = c.attemptScrapeList(ctx, targetURL)
 		if err == nil {
 			break
 		}
 		if i < maxRetries {
 			backoff := time.Duration(1<<i) * time.Second
-			log.Printf("[ALERT] Scraping attempt %d failed: %v. Retrying in %v...", i+1, err, backoff)
+			slog.Warn("Scraping list attempt failed, retrying", "attempt", i+1, "error", err, "backoff", backoff)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -77,8 +82,8 @@ func (c *Client) ScrapeHotDealsPage(ctx context.Context) ([]models.DealInfo, err
 	}
 
 	if err != nil {
-		log.Printf("[ALERT] Critical error scraping hot deals page after %d attempts: %v", maxRetries+1, err)
-		return nil, fmt.Errorf("failed to scrape hot deals page: %w", err)
+		slog.Error("All retry attempts failed for ScrapeDealList", "error", err)
+		return nil, fmt.Errorf("failed to scrape hot deals list: %w", err)
 	}
 
 	return scrapedDeals, nil
@@ -113,8 +118,8 @@ func resolveLink(s *goquery.Selection, selector string) (href, text string) {
 	return href, text
 }
 
-func (c *Client) attemptScrape(ctx context.Context, targetURL string) ([]models.DealInfo, error) {
-	log.Printf("Scraping hot deals page: %s", targetURL)
+func (c *Client) attemptScrapeList(ctx context.Context, targetURL string) ([]models.DealInfo, error) {
+	slog.Warn("Scraping hot deals page", "url", targetURL)
 	doc, err := c.fetchHTMLContent(ctx, targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch or parse hot deals page %s: %w", targetURL, err)
@@ -135,9 +140,6 @@ func (c *Client) attemptScrape(ctx context.Context, targetURL string) ([]models.
 		deal := c.parseDealFromSelection(s, ls.Elements)
 		deals = append(deals, deal)
 	})
-
-	// Fetch detail pages concurrently
-	c.fetchDealDetails(ctx, deals)
 
 	return deals, nil
 }
@@ -236,42 +238,45 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 	}
 
 	if len(parseErrors) > 0 {
-		log.Printf("Parsing issues for deal '%s' (URL: %s): %s", deal.Title, deal.PostURL, strings.Join(parseErrors, "; "))
+		slog.Warn("Parsing issues for deal", "title", deal.Title, "url", deal.PostURL, "errors", strings.Join(parseErrors, "; "))
 	}
 	return deal
 }
 
-func (c *Client) fetchDealDetails(ctx context.Context, deals []models.DealInfo) {
+func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo) {
 	type detailResult struct {
 		index int
 		url   string
 		err   error
 	}
 
-	concurrencyLimit := 5
-	semaphore := make(chan struct{}, concurrencyLimit)
 	results := make(chan detailResult, len(deals))
-
 	var wg sync.WaitGroup
-	for i, d := range deals {
-		if d.PostURL == "" {
+
+	// Limit concurrency
+	sem := make(chan struct{}, 5)
+
+	for i := range deals {
+		// Skip if PostURL is empty
+		if deals[i].PostURL == "" {
 			continue
 		}
 
 		wg.Add(1)
-		go func(index int, urlStr string) {
+		go func(idx int) {
 			defer wg.Done()
 			select {
-			case semaphore <- struct{}{}:
+			case sem <- struct{}{}:
 			case <-ctx.Done():
-				results <- detailResult{index: index, err: ctx.Err()}
+				results <- detailResult{index: idx, err: ctx.Err()}
 				return
 			}
-			defer func() { <-semaphore }()
+			defer func() { <-sem }()
 
-			actualURL, err := c.scrapeDealDetailPage(ctx, urlStr)
-			results <- detailResult{index: index, url: actualURL, err: err}
-		}(i, d.PostURL)
+			// Use the pointer directly
+			actualURL, err := c.scrapeDealDetailPage(ctx, deals[idx].PostURL)
+			results <- detailResult{index: idx, url: actualURL, err: err}
+		}(i)
 	}
 
 	// Close results channel once all goroutines are done
@@ -282,7 +287,11 @@ func (c *Client) fetchDealDetails(ctx context.Context, deals []models.DealInfo) 
 
 	for res := range results {
 		if res.err != nil {
-			log.Printf("Warning: Failed to scrape detail page for %s: %v", deals[res.index].PostURL, res.err)
+			if errors.Is(res.err, ErrDealLinkNotFound) {
+				slog.Info("No external deal link found", "postURL", deals[res.index].PostURL)
+			} else {
+				slog.Warn("Failed to scrape detail page", "url", deals[res.index].PostURL, "error", res.err)
+			}
 			continue
 		}
 		deals[res.index].ActualDealURL = res.url
@@ -293,7 +302,7 @@ func (c *Client) fetchDealDetails(ctx context.Context, deals []models.DealInfo) 
 			}
 		}
 		if deals[res.index].ActualDealURL == "" {
-			log.Printf("ActualDealURL for %s was empty after parsing.", deals[res.index].PostURL)
+			slog.Warn("ActualDealURL was empty after parsing", "postURL", deals[res.index].PostURL)
 		}
 	}
 }
@@ -324,7 +333,7 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		}
 	}
 
-	return "", nil
+	return "", ErrDealLinkNotFound
 }
 
 func (c *Client) fetchHTMLContent(ctx context.Context, urlStr string) (*goquery.Document, error) {

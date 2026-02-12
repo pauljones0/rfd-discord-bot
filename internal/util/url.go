@@ -11,11 +11,7 @@ func NormalizeURL(rawURL string) (string, error) {
 		return rawURL, err
 	}
 	parsedURL.Scheme = "https"
-	if strings.HasPrefix(parsedURL.Host, "www.") {
-		if parsedURL.Host == "www.forums.redflagdeals.com" || parsedURL.Host == "www.redflagdeals.com" {
-			parsedURL.Host = strings.TrimPrefix(parsedURL.Host, "www.")
-		}
-	}
+	parsedURL.Host = strings.TrimPrefix(parsedURL.Host, "www.")
 	if parsedURL.Host == "redflagdeals.com" {
 		parsedURL.Host = "forums.redflagdeals.com"
 	}

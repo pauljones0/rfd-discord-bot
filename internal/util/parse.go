@@ -7,7 +7,6 @@ import (
 )
 
 func SafeAtoi(s string) int {
-	s = strings.ReplaceAll(s, ",", "")
 	i, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil {
 		return 0

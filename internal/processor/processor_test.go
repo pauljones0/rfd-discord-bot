@@ -94,8 +94,13 @@ type mockScraper struct {
 	err   error
 }
 
-func (m *mockScraper) ScrapeHotDealsPage(_ context.Context) ([]models.DealInfo, error) {
+func (m *mockScraper) ScrapeDealList(_ context.Context) ([]models.DealInfo, error) {
 	return m.deals, m.err
+}
+
+func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealInfo) {
+	// No-op for mock, or we could update deals if needed.
+	// For basic tests, the deals struct already contains what we need.
 }
 
 func newTestProcessor(store DealStore, notifier DealNotifier, scraper *mockScraper) *DealProcessor {

@@ -66,7 +66,7 @@ func CleanReferralLink(rawUrl string, amazonTag string) (string, bool) {
 			parsedUrl.RawQuery = queryParams.Encode()
 			return parsedUrl.String(), true
 		}
-		return parsedUrl.String(), tagModified
+		return rawUrl, false
 
 	default:
 		return rawUrl, false

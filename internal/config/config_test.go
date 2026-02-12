@@ -11,7 +11,10 @@ func TestLoad(t *testing.T) {
 	t.Setenv("PORT", "9090")
 	t.Setenv("AMAZON_AFFILIATE_TAG", "test-tag-20")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
 
 	if cfg.ProjectID != "test-project" {
 		t.Errorf("Expected test-project, got %s", cfg.ProjectID)
@@ -27,5 +30,15 @@ func TestLoad(t *testing.T) {
 	}
 	if cfg.DiscordUpdateInterval != "10m" {
 		t.Errorf("Expected default 10m, got %s", cfg.DiscordUpdateInterval)
+	}
+}
+
+func TestLoad_MissingProjectID(t *testing.T) {
+	// Do NOT set GOOGLE_CLOUD_PROJECT
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+
+	_, err := Load()
+	if err == nil {
+		t.Error("Load() should return an error when GOOGLE_CLOUD_PROJECT is not set")
 	}
 }

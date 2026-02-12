@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -61,10 +61,6 @@ func (c *Client) GetDealByID(ctx context.Context, id string) (*models.DealInfo, 
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get deal by ID %s: %w", id, err)
-	}
-
-	if !doc.Exists() {
-		return nil, nil
 	}
 
 	var deal models.DealInfo
@@ -133,7 +129,7 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 		defer cancel()
 	}
 
-	log.Printf("TrimOldDeals: Entered function with maxDeals = %d", maxDeals)
+	slog.Info("TrimOldDeals: Entered function", "maxDeals", maxDeals)
 	collectionRef := c.client.Collection(firestoreCollection)
 
 	// Get current count
@@ -164,7 +160,7 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 	}
 
 	numToDelete := currentDealCount - maxDeals
-	log.Printf("TrimOldDeals: Trimming needed. Current: %d, Max: %d. Deleting: %d.", currentDealCount, maxDeals, numToDelete)
+	slog.Info("TrimOldDeals: Trimming needed", "current", currentDealCount, "max", maxDeals, "deleting", numToDelete)
 
 	// Query for the oldest deals to delete
 	iter := collectionRef.
@@ -195,14 +191,14 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 
 		_, delErr := bulkWriter.Delete(doc.Ref)
 		if delErr != nil {
-			log.Printf("TrimOldDeals: Error queueing delete for ID %s: %v", doc.Ref.ID, delErr)
+			slog.Error("TrimOldDeals: Error queueing delete", "id", doc.Ref.ID, "error", delErr)
 		}
 		deletedCount++
 	}
 
 	if deletedCount > 0 {
 		bulkWriter.Flush()
-		log.Printf("TrimOldDeals: Flushed %d delete operations.", deletedCount)
+		slog.Info("TrimOldDeals: Flushed delete operations", "count", deletedCount)
 	}
 
 	return nil
