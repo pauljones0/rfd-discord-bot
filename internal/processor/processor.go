@@ -30,7 +30,7 @@ type DealProcessor struct {
 }
 
 type DealAnalyzer interface {
-	AnalyzeDeal(ctx context.Context, title string) (string, bool, error)
+	AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, error)
 }
 
 func New(store DealStore, n DealNotifier, s DealScraper, v DealValidator, cfg *config.Config, ai DealAnalyzer) *DealProcessor {
@@ -159,17 +159,23 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 
 		// Optimization: Only fetch details if we actually need them.
 		// We need details if:
-		// 1. We don't have the ActualDealURL yet (maybe previous scrape failed to get it)
-		// 2. The PostURL changed (unlikely for same ID, but possible if ID is based on timestamp only and URL was updated)
-		// We do NOT need details if only metrics (Likes, Comments, Views) changed.
-		needsDetails := existing.ActualDealURL == "" || existing.PostURL != deal.PostURL
+		// 1. We don't have the ActualDealURL or Description yet.
+		// 2. The PostURL changed (new thread/link).
+		// 3. The Title changed (likely implies content update or significant edit).
+		needsDetails := existing.ActualDealURL == "" ||
+			existing.Description == "" ||
+			existing.PostURL != deal.PostURL ||
+			existing.Title != deal.Title
 
 		if needsDetails {
 			dealsToDetail = append(dealsToDetail, deal)
 		} else {
-			// Unchanged or only metrics changed — copy details from existing
+			// Unchanged or only metrics changed — copy details from existing so we have them for AI (if needed) or storage
 			deal.ActualDealURL = existing.ActualDealURL
 			deal.ThreadImageURL = existing.ThreadImageURL
+			deal.Description = existing.Description
+			deal.Comments = existing.Comments
+			deal.Summary = existing.Summary
 		}
 	}
 
@@ -188,25 +194,31 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 		existing := existingDeals[deal.FirestoreID]
 		isNew := existing == nil
 
-		// We only analyze if:
+		// We analyze if:
 		// 1. It's a new deal.
-		// 2. Or existing deal hasn't been processed (backfill).
-		// 3. And we haven't already set the CleanTitle (scraped deals might eventually carry this, but for now they don't).
+		// 2. Or existing deal hasn't been processed.
+		// 3. Or significant fields changed (Title/URL) which invalidates previous AI analysis.
 		shouldAnalyze := isNew || !existing.AIProcessed
 
-		// Optimization: If title hasn't changed, and we already processed it, don't re-process.
-		// But if title changed, we might want to re-process. For now, let's stick to simple "if not processed".
+		if !shouldAnalyze && existing != nil {
+			if deal.Title != existing.Title || deal.PostURL != existing.PostURL {
+				shouldAnalyze = true
+				logger.Info("Re-analyzing deal due to content change", "title", deal.Title)
+			}
+		}
 
 		if shouldAnalyze {
 			// Double check if we already have a clean title from somewhere else (unlikely with current flow)
-			if deal.CleanTitle != "" && deal.AIProcessed {
+			// But if we are re-analyzing, we ignore the existing clean title.
+			if !isNew && deal.CleanTitle != "" && deal.AIProcessed {
+				// This case shouldn't really happen with current flow unless we set it manually before here
 				continue
 			}
 
 			// Call AI
 			// Note: This is done sequentially here. For high volume, we might want concurrency,
 			// but for a few deals every 10 mins, sequential is fine and safer for rate limits.
-			cleanedTitle, isHot, err := p.aiClient.AnalyzeDeal(ctx, deal.Title)
+			cleanedTitle, isHot, err := p.aiClient.AnalyzeDeal(ctx, deal)
 			if err != nil {
 				// Log error but continue. Deal stays "unprocessed" effectively, or we mark it processed with failure?
 				// For now, just log. Next run will try again if we don't save AIProcessed=true.
@@ -288,6 +300,9 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 	existing.AuthorURL = scraped.AuthorURL
 	existing.PublishedTimestamp = scraped.PublishedTimestamp
 	existing.ActualDealURL = scraped.ActualDealURL
+	existing.Description = scraped.Description
+	existing.Comments = scraped.Comments
+	existing.Summary = scraped.Summary
 
 	// AI fields
 	if scraped.AIProcessed {

@@ -145,7 +145,7 @@ type mockDealAnalyzer struct {
 	called     bool
 }
 
-func (m *mockDealAnalyzer) AnalyzeDeal(ctx context.Context, title string) (string, bool, error) {
+func (m *mockDealAnalyzer) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, error) {
 	m.called = true
 	return m.cleanTitle, m.isHot, m.err
 }
@@ -547,20 +547,22 @@ func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
 	unchangedDeal := models.DealInfo{Title: "Same", FirestoreID: "id4", LikeCount: 5}
 
 	existingDeals := map[string]*models.DealInfo{
-		"id2": {Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://old.url", LikeCount: 10, ActualDealURL: "http://old.url/item"},
-		"id3": {Title: "MetricsChanged", FirestoreID: "id3", LikeCount: 50, ActualDealURL: "http://deal.url/item"},
-		"id4": {Title: "Same", FirestoreID: "id4", LikeCount: 5, ActualDealURL: "http://deal.url/item"},
+		"id2": {Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://old.url", LikeCount: 10, ActualDealURL: "http://old.url/item", Description: "desc"},
+		"id3": {Title: "MetricsChanged", FirestoreID: "id3", LikeCount: 50, ActualDealURL: "http://deal.url/item", Description: "desc"},
+		"id4": {Title: "Same", FirestoreID: "id4", LikeCount: 5, ActualDealURL: "http://deal.url/item", Description: "desc"},
+		"id5": {Title: "OldTitle", FirestoreID: "id5", Description: "desc", ActualDealURL: "http://deal.url/item"},
 	}
 
-	validDeals := []models.DealInfo{newDeal, urlChangedDeal, onlyMetricsChangedDeal, unchangedDeal}
+	titleChangedDeal := models.DealInfo{Title: "TitleChanged", FirestoreID: "id5", LikeCount: 5}
+	validDeals := []models.DealInfo{newDeal, urlChangedDeal, onlyMetricsChangedDeal, unchangedDeal, titleChangedDeal}
 
 	p.enrichDealsWithDetails(context.Background(), validDeals, existingDeals, slog.Default())
 
 	// Check fetched details
-	// Should fetch: New, UrlChanged.
+	// Should fetch: New, UrlChanged, TitleChanged.
 	// Should NOT fetch: MetricsChanged, Same.
-	if len(scraper.fetchedDetails) != 2 {
-		t.Errorf("Expected 2 deals to be fetched (New & UrlChanged), got %d", len(scraper.fetchedDetails))
+	if len(scraper.fetchedDetails) != 3 {
+		t.Errorf("Expected 3 deals to be fetched (New, UrlChanged, TitleChanged), got %d", len(scraper.fetchedDetails))
 	}
 
 	titles := make(map[string]bool)
@@ -572,6 +574,9 @@ func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
 	}
 	if !titles["UrlChanged"] {
 		t.Error("Expected UrlChanged deal to be fetched")
+	}
+	if !titles["TitleChanged"] {
+		t.Error("Expected TitleChanged deal to be fetched")
 	}
 	if titles["MetricsChanged"] {
 		t.Error("Expected MetricsChanged deal to NOT be fetched (optimization check)")

@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -240,17 +241,24 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 		}
 
 		g.Go(func() error {
-			actualURL, err := c.scrapeDealDetailPage(ctx, deal.PostURL)
+			actualURL, description, comments, summary, err := c.scrapeDealDetailPage(ctx, deal.PostURL)
 			if err != nil {
 				if errors.Is(err, ErrDealLinkNotFound) {
 					slog.Info("No external deal link found", "postURL", deal.PostURL)
 				} else {
 					slog.Warn("Failed to scrape detail page", "url", deal.PostURL, "error", err)
 				}
-				return nil // Don't fail the group for individual deal errors
+				// We don't fail the group, just don't update fields if failed
+				// However, if we got partial data (e.g. description but no link), we might want to keep it?
+				// For now, assume error means fail.
+				return nil
 			}
 
 			deal.ActualDealURL = actualURL
+			deal.Description = description
+			deal.Comments = comments
+			deal.Summary = summary
+
 			if deal.ActualDealURL != "" {
 				cleanedURL, changed := util.CleanReferralLink(deal.ActualDealURL, c.config.AmazonAffiliateTag, c.config.BestBuyAffiliatePrefix)
 				if changed {
@@ -269,33 +277,89 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 	}
 }
 
-func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, error) {
+func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, string, string, string, error) {
 	doc, err := c.fetchHTMLContent(ctx, dealURL)
 	if err != nil {
-		return "", err
+		return "", "", "", "", err
 	}
 
+	// 1. Get Deal Link
 	ds := c.selectors.DealDetails
+	var dealLink string
 
 	// Try primary link first
 	if btn := doc.Find(ds.PrimaryLink); btn.Length() > 0 {
 		if href, found := btn.Attr("href"); found && strings.TrimSpace(href) != "" {
-			return strings.TrimSpace(href), nil
+			dealLink = strings.TrimSpace(href)
 		}
 	}
 
 	// Fallback link
-	if link := doc.Find(ds.FallbackLink); link.Length() > 0 {
-		if href, found := link.Attr("href"); found {
-			trimmed := strings.TrimSpace(href)
-			if (strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://")) &&
-				!strings.Contains(trimmed, "redflagdeals.com") {
-				return trimmed, nil
+	if dealLink == "" {
+		if link := doc.Find(ds.FallbackLink); link.Length() > 0 {
+			if href, found := link.Attr("href"); found {
+				trimmed := strings.TrimSpace(href)
+				if (strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://")) &&
+					!strings.Contains(trimmed, "redflagdeals.com") {
+					dealLink = trimmed
+				}
 			}
 		}
 	}
 
-	return "", ErrDealLinkNotFound
+	if dealLink == "" {
+		// Log but continue, as we might still want description/comments for AI analysis
+		// or return error if link is strictly required. Original logic returned error.
+		// Let's return error for now to maintain behavior, but maybe AI can find it?
+		// Stick to strict behavior for now.
+		return "", "", "", "", ErrDealLinkNotFound
+	}
+
+	// 2. Extract JSON-LD for Description and Comments
+	var description, commentsStr string
+	doc.Find("script[type='application/ld+json']").Each(func(i int, s *goquery.Selection) {
+		text := s.Text()
+		var postings []JSONLDDiscussionForumPosting
+		// Try parsing as array first
+		if err := json.Unmarshal([]byte(text), &postings); err == nil && len(postings) > 0 {
+			for _, p := range postings {
+				if p.Type == "DiscussionForumPosting" { // Case sensitive check might be needed, usually PascalCase
+					description = cleanHTMLText(p.Text)
+
+					var commentTexts []string
+					for _, c := range p.Comment {
+						commentTexts = append(commentTexts, fmt.Sprintf("- %s: %s", c.Author.Name, cleanHTMLText(c.Text)))
+					}
+					// Truncate comments to avoid huge tokens
+					maxCommentsLen := 2000
+					fullComments := strings.Join(commentTexts, "\n")
+					if len(fullComments) > maxCommentsLen {
+						fullComments = fullComments[:maxCommentsLen] + "...(truncated)"
+					}
+					commentsStr = fullComments
+					return // Found the main posting
+				}
+			}
+		}
+		// If array fail, try single object? RFD usually arrays.
+		// Let's stick to array as per observation.
+	})
+
+	// 3. Extract Summary (if available)
+	// Try finding the element by ID even if it's dynamic, sometimes it's SSR.
+	summary := strings.TrimSpace(doc.Find("#rfd_topic_summary").Text())
+
+	return dealLink, description, commentsStr, summary, nil
+}
+
+// cleanHTMLText allows stripping HTML tags from a string.
+// It uses goquery to parse the fragment and return text.
+func cleanHTMLText(htmlStr string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlStr))
+	if err != nil {
+		return htmlStr // fallback
+	}
+	return strings.TrimSpace(doc.Text())
 }
 
 func (c *Client) fetchHTMLContent(ctx context.Context, urlStr string) (*goquery.Document, error) {

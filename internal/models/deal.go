@@ -29,4 +29,9 @@ type DealInfo struct {
 	CleanTitle  string `firestore:"cleanTitle,omitempty"`
 	IsLavaHot   bool   `firestore:"isLavaHot,omitempty"`
 	AIProcessed bool   `firestore:"aiProcessed"`
+
+	// Detailed Content
+	Description string `firestore:"description,omitempty"`
+	Comments    string `firestore:"comments,omitempty"` // Flattened comments for AI context
+	Summary     string `firestore:"summary,omitempty"`  // RFD editor summary if available
 }
