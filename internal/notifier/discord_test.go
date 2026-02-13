@@ -27,13 +27,16 @@ func TestFormatDealToEmbed(t *testing.T) {
 		ThreadImageURL:     "https://example.com/image.jpg",
 		PublishedTimestamp: time.Unix(1770954490, 0), // Stable timestamp for testing
 		AuthorName:         "testuser",
+		AIProcessed:        true,
+		IsLavaHot:          true,
 	}
 
 	embed := formatDealToEmbed(deal)
 
-	// Check Title format: "Title" (suffix removed in recent updates)
-	if embed.Title != deal.Title {
-		t.Errorf("Title format incorrect. Got: %s, Want: %s", embed.Title, deal.Title)
+	// Check Title format: "Title 🔥" (suffix added for hot deals)
+	expectedTitle := deal.Title + " 🔥"
+	if embed.Title != expectedTitle {
+		t.Errorf("Title format incorrect. Got: %s, Want: %s", embed.Title, expectedTitle)
 	}
 
 	// Check URL (should prefer ActualDealURL)

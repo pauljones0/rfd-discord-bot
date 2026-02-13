@@ -139,12 +139,8 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	}
 
 	// 3. Append Sentiment Emoji
-	if deal.AIProcessed {
-		if deal.IsLavaHot {
-			title += " 👍"
-		} else {
-			title += " 👎"
-		}
+	if deal.AIProcessed && deal.IsLavaHot {
+		title += " 🔥"
 	}
 
 	// 4. Construct Description
