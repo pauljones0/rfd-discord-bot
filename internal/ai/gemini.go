@@ -33,6 +33,22 @@ func NewClient(ctx context.Context, apiKey, modelID string) (*Client, error) {
 	model.SetTemperature(0.1) // Low temperature for deterministic output
 	model.ResponseMIMEType = "application/json"
 
+	// Define the schema for Structured Outputs
+	model.ResponseSchema = &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"clean_title": {
+				Type:        genai.TypeString,
+				Description: "A concise 5-20 word summary of the product/deal. Remove \"Lava Hot\", price errors, store names (unless critical), and fluff.",
+			},
+			"is_lava_hot": {
+				Type:        genai.TypeBoolean,
+				Description: "True if the deal seems exceptionally good (high percentage off, price error, \"lava hot\" in title). False otherwise.",
+			},
+		},
+		Required: []string{"clean_title", "is_lava_hot"},
+	}
+
 	return &Client{model: model}, nil
 }
 
@@ -44,12 +60,7 @@ func (c *Client) AnalyzeDeal(ctx context.Context, title string) (string, bool, e
 	prompt := fmt.Sprintf(`
 Analyze this deal title: "%s"
 
-Output JSON with two fields:
-1. "clean_title": A concise 5-20 word summary of the product/deal. Remove "Lava Hot", price errors, store names (unless critical), and fluff. 
-2. "is_lava_hot": Boolean. True if the deal seems exceptionally good (high percentage off, price error, "lava hot" in title). False otherwise.
-
-Example Input: "[Amazon.ca] LAVA HOT! Sony WH-1000XM5 Wireless Noise Cancelling Headphones - $298 (Reg. $498) - ATL!"
-Example Output: {"clean_title": "Sony WH-1000XM5 Wireless Noise Cancelling Headphones", "is_lava_hot": true}
+Output JSON adhering to the schema.
 `, title)
 
 	resp, err := c.model.GenerateContent(ctx, genai.Text(prompt))
@@ -64,8 +75,9 @@ Example Output: {"clean_title": "Sony WH-1000XM5 Wireless Noise Cancelling Headp
 	var result AnalysisResult
 	for _, part := range resp.Candidates[0].Content.Parts {
 		if txt, ok := part.(genai.Text); ok {
-			// Clean up potential markdown formatting ```json ... ```
-			jsonStr := strings.TrimPrefix(string(txt), "```json")
+			// Clean up potential markdown formatting just in case, though schema should prevent it
+			jsonStr := strings.TrimSpace(string(txt))
+			jsonStr = strings.TrimPrefix(jsonStr, "```json")
 			jsonStr = strings.TrimPrefix(jsonStr, "```")
 			jsonStr = strings.TrimSuffix(jsonStr, "```")
 
