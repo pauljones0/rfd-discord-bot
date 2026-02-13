@@ -71,7 +71,7 @@ func Load() (*Config, error) {
 
 	geminiModelID := os.Getenv("GEMINI_MODEL_ID")
 	if geminiModelID == "" {
-		geminiModelID = "gemini-2.5-flash"
+		geminiModelID = "gemini-2.5-flash-lite"
 	}
 
 	return &Config{
