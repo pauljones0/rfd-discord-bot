@@ -43,6 +43,11 @@ func CleanReferralLink(rawUrl string, amazonTag string, bestBuyPrefix string) (s
 		cleanedURL := bestBuyPrefix + url.QueryEscape(productURL)
 		return cleanedURL, true
 
+	case strings.HasSuffix(parsedUrl.Host, "bestbuy.ca"):
+		// Direct bestbuy.ca link - wrap it
+		cleanedURL := bestBuyPrefix + url.QueryEscape(rawUrl)
+		return cleanedURL, true
+
 	case strings.Contains(parsedUrl.Host, "amazon."):
 		queryParams := parsedUrl.Query()
 		originalTag := queryParams.Get("tag")

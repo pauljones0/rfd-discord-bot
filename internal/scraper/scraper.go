@@ -19,8 +19,7 @@ import (
 )
 
 const (
-	hotDealsURL = "https://forums.redflagdeals.com/hot-deals-f9/?sk=tt&rfd_sk=tt&sd=d"
-	rfdBase     = "https://forums.redflagdeals.com"
+// hotDealsURL and rfdBase are now in config
 )
 
 // ErrDealLinkNotFound is returned when a deal detail page does not contain an external deal link.
@@ -50,7 +49,7 @@ func NewWithBaseURL(cfg *config.Config, selectors SelectorConfig, baseURL string
 }
 
 func (c *Client) ScrapeDealList(ctx context.Context) ([]models.DealInfo, error) {
-	targetURL := hotDealsURL
+	targetURL := c.config.RFDBaseURL + "/hot-deals-f9/?sk=tt&rfd_sk=tt&sd=d"
 	if c.baseURL != "" {
 		targetURL = c.baseURL + "/hot-deals"
 	}
@@ -80,7 +79,7 @@ func (c *Client) ScrapeDealList(ctx context.Context) ([]models.DealInfo, error) 
 
 // resolveLink finds an <a> element within the selection (or the selection itself),
 // returning the href (resolved to absolute if relative) and text content.
-func resolveLink(s *goquery.Selection, selector string) (href, text string) {
+func (c *Client) resolveLink(s *goquery.Selection, selector string) (href, text string) {
 	sel := s.Find(selector)
 	if sel.Length() == 0 {
 		return "", ""
@@ -102,7 +101,7 @@ func resolveLink(s *goquery.Selection, selector string) (href, text string) {
 
 	href = rawHref
 	if strings.HasPrefix(href, "/") {
-		href = rfdBase + href
+		href = c.config.RFDBaseURL + href
 	}
 	return href, text
 }
@@ -158,7 +157,7 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 	}
 
 	// Title & Post URL
-	postURL, title := resolveLink(s, elems.TitleLink)
+	postURL, title := c.resolveLink(s, elems.TitleLink)
 	if title != "" {
 		deal.Title = title
 		if postURL != "" {
@@ -173,7 +172,7 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 	}
 
 	// Author
-	authorURL, _ := resolveLink(s, elems.AuthorLink)
+	authorURL, _ := c.resolveLink(s, elems.AuthorLink)
 	deal.AuthorURL = authorURL
 	if authorURL != "" {
 		// Try to find specific author name element within the author link
@@ -326,7 +325,7 @@ func (c *Client) fetchHTMLContent(ctx context.Context, urlStr string) (*goquery.
 		return nil, fmt.Errorf("failed to create request for URL %s: %w", urlStr, err)
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", c.config.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 

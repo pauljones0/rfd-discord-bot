@@ -53,11 +53,14 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	}
 	defer p.mu.Unlock()
 
+	runID := time.Now().Format("20060102-150405")
+	logger := slog.With("runID", runID)
+
 	scrapedDeals, err := p.scraper.ScrapeDealList(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to scrape hot deals list: %w", err)
 	}
-	slog.Info("Successfully scraped deal list", "count", len(scrapedDeals))
+	logger.Info("Successfully scraped deal list", "count", len(scrapedDeals))
 
 	// Assign IDs and filter invalid deals upfront
 	var validDeals []models.DealInfo
@@ -76,7 +79,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	// Batch read all existing deals in one Firestore call
 	existingDeals, err := p.store.GetDealsByIDs(ctx, idsToLookup)
 	if err != nil {
-		slog.Warn("Batch read failed, falling back to individual reads", "error", err)
+		logger.Warn("Batch read failed, falling back to individual reads", "error", err)
 		existingDeals = make(map[string]*models.DealInfo)
 	}
 
@@ -103,10 +106,10 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	}
 
 	if len(dealsToDetail) > 0 {
-		slog.Info("Fetching details for deals", "count", len(dealsToDetail))
+		logger.Info("Fetching details for deals", "count", len(dealsToDetail))
 		p.scraper.FetchDealDetails(ctx, dealsToDetail)
 	} else {
-		slog.Info("No deals needed detail scraping")
+		logger.Info("No deals needed detail scraping")
 	}
 
 	var newCount, updatedCount int
@@ -130,11 +133,11 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	// Trim old deals once per processing run instead of per-deal
 	if newCount > 0 {
 		if err := p.store.TrimOldDeals(ctx, p.config.MaxStoredDeals); err != nil {
-			slog.Warn("Failed to trim old deals", "error", err)
+			logger.Warn("Failed to trim old deals", "error", err)
 		}
 	}
 
-	slog.Info("Finished processing", "new", newCount, "updated", updatedCount)
+	logger.Info("Finished processing", "new", newCount, "updated", updatedCount)
 	if len(errorMessages) > 0 {
 		return fmt.Errorf("processed with errors: %s", strings.Join(errorMessages, "; "))
 	}

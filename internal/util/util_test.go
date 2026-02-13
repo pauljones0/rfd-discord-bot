@@ -43,6 +43,12 @@ func TestCleanReferralLink(t *testing.T) {
 			changed:  true,
 		},
 		{
+			name:     "BestBuy direct link",
+			input:    "https://bestbuy.ca/en-ca/product/12345",
+			expected: "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u=https%3A%2F%2Fbestbuy.ca%2Fen-ca%2Fproduct%2F12345",
+			changed:  true,
+		},
+		{
 			name:     "Linksynergy with valid MURL",
 			input:    "https://click.linksynergy.com/link?murl=https%3A%2F%2Fexample.com%2Fproduct",
 			expected: "https://example.com/product",

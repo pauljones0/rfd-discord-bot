@@ -34,7 +34,10 @@ func TestParseDealFromSelection_FullDeal(t *testing.T) {
 	}
 
 	defaults := DefaultSelectors()
-	c := &Client{selectors: defaults, config: &config.Config{AllowedDomains: []string{"forums.redflagdeals.com"}}}
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.Title != "Great Deal Title" {
@@ -74,7 +77,10 @@ func TestParseDealFromSelection_MinimalDeal(t *testing.T) {
 	}
 
 	defaults := DefaultSelectors()
-	c := &Client{selectors: defaults, config: &config.Config{AllowedDomains: []string{"forums.redflagdeals.com"}}}
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.Title != "Minimal Deal" {
@@ -105,7 +111,10 @@ func TestParseDealFromSelection_NegativeLikes(t *testing.T) {
 	}
 
 	defaults := DefaultSelectors()
-	c := &Client{selectors: defaults, config: &config.Config{AllowedDomains: []string{"forums.redflagdeals.com"}}}
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.LikeCount != -5 {
@@ -125,7 +134,10 @@ func TestParseDealFromSelection_DataURIImageFiltered(t *testing.T) {
 	}
 
 	defaults := DefaultSelectors()
-	c := &Client{selectors: defaults, config: &config.Config{AllowedDomains: []string{"forums.redflagdeals.com"}}}
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.ThreadImageURL != "" {
@@ -145,7 +157,10 @@ func TestParseDealFromSelection_RelativeImageFiltered(t *testing.T) {
 	}
 
 	defaults := DefaultSelectors()
-	c := &Client{selectors: defaults, config: &config.Config{AllowedDomains: []string{"forums.redflagdeals.com"}}}
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
 	if deal.ThreadImageURL != "" {
@@ -184,13 +199,18 @@ func TestResolveLink(t *testing.T) {
 		},
 	}
 
+	cfg := &config.Config{
+		RFDBaseURL: "https://forums.redflagdeals.com",
+	}
+	c := &Client{config: cfg}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			doc, err := goquery.NewDocumentFromReader(strings.NewReader(tt.html))
 			if err != nil {
 				t.Fatal(err)
 			}
-			href, text := resolveLink(doc.Selection, tt.selector)
+			href, text := c.resolveLink(doc.Selection, tt.selector)
 			if href != tt.wantHref {
 				t.Errorf("href = %q, want %q", href, tt.wantHref)
 			}
@@ -340,4 +360,3 @@ func TestFetchHTMLContent_DomainAllowlist(t *testing.T) {
 		t.Errorf("Expected allowlist error, got: %v", err)
 	}
 }
-
