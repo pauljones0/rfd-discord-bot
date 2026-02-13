@@ -1,0 +1,23 @@
+{
+    "hot_deals_list": {
+        "container": {
+            "item": "li.topic",
+            "ignore_modifier": ".sticky"
+        },
+        "elements": {
+            "title_link": ".thread_title_link",
+            "posted_time": ".thread_inner_footer .author_info time",
+            "author_link": ".thread_inner_footer .author_info .author",
+            "author_name": ".author_name",
+            "thread_image": ".thread_image img",
+            "like_count": ".thread_inner_footer .votes",
+            "comment_count": ".thread_inner_footer .posts",
+            "comment_count_fallback": ".posts_count",
+            "view_count": ".thread_inner_footer .views"
+        }
+    },
+    "deal_details": {
+        "primary_link": ".deal_link a",
+        "fallback_link": ".postlink"
+    }
+}

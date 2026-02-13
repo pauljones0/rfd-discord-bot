@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"embed"
+
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,9 +20,6 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/validator"
 )
 
-//go:embed selectors.json
-var embeddedSelectors embed.FS
-
 type Server struct {
 	processor processor.Processor
 	store     processor.DealStore
@@ -31,6 +28,7 @@ type Server struct {
 }
 
 func main() {
+	setupLogger()
 	slog.Info("Starting RFD Hot Deals Bot server...")
 	cfg, err := config.Load()
 	if err != nil {
@@ -46,7 +44,7 @@ func main() {
 	}
 	defer store.Close()
 
-	selectors, err := loadSelectorsWithFallback()
+	selectors, err := scraper.LoadConfig()
 	if err != nil {
 		slog.Warn("Failed to load selectors. Using defaults.", "error", err)
 		selectors = scraper.DefaultSelectors()
@@ -82,7 +80,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      mux,
+		Handler:      loggingMiddleware(mux),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  60 * time.Second,
@@ -114,27 +112,6 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("Server stopped.")
-}
-
-// loadSelectorsWithFallback tries the embedded selectors first,
-// then falls back to the external config file.
-func loadSelectorsWithFallback() (scraper.SelectorConfig, error) {
-	data, err := embeddedSelectors.ReadFile("selectors.json")
-	if err == nil {
-		sel, parseErr := scraper.LoadSelectorsFromBytes(data)
-		if parseErr == nil {
-			slog.Info("Loaded selectors from embedded config.")
-			return sel, nil
-		}
-		slog.Warn("Embedded selectors failed to parse. Trying file fallback.", "error", parseErr)
-	}
-
-	// Fallback to external file
-	configPath := os.Getenv("SELECTORS_CONFIG_PATH")
-	if configPath == "" {
-		configPath = "config/selectors.json"
-	}
-	return scraper.LoadSelectors(configPath)
 }
 
 func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
@@ -170,4 +147,22 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusAccepted)
 	fmt.Fprintln(w, "Deal processing started.")
+}
+
+func setupLogger() {
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}
+	// Use TextHandler for now, can be switched to JSONHandler for production
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
+	slog.SetDefault(logger)
+}
+
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		slog.Info("HTTP Request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
+		next.ServeHTTP(w, r)
+		slog.Info("HTTP Request Completed", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start))
+	})
 }

@@ -57,16 +57,54 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	runID := time.Now().Format("20060102-150405")
 	logger := slog.With("runID", runID)
 
+	// 1. Scrape and Validate
+	validDeals, err := p.scrapeAndValidate(ctx, logger)
+	if err != nil {
+		return err
+	}
+
+	// 2. Load Existing Deals
+	existingDeals, err := p.loadExistingDeals(ctx, validDeals, logger)
+	if err != nil {
+		return err
+	}
+
+	// 3. Fetch Details for New/Changed Deals
+	p.enrichDealsWithDetails(ctx, validDeals, existingDeals, logger)
+
+	// 4. Notify Discord and Prepare Updates
+	newDeals, updatedDeals, errorMessages := p.processNotificationsAndPrepareUpdates(ctx, validDeals, existingDeals)
+
+	// 5. Batch Save
+	if len(newDeals) > 0 || len(updatedDeals) > 0 {
+		if err := p.store.BatchWrite(ctx, newDeals, updatedDeals); err != nil {
+			return fmt.Errorf("batch write failed: %w", err)
+		}
+		logger.Info("Batch write completed", "created", len(newDeals), "updated", len(updatedDeals))
+	}
+
+	// 6. Cleanup Old Deals
+	if len(newDeals) > 0 {
+		if err := p.store.TrimOldDeals(ctx, p.config.MaxStoredDeals); err != nil {
+			logger.Warn("Failed to trim old deals", "error", err)
+		}
+	}
+
+	if len(errorMessages) > 0 {
+		return fmt.Errorf("processed with errors: %s", strings.Join(errorMessages, "; "))
+	}
+	return nil
+}
+
+// scrapeAndValidate scrapes the deal list and performs initial validation and ID assignment.
+func (p *DealProcessor) scrapeAndValidate(ctx context.Context, logger *slog.Logger) ([]models.DealInfo, error) {
 	scrapedDeals, err := p.scraper.ScrapeDealList(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to scrape hot deals list: %w", err)
+		return nil, fmt.Errorf("failed to scrape hot deals list: %w", err)
 	}
 	logger.Info("Successfully scraped deal list", "count", len(scrapedDeals))
 
-	// Assign IDs and filter/validate deals upfront
 	var validDeals []models.DealInfo
-	var idsToLookup []string
-
 	for i := range scrapedDeals {
 		deal := &scrapedDeals[i]
 
@@ -78,17 +116,29 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 
 		deal.FirestoreID = generateDealID(deal.PublishedTimestamp)
 		validDeals = append(validDeals, *deal)
+	}
+	return validDeals, nil
+}
+
+// loadExistingDeals fetches existing deals from Firestore corresponding to the valid scraped deals.
+func (p *DealProcessor) loadExistingDeals(ctx context.Context, validDeals []models.DealInfo, logger *slog.Logger) (map[string]*models.DealInfo, error) {
+	var idsToLookup []string
+	for _, deal := range validDeals {
 		idsToLookup = append(idsToLookup, deal.FirestoreID)
 	}
 
-	// Batch read all existing deals in one Firestore call
 	existingDeals, err := p.store.GetDealsByIDs(ctx, idsToLookup)
 	if err != nil {
 		logger.Warn("Batch read failed, falling back to individual reads", "error", err)
-		existingDeals = make(map[string]*models.DealInfo)
+		// Return empty map on error to treat all as new (safe fallback to avoid crashing, though duplicate notifications may happen)
+		// Ideally individual reads would be better but keeping it simple for now.
+		return make(map[string]*models.DealInfo), nil
 	}
+	return existingDeals, nil
+}
 
-	// Determine which deals need detail scraping
+// enrichDealsWithDetails determines which deals need detail scraping (new or changed) and fetches them.
+func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, logger *slog.Logger) {
 	var dealsToDetail []*models.DealInfo
 	for i := range validDeals {
 		deal := &validDeals[i]
@@ -116,7 +166,10 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	} else {
 		logger.Info("No deals needed detail scraping")
 	}
+}
 
+// processNotificationsAndPrepareUpdates sends/updates Discord notifications and prepares lists for DB persistence.
+func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo) ([]models.DealInfo, []models.DealInfo, []string) {
 	var newDeals []models.DealInfo
 	var updatedDeals []models.DealInfo
 	var errorMessages []string
@@ -124,26 +177,17 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	for i := range validDeals {
 		deal := &validDeals[i]
 		existing := existingDeals[deal.FirestoreID]
-
-		// Ensure deal has a Discord message
-		// If existing is nil, we treat it as new.
-		// If existing is not nil but missing DiscordMessageID, we treat it as update-needing-discord???
-		// Wait, if it's new, we need to get Discord ID first.
-
 		isNew := existing == nil
-		var dealToSave *models.DealInfo
 
 		if isNew {
 			// It's a new deal.
-			dealToSave = deal
+			dealToSave := deal
 			dealToSave.LastUpdated = time.Now()
 
 			// Send to Discord to get ID
 			msgID, err := p.notifier.Send(ctx, *dealToSave)
 			if err != nil {
 				slog.Error("Failed to send new deal notification", "title", deal.Title, "error", err)
-				// Continue without Discord ID? Or skip saving?
-				// If we skip saving, next run will retry. Ideally we skip saving.
 				errorMessages = append(errorMessages, fmt.Sprintf("discord send failed for %s: %v", deal.Title, err))
 				continue
 			}
@@ -192,25 +236,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 			updatedDeals = append(updatedDeals, *existing)
 		}
 	}
-
-	if len(newDeals) > 0 || len(updatedDeals) > 0 {
-		if err := p.store.BatchWrite(ctx, newDeals, updatedDeals); err != nil {
-			return fmt.Errorf("batch write failed: %w", err)
-		}
-		logger.Info("Batch write completed", "created", len(newDeals), "updated", len(updatedDeals))
-	}
-
-	// Trim old deals
-	if len(newDeals) > 0 {
-		if err := p.store.TrimOldDeals(ctx, p.config.MaxStoredDeals); err != nil {
-			logger.Warn("Failed to trim old deals", "error", err)
-		}
-	}
-
-	if len(errorMessages) > 0 {
-		return fmt.Errorf("processed with errors: %s", strings.Join(errorMessages, "; "))
-	}
-	return nil
+	return newDeals, updatedDeals, errorMessages
 }
 
 func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.DealInfo) bool {

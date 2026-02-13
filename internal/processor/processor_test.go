@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -119,8 +120,9 @@ func (m *mockNotifier) Update(_ context.Context, messageID string, _ models.Deal
 }
 
 type mockScraper struct {
-	deals []models.DealInfo
-	err   error
+	deals          []models.DealInfo
+	err            error
+	fetchedDetails []*models.DealInfo
 }
 
 func (m *mockScraper) ScrapeDealList(_ context.Context) ([]models.DealInfo, error) {
@@ -128,7 +130,12 @@ func (m *mockScraper) ScrapeDealList(_ context.Context) ([]models.DealInfo, erro
 }
 
 func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealInfo) {
-	// No-op for mock
+	// Track which deals were requested for detail fetching
+	// Need to copy because deals are pointers
+	for _, d := range deals {
+		copy := *d
+		m.fetchedDetails = append(m.fetchedDetails, &copy)
+	}
 }
 
 func newTestProcessor(store DealStore, notifier DealNotifier, scraper DealScraper) *DealProcessor {
@@ -475,5 +482,80 @@ func TestGenerateDealID_Stable(t *testing.T) {
 	id3 := generateDealID(ts2)
 	if id1 == id3 {
 		t.Errorf("Different timestamps should produce different IDs")
+	}
+}
+
+// --- New Unit Tests for Helper Functions ---
+
+func TestScrapeAndValidate_SubFunction(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Valid Deal", PostURL: "http://example.com/1", PublishedTimestamp: testTime1},
+			{Title: "", PostURL: "", PublishedTimestamp: testTime2}, // Invalid
+		},
+	}
+	p := newTestProcessor(store, notif, scraper)
+
+	validDeals, err := p.scrapeAndValidate(context.Background(), slog.Default())
+	if err != nil {
+		t.Fatalf("scrapeAndValidate failed: %v", err)
+	}
+
+	// Expect 1 valid deal (the empty one should be filtered)
+	if len(validDeals) != 1 {
+		t.Errorf("Expected 1 valid deal, got %d", len(validDeals))
+	}
+	if validDeals[0].Title != "Valid Deal" {
+		t.Errorf("Expected 'Valid Deal', got %s", validDeals[0].Title)
+	}
+	if validDeals[0].FirestoreID == "" {
+		t.Error("FirestoreID should be populated during validation")
+	}
+}
+
+func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{}
+
+	p := newTestProcessor(store, notif, scraper)
+
+	// Setup:
+	// New Deal: Not in existingDeals -> Should fetch
+	// Existing Changed: In existingDeals, changed field -> Should fetch
+	// Existing Unchanged: In existingDeals, same fields -> Should NOT fetch
+
+	newDeal := models.DealInfo{Title: "New", FirestoreID: "id1", LikeCount: 5}
+	changedDeal := models.DealInfo{Title: "Changed", FirestoreID: "id2", LikeCount: 10}
+	unchangedDeal := models.DealInfo{Title: "Same", FirestoreID: "id3", LikeCount: 5}
+
+	existingDeals := map[string]*models.DealInfo{
+		"id2": {Title: "Changed", FirestoreID: "id2", LikeCount: 5}, // Old LikeCount
+		"id3": {Title: "Same", FirestoreID: "id3", LikeCount: 5},
+	}
+
+	validDeals := []models.DealInfo{newDeal, changedDeal, unchangedDeal}
+
+	p.enrichDealsWithDetails(context.Background(), validDeals, existingDeals, slog.Default())
+
+	// Check fetched details
+	if len(scraper.fetchedDetails) != 2 {
+		t.Errorf("Expected 2 deals to be fetched (New & Changed), got %d", len(scraper.fetchedDetails))
+	}
+
+	titles := make(map[string]bool)
+	for _, d := range scraper.fetchedDetails {
+		titles[d.Title] = true
+	}
+	if !titles["New"] {
+		t.Error("Expected New deal to be fetched")
+	}
+	if !titles["Changed"] {
+		t.Error("Expected Changed deal to be fetched")
+	}
+	if titles["Same"] {
+		t.Error("Expected Unchanged deal to NOT be fetched")
 	}
 }
