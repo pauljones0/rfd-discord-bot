@@ -129,10 +129,8 @@ func (p *DealProcessor) loadExistingDeals(ctx context.Context, validDeals []mode
 
 	existingDeals, err := p.store.GetDealsByIDs(ctx, idsToLookup)
 	if err != nil {
-		logger.Warn("Batch read failed, falling back to individual reads", "error", err)
-		// Return empty map on error to treat all as new (safe fallback to avoid crashing, though duplicate notifications may happen)
-		// Ideally individual reads would be better but keeping it simple for now.
-		return make(map[string]*models.DealInfo), nil
+		logger.Error("Batch read failed", "error", err)
+		return nil, fmt.Errorf("failed to load existing deals: %w", err)
 	}
 	return existingDeals, nil
 }
@@ -150,11 +148,17 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 			continue
 		}
 
-		// Check if any tracked fields changed
-		if p.dealChanged(existing, deal) {
+		// Optimization: Only fetch details if we actually need them.
+		// We need details if:
+		// 1. We don't have the ActualDealURL yet (maybe previous scrape failed to get it)
+		// 2. The PostURL changed (unlikely for same ID, but possible if ID is based on timestamp only and URL was updated)
+		// We do NOT need details if only metrics (Likes, Comments, Views) changed.
+		needsDetails := existing.ActualDealURL == "" || existing.PostURL != deal.PostURL
+
+		if needsDetails {
 			dealsToDetail = append(dealsToDetail, deal)
 		} else {
-			// Unchanged — copy details from existing so processSingleDeal doesn't see a diff
+			// Unchanged or only metrics changed — copy details from existing
 			deal.ActualDealURL = existing.ActualDealURL
 			deal.ThreadImageURL = existing.ThreadImageURL
 		}

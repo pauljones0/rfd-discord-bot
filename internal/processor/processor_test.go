@@ -524,25 +524,30 @@ func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
 
 	// Setup:
 	// New Deal: Not in existingDeals -> Should fetch
-	// Existing Changed: In existingDeals, changed field -> Should fetch
-	// Existing Unchanged: In existingDeals, same fields -> Should NOT fetch
+	// Existing Changed (PostURL): In existingDeals, changed PostURL -> Should fetch
+	// Existing Changed (LikeCount Only): In existingDeals, changed LikeCount -> Should NOT fetch (Optimization)
+	// Existing Unchanged: In existingDeals, same data -> Should NOT fetch
 
 	newDeal := models.DealInfo{Title: "New", FirestoreID: "id1", LikeCount: 5}
-	changedDeal := models.DealInfo{Title: "Changed", FirestoreID: "id2", LikeCount: 10}
-	unchangedDeal := models.DealInfo{Title: "Same", FirestoreID: "id3", LikeCount: 5}
+	urlChangedDeal := models.DealInfo{Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://new.url", LikeCount: 10}
+	onlyMetricsChangedDeal := models.DealInfo{Title: "MetricsChanged", FirestoreID: "id3", LikeCount: 100} // was 50
+	unchangedDeal := models.DealInfo{Title: "Same", FirestoreID: "id4", LikeCount: 5}
 
 	existingDeals := map[string]*models.DealInfo{
-		"id2": {Title: "Changed", FirestoreID: "id2", LikeCount: 5}, // Old LikeCount
-		"id3": {Title: "Same", FirestoreID: "id3", LikeCount: 5},
+		"id2": {Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://old.url", LikeCount: 10},
+		"id3": {Title: "MetricsChanged", FirestoreID: "id3", LikeCount: 50},
+		"id4": {Title: "Same", FirestoreID: "id4", LikeCount: 5},
 	}
 
-	validDeals := []models.DealInfo{newDeal, changedDeal, unchangedDeal}
+	validDeals := []models.DealInfo{newDeal, urlChangedDeal, onlyMetricsChangedDeal, unchangedDeal}
 
 	p.enrichDealsWithDetails(context.Background(), validDeals, existingDeals, slog.Default())
 
 	// Check fetched details
+	// Should fetch: New, UrlChanged.
+	// Should NOT fetch: MetricsChanged, Same.
 	if len(scraper.fetchedDetails) != 2 {
-		t.Errorf("Expected 2 deals to be fetched (New & Changed), got %d", len(scraper.fetchedDetails))
+		t.Errorf("Expected 2 deals to be fetched (New & UrlChanged), got %d", len(scraper.fetchedDetails))
 	}
 
 	titles := make(map[string]bool)
@@ -552,8 +557,11 @@ func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
 	if !titles["New"] {
 		t.Error("Expected New deal to be fetched")
 	}
-	if !titles["Changed"] {
-		t.Error("Expected Changed deal to be fetched")
+	if !titles["UrlChanged"] {
+		t.Error("Expected UrlChanged deal to be fetched")
+	}
+	if titles["MetricsChanged"] {
+		t.Error("Expected MetricsChanged deal to NOT be fetched (optimization check)")
 	}
 	if titles["Same"] {
 		t.Error("Expected Unchanged deal to NOT be fetched")
