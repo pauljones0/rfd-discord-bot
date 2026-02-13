@@ -4,9 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -23,16 +24,18 @@ type DealProcessor struct {
 	store          DealStore
 	notifier       DealNotifier
 	scraper        DealScraper
+	validator      DealValidator
 	config         *config.Config
 	updateInterval time.Duration
 	mu             sync.Mutex // prevents overlapping ProcessDeals runs
 }
 
-func New(store DealStore, n DealNotifier, s DealScraper, cfg *config.Config) *DealProcessor {
+func New(store DealStore, n DealNotifier, s DealScraper, v DealValidator, cfg *config.Config) *DealProcessor {
 	return &DealProcessor{
 		store:          store,
 		notifier:       n,
 		scraper:        s,
+		validator:      v,
 		config:         cfg,
 		updateInterval: cfg.DiscordUpdateInterval,
 	}
@@ -62,15 +65,19 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	}
 	logger.Info("Successfully scraped deal list", "count", len(scrapedDeals))
 
-	// Assign IDs and filter invalid deals upfront
+	// Assign IDs and filter/validate deals upfront
 	var validDeals []models.DealInfo
 	var idsToLookup []string
 
 	for i := range scrapedDeals {
 		deal := &scrapedDeals[i]
-		if strings.TrimSpace(deal.Title) == "" || strings.TrimSpace(deal.PostURL) == "" || deal.PublishedTimestamp.IsZero() {
+
+		// Validate using the validator
+		if err := p.validator.ValidateStruct(deal); err != nil {
+			p.handleDeadLetter(deal, err)
 			continue
 		}
+
 		deal.FirestoreID = generateDealID(deal.PublishedTimestamp)
 		validDeals = append(validDeals, *deal)
 		idsToLookup = append(idsToLookup, deal.FirestoreID)
@@ -112,126 +119,100 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 		logger.Info("No deals needed detail scraping")
 	}
 
-	var newCount, updatedCount int
+	var newDeals []models.DealInfo
+	var updatedDeals []models.DealInfo
 	var errorMessages []string
 
-	for _, deal := range validDeals {
-		existing := existingDeals[deal.FirestoreID] // may be nil for new deals
-		isNew, isUpdated, err := p.processSingleDeal(ctx, deal, existing)
-		if err != nil {
-			errorMessages = append(errorMessages, err.Error())
-			continue
-		}
+	for i := range validDeals {
+		deal := &validDeals[i]
+		existing := existingDeals[deal.FirestoreID]
+
+		// Ensure deal has a Discord message
+		// If existing is nil, we treat it as new.
+		// If existing is not nil but missing DiscordMessageID, we treat it as update-needing-discord???
+		// Wait, if it's new, we need to get Discord ID first.
+
+		isNew := existing == nil
+		var dealToSave *models.DealInfo
+
 		if isNew {
-			newCount++
-		}
-		if isUpdated {
-			updatedCount++
+			// It's a new deal.
+			dealToSave = deal
+			dealToSave.LastUpdated = time.Now()
+
+			// Send to Discord to get ID
+			msgID, err := p.notifier.Send(ctx, *dealToSave)
+			if err != nil {
+				slog.Error("Failed to send new deal notification", "title", deal.Title, "error", err)
+				// Continue without Discord ID? Or skip saving?
+				// If we skip saving, next run will retry. Ideally we skip saving.
+				errorMessages = append(errorMessages, fmt.Sprintf("discord send failed for %s: %v", deal.Title, err))
+				continue
+			}
+			dealToSave.DiscordMessageID = msgID
+			dealToSave.DiscordLastUpdatedTime = time.Now()
+			newDeals = append(newDeals, *dealToSave)
+
+		} else {
+			// Existing deal
+			// Check if changed
+			if !p.dealChanged(existing, deal) {
+				continue
+			}
+
+			// Merge changes into existing
+			existing.Title = deal.Title
+			existing.PostURL = deal.PostURL
+			existing.LikeCount = deal.LikeCount
+			existing.CommentCount = deal.CommentCount
+			existing.ViewCount = deal.ViewCount
+			existing.ThreadImageURL = deal.ThreadImageURL
+			existing.AuthorName = deal.AuthorName
+			existing.AuthorURL = deal.AuthorURL
+			existing.PublishedTimestamp = deal.PublishedTimestamp
+			existing.ActualDealURL = deal.ActualDealURL
+			existing.LastUpdated = time.Now()
+
+			// Check if we need to update Discord
+			if existing.DiscordMessageID == "" {
+				// Should have had one. Send now.
+				msgID, err := p.notifier.Send(ctx, *existing)
+				if err == nil {
+					existing.DiscordMessageID = msgID
+					existing.DiscordLastUpdatedTime = time.Now()
+				} else {
+					slog.Warn("Failed to send missing discord notification", "id", existing.FirestoreID, "error", err)
+				}
+			} else if time.Since(existing.DiscordLastUpdatedTime) >= p.updateInterval {
+				if err := p.notifier.Update(ctx, existing.DiscordMessageID, *existing); err == nil {
+					existing.DiscordLastUpdatedTime = time.Now()
+				} else {
+					slog.Warn("Failed to update discord notification", "id", existing.FirestoreID, "error", err)
+				}
+			}
+
+			updatedDeals = append(updatedDeals, *existing)
 		}
 	}
 
-	// Trim old deals once per processing run instead of per-deal
-	if newCount > 0 {
+	if len(newDeals) > 0 || len(updatedDeals) > 0 {
+		if err := p.store.BatchWrite(ctx, newDeals, updatedDeals); err != nil {
+			return fmt.Errorf("batch write failed: %w", err)
+		}
+		logger.Info("Batch write completed", "created", len(newDeals), "updated", len(updatedDeals))
+	}
+
+	// Trim old deals
+	if len(newDeals) > 0 {
 		if err := p.store.TrimOldDeals(ctx, p.config.MaxStoredDeals); err != nil {
 			logger.Warn("Failed to trim old deals", "error", err)
 		}
 	}
 
-	logger.Info("Finished processing", "new", newCount, "updated", updatedCount)
 	if len(errorMessages) > 0 {
 		return fmt.Errorf("processed with errors: %s", strings.Join(errorMessages, "; "))
 	}
 	return nil
-}
-
-func (p *DealProcessor) processSingleDeal(ctx context.Context, deal models.DealInfo, existing *models.DealInfo) (isNew, isUpdated bool, err error) {
-	// ID was already computed in ProcessDeals; ensure it's set
-	if deal.FirestoreID == "" {
-		deal.FirestoreID = generateDealID(deal.PublishedTimestamp)
-	}
-	deal.LastUpdated = time.Now()
-
-	// New deal — try to create it
-	if existing == nil {
-		createErr := p.store.TryCreateDeal(ctx, deal)
-		if createErr == nil {
-			slog.Info("New deal added", "title", deal.Title)
-			p.sendAndSaveDiscordID(ctx, &deal)
-			return true, false, nil
-		}
-
-		// Race condition: another instance created it first
-		if !errors.Is(createErr, models.ErrDealExists) {
-			return false, false, fmt.Errorf("failed to create deal %s: %v", deal.Title, createErr)
-		}
-
-		existing, err = p.store.GetDealByID(ctx, deal.FirestoreID)
-		if err != nil {
-			return false, false, fmt.Errorf("error recovering from race for deal %s: %v", deal.FirestoreID, err)
-		}
-		if existing == nil {
-			slog.Warn("Race condition anomaly: deal claimed to exist but returned nil", "id", deal.FirestoreID)
-			return false, false, nil
-		}
-	}
-
-	// Ensure deal has a Discord message
-	if existing.DiscordMessageID == "" {
-		p.sendAndSaveDiscordID(ctx, existing)
-	}
-
-	// Check if scraped data differs from stored data
-	if !p.dealChanged(existing, &deal) {
-		return false, false, nil
-	}
-
-	// Apply updates (including PostURL which may have changed)
-	existing.Title = deal.Title
-	existing.PostURL = deal.PostURL
-	existing.LikeCount = deal.LikeCount
-	existing.CommentCount = deal.CommentCount
-	existing.ViewCount = deal.ViewCount
-	existing.ThreadImageURL = deal.ThreadImageURL
-	existing.AuthorName = deal.AuthorName
-	existing.AuthorURL = deal.AuthorURL
-	existing.PublishedTimestamp = deal.PublishedTimestamp
-	existing.ActualDealURL = deal.ActualDealURL
-	existing.LastUpdated = time.Now()
-
-	// If a throttled Discord update will happen, set the timestamp before persisting
-	// so we only need a single Firestore write.
-	shouldUpdateDiscord := existing.DiscordMessageID != "" &&
-		time.Since(existing.DiscordLastUpdatedTime) >= p.updateInterval
-	if shouldUpdateDiscord {
-		existing.DiscordLastUpdatedTime = time.Now()
-	}
-
-	if err := p.store.UpdateDeal(ctx, *existing); err != nil {
-		return false, false, fmt.Errorf("failed to update deal %s: %w", existing.FirestoreID, err)
-	}
-	slog.Info("Updated deal", "title", existing.Title)
-
-	// Send Discord update after persisting
-	if shouldUpdateDiscord {
-		if err := p.notifier.Update(ctx, existing.DiscordMessageID, *existing); err != nil {
-			slog.Warn("Discord update failed", "id", existing.FirestoreID, "error", err)
-		}
-	}
-
-	return false, true, nil
-}
-
-func (p *DealProcessor) sendAndSaveDiscordID(ctx context.Context, deal *models.DealInfo) {
-	msgID, err := p.notifier.Send(ctx, *deal)
-	if err != nil {
-		slog.Error("Error sending to Discord", "error", err)
-		return
-	}
-	deal.DiscordMessageID = msgID
-	deal.DiscordLastUpdatedTime = time.Now()
-	if err := p.store.UpdateDeal(ctx, *deal); err != nil {
-		slog.Warn("Failed to save Discord message ID", "id", deal.FirestoreID, "error", err)
-	}
 }
 
 func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.DealInfo) bool {
@@ -243,4 +224,31 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 		existing.AuthorName != scraped.AuthorName ||
 		existing.ThreadImageURL != scraped.ThreadImageURL ||
 		existing.ActualDealURL != scraped.ActualDealURL
+}
+
+func (p *DealProcessor) handleDeadLetter(deal *models.DealInfo, err error) {
+	slog.Warn("Validation failed, sending to dead letter file", "error", err, "title", deal.Title)
+
+	f, fileErr := os.OpenFile("dead_letter.jsonl", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if fileErr != nil {
+		slog.Error("Failed to open dead letter file", "error", fileErr)
+		return
+	}
+	defer f.Close()
+
+	type deadLetterEntry struct {
+		Time  time.Time        `json:"time"`
+		Error string           `json:"error"`
+		Deal  *models.DealInfo `json:"deal"`
+	}
+
+	entry := deadLetterEntry{
+		Time:  time.Now(),
+		Error: err.Error(),
+		Deal:  deal,
+	}
+
+	if jsonErr := json.NewEncoder(f).Encode(entry); jsonErr != nil {
+		slog.Error("Failed to write to dead letter file", "error", jsonErr)
+	}
 }

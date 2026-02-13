@@ -17,6 +17,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
 	"github.com/pauljones0/rfd-discord-bot/internal/storage"
+	"github.com/pauljones0/rfd-discord-bot/internal/validator"
 )
 
 //go:embed selectors.json
@@ -24,6 +25,7 @@ var embeddedSelectors embed.FS
 
 type Server struct {
 	processor processor.Processor
+	store     processor.DealStore
 	wg        sync.WaitGroup
 }
 
@@ -51,17 +53,26 @@ func main() {
 
 	n := notifier.New(cfg.DiscordWebhookURL)
 	s := scraper.New(cfg, selectors)
-	p := processor.New(store, n, s, cfg)
+	v := validator.New()
+	p := processor.New(store, n, s, v, cfg)
 
-	srv := &Server{processor: p}
+	srv := &Server{processor: p, store: store}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", srv.ProcessDealsHandler)
 	mux.HandleFunc("/process-deals", srv.ProcessDealsHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+
+		if err := srv.store.Ping(r.Context()); err != nil {
+			slog.Error("Health check failed", "error", err)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, `{"status":"error", "details": "%v"}`, err)
+			return
+		}
+
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `{"status":"ok"}`)
+		fmt.Fprintln(w, `{"status":"ok", "firestore": "connected"}`)
 	})
 
 	httpServer := &http.Server{

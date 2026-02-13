@@ -13,6 +13,8 @@ type DealStore interface {
 	TryCreateDeal(ctx context.Context, deal models.DealInfo) error
 	UpdateDeal(ctx context.Context, deal models.DealInfo) error
 	TrimOldDeals(ctx context.Context, maxDeals int) error
+	BatchWrite(ctx context.Context, creates []models.DealInfo, updates []models.DealInfo) error
+	Ping(ctx context.Context) error
 }
 
 // DealNotifier abstracts the notification layer.
@@ -25,4 +27,9 @@ type DealNotifier interface {
 type DealScraper interface {
 	ScrapeDealList(ctx context.Context) ([]models.DealInfo, error)
 	FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
+}
+
+// DealValidator abstracts the validation layer.
+type DealValidator interface {
+	ValidateStruct(s interface{}) error
 }

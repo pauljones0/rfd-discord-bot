@@ -8,6 +8,7 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/validator"
 )
 
 // --- Mock implementations ---
@@ -71,6 +72,24 @@ func (m *mockStore) TrimOldDeals(_ context.Context, _ int) error {
 	return nil
 }
 
+func (m *mockStore) BatchWrite(ctx context.Context, creates []models.DealInfo, updates []models.DealInfo) error {
+	for _, deal := range creates {
+		if err := m.TryCreateDeal(ctx, deal); err != nil {
+			return err
+		}
+	}
+	for _, deal := range updates {
+		if err := m.UpdateDeal(ctx, deal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *mockStore) Ping(ctx context.Context) error {
+	return nil
+}
+
 type mockNotifier struct {
 	sentDeals  []models.DealInfo
 	updatedIDs []string
@@ -118,7 +137,8 @@ func newTestProcessor(store DealStore, notifier DealNotifier, scraper DealScrape
 		MaxStoredDeals:        500,
 		AmazonAffiliateTag:    "test-tag",
 	}
-	return New(store, notifier, scraper, cfg)
+	v := validator.New()
+	return New(store, notifier, scraper, v, cfg)
 }
 
 // Helper: fixed timestamp for test deals
@@ -158,8 +178,8 @@ func TestProcessDeals_SkipsInvalidDeal(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "", PostURL: "", PublishedTimestamp: testTime1},                  // empty title and URL
-			{Title: "   ", PostURL: "  ", PublishedTimestamp: testTime2},             // whitespace only
+			{Title: "", PostURL: "", PublishedTimestamp: testTime1},      // empty title and URL
+			{Title: "   ", PostURL: "  ", PublishedTimestamp: testTime2}, // whitespace only
 			{Title: "Valid", PostURL: "https://rfd.com/deal", PublishedTimestamp: testTime1},
 		},
 	}

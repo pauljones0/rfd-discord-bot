@@ -10,18 +10,18 @@ var ErrDealExists = errors.New("deal already exists")
 
 // DealInfo represents the structured information for a deal.
 type DealInfo struct {
-	Title                  string    `firestore:"title"`
-	PostURL                string    `firestore:"postURL"`
+	Title                  string    `firestore:"title" validate:"required"`
+	PostURL                string    `firestore:"postURL" validate:"required,url"`
 	AuthorName             string    `firestore:"authorName"`
 	AuthorURL              string    `firestore:"authorURL"`
-	ThreadImageURL         string    `firestore:"threadImageURL,omitempty"`
-	LikeCount              int       `firestore:"likeCount"`
-	CommentCount           int       `firestore:"commentCount"`
-	ViewCount              int       `firestore:"viewCount"`
-	ActualDealURL          string    `firestore:"actualDealURL,omitempty"`
+	ThreadImageURL         string    `firestore:"threadImageURL,omitempty" validate:"omitempty,url"`
+	LikeCount              int       `firestore:"likeCount" validate:"gte=0"`
+	CommentCount           int       `firestore:"commentCount" validate:"gte=0"`
+	ViewCount              int       `firestore:"viewCount" validate:"gte=0"`
+	ActualDealURL          string    `firestore:"actualDealURL,omitempty" validate:"omitempty,url"`
 	FirestoreID            string    `firestore:"-"` // To store the Firestore document ID, not stored in Firestore itself
 	DiscordMessageID       string    `firestore:"discordMessageID,omitempty"`
 	LastUpdated            time.Time `firestore:"lastUpdated"`
-	PublishedTimestamp     time.Time `firestore:"publishedTimestamp"` // Parsed from PostedTime
+	PublishedTimestamp     time.Time `firestore:"publishedTimestamp" validate:"required"` // Parsed from PostedTime
 	DiscordLastUpdatedTime time.Time `firestore:"discordLastUpdatedTime,omitempty"`
 }

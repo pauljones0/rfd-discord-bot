@@ -147,14 +147,34 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	embedColor := getHeatColor(heatScore)
 
 	// Item link in Description for a clickable mobile-friendly target.
-	return discordEmbed{
+	emailEmbed := discordEmbed{
 		Title:       title,
 		URL:         deal.PostURL,
 		Description: description,
 		Timestamp:   isoTimestamp,
 		Color:       embedColor,
 		Thumbnail:   thumbnail,
+		Footer: discordEmbedFooter{
+			Text: "RFD Bot • " + time.Now().Format("2006-01-02 15:04"),
+		},
 	}
+
+	if deal.AuthorName != "" {
+		emailEmbed.Fields = append(emailEmbed.Fields, discordEmbedField{
+			Name:   "Posted By",
+			Value:  deal.AuthorName,
+			Inline: true,
+		})
+	}
+
+	// Add Engagement Metrics field
+	emailEmbed.Fields = append(emailEmbed.Fields, discordEmbedField{
+		Name:   "Engagement",
+		Value:  fmt.Sprintf("👍 %d  💬 %d  👀 %d", deal.LikeCount, deal.CommentCount, deal.ViewCount),
+		Inline: true,
+	})
+
+	return emailEmbed
 }
 
 // doRequest handles the shared retry/rate-limit/backoff loop for Discord API calls.
@@ -262,4 +282,3 @@ func getHeatColor(heatScore float64) int {
 	}
 	return colorColdDeal
 }
-

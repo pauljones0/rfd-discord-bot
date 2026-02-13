@@ -20,7 +20,6 @@ const firestoreCollection = "deals"
 // DefaultTimeout is the default duration for Firestore operations if the context has no deadline.
 const DefaultTimeout = 30 * time.Second
 
-
 type Client struct {
 	client *firestore.Client
 }
@@ -236,5 +235,57 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 		slog.Info("TrimOldDeals: Flushed delete operations", "queued", deletedCount)
 	}
 
+	return nil
+}
+
+// BatchWrite executes multiple creates and updates in a single bulk operation.
+func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, updates []models.DealInfo) error {
+	if len(creates) == 0 && len(updates) == 0 {
+		return nil
+	}
+
+	bw := c.client.BulkWriter(ctx)
+	col := c.client.Collection(firestoreCollection)
+
+	for _, d := range creates {
+		doc := col.Doc(d.FirestoreID)
+		if _, err := bw.Create(doc, d); err != nil {
+			slog.Error("BatchWrite: Failed to queue create", "id", d.FirestoreID, "error", err)
+		}
+	}
+
+	for _, d := range updates {
+		doc := col.Doc(d.FirestoreID)
+		_, err := bw.Update(doc, []firestore.Update{
+			{Path: "title", Value: d.Title},
+			{Path: "postURL", Value: d.PostURL},
+			{Path: "authorName", Value: d.AuthorName},
+			{Path: "authorURL", Value: d.AuthorURL},
+			{Path: "threadImageURL", Value: d.ThreadImageURL},
+			{Path: "likeCount", Value: d.LikeCount},
+			{Path: "commentCount", Value: d.CommentCount},
+			{Path: "viewCount", Value: d.ViewCount},
+			{Path: "actualDealURL", Value: d.ActualDealURL},
+			{Path: "lastUpdated", Value: d.LastUpdated},
+			{Path: "discordMessageID", Value: d.DiscordMessageID},
+			{Path: "discordLastUpdatedTime", Value: d.DiscordLastUpdatedTime},
+			{Path: "publishedTimestamp", Value: d.PublishedTimestamp},
+		})
+		if err != nil {
+			slog.Error("BatchWrite: Failed to queue update", "id", d.FirestoreID, "error", err)
+		}
+	}
+
+	bw.Flush()
+	return nil
+}
+
+// Ping checks connectivity to Firestore.
+func (c *Client) Ping(ctx context.Context) error {
+	iter := c.client.Collections(ctx)
+	_, err := iter.Next()
+	if err != nil && err != iterator.Done {
+		return err
+	}
 	return nil
 }
