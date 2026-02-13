@@ -19,7 +19,7 @@ type AnalysisResult struct {
 	IsLavaHot  bool   `json:"is_lava_hot"`
 }
 
-func NewClient(ctx context.Context, apiKey string) (*Client, error) {
+func NewClient(ctx context.Context, apiKey, modelID string) (*Client, error) {
 	if apiKey == "" {
 		return nil, nil // Return nil client if no key provided
 	}
@@ -29,7 +29,7 @@ func NewClient(ctx context.Context, apiKey string) (*Client, error) {
 		return nil, fmt.Errorf("failed to create gemini client: %w", err)
 	}
 
-	model := client.GenerativeModel("gemini-1.5-flash")
+	model := client.GenerativeModel(modelID)
 	model.SetTemperature(0.1) // Low temperature for deterministic output
 	model.ResponseMIMEType = "application/json"
 

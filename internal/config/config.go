@@ -20,6 +20,7 @@ type Config struct {
 	RFDBaseURL             string
 	UserAgent              string
 	GeminiAPIKey           string
+	GeminiModelID          string
 }
 
 func Load() (*Config, error) {
@@ -68,6 +69,11 @@ func Load() (*Config, error) {
 		maxStoredDeals = parsed
 	}
 
+	geminiModelID := os.Getenv("GEMINI_MODEL_ID")
+	if geminiModelID == "" {
+		geminiModelID = "gemini-2.5-flash"
+	}
+
 	return &Config{
 		ProjectID:              projectID,
 		DiscordWebhookURL:      discordWebhookURL,
@@ -80,5 +86,6 @@ func Load() (*Config, error) {
 		RFDBaseURL:             "https://forums.redflagdeals.com",
 		UserAgent:              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		GeminiAPIKey:           os.Getenv("GEMINI_API_KEY"),
+		GeminiModelID:          geminiModelID,
 	}, nil
 }

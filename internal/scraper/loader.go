@@ -31,7 +31,15 @@ func LoadConfig() (SelectorConfig, error) {
 		configPath = "config/selectors.json"
 	}
 
-	// If external file doesn't exist, we might want to return defaults directly or return error so caller can use defaults.
-	// The original main.go logic returned the result of LoadSelectors(configPath).
-	return LoadSelectors(configPath)
+	// Try loading from file
+	if fileSel, err := LoadSelectors(configPath); err == nil {
+		slog.Info("Loaded selectors from external file", "path", configPath)
+		return fileSel, nil
+	} else {
+		slog.Warn("Failed to load external selectors, falling back to defaults", "path", configPath, "error", err)
+	}
+
+	// 3. Fallback to hardcoded defaults
+	slog.Info("Using hardcoded default selectors")
+	return DefaultSelectors(), nil
 }

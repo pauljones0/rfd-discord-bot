@@ -3,6 +3,7 @@ package notifier
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,34 +25,38 @@ func TestFormatDealToEmbed(t *testing.T) {
 		CommentCount:       5,
 		ViewCount:          100,
 		ThreadImageURL:     "https://example.com/image.jpg",
-		PublishedTimestamp: time.Now(),
+		PublishedTimestamp: time.Unix(1770954490, 0), // Stable timestamp for testing
 		AuthorName:         "testuser",
 	}
 
 	embed := formatDealToEmbed(deal)
 
-	// Check Title format: "Title (L/C/V)"
-	expectedTitleSuffix := " (10/5/100)"
-	if embed.Title != deal.Title+expectedTitleSuffix {
-		t.Errorf("Title format incorrect. Got: %s, Want suffix: %s", embed.Title, expectedTitleSuffix)
+	// Check Title format: "Title" (suffix removed in recent updates)
+	if embed.Title != deal.Title {
+		t.Errorf("Title format incorrect. Got: %s, Want: %s", embed.Title, deal.Title)
 	}
 
-	// Check URL (should be PostURL)
-	if embed.URL != deal.PostURL {
-		t.Errorf("URL incorrect. Got: %s, Want: %s", embed.URL, deal.PostURL)
+	// Check URL (should prefer ActualDealURL)
+	if embed.URL != deal.ActualDealURL {
+		t.Errorf("URL incorrect. Got: %s, Want: %s", embed.URL, deal.ActualDealURL)
 	}
 
-	// Check Description (should contain Item Link)
-	expectedDesc := "[Link to Item](https://amazon.ca/item)"
+	// Check Description (should contain RFD Thread link and Relative Timestamp)
+	expectedDesc := fmt.Sprintf("[RFD Thread](%s) • Posted <t:%d:R>\n", deal.PostURL, deal.PublishedTimestamp.Unix())
 	if embed.Description != expectedDesc {
-		t.Errorf("Description incorrect. Got: %s, Want: %s", embed.Description, expectedDesc)
+		t.Errorf("Description incorrect. Got: %q, Want: %q", embed.Description, expectedDesc)
 	}
 
 	// Check Engagement Field
+	// Default footer logic is "RFD Bot", no Author field in footer anymore, it's a field or similar?
+	// formatDealToEmbed creates a "Posted By" field if AuthorName is present.
+
+	// Check Fields
 	if len(embed.Fields) != 2 {
 		t.Errorf("Expected 2 fields (Posted By + Engagement), got %d fields", len(embed.Fields))
 	}
 
+	// Check Engagement Field
 	foundEngagement := false
 	for _, field := range embed.Fields {
 		if field.Name == "Engagement" {
