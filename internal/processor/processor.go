@@ -24,17 +24,23 @@ type DealProcessor struct {
 	scraper        DealScraper
 	validator      DealValidator
 	config         *config.Config
+	aiClient       DealAnalyzer
 	updateInterval time.Duration
 	mu             sync.Mutex // prevents overlapping ProcessDeals runs
 }
 
-func New(store DealStore, n DealNotifier, s DealScraper, v DealValidator, cfg *config.Config) *DealProcessor {
+type DealAnalyzer interface {
+	AnalyzeDeal(ctx context.Context, title string) (string, bool, error)
+}
+
+func New(store DealStore, n DealNotifier, s DealScraper, v DealValidator, cfg *config.Config, ai DealAnalyzer) *DealProcessor {
 	return &DealProcessor{
 		store:          store,
 		notifier:       n,
 		scraper:        s,
 		validator:      v,
 		config:         cfg,
+		aiClient:       ai,
 		updateInterval: cfg.DiscordUpdateInterval,
 	}
 }
@@ -71,6 +77,9 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 
 	// 3. Fetch Details for New/Changed Deals
 	p.enrichDealsWithDetails(ctx, validDeals, existingDeals, logger)
+
+	// 3a. AI Analysis for New Deals
+	p.analyzeDeals(ctx, validDeals, existingDeals, logger)
 
 	// 4. Notify Discord and Prepare Updates
 	newDeals, updatedDeals, errorMessages := p.processNotificationsAndPrepareUpdates(ctx, validDeals, existingDeals)
@@ -172,6 +181,56 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 	}
 }
 
+// analyzeDeals runs AI analysis on deals that haven't been processed yet.
+func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, logger *slog.Logger) {
+	for i := range validDeals {
+		deal := &validDeals[i]
+		existing := existingDeals[deal.FirestoreID]
+		isNew := existing == nil
+
+		// We only analyze if:
+		// 1. It's a new deal.
+		// 2. Or existing deal hasn't been processed (backfill).
+		// 3. And we haven't already set the CleanTitle (scraped deals might eventually carry this, but for now they don't).
+		shouldAnalyze := isNew || (existing != nil && !existing.AIProcessed)
+
+		// Optimization: If title hasn't changed, and we already processed it, don't re-process.
+		// But if title changed, we might want to re-process. For now, let's stick to simple "if not processed".
+
+		if shouldAnalyze {
+			// Double check if we already have a clean title from somewhere else (unlikely with current flow)
+			if deal.CleanTitle != "" && deal.AIProcessed {
+				continue
+			}
+
+			// Call AI
+			// Note: This is done sequentially here. For high volume, we might want concurrency,
+			// but for a few deals every 10 mins, sequential is fine and safer for rate limits.
+			cleanedTitle, isHot, err := p.aiClient.AnalyzeDeal(ctx, deal.Title)
+			if err != nil {
+				// Log error but continue. Deal stays "unprocessed" effectively, or we mark it processed with failure?
+				// For now, just log. Next run will try again if we don't save AIProcessed=true.
+				// However, to avoid infinite loops on bad deals, we could mark as processed?
+				// Let's NOT mark as processed so it retries, but maybe we need a retry count later.
+				logger.Warn("AI analysis failed", "title", deal.Title, "error", err)
+
+				// Fallback: use original title if we must, but here we just leave CleanTitle empty.
+				// The notifier will handle empty CleanTitle by using Title.
+			} else {
+				deal.CleanTitle = cleanedTitle
+				deal.IsLavaHot = isHot
+				deal.AIProcessed = true
+				logger.Info("AI analysis complete", "original", deal.Title, "clean", cleanedTitle, "hot", isHot)
+			}
+		} else if existing != nil {
+			// Carry over existing AI data
+			deal.CleanTitle = existing.CleanTitle
+			deal.IsLavaHot = existing.IsLavaHot
+			deal.AIProcessed = existing.AIProcessed
+		}
+	}
+}
+
 // processNotificationsAndPrepareUpdates sends/updates Discord notifications and prepares lists for DB persistence.
 func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo) ([]models.DealInfo, []models.DealInfo, []string) {
 	var newDeals []models.DealInfo
@@ -217,6 +276,14 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 			existing.AuthorURL = deal.AuthorURL
 			existing.PublishedTimestamp = deal.PublishedTimestamp
 			existing.ActualDealURL = deal.ActualDealURL
+
+			// AI fields
+			if deal.AIProcessed {
+				existing.CleanTitle = deal.CleanTitle
+				existing.IsLavaHot = deal.IsLavaHot
+				existing.AIProcessed = deal.AIProcessed
+			}
+
 			existing.LastUpdated = time.Now()
 
 			// Check if we need to update Discord

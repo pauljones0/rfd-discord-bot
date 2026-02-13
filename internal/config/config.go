@@ -19,6 +19,7 @@ type Config struct {
 	AllowedDomains         []string
 	RFDBaseURL             string
 	UserAgent              string
+	GeminiAPIKey           string
 }
 
 func Load() (*Config, error) {
@@ -78,5 +79,6 @@ func Load() (*Config, error) {
 		AllowedDomains:         []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com", "bestbuy.ca"},
 		RFDBaseURL:             "https://forums.redflagdeals.com",
 		UserAgent:              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		GeminiAPIKey:           os.Getenv("GEMINI_API_KEY"),
 	}, nil
 }

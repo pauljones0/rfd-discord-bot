@@ -24,4 +24,9 @@ type DealInfo struct {
 	LastUpdated            time.Time `firestore:"lastUpdated"`
 	PublishedTimestamp     time.Time `firestore:"publishedTimestamp" validate:"required"` // Parsed from PostedTime
 	DiscordLastUpdatedTime time.Time `firestore:"discordLastUpdatedTime,omitempty"`
+
+	// AI Enriched Fields
+	CleanTitle  string `firestore:"cleanTitle,omitempty"`
+	IsLavaHot   bool   `firestore:"isLavaHot,omitempty"`
+	AIProcessed bool   `firestore:"aiProcessed"`
 }

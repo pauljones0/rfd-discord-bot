@@ -138,6 +138,18 @@ func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealIn
 	}
 }
 
+type mockDealAnalyzer struct {
+	cleanTitle string
+	isHot      bool
+	err        error
+	called     bool
+}
+
+func (m *mockDealAnalyzer) AnalyzeDeal(ctx context.Context, title string) (string, bool, error) {
+	m.called = true
+	return m.cleanTitle, m.isHot, m.err
+}
+
 func newTestProcessor(store DealStore, notifier DealNotifier, scraper DealScraper) *DealProcessor {
 	cfg := &config.Config{
 		DiscordUpdateInterval: 10 * time.Minute,
@@ -145,7 +157,8 @@ func newTestProcessor(store DealStore, notifier DealNotifier, scraper DealScrape
 		AmazonAffiliateTag:    "test-tag",
 	}
 	v := validator.New()
-	return New(store, notifier, scraper, v, cfg)
+	ai := &mockDealAnalyzer{cleanTitle: "Clean Title", isHot: true}
+	return New(store, notifier, scraper, v, cfg, ai)
 }
 
 // Helper: fixed timestamp for test deals
@@ -534,9 +547,9 @@ func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
 	unchangedDeal := models.DealInfo{Title: "Same", FirestoreID: "id4", LikeCount: 5}
 
 	existingDeals := map[string]*models.DealInfo{
-		"id2": {Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://old.url", LikeCount: 10},
-		"id3": {Title: "MetricsChanged", FirestoreID: "id3", LikeCount: 50},
-		"id4": {Title: "Same", FirestoreID: "id4", LikeCount: 5},
+		"id2": {Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://old.url", LikeCount: 10, ActualDealURL: "http://old.url/item"},
+		"id3": {Title: "MetricsChanged", FirestoreID: "id3", LikeCount: 50, ActualDealURL: "http://deal.url/item"},
+		"id4": {Title: "Same", FirestoreID: "id4", LikeCount: 5, ActualDealURL: "http://deal.url/item"},
 	}
 
 	validDeals := []models.DealInfo{newDeal, urlChangedDeal, onlyMetricsChangedDeal, unchangedDeal}

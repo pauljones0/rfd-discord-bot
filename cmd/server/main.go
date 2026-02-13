@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/ai"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
@@ -53,7 +54,14 @@ func main() {
 	n := notifier.New(cfg.DiscordWebhookURL)
 	s := scraper.New(cfg, selectors)
 	v := validator.New()
-	p := processor.New(store, n, s, v, cfg)
+
+	// Initialize AI client (gracefully handles missing key)
+	aiClient, err := ai.NewClient(ctx, cfg.GeminiAPIKey)
+	if err != nil {
+		slog.Warn("Failed to initialize Gemini client (AI features disabled)", "error", err)
+	}
+
+	p := processor.New(store, n, s, v, cfg, aiClient)
 
 	srv := &Server{
 		processor: p,

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -125,37 +126,57 @@ type discordMessageResponse struct {
 }
 
 func formatDealToEmbed(deal models.DealInfo) discordEmbed {
-	statsSuffix := fmt.Sprintf(" (%d/%d/%d)", deal.LikeCount, deal.CommentCount, deal.ViewCount)
-	title := deal.Title + statsSuffix
-
-	var description string
-	if deal.ActualDealURL != "" {
-		description = fmt.Sprintf("[Link to Item](%s)", deal.ActualDealURL)
+	// 1. Determine Title
+	title := deal.Title
+	if deal.CleanTitle != "" {
+		title = deal.CleanTitle
 	}
 
+	// 2. Determine Title URL (Product Link vs Thread Link)
+	titleURL := deal.PostURL
+	if deal.ActualDealURL != "" {
+		titleURL = deal.ActualDealURL
+	}
+
+	// 3. Append Sentiment Emoji
+	if deal.AIProcessed {
+		if deal.IsLavaHot {
+			title += " 👍"
+		} else {
+			title += " 👎"
+		}
+	}
+
+	// 4. Construct Description
+	var descriptionBuilder strings.Builder
+
+	// Add RFD Thread link always (since title might point to product)
+	descriptionBuilder.WriteString(fmt.Sprintf("[RFD Thread](%s)", deal.PostURL))
+
+	// Add Relative Timestamp
+	if !deal.PublishedTimestamp.IsZero() {
+		descriptionBuilder.WriteString(fmt.Sprintf(" • Posted <t:%d:R>", deal.PublishedTimestamp.Unix()))
+	}
+	descriptionBuilder.WriteString("\n")
+
+	// 5. Heat Color
+	heatScore := calculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
+	embedColor := getHeatColor(heatScore)
+
+	// 6. Thumbnail
 	var thumbnail discordEmbedThumbnail
 	if deal.ThreadImageURL != "" {
 		thumbnail.URL = deal.ThreadImageURL
 	}
 
-	var isoTimestamp string
-	if !deal.PublishedTimestamp.IsZero() {
-		isoTimestamp = deal.PublishedTimestamp.Format(time.RFC3339)
-	}
-
-	heatScore := calculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
-	embedColor := getHeatColor(heatScore)
-
-	// Item link in Description for a clickable mobile-friendly target.
 	emailEmbed := discordEmbed{
 		Title:       title,
-		URL:         deal.PostURL,
-		Description: description,
-		Timestamp:   isoTimestamp,
+		URL:         titleURL,
+		Description: descriptionBuilder.String(),
 		Color:       embedColor,
 		Thumbnail:   thumbnail,
 		Footer: discordEmbedFooter{
-			Text: "RFD Bot • " + time.Now().Format("2006-01-02 15:04"),
+			Text: "RFD Bot", // Simplified footer
 		},
 	}
 
