@@ -25,6 +25,7 @@ func TestFormatDealToEmbed(t *testing.T) {
 		ViewCount:          100,
 		ThreadImageURL:     "https://example.com/image.jpg",
 		PublishedTimestamp: time.Now(),
+		AuthorName:         "testuser",
 	}
 
 	embed := formatDealToEmbed(deal)
@@ -46,8 +47,23 @@ func TestFormatDealToEmbed(t *testing.T) {
 		t.Errorf("Description incorrect. Got: %s, Want: %s", embed.Description, expectedDesc)
 	}
 
-	if len(embed.Fields) != 0 {
-		t.Errorf("Fields should be empty, got %d fields", len(embed.Fields))
+	// Check Engagement Field
+	if len(embed.Fields) != 2 {
+		t.Errorf("Expected 2 fields (Posted By + Engagement), got %d fields", len(embed.Fields))
+	}
+
+	foundEngagement := false
+	for _, field := range embed.Fields {
+		if field.Name == "Engagement" {
+			foundEngagement = true
+			expectedValue := "👍 10  💬 5  👀 100"
+			if field.Value != expectedValue {
+				t.Errorf("Engagement field value incorrect. Got: %s, Want: %s", field.Value, expectedValue)
+			}
+		}
+	}
+	if !foundEngagement {
+		t.Error("Engagement field not found")
 	}
 }
 
@@ -60,7 +76,7 @@ func TestClient_Send(t *testing.T) {
 		if r.URL.Query().Get("wait") != "true" {
 			t.Errorf("Expected wait=true query param")
 		}
-		
+
 		// Verify payload
 		var payload discordWebhookPayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -82,7 +98,7 @@ func TestClient_Send(t *testing.T) {
 
 	deal := models.DealInfo{Title: "Test Deal", PostURL: "http://example.com"}
 	ctx := context.Background()
-	
+
 	id, err := client.Send(ctx, deal)
 	if err != nil {
 		t.Fatalf("Send() returned error: %v", err)
@@ -94,7 +110,7 @@ func TestClient_Send(t *testing.T) {
 
 func TestClient_Update(t *testing.T) {
 	messageID := "12345"
-	
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "PATCH" {
 			t.Errorf("Expected PATCH request, got %s", r.Method)
@@ -259,4 +275,3 @@ func TestClient_Send_EmptyWebhookURL(t *testing.T) {
 		t.Errorf("Send() with empty webhook should return empty ID, got %q", id)
 	}
 }
-

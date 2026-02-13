@@ -4,10 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -74,7 +72,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 
 		// Validate using the validator
 		if err := p.validator.ValidateStruct(deal); err != nil {
-			p.handleDeadLetter(deal, err)
+			slog.Error("Validation failed for deal", "title", deal.Title, "error", err)
 			continue
 		}
 
@@ -224,31 +222,4 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 		existing.AuthorName != scraped.AuthorName ||
 		existing.ThreadImageURL != scraped.ThreadImageURL ||
 		existing.ActualDealURL != scraped.ActualDealURL
-}
-
-func (p *DealProcessor) handleDeadLetter(deal *models.DealInfo, err error) {
-	slog.Warn("Validation failed, sending to dead letter file", "error", err, "title", deal.Title)
-
-	f, fileErr := os.OpenFile("dead_letter.jsonl", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if fileErr != nil {
-		slog.Error("Failed to open dead letter file", "error", fileErr)
-		return
-	}
-	defer f.Close()
-
-	type deadLetterEntry struct {
-		Time  time.Time        `json:"time"`
-		Error string           `json:"error"`
-		Deal  *models.DealInfo `json:"deal"`
-	}
-
-	entry := deadLetterEntry{
-		Time:  time.Now(),
-		Error: err.Error(),
-		Deal:  deal,
-	}
-
-	if jsonErr := json.NewEncoder(f).Encode(entry); jsonErr != nil {
-		slog.Error("Failed to write to dead letter file", "error", jsonErr)
-	}
 }

@@ -27,6 +27,7 @@ type Server struct {
 	processor processor.Processor
 	store     processor.DealStore
 	wg        sync.WaitGroup
+	sem       chan struct{} // Semaphore to limit concurrent processing requests
 }
 
 func main() {
@@ -56,7 +57,11 @@ func main() {
 	v := validator.New()
 	p := processor.New(store, n, s, v, cfg)
 
-	srv := &Server{processor: p, store: store}
+	srv := &Server{
+		processor: p,
+		store:     store,
+		sem:       make(chan struct{}, 1), // Allow only 1 concurrent request processing attempt
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", srv.ProcessDealsHandler)
@@ -133,11 +138,24 @@ func loadSelectorsWithFallback() (scraper.SelectorConfig, error) {
 }
 
 func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
+	// Non-blocking check to see if we can acquire the semaphore
+	select {
+	case s.sem <- struct{}{}:
+		// acquired
+	default:
+		slog.Warn("ProcessDealsHandler: dropped request due to concurrency limit")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprintln(w, `{"status":"busy", "details": "server is busy processing deals"}`)
+		return
+	}
+
 	// Run processing asynchronously so the HTTP response isn't blocked
 	// by scraping, Firestore, and Discord operations that may exceed timeouts.
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer func() { <-s.sem }() // Release semaphore when done
+
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("Panic in ProcessDeals", "panic", r)
