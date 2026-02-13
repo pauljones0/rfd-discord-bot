@@ -85,6 +85,22 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	newDeals, updatedDeals, errorMessages := p.processNotificationsAndPrepareUpdates(ctx, validDeals, existingDeals)
 
 	// 5. Batch Save
+	// Optimization: Clear large text fields for AI processed deals to save storage
+	// This prevents "leaky bucket" storage growth as requested
+	for i := range newDeals {
+		if newDeals[i].AIProcessed {
+			newDeals[i].Description = ""
+			newDeals[i].Comments = ""
+			newDeals[i].Summary = ""
+		}
+	}
+	for i := range updatedDeals {
+		if updatedDeals[i].AIProcessed {
+			updatedDeals[i].Description = ""
+			updatedDeals[i].Comments = ""
+			updatedDeals[i].Summary = ""
+		}
+	}
 	if len(newDeals) > 0 || len(updatedDeals) > 0 {
 		if err := p.store.BatchWrite(ctx, newDeals, updatedDeals); err != nil {
 			return fmt.Errorf("batch write failed: %w", err)
@@ -162,8 +178,9 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 		// 1. We don't have the ActualDealURL or Description yet.
 		// 2. The PostURL changed (new thread/link).
 		// 3. The Title changed (likely implies content update or significant edit).
+		// Note: If AIProcessed is true, we expect Description to be empty (cleared), so don't re-fetch.
 		needsDetails := existing.ActualDealURL == "" ||
-			existing.Description == "" ||
+			(existing.Description == "" && !existing.AIProcessed) ||
 			existing.PostURL != deal.PostURL ||
 			existing.Title != deal.Title
 

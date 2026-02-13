@@ -140,7 +140,7 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 	collectionRef := c.client.Collection(firestoreCollection)
 	docRef := collectionRef.Doc(deal.FirestoreID)
 
-	_, err := docRef.Update(ctx, []firestore.Update{
+	updates := []firestore.Update{
 		{Path: "title", Value: deal.Title},
 		{Path: "postURL", Value: deal.PostURL},
 		{Path: "authorName", Value: deal.AuthorName},
@@ -154,7 +154,32 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 		{Path: "discordMessageID", Value: deal.DiscordMessageID},
 		{Path: "discordLastUpdatedTime", Value: deal.DiscordLastUpdatedTime},
 		{Path: "publishedTimestamp", Value: deal.PublishedTimestamp},
-	})
+		{Path: "cleanTitle", Value: deal.CleanTitle},
+		{Path: "isLavaHot", Value: deal.IsLavaHot},
+		{Path: "aiProcessed", Value: deal.AIProcessed},
+	}
+
+	// Handle optional fields that should be deleted if empty to save space
+	// This helps prevent "leaky bucket" storage growth
+	if deal.Description == "" {
+		updates = append(updates, firestore.Update{Path: "description", Value: firestore.Delete})
+	} else {
+		updates = append(updates, firestore.Update{Path: "description", Value: deal.Description})
+	}
+
+	if deal.Comments == "" {
+		updates = append(updates, firestore.Update{Path: "comments", Value: firestore.Delete})
+	} else {
+		updates = append(updates, firestore.Update{Path: "comments", Value: deal.Comments})
+	}
+
+	if deal.Summary == "" {
+		updates = append(updates, firestore.Update{Path: "summary", Value: firestore.Delete})
+	} else {
+		updates = append(updates, firestore.Update{Path: "summary", Value: deal.Summary})
+	}
+
+	_, err := docRef.Update(ctx, updates)
 	return err
 }
 
@@ -256,7 +281,7 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 
 	for _, d := range updates {
 		doc := col.Doc(d.FirestoreID)
-		_, err := bw.Update(doc, []firestore.Update{
+		updates := []firestore.Update{
 			{Path: "title", Value: d.Title},
 			{Path: "postURL", Value: d.PostURL},
 			{Path: "authorName", Value: d.AuthorName},
@@ -270,7 +295,30 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 			{Path: "discordMessageID", Value: d.DiscordMessageID},
 			{Path: "discordLastUpdatedTime", Value: d.DiscordLastUpdatedTime},
 			{Path: "publishedTimestamp", Value: d.PublishedTimestamp},
-		})
+			{Path: "cleanTitle", Value: d.CleanTitle},
+			{Path: "isLavaHot", Value: d.IsLavaHot},
+			{Path: "aiProcessed", Value: d.AIProcessed},
+		}
+
+		if d.Description == "" {
+			updates = append(updates, firestore.Update{Path: "description", Value: firestore.Delete})
+		} else {
+			updates = append(updates, firestore.Update{Path: "description", Value: d.Description})
+		}
+
+		if d.Comments == "" {
+			updates = append(updates, firestore.Update{Path: "comments", Value: firestore.Delete})
+		} else {
+			updates = append(updates, firestore.Update{Path: "comments", Value: d.Comments})
+		}
+
+		if d.Summary == "" {
+			updates = append(updates, firestore.Update{Path: "summary", Value: firestore.Delete})
+		} else {
+			updates = append(updates, firestore.Update{Path: "summary", Value: d.Summary})
+		}
+
+		_, err := bw.Update(doc, updates)
 		if err != nil {
 			slog.Error("BatchWrite: Failed to queue update", "id", d.FirestoreID, "error", err)
 		}
