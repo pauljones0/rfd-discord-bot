@@ -5,35 +5,37 @@ TLDR; Watches RFD hot deals forum, runs on google cloud, posts to discord.
 ![example.png](docs/assets/example.png)
 ## Features
 
-*   Identifies RFD Hot Deals using Firestore for state management.
-*   Sends notifications to a configurable Discord webhook.
-*   Designed for lightweight, serverless deployment on Google Cloud Run (free tier).
-*   Color of embeds changes with how good a deal is
-*   Embeds are updated every X minutes to keep the likes, comments and views up to date
-*   Item Links default to Rick Rolling if no link is provided
+*   **Identifies RFD Hot Deals:** Scrapes the latest deals from the Hot Deals forum natively with fallback support.
+*   **Gemini AI Integration:** Optionally uses Google Gemini AI (`gemini-2.5-flash-lite`) to:
+    *   Clean up and summarize messy deal titles.
+    *   Determine if a deal is "Lava Hot" (adds 🔥 emojis to the Discord alert).
+*   **Deep Scraping:** Extracts detailed deal content, including descriptions and comments from deal pages for AI context.
+*   **Discord Webhook Notifications:** Sends detailed notifications to Discord, complete with relative timestamps, author links, and actual deal URLs (falling back to Rick Rolls if none exist).
+*   **Live Updates:** Discord embed colors change based on deal metrics (likes/views/hotness). Embeds are updated periodically to keep likes, comments, and views accurate.
+*   **Firestore State Management:** Prevents duplicate posts and tracks deal metrics over time. Automatically clears heavy text fields (like descriptions and comments) post-analysis to minimize storage costs and avoid infinite fetching loops.
 
 ## Simplified Architecture
 
 The bot operates with a simple, serverless architecture on Google Cloud:
 
-*   **Cloud Scheduler:** Triggers the bot every minute (or as configured).
-*   **Cloud Run:** Hosts the Go application. When triggered, it:
-    1.  Fetches the latest deals from the RFD Hot Deals.
-    2.  Checks Firestore to determine if the deal is fresh, updating as needed.
-    3.  Processes new deals (extracts info, filters, formats) or prepares to update likes/views/comments if it's an old deal.
-    4.  Sends formatted deal notifications to the configured Discord webhook and updates firestore with the returned message id.
-*   **Firestore:** Stores the deal data and state, ensuring deals are not sent multiple times.
+*   **Cloud Scheduler:** Triggers the bot every minute via an HTTP GET to `/`.
+*   **Cloud Run:** Hosts the Go HTTP server. When triggered:
+    1.  Scrapes the RFD Hot Deals list natively.
+    2.  Checks Firestore and compares scraped deals with previously processed ones.
+    3.  Fetches deep detail pages (descriptions, comments) for new or updated deals.
+    4.  *(Optional)* Passes deep deal context to Gemini AI to generate a clean title and "hotness" rating.
+    5.  Sends or updates formatted deal notifications on Discord.
+    6.  Updates Firestore state while optimizing storage payload.
+*   **Firestore:** Stores deal records, tracking what has been sent to avoid duplicate entries.
 
 ```mermaid
 graph LR
-    A[Cloud Scheduler: Runs every minute] --> B(Cloud Run: Go Application)
-    B --> C{Fetch RFD page}
-    C --> D{Fetch from Firestore, updating as needed}
-    D --> E{Identify new deals and deals that need to be updated}
-    E --> F{Process & Format Deals}
-    F --> G[Send to Discord Webhook]
-    G --> H{Update Firestore with new discord message ids}
-    H <--> I[Firestore: Stores last_processed_deal timestamp]
+    A[Cloud Scheduler: Runs every minute] --> B(Cloud Run: Go Server)
+    B --> C{Scrape RFD List}
+    C --> D{Check/Fetch heavily detailed info}
+    D --> E{Gemini AI Analysis}
+    E --> F{Format & Post to Discord}
+    F --> G[Update Firestore State]
 ```
 
 ## Local Development
@@ -64,6 +66,8 @@ The application requires the following environment variables to run locally:
 
 *   `GOOGLE_CLOUD_PROJECT`: Your Google Cloud Project ID.
 *   `DISCORD_WEBHOOK_URL`: The Discord webhook URL where notifications will be sent.
+*   `GEMINI_API_KEY`: (Optional) Your Google Gemini API key. If omitted, AI features like title cleaning and hotness rating are disabled.
+*   `PORT`: (Optional) The port the HTTP server should listen on. Defaults to 8080.
 
 It's recommended to create a `.env` file in the project root to store these variables. This file is included in `.gitignore` to prevent accidental commits of sensitive information.
 
@@ -72,8 +76,10 @@ It's recommended to create a `.env` file in the project root to store these vari
 # .env
 export GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
 export DISCORD_WEBHOOK_URL="your-discord-webhook-url"
+export GEMINI_API_KEY="your-gemini-api-key"
+export PORT="8080"
 ```
-Replace `"your-gcp-project-id"` and `"your-discord-webhook-url"` with your actual values.
+Replace `"your-gcp-project-id"`, `"your-discord-webhook-url"`, and `"your-gemini-api-key"` with your actual values.
 
 **Load Environment Variables:**
 Before running the application, source the `.env` file:
@@ -84,6 +90,7 @@ Alternatively, you can set these variables directly in your shell session:
 ```bash
 export GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
 export DISCORD_WEBHOOK_URL="your-discord-webhook-url"
+export GEMINI_API_KEY="your-gemini-api-key"
 ```
 
 ### Running Locally
@@ -255,13 +262,13 @@ To set up Firestore for the bot, follow these steps in the [Google Cloud Console
 
 The bot will automatically create the necessary collection (`bot_state`) and document (`last_processed_deal`) within Firestore when it runs for the first time after successful deployment and configuration.
 
-### Configure Discord Webhook URL (as Environment Variable)
+### Configure Environment Variables for Deployment
 
-The `DISCORD_WEBHOOK_URL` is a sensitive piece of information and should be passed to the Cloud Run service as an environment variable during deployment.
+The `DISCORD_WEBHOOK_URL` and `GEMINI_API_KEY` are sensitive pieces of information and should be passed to the Cloud Run service as environment variables during deployment.
 
-**CRITICAL: DO NOT COMMIT THE ACTUAL WEBHOOK URL TO YOUR CODE REPOSITORY.**
+**CRITICAL: DO NOT COMMIT ACTUAL SECRETS TO YOUR CODE REPOSITORY.**
 
-You will provide this URL in the deployment command below.
+You will provide these values in the deployment command below.
 
 ### Deploy Cloud Run Service
 
@@ -269,19 +276,20 @@ Navigate to your project's root directory (`rfd-discord-bot`) in your terminal. 
 
 ```bash
 # For Linux/macOS (ensure PROJECT_ID and REGION are set):
-gcloud run deploy rfd-discord-bot --source . --platform managed --region "$REGION" --allow-unauthenticated --set-env-vars GOOGLE_CLOUD_PROJECT=$PROJECT_ID --set-env-vars DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE --project "$PROJECT_ID"
+gcloud run deploy rfd-discord-bot --source . --platform managed --region "$REGION" --allow-unauthenticated --set-env-vars GOOGLE_CLOUD_PROJECT=$PROJECT_ID,DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE,GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE --project "$PROJECT_ID"
 
 # For Windows CMD (ensure PROJECT_ID_VAL and REGION_VAL are set):
-# gcloud run deploy rfd-discord-bot --source . --platform managed --region "%REGION_VAL%" --allow-unauthenticated --set-env-vars GOOGLE_CLOUD_PROJECT=%PROJECT_ID_VAL% --set-env-vars DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE --project "%PROJECT_ID_VAL%"
+# gcloud run deploy rfd-discord-bot --source . --platform managed --region "%REGION_VAL%" --allow-unauthenticated --set-env-vars GOOGLE_CLOUD_PROJECT=%PROJECT_ID_VAL%,DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE,GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE --project "%PROJECT_ID_VAL%"
 
 # For PowerShell (ensure $env:PROJECT_ID and $env:REGION are set):
-# gcloud run deploy rfd-discord-bot --source . --platform managed --region "$env:REGION" --allow-unauthenticated --set-env-vars GOOGLE_CLOUD_PROJECT=$env:PROJECT_ID --set-env-vars DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE --project "$env:PROJECT_ID"
+# gcloud run deploy rfd-discord-bot --source . --platform managed --region "$env:REGION" --allow-unauthenticated --set-env-vars GOOGLE_CLOUD_PROJECT=$env:PROJECT_ID,DISCORD_WEBHOOK_URL=YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE,GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE --project "$env:PROJECT_ID"
 ```
 
 **Explanation of variables and placeholders:**
 *   `$REGION` (or `%REGION_VAL%` / `$env:REGION`): This should be the Google Cloud region you set up earlier (e.g., `us-central1`). It's used for the `--region` flag.
 *   `$PROJECT_ID` (or `%PROJECT_ID_VAL%` / `$env:PROJECT_ID`): This is your Google Cloud Project ID, set up earlier. It's used for the `GOOGLE_CLOUD_PROJECT` environment variable and the `--project` flag.
 *   `YOUR_ACTUAL_DISCORD_WEBHOOK_URL_HERE`: **Crucially, you MUST replace this placeholder with your actual Discord webhook URL.**
+*   `YOUR_GEMINI_API_KEY_HERE`: **Crucially, you MUST replace this placeholder with your actual Google Gemini API key. If you omit it, AI processing will be gracefully disabled.**
 
 **Notes on the command flags:**
 *   `--source .`: Deploys the code from the current directory. Cloud Build will build the container image.
