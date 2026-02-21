@@ -15,7 +15,7 @@ type DealInfo struct {
 	AuthorName             string    `firestore:"authorName"`
 	AuthorURL              string    `firestore:"authorURL"`
 	ThreadImageURL         string    `firestore:"threadImageURL,omitempty" validate:"omitempty,url"`
-	LikeCount              int       `firestore:"likeCount" validate:"gte=0"`
+	LikeCount              int       `firestore:"likeCount"`
 	CommentCount           int       `firestore:"commentCount" validate:"gte=0"`
 	ViewCount              int       `firestore:"viewCount" validate:"gte=0"`
 	ActualDealURL          string    `firestore:"actualDealURL,omitempty" validate:"omitempty,url"`

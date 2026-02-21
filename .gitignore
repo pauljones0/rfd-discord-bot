@@ -51,3 +51,6 @@ yarn.lock
 
 # Virtual environment
 venv/
+
+#logs
+logs/

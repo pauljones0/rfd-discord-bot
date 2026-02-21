@@ -52,7 +52,7 @@ func TestValidator_ValidateStruct(t *testing.T) {
 				PublishedTimestamp: time.Now(),
 				LikeCount:          -1,
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 	}
 
