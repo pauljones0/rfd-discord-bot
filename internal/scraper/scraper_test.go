@@ -289,7 +289,7 @@ func TestScrapeDealDetailPage_PrimaryLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	url, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	url, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
@@ -314,7 +314,7 @@ func TestScrapeDealDetailPage_FallbackLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	url, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	url, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
@@ -339,7 +339,7 @@ func TestScrapeDealDetailPage_NoLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	_, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	_, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != ErrDealLinkNotFound {
 		t.Errorf("Expected ErrDealLinkNotFound, got %v", err)
 	}

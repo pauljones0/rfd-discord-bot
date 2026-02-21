@@ -241,7 +241,7 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 		}
 
 		g.Go(func() error {
-			actualURL, description, comments, summary, err := c.scrapeDealDetailPage(ctx, deal.PostURL)
+			actualURL, description, comments, summary, price, retailer, err := c.scrapeDealDetailPage(ctx, deal.PostURL)
 			if err != nil {
 				if errors.Is(err, ErrDealLinkNotFound) {
 					slog.Info("No external deal link found", "postURL", deal.PostURL)
@@ -258,6 +258,8 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 			deal.Description = description
 			deal.Comments = comments
 			deal.Summary = summary
+			deal.Price = price
+			deal.Retailer = retailer
 
 			if deal.ActualDealURL != "" {
 				cleanedURL, changed := util.CleanReferralLink(deal.ActualDealURL, c.config.AmazonAffiliateTag, c.config.BestBuyAffiliatePrefix)
@@ -277,10 +279,10 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 	}
 }
 
-func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, string, string, string, error) {
+func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, string, string, string, string, string, error) {
 	doc, err := c.fetchHTMLContent(ctx, dealURL)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", "", err
 	}
 
 	// 1. Get Deal Link
@@ -312,7 +314,7 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		// or return error if link is strictly required. Original logic returned error.
 		// Let's return error for now to maintain behavior, but maybe AI can find it?
 		// Stick to strict behavior for now.
-		return "", "", "", "", ErrDealLinkNotFound
+		return "", "", "", "", "", "", ErrDealLinkNotFound
 	}
 
 	// 2. Extract JSON-LD for Description and Comments
@@ -349,7 +351,29 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 	// Try finding the element by ID even if it's dynamic, sometimes it's SSR.
 	summary := strings.TrimSpace(doc.Find("#rfd_topic_summary").Text())
 
-	return dealLink, description, commentsStr, summary, nil
+	// 4. Extract Price and Retailer
+	var price, retailer string
+
+	// Extract Price
+	doc.Find("dt").Each(func(i int, s *goquery.Selection) {
+		if strings.TrimSpace(s.Text()) == "Price:" {
+			price = strings.TrimSpace(s.Next().Text())
+		}
+	})
+
+	// Extract Retailer
+	if badge := doc.Find(".retailer_badge"); badge.Length() > 0 {
+		retailer = strings.TrimSpace(badge.Text())
+	}
+	if retailer == "" {
+		doc.Find("dt").Each(func(i int, s *goquery.Selection) {
+			if strings.TrimSpace(s.Text()) == "Retailer:" {
+				retailer = strings.TrimSpace(s.Next().Text())
+			}
+		})
+	}
+
+	return dealLink, description, commentsStr, summary, price, retailer, nil
 }
 
 // cleanHTMLText allows stripping HTML tags from a string.

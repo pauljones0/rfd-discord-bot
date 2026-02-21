@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/google/generative-ai-go/genai"
@@ -58,19 +59,27 @@ func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string
 		return "", false, nil // Graceful degradation
 	}
 
+	link := deal.ActualDealURL
+	if link == "" {
+		link = deal.PostURL // Fallback to thread URL if deal URL is not available
+	}
+
 	prompt := fmt.Sprintf(`
 Analyze this deal:
 Title: "%s"
 Description: "%s"
 User Comments Summary: "%s"
 RFD Summary: "%s"
+Deal Link: "%s"
+Price: "%s"
+Retailer: "%s"
 
 Task:
 1. Create a clean, concise title (5-15 words). Remove fluff ("Lava Hot", "Price Error"), store names if redundant, and focus on the product and price/discount.
 2. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
 
 Output JSON adhering to the schema.
-`, deal.Title, deal.Description, deal.Comments, deal.Summary)
+`, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, deal.Retailer)
 
 	resp, err := c.model.GenerateContent(ctx, genai.Text(prompt))
 	if err != nil {
@@ -93,6 +102,19 @@ Output JSON adhering to the schema.
 			if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 				return "", false, fmt.Errorf("failed to parse gemini response: %w", err)
 			}
+
+			// Log the input prompt and output response as a single message
+			slog.Info("Completed Gemini AI Deal Analysis",
+				"deal_id", deal.FirestoreID,
+				"deal_title", deal.Title,
+				"prompt", prompt,
+				"response_json", jsonStr,
+				"clean_title", result.CleanTitle,
+				"is_lava_hot", result.IsLavaHot,
+				"price", deal.Price,
+				"retailer", deal.Retailer,
+			)
+
 			return result.CleanTitle, result.IsLavaHot, nil
 		}
 	}
