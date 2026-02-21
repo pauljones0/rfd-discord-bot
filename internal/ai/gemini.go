@@ -44,7 +44,7 @@ func NewClient(ctx context.Context, apiKey, modelID string) (*Client, error) {
 			},
 			"is_lava_hot": {
 				Type:        genai.TypeBoolean,
-				Description: "True if the deal seems exceptionally good (high percentage off, price error, \"lava hot\" in title). False otherwise.",
+				Description: "A boolean indicating extreme urgency. True ONLY if the deal is an absolute must-buy that would cause FOMO or lost sleep if missed. False for regular good deals.",
 			},
 		},
 		Required: []string{"clean_title", "is_lava_hot"},
@@ -67,7 +67,7 @@ RFD Summary: "%s"
 
 Task:
 1. Create a clean, concise title (5-15 words). Remove fluff ("Lava Hot", "Price Error"), store names if redundant, and focus on the product and price/discount.
-2. Determine if this is "Lava Hot" (exceptionally good deal, price error, or highly praised by users).
+2. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
 
 Output JSON adhering to the schema.
 `, deal.Title, deal.Description, deal.Comments, deal.Summary)
