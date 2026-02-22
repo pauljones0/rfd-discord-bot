@@ -75,6 +75,56 @@ func TestFormatDealToEmbed(t *testing.T) {
 	}
 }
 
+func TestFormatDealToEmbed_NegativeLikesStaysCold(t *testing.T) {
+	tests := []struct {
+		name      string
+		likes     int
+		comments  int
+		views     int
+		wantColor int
+	}{
+		{
+			name:      "zero likes with high engagement stays cold",
+			likes:     0,
+			comments:  100,
+			views:     5000,
+			wantColor: colorColdDeal,
+		},
+		{
+			name:      "negative likes with high engagement stays cold",
+			likes:     -20,
+			comments:  200,
+			views:     10000,
+			wantColor: colorColdDeal,
+		},
+		{
+			name:      "positive likes still gets heat color",
+			likes:     50,
+			comments:  100,
+			views:     500,
+			wantColor: colorHotDeal, // (50 + 200) / 500 = 0.5, well above 0.20 threshold
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deal := models.DealInfo{
+				Title:        "Test Deal",
+				PostURL:      "https://forums.redflagdeals.com/test",
+				LikeCount:    tt.likes,
+				CommentCount: tt.comments,
+				ViewCount:    tt.views,
+			}
+
+			embed := formatDealToEmbed(deal)
+
+			if embed.Color != tt.wantColor {
+				t.Errorf("Color = %d, want %d", embed.Color, tt.wantColor)
+			}
+		})
+	}
+}
+
 func TestClient_Send(t *testing.T) {
 	// Mock Discord Server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

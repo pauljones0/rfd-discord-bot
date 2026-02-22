@@ -19,14 +19,12 @@ import (
 )
 
 const (
-	colorColdDeal    = 3092790  // #2F3136
-	colorWarmDeal    = 16753920 // #FFA500
-	colorHotDeal     = 16711680 // #FF0000
-	colorVeryHotDeal = 16776960 // #FFFF00 (yellow)
+	colorColdDeal = 5793266  // #5865F2 (Discord blurple) — alert fired, but quiet
+	colorWarmDeal = 16098851 // #F5A623 (amber)            — getting traction
+	colorHotDeal  = 16723320 // #FF2D78 (magenta-pink)     — blowing up, act fast
 
-	heatScoreThresholdCold = 0.05
-	heatScoreThresholdWarm = 0.1
-	heatScoreThresholdHot  = 0.25
+	heatScoreThresholdWarm = 0.05
+	heatScoreThresholdHot  = 0.20
 
 	maxRetries = 3
 )
@@ -156,8 +154,13 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	descriptionBuilder.WriteString("\n")
 
 	// 5. Heat Color
+	// Don't escalate color for deals with non-positive likes — high engagement
+	// on a downvoted deal means people hate it, not that it's a good deal.
 	heatScore := calculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
-	embedColor := getHeatColor(heatScore)
+	embedColor := colorColdDeal
+	if deal.LikeCount > 0 {
+		embedColor = getHeatColor(heatScore)
+	}
 
 	// 6. Thumbnail
 	var thumbnail discordEmbedThumbnail
@@ -289,12 +292,9 @@ func calculateHeatScore(likes, comments, views int) float64 {
 
 func getHeatColor(heatScore float64) int {
 	if heatScore > heatScoreThresholdHot {
-		return colorVeryHotDeal
-	}
-	if heatScore > heatScoreThresholdWarm {
 		return colorHotDeal
 	}
-	if heatScore > heatScoreThresholdCold {
+	if heatScore > heatScoreThresholdWarm {
 		return colorWarmDeal
 	}
 	return colorColdDeal
