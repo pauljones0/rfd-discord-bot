@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	colorColdDeal = 5793266  // #5865F2 (Discord blurple) — alert fired, but quiet
+	colorColdDeal = 2829617  // #2B2D31 (Discord dark mode embed background) — alert fired, but quiet
 	colorWarmDeal = 16098851 // #F5A623 (amber)            — getting traction
 	colorHotDeal  = 16723320 // #FF2D78 (magenta-pink)     — blowing up, act fast
 
