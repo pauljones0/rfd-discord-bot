@@ -226,7 +226,7 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 
 	// Query for the oldest deals to delete
 	iter := collectionRef.
-		OrderBy("publishedTimestamp", firestore.Asc). // Ascending to get oldest first
+		OrderBy("lastUpdated", firestore.Asc). // Ascending to get oldest first
 		Limit(numToDelete).
 		Documents(ctx)
 	defer iter.Stop()
