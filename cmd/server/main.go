@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/ai"
+	"github.com/pauljones0/rfd-discord-bot/internal/api"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
@@ -51,7 +52,7 @@ func main() {
 		selectors = scraper.DefaultSelectors()
 	}
 
-	n := notifier.New(cfg.DiscordWebhookURL)
+	n := notifier.New(cfg.DiscordBotToken)
 	s := scraper.New(cfg, selectors)
 	v := validator.New()
 
@@ -69,9 +70,16 @@ func main() {
 		sem:       make(chan struct{}, 1), // Allow only 1 concurrent request processing attempt
 	}
 
+	apiHandler, err := api.NewHandler(cfg, store)
+	if err != nil {
+		slog.Error("Failed to initialize API handler", "error", err)
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", srv.ProcessDealsHandler)
 	mux.HandleFunc("/process-deals", srv.ProcessDealsHandler)
+	mux.Handle("/discord/interactions", apiHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 

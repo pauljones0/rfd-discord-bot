@@ -81,10 +81,16 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	// 3a. AI Analysis for New Deals
 	p.analyzeDeals(ctx, validDeals, existingDeals, logger)
 
-	// 4. Notify Discord and Prepare Updates
-	newDeals, updatedDeals, errorMessages := p.processNotificationsAndPrepareUpdates(ctx, validDeals, existingDeals)
+	// 4. Fetch Subscriptions
+	subs, err := p.store.GetAllSubscriptions(ctx)
+	if err != nil {
+		logger.Error("Failed to get subscriptions, skipping notifications", "error", err)
+	}
 
-	// 5. Batch Save
+	// 5. Notify Discord and Prepare Updates
+	newDeals, updatedDeals, errorMessages := p.processNotificationsAndPrepareUpdates(ctx, validDeals, existingDeals, subs)
+
+	// 6. Batch Save
 	// Optimization: Clear large text fields for AI processed deals to save storage
 	// This prevents "leaky bucket" storage growth as requested
 	for i := range newDeals {
@@ -261,7 +267,7 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 }
 
 // processNotificationsAndPrepareUpdates sends/updates Discord notifications and prepares lists for DB persistence.
-func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo) ([]models.DealInfo, []models.DealInfo, []string) {
+func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, subs []models.Subscription) ([]models.DealInfo, []models.DealInfo, []string) {
 	var newDeals []models.DealInfo
 	var updatedDeals []models.DealInfo
 	var errorMessages []string
@@ -271,12 +277,12 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 		existing := existingDeals[deal.FirestoreID]
 
 		if existing == nil {
-			if err := p.processNewDeal(ctx, deal, &newDeals); err != nil {
+			if err := p.processNewDeal(ctx, deal, &newDeals, subs); err != nil {
 				slog.Error("Failed to process new deal", "title", deal.Title, "error", err)
 				errorMessages = append(errorMessages, fmt.Sprintf("new deal error %s: %v", deal.Title, err))
 			}
 		} else {
-			if err := p.processExistingDeal(ctx, existing, deal, &updatedDeals); err != nil {
+			if err := p.processExistingDeal(ctx, existing, deal, &updatedDeals, subs); err != nil {
 				slog.Error("Failed to process existing deal", "title", deal.Title, "error", err)
 				errorMessages = append(errorMessages, fmt.Sprintf("existing deal error %s: %v", deal.Title, err))
 			}
@@ -285,22 +291,22 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 	return newDeals, updatedDeals, errorMessages
 }
 
-func (p *DealProcessor) processNewDeal(ctx context.Context, deal *models.DealInfo, newDeals *[]models.DealInfo) error {
+func (p *DealProcessor) processNewDeal(ctx context.Context, deal *models.DealInfo, newDeals *[]models.DealInfo, subs []models.Subscription) error {
 	dealToSave := deal
 	dealToSave.LastUpdated = time.Now()
 
 	// Send to Discord to get ID
-	msgID, err := p.notifier.Send(ctx, *dealToSave)
+	msgIDs, err := p.notifier.Send(ctx, *dealToSave, subs)
 	if err != nil {
 		return err
 	}
-	dealToSave.DiscordMessageID = msgID
+	dealToSave.DiscordMessageIDs = msgIDs
 	dealToSave.DiscordLastUpdatedTime = time.Now()
 	*newDeals = append(*newDeals, *dealToSave)
 	return nil
 }
 
-func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *models.DealInfo, scraped *models.DealInfo, updatedDeals *[]models.DealInfo) error {
+func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *models.DealInfo, scraped *models.DealInfo, updatedDeals *[]models.DealInfo, subs []models.Subscription) error {
 	// Check if changed
 	if !p.dealChanged(existing, scraped) {
 		return nil
@@ -330,21 +336,41 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 
 	existing.LastUpdated = time.Now()
 
-	// Check if we need to update Discord
-	if existing.DiscordMessageID == "" {
-		// Should have had one. Send now.
-		msgID, err := p.notifier.Send(ctx, *existing)
-		if err == nil {
-			existing.DiscordMessageID = msgID
-			existing.DiscordLastUpdatedTime = time.Now()
-		} else {
-			slog.Warn("Failed to send missing discord notification", "id", existing.FirestoreID, "error", err)
+	existing.LastUpdated = time.Now()
+
+	// Handle Discord multi-channel updates
+	// 1. Send to newly added channels that don't have this deal yet
+	if len(subs) > 0 {
+		var missingSubs []models.Subscription
+		if existing.DiscordMessageIDs == nil {
+			existing.DiscordMessageIDs = make(map[string]string)
 		}
-	} else if time.Since(existing.DiscordLastUpdatedTime) >= p.updateInterval {
-		if err := p.notifier.Update(ctx, existing.DiscordMessageID, *existing); err == nil {
+
+		for _, sub := range subs {
+			if _, ok := existing.DiscordMessageIDs[sub.ChannelID]; !ok {
+				missingSubs = append(missingSubs, sub)
+			}
+		}
+
+		if len(missingSubs) > 0 {
+			newMsgIDs, err := p.notifier.Send(ctx, *existing, missingSubs)
+			if err == nil {
+				for channelID, msgID := range newMsgIDs {
+					existing.DiscordMessageIDs[channelID] = msgID
+				}
+				existing.DiscordLastUpdatedTime = time.Now()
+			} else {
+				slog.Warn("Failed to send missing discord notifications", "id", existing.FirestoreID, "error", err)
+			}
+		}
+	}
+
+	// 2. Update existing channels
+	if len(existing.DiscordMessageIDs) > 0 && time.Since(existing.DiscordLastUpdatedTime) >= p.updateInterval {
+		if err := p.notifier.Update(ctx, *existing); err == nil {
 			existing.DiscordLastUpdatedTime = time.Now()
 		} else {
-			slog.Warn("Failed to update discord notification", "id", existing.FirestoreID, "error", err)
+			slog.Warn("Failed to update discord notifications", "id", existing.FirestoreID, "error", err)
 		}
 	}
 

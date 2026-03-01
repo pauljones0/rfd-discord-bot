@@ -91,6 +91,13 @@ func (m *mockStore) Ping(ctx context.Context) error {
 	return nil
 }
 
+func (m *mockStore) GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error) {
+	// Return a default test subscription so the notifier actually sends
+	return []models.Subscription{
+		{GuildID: "guild1", ChannelID: "channel1"},
+	}, nil
+}
+
 type mockNotifier struct {
 	sentDeals  []models.DealInfo
 	updatedIDs []string
@@ -103,19 +110,25 @@ func newMockNotifier() *mockNotifier {
 	return &mockNotifier{nextMsgID: "msg-123"}
 }
 
-func (m *mockNotifier) Send(_ context.Context, deal models.DealInfo) (string, error) {
+func (m *mockNotifier) Send(_ context.Context, deal models.DealInfo, subs []models.Subscription) (map[string]string, error) {
 	if m.sendErr != nil {
-		return "", m.sendErr
+		return nil, m.sendErr
 	}
 	m.sentDeals = append(m.sentDeals, deal)
-	return m.nextMsgID, nil
+	res := make(map[string]string)
+	for _, sub := range subs {
+		res[sub.ChannelID] = m.nextMsgID + "-" + sub.ChannelID
+	}
+	return res, nil
 }
 
-func (m *mockNotifier) Update(_ context.Context, messageID string, _ models.DealInfo) error {
+func (m *mockNotifier) Update(_ context.Context, deal models.DealInfo) error {
 	if m.updateErr != nil {
 		return m.updateErr
 	}
-	m.updatedIDs = append(m.updatedIDs, messageID)
+	for _, msgID := range deal.DiscordMessageIDs {
+		m.updatedIDs = append(m.updatedIDs, msgID)
+	}
 	return nil
 }
 

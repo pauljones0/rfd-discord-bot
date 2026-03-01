@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -31,61 +30,67 @@ const (
 )
 
 type Client struct {
-	webhookURL  string
+	botToken    string
 	client      *http.Client
 	rateLimiter *rate.Limiter
 }
 
-func New(webhookURL string) *Client {
+func New(botToken string) *Client {
 	return &Client{
-		webhookURL:  webhookURL,
+		botToken:    botToken,
 		client:      &http.Client{Timeout: 10 * time.Second},
-		rateLimiter: rate.NewLimiter(rate.Every(60*time.Second/25), 1), // 25 req/min
+		rateLimiter: rate.NewLimiter(rate.Every(60*time.Second/50), 1), // Discord allows 50 req/sec globally, let's play it safe
 	}
 }
 
-// Send sends a new deal notification and returns the message ID.
-func (c *Client) Send(ctx context.Context, deal models.DealInfo) (string, error) {
-	if c.webhookURL == "" {
-		return "", nil
+// Send sends a new deal notification to all subscribed channels.
+// Returns a map of ChannelID -> MessageID.
+func (c *Client) Send(ctx context.Context, deal models.DealInfo, subs []models.Subscription) (map[string]string, error) {
+	if c.botToken == "" {
+		return nil, nil // No bot token configured
 	}
+
 	payload := createDiscordPayload(deal)
+	results := make(map[string]string)
 
-	parsedURL, err := url.Parse(c.webhookURL)
-	if err != nil {
-		return "", err
-	}
-	q := parsedURL.Query()
-	q.Set("wait", "true")
-	parsedURL.RawQuery = q.Encode()
+	for _, sub := range subs {
+		urlStr := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", sub.ChannelID)
+		body, err := c.doRequest(ctx, "POST", urlStr, payload)
+		if err != nil {
+			slog.Error("Failed to send deal to channel", "channel", sub.ChannelID, "error", err)
+			continue
+		}
 
-	body, err := c.doRequest(ctx, "POST", parsedURL.String(), payload)
-	if err != nil {
-		return "", err
+		var msgResponse discordMessageResponse
+		if err := json.Unmarshal(body, &msgResponse); err != nil {
+			slog.Error("Failed to parse discord message response", "error", err)
+			continue
+		}
+		results[sub.ChannelID] = msgResponse.ID
 	}
 
-	var msgResponse discordMessageResponse
-	if err := json.Unmarshal(body, &msgResponse); err != nil {
-		return "", err
-	}
-	return msgResponse.ID, nil
+	return results, nil
 }
 
-// Update updates an existing notification.
-func (c *Client) Update(ctx context.Context, messageID string, deal models.DealInfo) error {
-	if c.webhookURL == "" || messageID == "" {
+// Update updates an existing notification in all channels it was published to.
+func (c *Client) Update(ctx context.Context, deal models.DealInfo) error {
+	if c.botToken == "" || len(deal.DiscordMessageIDs) == 0 {
 		return nil
 	}
+
 	payload := createDiscordPayload(deal)
+	var lastErr error
 
-	parsedBaseURL, err := url.Parse(c.webhookURL)
-	if err != nil {
-		return err
+	for channelID, messageID := range deal.DiscordMessageIDs {
+		patchURL := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages/%s", channelID, messageID)
+		_, err := c.doRequest(ctx, "PATCH", patchURL, payload)
+		if err != nil {
+			slog.Error("Failed to update deal", "channel", channelID, "message", messageID, "error", err)
+			lastErr = err
+		}
 	}
-	patchURL := fmt.Sprintf("%s://%s%s/messages/%s", parsedBaseURL.Scheme, parsedBaseURL.Host, parsedBaseURL.Path, messageID)
 
-	_, err = c.doRequest(ctx, "PATCH", patchURL, payload)
-	return err
+	return lastErr
 }
 
 // Internal structures
@@ -242,6 +247,7 @@ func (c *Client) doRequest(ctx context.Context, method, targetURL string, payloa
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bot "+c.botToken)
 
 		resp, err := c.client.Do(req)
 		if err != nil {

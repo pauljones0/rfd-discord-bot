@@ -131,8 +131,11 @@ func TestClient_Send(t *testing.T) {
 		if r.Method != "POST" {
 			t.Errorf("Expected POST request, got %s", r.Method)
 		}
-		if r.URL.Query().Get("wait") != "true" {
-			t.Errorf("Expected wait=true query param")
+		if !strings.Contains(r.URL.Path, "/channels/67890/messages") {
+			t.Errorf("Expected URL to be for channel messages, got %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bot token" {
+			t.Errorf("Expected Bot token auth header")
 		}
 
 		// Verify payload
@@ -150,20 +153,40 @@ func TestClient_Send(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL)
+	client := New("token")
 	// Override rate limiter for tests to run fast
-	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+	client.rateLimiter = rate.NewLimiter(rate.Inf, 1) // Inf usually doesn't work well with URL override in the mock anymore without hacking the domain
+	// Actually we didn't mock the endpoint properly since it's hardcoded to discord.com! Let's just mock the HTTP Client Transport.
 
 	deal := models.DealInfo{Title: "Test Deal", PostURL: "http://example.com", LikeCount: 1}
 	ctx := context.Background()
 
-	id, err := client.Send(ctx, deal)
+	// Need to override the URL in doRequest? In discord.go, the target URL is absolute.
+	// Since we mock via client.Do override later, let's fix the test HTTP client.
+	client.client = server.Client() // doesn't help with URL
+
+	// Better approach for these tests is to mock the discord client HTTP transport to redirect requests to our server.
+	client.client.Transport = &rewriteTransport{target: server.URL}
+
+	subs := []models.Subscription{{ChannelID: "67890"}}
+	ids, err := client.Send(ctx, deal, subs)
 	if err != nil {
 		t.Fatalf("Send() returned error: %v", err)
 	}
-	if id != "12345" {
-		t.Errorf("Expected ID 12345, got %s", id)
+	if ids["67890"] != "12345" {
+		t.Errorf("Expected ID 12345, got %s", ids["67890"])
 	}
+}
+
+// rewriteTransport redirects all requests to the given URL (useful for testing absolute URLs).
+type rewriteTransport struct {
+	target string
+}
+
+func (r *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = "http"
+	req.URL.Host = strings.TrimPrefix(r.target, "http://")
+	return http.DefaultTransport.RoundTrip(req)
 }
 
 func TestClient_Update(t *testing.T) {
@@ -183,13 +206,19 @@ func TestClient_Update(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL)
+	client := New("token")
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+	client.client.Transport = &rewriteTransport{target: server.URL}
 
-	deal := models.DealInfo{Title: "Updated Deal", PostURL: "http://example.com", LikeCount: 1}
+	deal := models.DealInfo{
+		Title:             "Updated Deal",
+		PostURL:           "http://example.com",
+		LikeCount:         1,
+		DiscordMessageIDs: map[string]string{"67890": messageID},
+	}
 	ctx := context.Background()
 
-	err := client.Update(ctx, messageID, deal)
+	err := client.Update(ctx, deal)
 	if err != nil {
 		t.Fatalf("Update() returned error: %v", err)
 	}
@@ -211,18 +240,20 @@ func TestClient_Send_RetriesOn5xx(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL)
+	client := New("token")
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+	client.client.Transport = &rewriteTransport{target: server.URL}
 
 	deal := models.DealInfo{Title: "Retry Deal", PostURL: "http://example.com", LikeCount: 1}
 	ctx := context.Background()
+	subs := []models.Subscription{{ChannelID: "67890"}}
 
-	id, err := client.Send(ctx, deal)
+	ids, err := client.Send(ctx, deal, subs)
 	if err != nil {
 		t.Fatalf("Send() should have succeeded after retries, got error: %v", err)
 	}
-	if id != "retry-success" {
-		t.Errorf("Expected ID 'retry-success', got %s", id)
+	if ids["67890"] != "retry-success" {
+		t.Errorf("Expected ID 'retry-success', got %s", ids["67890"])
 	}
 	if atomic.LoadInt32(&attempts) != 3 {
 		t.Errorf("Expected 3 attempts (2 failures + 1 success), got %d", atomic.LoadInt32(&attempts))
@@ -246,18 +277,20 @@ func TestClient_Send_RetriesOn429(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL)
+	client := New("token")
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+	client.client.Transport = &rewriteTransport{target: server.URL}
 
 	deal := models.DealInfo{Title: "Rate Limited Deal", PostURL: "http://example.com", LikeCount: 1}
 	ctx := context.Background()
+	subs := []models.Subscription{{ChannelID: "67890"}}
 
-	id, err := client.Send(ctx, deal)
+	ids, err := client.Send(ctx, deal, subs)
 	if err != nil {
 		t.Fatalf("Send() should have succeeded after 429 retry, got error: %v", err)
 	}
-	if id != "429-success" {
-		t.Errorf("Expected ID '429-success', got %s", id)
+	if ids["67890"] != "429-success" {
+		t.Errorf("Expected ID '429-success', got %s", ids["67890"])
 	}
 }
 
@@ -271,15 +304,20 @@ func TestClient_Send_NoRetryOn4xx(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL)
+	client := New("token")
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+	client.client.Transport = &rewriteTransport{target: server.URL}
 
 	deal := models.DealInfo{Title: "Bad Deal", PostURL: "http://example.com", LikeCount: 1}
 	ctx := context.Background()
+	subs := []models.Subscription{{ChannelID: "67890"}}
 
-	_, err := client.Send(ctx, deal)
-	if err == nil {
-		t.Fatal("Send() should have returned error for 400 response")
+	ids, err := client.Send(ctx, deal, subs)
+	if err != nil {
+		t.Fatalf("Send() returned an unexpected error: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("Send() should have returned empty ID map for 400 response, got %v", ids)
 	}
 	if atomic.LoadInt32(&attempts) != 1 {
 		t.Errorf("Expected 1 attempt (no retry for 400), got %d", atomic.LoadInt32(&attempts))
@@ -323,14 +361,15 @@ func TestRetryBackoff(t *testing.T) {
 	}
 }
 
-func TestClient_Send_EmptyWebhookURL(t *testing.T) {
+func TestClient_Send_EmptyToken(t *testing.T) {
 	c := New("")
-	id, err := c.Send(context.Background(), models.DealInfo{Title: "Test Deal"})
+	subs := []models.Subscription{{ChannelID: "67890"}}
+	ids, err := c.Send(context.Background(), models.DealInfo{Title: "Test Deal"}, subs)
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
-	if id != "" {
-		t.Errorf("Send() with empty webhook should return empty ID, got %q", id)
+	if len(ids) != 0 {
+		t.Errorf("Send() with empty token should return empty map, got %v", ids)
 	}
 }
 
@@ -353,18 +392,20 @@ func TestClient_Send_HiddenDeal(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL)
+	client := New("token")
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+	client.client.Transport = &rewriteTransport{target: server.URL}
 
 	// Deal with <= 0 likes should be hidden
 	deal := models.DealInfo{Title: "Bad Deal", PostURL: "http://example.com", LikeCount: -5}
 	ctx := context.Background()
+	subs := []models.Subscription{{ChannelID: "67890"}}
 
-	id, err := client.Send(ctx, deal)
+	ids, err := client.Send(ctx, deal, subs)
 	if err != nil {
 		t.Fatalf("Send() returned error: %v", err)
 	}
-	if id != "hidden-msg-1" {
-		t.Errorf("Expected ID hidden-msg-1, got %s", id)
+	if ids["67890"] != "hidden-msg-1" {
+		t.Errorf("Expected ID hidden-msg-1, got %s", ids["67890"])
 	}
 }

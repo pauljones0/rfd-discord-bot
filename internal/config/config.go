@@ -21,6 +21,11 @@ type Config struct {
 	UserAgent              string
 	GeminiAPIKey           string
 	GeminiModelID          string
+
+	// Discord App Auth
+	DiscordAppID     string
+	DiscordPublicKey string
+	DiscordBotToken  string
 }
 
 func Load() (*Config, error) {
@@ -74,6 +79,12 @@ func Load() (*Config, error) {
 		geminiModelID = "gemini-2.5-flash-lite"
 	}
 
+	discordPublicKey := os.Getenv("DISCORD_PUBLIC_KEY")
+	discordBotToken := os.Getenv("DISCORD_BOT_TOKEN")
+	if discordBotToken == "" {
+		slog.Warn("DISCORD_BOT_TOKEN not set, Discord application features may be disabled")
+	}
+
 	return &Config{
 		ProjectID:              projectID,
 		DiscordWebhookURL:      discordWebhookURL,
@@ -87,5 +98,8 @@ func Load() (*Config, error) {
 		UserAgent:              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		GeminiAPIKey:           os.Getenv("GEMINI_API_KEY"),
 		GeminiModelID:          geminiModelID,
+		DiscordAppID:           os.Getenv("DISCORD_APP_ID"),
+		DiscordPublicKey:       discordPublicKey,
+		DiscordBotToken:        discordBotToken,
 	}, nil
 }

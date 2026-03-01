@@ -15,12 +15,13 @@ type DealStore interface {
 	TrimOldDeals(ctx context.Context, maxDeals int) error
 	BatchWrite(ctx context.Context, creates []models.DealInfo, updates []models.DealInfo) error
 	Ping(ctx context.Context) error
+	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
 }
 
 // DealNotifier abstracts the notification layer.
 type DealNotifier interface {
-	Send(ctx context.Context, deal models.DealInfo) (string, error)
-	Update(ctx context.Context, messageID string, deal models.DealInfo) error
+	Send(ctx context.Context, deal models.DealInfo, subs []models.Subscription) (map[string]string, error)
+	Update(ctx context.Context, deal models.DealInfo) error
 }
 
 // DealScraper abstracts the web scraping layer.
