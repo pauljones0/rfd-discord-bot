@@ -238,6 +238,18 @@ This step is crucial for deployments from source to succeed.
 **Artifact Registry Note:**
 Additionally, when deploying from source for the first time, `gcloud run deploy` might prompt you to enable the Artifact Registry API (`artifactregistry.googleapis.com`) and offer to create a default Docker repository (e.g., `cloud-run-source-deploy`) in your chosen region. You should allow these operations when prompted, as Artifact Registry is used to store the container images built by Cloud Build.
 
+### Configure Google Cloud Build (project.toml)
+
+Because the project places its `main` package inside the `cmd/server/` directory, you need to tell Google Cloud Build where to find the source code to build the container.
+
+Create a file named `project.toml` in the project root with the following content:
+
+```toml
+[[build.env]]
+  name = "GOOGLE_BUILDABLE"
+  value = "./cmd/server"
+```
+Ensure this file is committed to your repository before attempting to deploy from source or connecting a GitHub repository for continuous deployment.
 ### Create Firestore Instance
 
 To set up Firestore for the bot, follow these steps in the [Google Cloud Console](https://console.cloud.google.com/firestore):
