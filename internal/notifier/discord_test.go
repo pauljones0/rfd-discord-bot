@@ -154,7 +154,7 @@ func TestClient_Send(t *testing.T) {
 	// Override rate limiter for tests to run fast
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
 
-	deal := models.DealInfo{Title: "Test Deal", PostURL: "http://example.com"}
+	deal := models.DealInfo{Title: "Test Deal", PostURL: "http://example.com", LikeCount: 1}
 	ctx := context.Background()
 
 	id, err := client.Send(ctx, deal)
@@ -186,7 +186,7 @@ func TestClient_Update(t *testing.T) {
 	client := New(server.URL)
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
 
-	deal := models.DealInfo{Title: "Updated Deal", PostURL: "http://example.com"}
+	deal := models.DealInfo{Title: "Updated Deal", PostURL: "http://example.com", LikeCount: 1}
 	ctx := context.Background()
 
 	err := client.Update(ctx, messageID, deal)
@@ -214,7 +214,7 @@ func TestClient_Send_RetriesOn5xx(t *testing.T) {
 	client := New(server.URL)
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
 
-	deal := models.DealInfo{Title: "Retry Deal", PostURL: "http://example.com"}
+	deal := models.DealInfo{Title: "Retry Deal", PostURL: "http://example.com", LikeCount: 1}
 	ctx := context.Background()
 
 	id, err := client.Send(ctx, deal)
@@ -249,7 +249,7 @@ func TestClient_Send_RetriesOn429(t *testing.T) {
 	client := New(server.URL)
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
 
-	deal := models.DealInfo{Title: "Rate Limited Deal", PostURL: "http://example.com"}
+	deal := models.DealInfo{Title: "Rate Limited Deal", PostURL: "http://example.com", LikeCount: 1}
 	ctx := context.Background()
 
 	id, err := client.Send(ctx, deal)
@@ -274,7 +274,7 @@ func TestClient_Send_NoRetryOn4xx(t *testing.T) {
 	client := New(server.URL)
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
 
-	deal := models.DealInfo{Title: "Bad Deal", PostURL: "http://example.com"}
+	deal := models.DealInfo{Title: "Bad Deal", PostURL: "http://example.com", LikeCount: 1}
 	ctx := context.Background()
 
 	_, err := client.Send(ctx, deal)
@@ -331,5 +331,40 @@ func TestClient_Send_EmptyWebhookURL(t *testing.T) {
 	}
 	if id != "" {
 		t.Errorf("Send() with empty webhook should return empty ID, got %q", id)
+	}
+}
+
+func TestClient_Send_HiddenDeal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload discordWebhookPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Failed to decode request body: %v", err)
+		}
+		if len(payload.Embeds) != 0 {
+			t.Errorf("Expected 0 embeds for hidden deal, got %d", len(payload.Embeds))
+		}
+		if payload.Content != "\u200B" {
+			t.Errorf("Expected hidden message content, got %q", payload.Content)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "hidden-msg-1", "channel_id": "67890"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+
+	// Deal with <= 0 likes should be hidden
+	deal := models.DealInfo{Title: "Bad Deal", PostURL: "http://example.com", LikeCount: -5}
+	ctx := context.Background()
+
+	id, err := client.Send(ctx, deal)
+	if err != nil {
+		t.Fatalf("Send() returned error: %v", err)
+	}
+	if id != "hidden-msg-1" {
+		t.Errorf("Expected ID hidden-msg-1, got %s", id)
 	}
 }

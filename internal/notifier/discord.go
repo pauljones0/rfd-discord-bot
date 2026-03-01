@@ -48,7 +48,7 @@ func (c *Client) Send(ctx context.Context, deal models.DealInfo) (string, error)
 	if c.webhookURL == "" {
 		return "", nil
 	}
-	embed := formatDealToEmbed(deal)
+	payload := createDiscordPayload(deal)
 
 	parsedURL, err := url.Parse(c.webhookURL)
 	if err != nil {
@@ -58,7 +58,7 @@ func (c *Client) Send(ctx context.Context, deal models.DealInfo) (string, error)
 	q.Set("wait", "true")
 	parsedURL.RawQuery = q.Encode()
 
-	body, err := c.doRequest(ctx, "POST", parsedURL.String(), embed)
+	body, err := c.doRequest(ctx, "POST", parsedURL.String(), payload)
 	if err != nil {
 		return "", err
 	}
@@ -75,7 +75,7 @@ func (c *Client) Update(ctx context.Context, messageID string, deal models.DealI
 	if c.webhookURL == "" || messageID == "" {
 		return nil
 	}
-	embed := formatDealToEmbed(deal)
+	payload := createDiscordPayload(deal)
 
 	parsedBaseURL, err := url.Parse(c.webhookURL)
 	if err != nil {
@@ -83,13 +83,13 @@ func (c *Client) Update(ctx context.Context, messageID string, deal models.DealI
 	}
 	patchURL := fmt.Sprintf("%s://%s%s/messages/%s", parsedBaseURL.Scheme, parsedBaseURL.Host, parsedBaseURL.Path, messageID)
 
-	_, err = c.doRequest(ctx, "PATCH", patchURL, embed)
+	_, err = c.doRequest(ctx, "PATCH", patchURL, payload)
 	return err
 }
 
 // Internal structures
 type discordWebhookPayload struct {
-	Content string         `json:"content,omitempty"`
+	Content string         `json:"content"`
 	Embeds  []discordEmbed `json:"embeds"`
 }
 
@@ -121,6 +121,21 @@ type discordEmbed struct {
 type discordMessageResponse struct {
 	ID        string `json:"id"`
 	ChannelID string `json:"channel_id"`
+}
+
+func createDiscordPayload(deal models.DealInfo) discordWebhookPayload {
+	if deal.LikeCount <= 0 {
+		return discordWebhookPayload{
+			Content: "\u200B", // Zero-width space to make the message visually blank
+			Embeds:  make([]discordEmbed, 0),
+		}
+	}
+
+	embed := formatDealToEmbed(deal)
+	return discordWebhookPayload{
+		Content: "", // clear any hidden message text
+		Embeds:  []discordEmbed{embed},
+	}
 }
 
 func formatDealToEmbed(deal models.DealInfo) discordEmbed {
@@ -199,8 +214,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 
 // doRequest handles the shared retry/rate-limit/backoff loop for Discord API calls.
 // It returns the response body on success.
-func (c *Client) doRequest(ctx context.Context, method, targetURL string, embed discordEmbed) ([]byte, error) {
-	payload := discordWebhookPayload{Embeds: []discordEmbed{embed}}
+func (c *Client) doRequest(ctx context.Context, method, targetURL string, payload discordWebhookPayload) ([]byte, error) {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
