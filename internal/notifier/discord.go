@@ -16,6 +16,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
 const (
@@ -156,8 +157,13 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		title += " 🔥"
 	}
 
-	// 4. Construct Description
+	// Construct Description
 	var descriptionBuilder strings.Builder
+
+	// Prepend Tech badge if applicable
+	if deal.Category != "" && util.IsTechCategory(deal.Category) {
+		descriptionBuilder.WriteString("`💻 Tech` • ")
+	}
 
 	// Add RFD Thread link always (since title might point to product)
 	descriptionBuilder.WriteString(fmt.Sprintf("[RFD Thread](%s)", deal.PostURL))

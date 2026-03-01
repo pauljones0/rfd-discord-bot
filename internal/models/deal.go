@@ -12,6 +12,7 @@ var ErrDealExists = errors.New("deal already exists")
 type DealInfo struct {
 	Title                  string    `firestore:"title" validate:"required"`
 	PostURL                string    `firestore:"postURL" validate:"required,url"`
+	Category               string    `firestore:"category,omitempty"`
 	AuthorName             string    `firestore:"authorName"`
 	AuthorURL              string    `firestore:"authorURL"`
 	ThreadImageURL         string    `firestore:"threadImageURL,omitempty" validate:"omitempty,url"`

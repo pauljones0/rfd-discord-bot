@@ -10,7 +10,7 @@ TLDR; Watches RFD hot deals forum, runs on google cloud, posts to discord.
     *   Clean up and summarize messy deal titles.
     *   Determine if a deal is "Lava Hot" (adds 🔥 emojis to the Discord alert).
 *   **Deep Scraping:** Extracts detailed deal content, including descriptions and comments from deal pages for AI context.
-*   **Discord Webhook Notifications:** Sends detailed notifications to Discord, complete with relative timestamps, author links, and actual deal URLs (falling back to Rick Rolls if none exist).
+*   **Discord Webhook Notifications:** Sends detailed notifications to Discord, complete with relative timestamps, author links, actual deal URLs, and a "Tech" badge for tech-related deals with high engagement.
 *   **Live Updates:** Discord embed colors change based on deal metrics (likes/views/hotness). Embeds are updated periodically to keep likes, comments, and views accurate.
 *   **Firestore State Management:** Prevents duplicate posts and tracks deal metrics over time. Uses stable `lastUpdated` logic for collection maintenance, ensuring active threads (even old ones) are not prematurely trimmed. Automatically clears heavy text fields (like descriptions and comments) post-analysis to minimize storage costs.
 

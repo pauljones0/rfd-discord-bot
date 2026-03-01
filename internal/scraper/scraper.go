@@ -172,6 +172,12 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 		parseErrors = append(parseErrors, "title/post URL element not found")
 	}
 
+	// Category
+	categorySel := s.Find(elems.Category)
+	if categorySel.Length() > 0 {
+		deal.Category = strings.TrimSpace(categorySel.Text())
+	}
+
 	// Author
 	authorURL, _ := c.resolveLink(s, elems.AuthorLink)
 	deal.AuthorURL = authorURL

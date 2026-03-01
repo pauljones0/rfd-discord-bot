@@ -24,6 +24,7 @@ type ListContainer struct {
 
 type ListElements struct {
 	TitleLink            string `json:"title_link"`
+	Category             string `json:"category"`
 	PostedTime           string `json:"posted_time"`
 	AuthorLink           string `json:"author_link"`
 	AuthorName           string `json:"author_name"`
@@ -93,6 +94,7 @@ func DefaultSelectors() SelectorConfig {
 			},
 			Elements: ListElements{
 				TitleLink:            ".thread_title_link",
+				Category:             "a.pill.thread_category",
 				PostedTime:           ".thread_inner_footer .author_info time",
 				AuthorLink:           ".thread_inner_footer .author_info .author",
 				AuthorName:           ".author_name",
