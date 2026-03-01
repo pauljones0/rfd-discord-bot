@@ -1,20 +1,47 @@
 # RFD Hot Deals Discord Bot
 
-TLDR; Watches RFD hot deals forum, runs on google cloud, posts to discord.
+The ultimate companion for your Discord server to catch the hottest deals from RedFlagDeals!
 
-![example.png](docs/assets/example.png)
-## Features
+Adding this bot to your server will automatically post the latest and greatest deals directly into the channel of your choice. Never miss another price error or "Lava Hot" deal again.
+
+> [!TIP]
+> **Want to use the bot right away?**
+> Click the link below to invite the bot to your server!
+> 
+> 👉 **[Invite the RFD Bot to Your Discord Server](https://discord.com/oauth2/authorize?client_id=1477501388673126460&permissions=18432&integration_type=0&scope=bot+applications.commands)**
+>
+> *(The bot only requests permission to Send Messages and Embed Links)*
+
+---
+
+## 🚀 How to Setup and Use
+
+1. **Invite the bot:** Click the invite link above and select the server you want to add it to.
+2. **Choose a channel:** Go to the channel where you want the bot to post deals.
+3. **Run the setup command:** Type `/rfd-bot-setup set channel:#your-channel-name` and hit Enter!
+
+That's it! The bot will now monitor the RedFlagDeals "Hot Deals" forum 24/7 and post beautifully formatted alerts directly to that channel.
+
+To stop the bot from posting, an administrator can simply type `/rfd-bot-setup remove` in any channel.
+
+---
+
+## 🌟 Features
 
 *   **Identifies RFD Hot Deals:** Scrapes the latest deals from the Hot Deals forum natively with fallback support.
-*   **Gemini AI Integration:** Optionally uses Google Gemini AI (`gemini-2.5-flash-lite`) to:
+*   **Gemini AI Integration:** Uses Google Gemini AI (`gemini-2.5-flash-lite`) to:
     *   Clean up and summarize messy deal titles.
     *   Determine if a deal is "Lava Hot" (adds 🔥 emojis to the Discord alert).
 *   **Deep Scraping:** Extracts detailed deal content, including descriptions and comments from deal pages for AI context.
 *   **Discord Bot Notifications:** Sends detailed notifications to multiple subscribed Discord servers, complete with relative timestamps, author links, actual deal URLs, and a "Tech" badge for tech-related deals.
 *   **Live Updates:** Discord embed colors change based on deal metrics (likes/views/hotness). Embeds are dynamically patched to keep likes, comments, and views accurate.
-*   **Firestore State Management:** Prevents duplicate posts, tracks deal metrics over time, and stores Discord server subscriptions. Features dynamic `/rfd-bot-setup` Slash Commands to subscribe/unsubscribe a server to deal alerts.
+*   **Zero-Config For Users:** Just invite, set the channel via a Slash Command, and enjoy the deals.
 
-## Simplified Architecture
+---
+
+## 🛠️ For Developers & Self-Hosting
+
+Want to host your own instance or modify the code? The bot operates with a simple, serverless architecture on Google Cloud:
 
 The bot operates with a simple, serverless architecture on Google Cloud:
 
