@@ -7,13 +7,13 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/google/generative-ai-go/genai"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
-	"google.golang.org/api/option"
+	"google.golang.org/genai"
 )
 
 type Client struct {
-	model *genai.GenerativeModel
+	client  *genai.Client
+	modelID string
 }
 
 type AnalysisResult struct {
@@ -26,36 +26,19 @@ func NewClient(ctx context.Context, apiKey, modelID string) (*Client, error) {
 		return nil, nil // Return nil client if no key provided
 	}
 
-	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gemini client: %w", err)
 	}
 
-	model := client.GenerativeModel(modelID)
-	model.SetTemperature(0.1) // Low temperature for deterministic output
-	model.ResponseMIMEType = "application/json"
-
-	// Define the schema for Structured Outputs
-	model.ResponseSchema = &genai.Schema{
-		Type: genai.TypeObject,
-		Properties: map[string]*genai.Schema{
-			"clean_title": {
-				Type:        genai.TypeString,
-				Description: "A concise 5-20 word summary of the product/deal. Remove \"Lava Hot\", price errors, store names (unless critical), and fluff.",
-			},
-			"is_lava_hot": {
-				Type:        genai.TypeBoolean,
-				Description: "A boolean indicating extreme urgency. True ONLY if the deal is an absolute must-buy that would cause FOMO or lost sleep if missed. False for regular good deals.",
-			},
-		},
-		Required: []string{"clean_title", "is_lava_hot"},
-	}
-
-	return &Client{model: model}, nil
+	return &Client{client: client, modelID: modelID}, nil
 }
 
 func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, error) {
-	if c == nil || c.model == nil {
+	if c == nil || c.client == nil {
 		return "", false, nil // Graceful degradation
 	}
 
@@ -81,42 +64,68 @@ Task:
 Output JSON adhering to the schema.
 `, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, deal.Retailer)
 
-	resp, err := c.model.GenerateContent(ctx, genai.Text(prompt))
+	config := &genai.GenerateContentConfig{
+		Temperature:      genai.Ptr[float32](0.1),
+		ResponseMIMEType: "application/json",
+		ResponseSchema: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"clean_title": {
+					Type:        genai.TypeString,
+					Description: "A concise 5-20 word summary of the product/deal. Remove \"Lava Hot\", price errors, store names (unless critical), and fluff.",
+				},
+				"is_lava_hot": {
+					Type:        genai.TypeBoolean,
+					Description: "A boolean indicating extreme urgency. True ONLY if the deal is an absolute must-buy that would cause FOMO or lost sleep if missed. False for regular good deals.",
+				},
+			},
+			Required: []string{"clean_title", "is_lava_hot"},
+		},
+		Tools: []*genai.Tool{
+			{GoogleSearchRetrieval: &genai.GoogleSearchRetrieval{}},
+		},
+	}
+
+	resp, err := c.client.Models.GenerateContent(ctx, c.modelID, genai.Text(prompt), config)
 	if err != nil {
 		return "", false, fmt.Errorf("gemini generation failed: %w", err)
 	}
 
-	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+	if len(resp.Candidates) == 0 {
 		return "", false, fmt.Errorf("no response candidates from gemini")
 	}
 
-	var result AnalysisResult
-	for _, part := range resp.Candidates[0].Content.Parts {
-		if txt, ok := part.(genai.Text); ok {
-			// Clean up potential markdown formatting just in case
-			jsonStr := strings.TrimSpace(string(txt))
-			jsonStr = strings.TrimPrefix(jsonStr, "```json")
-			jsonStr = strings.TrimPrefix(jsonStr, "```")
-			jsonStr = strings.TrimSuffix(jsonStr, "```")
+	candidate := resp.Candidates[0]
+	if candidate.Content == nil || len(candidate.Content.Parts) == 0 {
+		return "", false, fmt.Errorf("no response content from gemini")
+	}
 
-			if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-				return "", false, fmt.Errorf("failed to parse gemini response: %w", err)
-			}
+	part := candidate.Content.Parts[0]
+	if txt, ok := part.(genai.Text); ok {
+		// Clean up potential markdown formatting just in case
+		jsonStr := strings.TrimSpace(string(txt))
+		jsonStr = strings.TrimPrefix(jsonStr, "```json")
+		jsonStr = strings.TrimPrefix(jsonStr, "```")
+		jsonStr = strings.TrimSuffix(jsonStr, "```")
 
-			// Log the input prompt and output response as a single message
-			slog.Info("Completed Gemini AI Deal Analysis",
-				"deal_id", deal.FirestoreID,
-				"deal_title", deal.Title,
-				"prompt", prompt,
-				"response_json", jsonStr,
-				"clean_title", result.CleanTitle,
-				"is_lava_hot", result.IsLavaHot,
-				"price", deal.Price,
-				"retailer", deal.Retailer,
-			)
-
-			return result.CleanTitle, result.IsLavaHot, nil
+		var result AnalysisResult
+		if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+			return "", false, fmt.Errorf("failed to parse gemini response: %w", err)
 		}
+
+		// Log the input prompt and output response as a single message
+		slog.Info("Completed Gemini AI Deal Analysis",
+			"deal_id", deal.FirestoreID,
+			"deal_title", deal.Title,
+			"prompt", prompt,
+			"response_json", jsonStr,
+			"clean_title", result.CleanTitle,
+			"is_lava_hot", result.IsLavaHot,
+			"price", deal.Price,
+			"retailer", deal.Retailer,
+		)
+
+		return result.CleanTitle, result.IsLavaHot, nil
 	}
 
 	return "", false, fmt.Errorf("no text part in response")

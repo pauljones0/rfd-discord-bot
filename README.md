@@ -29,8 +29,8 @@ To stop the bot from posting, an administrator can simply type `/rfd-bot-setup r
 ## 🌟 Features
 
 *   **Identifies RFD Hot Deals:** Scrapes the latest deals from the Hot Deals forum natively with fallback support.
-*   **Gemini AI Integration:** Uses Google Gemini AI (`gemini-2.5-flash-lite`) to:
-    *   Clean up and summarize messy deal titles.
+*   **Gemini AI Integration:** Uses Google Gemini AI (`gemini-2.5-flash-lite`) with **Google Search Grounding** to:
+    *   Clean up and summarize messy deal titles based on real-time search context.
     *   Determine if a deal is "Lava Hot" (adds 🔥 emojis to the Discord alert).
 *   **Deep Scraping:** Extracts detailed deal content, including descriptions and comments from deal pages for AI context.
 *   **Discord Bot Notifications:** Sends detailed notifications to multiple subscribed Discord servers, complete with relative timestamps, author links, actual deal URLs, and a "Tech" badge for tech-related deals.
@@ -96,7 +96,7 @@ The application requires the following environment variables to run locally:
 *   `DISCORD_APP_ID`: The Discord Application ID (for Slash Command registration).
 *   `DISCORD_PUBLIC_KEY`: The Discord Public Key (for Ed25519 Interaction signature validation).
 *   `DISCORD_BOT_TOKEN`: The Discord Bot Token used for API authorization.
-*   `GEMINI_API_KEY`: (Optional) Your Google Gemini API key. If omitted, AI features like title cleaning and hotness rating are disabled.
+*   `GEMINI_API_KEY`: (Optional) Your Google Gemini API key. If omitted, AI features like grounded title cleaning and hotness rating are disabled.
 *   `PORT`: (Optional) The port the HTTP server should listen on. Defaults to 8080.
 
 It's recommended to create a `.env` file in the project root to store these variables. This file is included in `.gitignore` to prevent accidental commits of sensitive information.
