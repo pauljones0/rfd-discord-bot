@@ -44,6 +44,38 @@ func main() {
 						"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
 						"required":      true,
 					},
+					{
+						"name":        "type",
+						"description": "The type of deals to publish to this channel.",
+						"type":        3, // STRING
+						"required":    true,
+						"choices": []map[string]interface{}{
+							{
+								"name":  "All deals",
+								"value": "all",
+							},
+							{
+								"name":  "Tech only deals",
+								"value": "tech",
+							},
+							{
+								"name":  "All warm + hot deals",
+								"value": "warm_hot_all",
+							},
+							{
+								"name":  "All warm + hot tech deals",
+								"value": "warm_hot_tech",
+							},
+							{
+								"name":  "All hot deals",
+								"value": "hot_all",
+							},
+							{
+								"name":  "All hot tech deals",
+								"value": "hot_tech",
+							},
+						},
+					},
 				},
 			},
 			{

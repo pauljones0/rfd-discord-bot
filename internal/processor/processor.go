@@ -12,6 +12,7 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
 type Processor interface {
@@ -339,7 +340,7 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 	existing.LastUpdated = time.Now()
 
 	// Handle Discord multi-channel updates
-	// 1. Send to newly added channels that don't have this deal yet
+	// 1. Send to newly added channels that don't have this deal yet, OR channels where the deal just reached their threshold
 	if len(subs) > 0 {
 		var missingSubs []models.Subscription
 		if existing.DiscordMessageIDs == nil {
@@ -348,7 +349,10 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 
 		for _, sub := range subs {
 			if _, ok := existing.DiscordMessageIDs[sub.ChannelID]; !ok {
-				missingSubs = append(missingSubs, sub)
+				// The channel doesn't have the deal yet. Should it get it now?
+				if p.isDealEligibleForSubscription(*existing, sub) {
+					missingSubs = append(missingSubs, sub)
+				}
 			}
 		}
 
@@ -387,4 +391,26 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 		existing.AuthorName != scraped.AuthorName ||
 		existing.ThreadImageURL != scraped.ThreadImageURL ||
 		existing.ActualDealURL != scraped.ActualDealURL
+}
+
+func (p *DealProcessor) isDealEligibleForSubscription(deal models.DealInfo, sub models.Subscription) bool {
+	isTech := deal.Category != "" && util.IsTechCategory(deal.Category)
+	isWarm := p.notifier.IsWarm(deal)
+	isHot := p.notifier.IsHot(deal)
+
+	switch sub.DealType {
+	case "all", "": // Empty means legacy fallback which is "all deals"
+		return true // Send everything, even 0/negative likes
+	case "tech":
+		return isTech
+	case "warm_hot_all":
+		return isWarm || isHot
+	case "warm_hot_tech":
+		return (isWarm || isHot) && isTech
+	case "hot_all":
+		return isHot
+	case "hot_tech":
+		return isHot && isTech
+	}
+	return true
 }

@@ -17,11 +17,13 @@ import (
 
 // Interaction constants
 const (
-	InteractionTypePing               = 1
-	InteractionTypeApplicationCommand = 2
-
 	InteractionResponseTypePong                     = 1
 	InteractionResponseTypeChannelMessageWithSource = 4
+	InteractionResponseTypeUpdateMessage            = 7
+
+	InteractionTypePing               = 1
+	InteractionTypeApplicationCommand = 2
+	InteractionTypeMessageComponent   = 3
 )
 
 // Simplified interaction payloads
@@ -30,11 +32,13 @@ type interactionRequest struct {
 	Data    *interactionData   `json:"data,omitempty"`
 	GuildID string             `json:"guild_id,omitempty"`
 	Member  *interactionMember `json:"member,omitempty"`
+	Message *discordMessage    `json:"message,omitempty"`
 }
 
 type interactionData struct {
-	Name    string              `json:"name"`
-	Options []interactionOption `json:"options,omitempty"`
+	Name     string              `json:"name,omitempty"`
+	Options  []interactionOption `json:"options,omitempty"`
+	CustomID string              `json:"custom_id,omitempty"` // For components
 }
 
 type interactionOption struct {
@@ -58,14 +62,30 @@ type interactionResponse struct {
 }
 
 type interactionResponseData struct {
-	Content string `json:"content"`
-	Flags   int    `json:"flags,omitempty"`
+	Content    string             `json:"content"`
+	Flags      int                `json:"flags,omitempty"`
+	Components []discordComponent `json:"components,omitempty"`
+}
+
+type discordComponent struct {
+	Type       int                `json:"type"`
+	CustomID   string             `json:"custom_id,omitempty"`
+	Style      int                `json:"style,omitempty"`
+	Label      string             `json:"label,omitempty"`
+	Components []discordComponent `json:"components,omitempty"`
+}
+
+type discordMessage struct {
+	ID        string `json:"id"`
+	ChannelID string `json:"channel_id"`
+	Content   string `json:"content"`
 }
 
 // Store abstracts the database operations needed by the API.
 type Store interface {
 	SaveSubscription(ctx context.Context, sub models.Subscription) error
-	RemoveSubscription(ctx context.Context, guildID string) error
+	RemoveSubscription(ctx context.Context, guildID, channelID string) error
+	GetSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
 }
 
 // Handler holds the dependencies for the interaction endpoint.
@@ -153,6 +173,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Message Component
+	if req.Type == InteractionTypeMessageComponent {
+		h.handleComponent(w, req)
+		return
+	}
+
 	http.Error(w, "Unknown interaction type", http.StatusBadRequest)
 }
 
@@ -201,17 +227,21 @@ func (h *Handler) handleCommand(w http.ResponseWriter, req interactionRequest) {
 
 func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
 	var channelID string
+	var dealType string
 	for _, opt := range options {
 		if opt.Name == "channel" {
 			if val, ok := opt.Value.(string); ok {
 				channelID = val
 			}
-			break
+		} else if opt.Name == "type" {
+			if val, ok := opt.Value.(string); ok {
+				dealType = val
+			}
 		}
 	}
 
-	if channelID == "" {
-		h.respondPrivateMessage(w, "Please select a channel.")
+	if channelID == "" || dealType == "" {
+		h.respondPrivateMessage(w, "Please select a channel and deal type.")
 		return
 	}
 
@@ -226,6 +256,7 @@ func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest
 	sub := models.Subscription{
 		GuildID:   req.GuildID,
 		ChannelID: channelID,
+		DealType:  dealType,
 		AddedBy:   username,
 		AddedAt:   time.Now(),
 	}
@@ -243,13 +274,92 @@ func (h *Handler) handleRemoveCommand(w http.ResponseWriter, req interactionRequ
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	if err := h.store.RemoveSubscription(ctx, req.GuildID); err != nil {
-		slog.Error("Failed to remove subscription", "guild", req.GuildID, "error", err)
+	if req.GuildID == "" {
+		h.respondPrivateMessage(w, "This command can only be used in a server.")
+		return
+	}
+
+	subs, err := h.store.GetSubscriptionsByGuild(ctx, req.GuildID)
+	if err != nil {
+		slog.Error("Failed to get subscriptions for guild", "guild", req.GuildID, "error", err)
+		h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
+		return
+	}
+
+	if len(subs) == 0 {
+		h.respondPrivateMessage(w, "There are currently no active deal subscriptions for this server.")
+		return
+	}
+
+	var components []discordComponent
+	for _, sub := range subs {
+		// Create an ActionRow for each subscription
+		typeLabel := sub.DealType
+		if typeLabel == "" {
+			typeLabel = "all"
+		}
+
+		components = append(components, discordComponent{
+			Type: 1, // Action Row
+			Components: []discordComponent{
+				{
+					Type:     2, // Button
+					Style:    4, // Danger (Red)
+					Label:    fmt.Sprintf("Delete Channel (%s)", typeLabel),
+					CustomID: fmt.Sprintf("remove_sub_%s", sub.ChannelID),
+				},
+			},
+		})
+	}
+
+	res := interactionResponse{
+		Type: InteractionResponseTypeChannelMessageWithSource,
+		Data: &interactionResponseData{
+			Content:    "Here are the active deal channels for this server. Click the button below to remove them individually.",
+			Flags:      64,
+			Components: components,
+		},
+	}
+	json.NewEncoder(w).Encode(res)
+}
+
+func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest) {
+	if req.Data == nil || req.Data.CustomID == "" {
+		h.respondError(w, "Missing component data.")
+		return
+	}
+
+	if req.GuildID == "" {
+		h.respondError(w, "This action can only be used in a server.")
+		return
+	}
+
+	// Example: remove_sub_123456789
+	var channelID string
+	if len(req.Data.CustomID) > 11 && req.Data.CustomID[:11] == "remove_sub_" {
+		channelID = req.Data.CustomID[11:]
+	} else {
+		h.respondError(w, "Unknown button clicked.")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := h.store.RemoveSubscription(ctx, req.GuildID, channelID); err != nil {
+		slog.Error("Failed to remove subscription", "guild", req.GuildID, "channel", channelID, "error", err)
 		h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
 		return
 	}
 
-	h.respondPrivateMessage(w, "🗑️ RFD Bot subscription has been removed from this server.")
+	res := interactionResponse{
+		Type: InteractionResponseTypeUpdateMessage,
+		Data: &interactionResponseData{
+			Content:    fmt.Sprintf("🗑️ RFD Bot subscription has been removed from <#%s>.", channelID),
+			Components: []discordComponent{}, // Clear the buttons
+		},
+	}
+	json.NewEncoder(w).Encode(res)
 }
 
 func (h *Handler) respondPrivateMessage(w http.ResponseWriter, msg string) {

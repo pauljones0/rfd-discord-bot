@@ -54,3 +54,4 @@ venv/
 
 #logs
 logs/
+*_output.txt

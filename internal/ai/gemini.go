@@ -101,9 +101,9 @@ Output JSON adhering to the schema.
 	}
 
 	part := candidate.Content.Parts[0]
-	if txt, ok := part.(genai.Text); ok {
+	if part.Text != "" {
 		// Clean up potential markdown formatting just in case
-		jsonStr := strings.TrimSpace(string(txt))
+		jsonStr := strings.TrimSpace(part.Text)
 		jsonStr = strings.TrimPrefix(jsonStr, "```json")
 		jsonStr = strings.TrimPrefix(jsonStr, "```")
 		jsonStr = strings.TrimSuffix(jsonStr, "```")

@@ -22,6 +22,8 @@ type DealStore interface {
 type DealNotifier interface {
 	Send(ctx context.Context, deal models.DealInfo, subs []models.Subscription) (map[string]string, error)
 	Update(ctx context.Context, deal models.DealInfo) error
+	IsWarm(deal models.DealInfo) bool
+	IsHot(deal models.DealInfo) bool
 }
 
 // DealScraper abstracts the web scraping layer.

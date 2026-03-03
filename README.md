@@ -18,11 +18,18 @@ Adding this bot to your server will automatically post the latest and greatest d
 
 1. **Invite the bot:** Click the invite link above and select the server you want to add it to.
 2. **Choose a channel:** Go to the channel where you want the bot to post deals.
-3. **Run the setup command:** Type `/rfd-bot-setup set channel:#your-channel-name` and hit Enter!
+3. **Run the setup command:** Type `/rfd-bot-setup set channel:#your-channel-name type:your-preference` and hit Enter!
+   * The `type` option allows you to choose exactly what deals you want:
+     *   `All deals`
+     *   `Tech only deals`
+     *   `All warm + hot deals`
+     *   `All warm + hot tech deals`
+     *   `All hot deals`
+     *   `All hot tech deals`
 
-That's it! The bot will now monitor the RedFlagDeals "Hot Deals" forum 24/7 and post beautifully formatted alerts directly to that channel.
+That's it! The bot will now monitor the RedFlagDeals "Hot Deals" forum 24/7 and post beautifully formatted alerts directly to that channel based on your chosen type.
 
-To stop the bot from posting, an administrator can simply type `/rfd-bot-setup remove` in any channel.
+To stop the bot from posting or securely view active subscriptions, an administrator can simply type `/rfd-bot-setup remove` in any channel. This brings up an interactive dashboard with delete buttons for each active channel.
 
 ---
 

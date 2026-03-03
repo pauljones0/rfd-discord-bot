@@ -130,13 +130,6 @@ type discordMessageResponse struct {
 }
 
 func createDiscordPayload(deal models.DealInfo) discordWebhookPayload {
-	if deal.LikeCount <= 0 {
-		return discordWebhookPayload{
-			Content: "\u200B", // Zero-width space to make the message visually blank
-			Embeds:  make([]discordEmbed, 0),
-		}
-	}
-
 	embed := formatDealToEmbed(deal)
 	return discordWebhookPayload{
 		Content: "", // clear any hidden message text
@@ -165,11 +158,6 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	// Construct Description
 	var descriptionBuilder strings.Builder
 
-	// Prepend Tech badge if applicable
-	if deal.Category != "" && util.IsTechCategory(deal.Category) {
-		descriptionBuilder.WriteString("`💻 Tech` • ")
-	}
-
 	// Add RFD Thread link always (since title might point to product)
 	descriptionBuilder.WriteString(fmt.Sprintf("[RFD Thread](%s)", deal.PostURL))
 
@@ -182,7 +170,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	// 5. Heat Color
 	// Don't escalate color for deals with non-positive likes — high engagement
 	// on a downvoted deal means people hate it, not that it's a good deal.
-	heatScore := calculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
+	heatScore := CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
 	embedColor := colorColdDeal
 	if deal.LikeCount > 0 {
 		embedColor = getHeatColor(heatScore)
@@ -194,6 +182,11 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		thumbnail.URL = deal.ThreadImageURL
 	}
 
+	footerText := "🏷️ Other"
+	if deal.Category != "" {
+		footerText = fmt.Sprintf("%s %s", util.GetCategoryEmoji(deal.Category), deal.Category)
+	}
+
 	emailEmbed := discordEmbed{
 		Title:       title,
 		URL:         titleURL,
@@ -201,7 +194,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		Color:       embedColor,
 		Thumbnail:   thumbnail,
 		Footer: discordEmbedFooter{
-			Text: "RFD Bot", // Simplified footer
+			Text: footerText, // Generalized category footer
 		},
 	}
 
@@ -214,9 +207,13 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	}
 
 	// Add Engagement Metrics field
+	likeIcon := "👍"
+	if deal.LikeCount < 0 {
+		likeIcon = "👎"
+	}
 	emailEmbed.Fields = append(emailEmbed.Fields, discordEmbedField{
 		Name:   "Engagement",
-		Value:  fmt.Sprintf("👍 %d  💬 %d  👀 %d", deal.LikeCount, deal.CommentCount, deal.ViewCount),
+		Value:  fmt.Sprintf("%s %d  💬 %d  👀 %d", likeIcon, deal.LikeCount, deal.CommentCount, deal.ViewCount),
 		Inline: true,
 	})
 
@@ -304,7 +301,8 @@ func retryBackoff(resp *http.Response, attempt int) time.Duration {
 	return 0
 }
 
-func calculateHeatScore(likes, comments, views int) float64 {
+// CalculateHeatScore determines the heat of a deal based on engagement.
+func CalculateHeatScore(likes, comments, views int) float64 {
 	if views == 0 {
 		return 0.0
 	}
@@ -314,6 +312,16 @@ func calculateHeatScore(likes, comments, views int) float64 {
 	// Comments are weighted 2x since they represent deeper engagement
 	engagement := float64(effectiveLikes) + 2.0*float64(effectiveComments)
 	return engagement / float64(views)
+}
+
+// IsWarm determines if a deal is considered warm.
+func (c *Client) IsWarm(deal models.DealInfo) bool {
+	return deal.LikeCount > 0 && CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount) > heatScoreThresholdWarm
+}
+
+// IsHot determines if a deal is considered hot.
+func (c *Client) IsHot(deal models.DealInfo) bool {
+	return deal.LikeCount > 0 && CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount) > heatScoreThresholdHot
 }
 
 func getHeatColor(heatScore float64) int {

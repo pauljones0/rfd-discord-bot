@@ -132,6 +132,14 @@ func (m *mockNotifier) Update(_ context.Context, deal models.DealInfo) error {
 	return nil
 }
 
+func (m *mockNotifier) IsWarm(deal models.DealInfo) bool {
+	return true
+}
+
+func (m *mockNotifier) IsHot(deal models.DealInfo) bool {
+	return true
+}
+
 type mockScraper struct {
 	deals          []models.DealInfo
 	err            error

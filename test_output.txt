@@ -1,9 +1,0 @@
-2026/02/28 20:48:12 WARN Retrying Discord request method=POST attempt=1 error="discord POST failed: 500 Internal Server Error, body: {\"message\": \"server error\"}"
-2026/02/28 20:48:14 WARN Retrying Discord request method=POST attempt=2 error="discord POST failed: 500 Internal Server Error, body: {\"message\": \"server error\"}"
-2026/02/28 20:48:15 WARN Retrying Discord request method=POST attempt=1 error="discord POST failed: 429 Too Many Requests, body: {\"message\": \"rate limited\"}"
-2026/02/28 20:48:15 ERROR Failed to send deal to channel channel=67890 error="discord POST failed: 400 Bad Request, body: {\"message\": \"bad request\"}"
---- FAIL: TestClient_Send_NoRetryOn4xx (0.00s)
-    discord_test.go:317: Send() should have returned error for 400 response
-FAIL
-FAIL	github.com/pauljones0/rfd-discord-bot/internal/notifier	5.946s
-FAIL
