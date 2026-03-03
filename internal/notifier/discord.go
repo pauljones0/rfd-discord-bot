@@ -182,7 +182,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		thumbnail.URL = deal.ThreadImageURL
 	}
 
-	footerText := "🏷️ Other"
+	footerText := "❌ Unknown"
 	if deal.Category != "" {
 		footerText = fmt.Sprintf("%s %s", util.GetCategoryEmoji(deal.Category), deal.Category)
 	}

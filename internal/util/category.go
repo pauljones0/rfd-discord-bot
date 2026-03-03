@@ -6,7 +6,7 @@ import "strings"
 func IsTechCategory(category string) bool {
 	cat := strings.ToLower(strings.TrimSpace(category))
 	switch cat {
-	case "computers & electronics", "cameras", "cell phones",
+	case "computers & electronics", "cameras", "cell phones", "cell phones & plans",
 		"computers & tablets/ereaders", "home theatre & audio",
 		"peripherals & accessories", "telecom", "televisions",
 		"video games", "pc & video games":
@@ -16,10 +16,11 @@ func IsTechCategory(category string) bool {
 }
 
 // GetCategoryEmoji returns a suitable emoji for a given category.
+// If an emoji is not yet mapped for a category, it will return "❌".
 func GetCategoryEmoji(category string) string {
 	cat := strings.ToLower(strings.TrimSpace(category))
 	switch cat {
-	case "computers & electronics", "cameras", "cell phones",
+	case "computers & electronics", "cameras", "cell phones", "cell phones & plans",
 		"computers & tablets/ereaders", "home theatre & audio",
 		"peripherals & accessories", "telecom", "televisions",
 		"video games", "pc & video games":
@@ -32,7 +33,7 @@ func GetCategoryEmoji(category string) string {
 		return "💄"
 	case "entertainment":
 		return "🍿"
-	case "financial services":
+	case "financial services", "personal finance":
 		return "💰"
 	case "groceries":
 		return "🛒"
@@ -40,12 +41,22 @@ func GetCategoryEmoji(category string) string {
 		return "🏡"
 	case "kids & babies":
 		return "👶"
-	case "restaurants":
+	case "restaurants", "fast food":
 		return "🍔"
 	case "sports & fitness":
 		return "⚽"
 	case "travel":
 		return "✈️"
+	case "small business":
+		return "💼"
+	case "shopping discussion":
+		return "🛍️"
+	case "request-a-deal":
+		return "❓"
+	case "careers":
+		return "👔"
+	case "expired offers":
+		return "⏳"
 	}
-	return "🏷️" // Default tag emoji
+	return "❌" // Unmapped category tag emoji
 }
