@@ -61,28 +61,35 @@ Task:
 1. Create a clean, concise title (5-15 words). Remove fluff ("Lava Hot", "Price Error"), store names if redundant, and focus on the product and price/discount.
 2. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
 
-Output JSON adhering to the schema.
+You MUST respond by calling the "submit_analysis" function with your final decision.
 `, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, deal.Retailer)
 
 	config := &genai.GenerateContentConfig{
-		Temperature:      genai.Ptr[float32](0.1),
-		ResponseMIMEType: "application/json",
-		ResponseSchema: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"clean_title": {
-					Type:        genai.TypeString,
-					Description: "A concise 5-20 word summary of the product/deal. Remove \"Lava Hot\", price errors, store names (unless critical), and fluff.",
-				},
-				"is_lava_hot": {
-					Type:        genai.TypeBoolean,
-					Description: "A boolean indicating extreme urgency. True ONLY if the deal is an absolute must-buy that would cause FOMO or lost sleep if missed. False for regular good deals.",
-				},
-			},
-			Required: []string{"clean_title", "is_lava_hot"},
-		},
+		Temperature: genai.Ptr[float32](0.1),
 		Tools: []*genai.Tool{
 			{GoogleSearch: &genai.GoogleSearch{}},
+			{
+				FunctionDeclarations: []*genai.FunctionDeclaration{
+					{
+						Name:        "submit_analysis",
+						Description: "Submit the final determination of the deal title and whether it is lava hot.",
+						Parameters: &genai.Schema{
+							Type: genai.TypeObject,
+							Properties: map[string]*genai.Schema{
+								"clean_title": {
+									Type:        genai.TypeString,
+									Description: "A concise 5-20 word summary of the product/deal. Remove \"Lava Hot\", price errors, store names (unless critical), and fluff.",
+								},
+								"is_lava_hot": {
+									Type:        genai.TypeBoolean,
+									Description: "A boolean indicating extreme urgency. True ONLY if the deal is an absolute must-buy that would cause FOMO or lost sleep if missed. False for regular good deals.",
+								},
+							},
+							Required: []string{"clean_title", "is_lava_hot"},
+						},
+					},
+				},
+			},
 		},
 	}
 
@@ -100,33 +107,63 @@ Output JSON adhering to the schema.
 		return "", false, fmt.Errorf("no response content from gemini")
 	}
 
-	part := candidate.Content.Parts[0]
-	if part.Text != "" {
-		// Clean up potential markdown formatting just in case
-		jsonStr := strings.TrimSpace(part.Text)
-		jsonStr = strings.TrimPrefix(jsonStr, "```json")
-		jsonStr = strings.TrimPrefix(jsonStr, "```")
-		jsonStr = strings.TrimSuffix(jsonStr, "```")
+	var result string
+	var hot bool
+	var found bool
 
-		var result AnalysisResult
-		if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-			return "", false, fmt.Errorf("failed to parse gemini response: %w", err)
+	for _, part := range candidate.Content.Parts {
+		if part.FunctionCall != nil && part.FunctionCall.Name == "submit_analysis" {
+			args := part.FunctionCall.Args
+			if titleVal, ok := args["clean_title"]; ok {
+				if title, ok := titleVal.(string); ok {
+					result = title
+				}
+			}
+			if hotVal, ok := args["is_lava_hot"]; ok {
+				if hotBool, ok := hotVal.(bool); ok {
+					hot = hotBool
+				}
+			}
+			found = true
+			break
 		}
-
-		// Log the input prompt and output response as a single message
-		slog.Info("Completed Gemini AI Deal Analysis",
-			"deal_id", deal.FirestoreID,
-			"deal_title", deal.Title,
-			"prompt", prompt,
-			"response_json", jsonStr,
-			"clean_title", result.CleanTitle,
-			"is_lava_hot", result.IsLavaHot,
-			"price", deal.Price,
-			"retailer", deal.Retailer,
-		)
-
-		return result.CleanTitle, result.IsLavaHot, nil
 	}
 
-	return "", false, fmt.Errorf("no text part in response")
+	if !found {
+		// Fallback if the model writes JSON block as text instead of function calling.
+		for _, part := range candidate.Content.Parts {
+			if part.Text != "" {
+				jsonStr := strings.TrimSpace(part.Text)
+				jsonStr = strings.TrimPrefix(jsonStr, "```json")
+				jsonStr = strings.TrimPrefix(jsonStr, "```")
+				jsonStr = strings.TrimSuffix(jsonStr, "```")
+
+				var extracted AnalysisResult
+				if err := json.Unmarshal([]byte(jsonStr), &extracted); err == nil {
+					result = extracted.CleanTitle
+					hot = extracted.IsLavaHot
+					found = true
+					break
+				}
+			}
+		}
+	}
+
+	if !found {
+		return "", false, fmt.Errorf("no valid function call or text response from gemini")
+	}
+
+	// Log the input prompt and output response as a single message
+	slog.Info("Completed Gemini AI Deal Analysis",
+		"deal_id", deal.FirestoreID,
+		"deal_title", deal.Title,
+		"prompt", prompt,
+		"response_title", result,
+		"clean_title", result,
+		"is_lava_hot", hot,
+		"price", deal.Price,
+		"retailer", deal.Retailer,
+	)
+
+	return result, hot, nil
 }
