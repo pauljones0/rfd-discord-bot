@@ -169,8 +169,16 @@ func setupLogger() {
 	opts := &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}
-	// Use TextHandler for now, can be switched to JSONHandler for production
-	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
+
+	var handler slog.Handler
+	// Use JSONHandler in Cloud Run for proper structured log parsing
+	if os.Getenv("K_SERVICE") != "" {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	}
+
+	logger := slog.New(handler)
 	slog.SetDefault(logger)
 }
 

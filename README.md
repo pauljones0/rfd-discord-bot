@@ -430,7 +430,9 @@ Once deployed and Cloud Scheduler is active (it might take a minute for the firs
 
 ### Cloud Logging
 
-All standard output from your Go application (e.g., using `log.Printf`, `fmt.Println`) when running on Cloud Run is automatically captured by [Google Cloud Logging](https://console.cloud.google.com/logs/viewer).
+All standard output from your Go application when running on Cloud Run is automatically captured by [Google Cloud Logging](https://console.cloud.google.com/logs/viewer). 
+
+**Structured Logging (`slog`)**: When deployed to Cloud Run, the application automatically switches to structured JSON logging (`slog.JSONHandler`). This is highly beneficial for the Gemini AI integration, as it logs the full AI input prompt and raw output cleanly inside the JSON payload. 
 
 To view logs:
 1.  Go to the GCP Console.
@@ -438,6 +440,7 @@ To view logs:
 3.  You can filter logs by your Cloud Run service name:
     *   In the query builder, select "Cloud Run Revision" as the resource type.
     *   Then select your service name (`rfd-discord-bot`) and revision.
+4.  **To view AI Decisions**: Search for `jsonPayload.msg="Completed Gemini AI Deal Analysis"`. You can expand the log entry to see `prompt`, `clean_title`, and `is_lava_hot` fields nicely formatted.
 
 This is the primary place to check for errors or operational messages from your bot.
 
