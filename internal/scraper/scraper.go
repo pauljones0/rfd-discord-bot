@@ -176,6 +176,9 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 	categorySel := s.Find(elems.Category)
 	if categorySel.Length() > 0 {
 		deal.Category = strings.TrimSpace(categorySel.Text())
+		if deal.Category == "" {
+			deal.Category = strings.TrimSpace(categorySel.AttrOr("data-name", ""))
+		}
 	}
 
 	// Author

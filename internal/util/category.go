@@ -9,7 +9,7 @@ func IsTechCategory(category string) bool {
 	case "computers & electronics", "cameras", "cell phones", "cell phones & plans",
 		"computers & tablets/ereaders", "home theatre & audio",
 		"peripherals & accessories", "telecom", "televisions",
-		"video games", "pc & video games":
+		"video games", "pc & video games", "equipment":
 		return true
 	}
 	return false
@@ -20,43 +20,76 @@ func IsTechCategory(category string) bool {
 func GetCategoryEmoji(category string) string {
 	cat := strings.ToLower(strings.TrimSpace(category))
 	switch cat {
+	// Tech & Electronics
 	case "computers & electronics", "cameras", "cell phones", "cell phones & plans",
 		"computers & tablets/ereaders", "home theatre & audio",
 		"peripherals & accessories", "telecom", "televisions",
 		"video games", "pc & video games":
 		return "💻"
-	case "apparel":
+
+	// Apparel
+	case "apparel", "baby apparel", "children's apparel", "men's apparel",
+		"men's clothing", "men's shoes", "women's apparel", "women's clothing",
+		"women's shoes", "clothing & accessories":
 		return "👕"
-	case "automotive":
+
+	// Automotive
+	case "automotive", "auto parts & accessories", "auto services", "motor vehicles":
 		return "🚗"
-	case "beauty & wellness":
+
+	// Beauty & Wellness
+	case "beauty & wellness", "beauty supplies & personal care", "salons & spas":
 		return "💄"
-	case "entertainment":
+
+	// Entertainment
+	case "entertainment", "books, music, movies, magazines", "events & attractions":
 		return "🍿"
-	case "financial services", "personal finance":
+
+	// Financial Services
+	case "financial services", "personal finance", "banking & investing",
+		"credit cards", "insurance", "mortgages & loans":
 		return "💰"
-	case "groceries":
+
+	// Food & Restaurants
+	case "groceries", "coffee & desserts":
 		return "🛒"
-	case "home & garden":
-		return "🏡"
-	case "kids & babies":
-		return "👶"
-	case "restaurants", "fast food":
+	case "restaurants", "fast food", "restaurants & bars":
 		return "🍔"
-	case "sports & fitness":
+
+	// Home & Garden
+	case "home & garden", "appliances", "furniture", "home decor",
+		"home improvement & tools", "home services & repairs", "outdoors & patio":
+		return "🏡"
+
+	// Kids & Babies
+	case "kids & babies", "baby needs", "toys & games":
+		return "👶"
+
+	// Sports & Fitness
+	case "sports & fitness", "gyms & related services":
 		return "⚽"
-	case "travel":
+
+	// Travel
+	case "travel", "flights", "hotels", "rail & bus", "vacations & cruises", "car rentals":
 		return "✈️"
-	case "small business":
+
+	// Office, Services, Pets & Others
+	case "small business", "office supplies":
 		return "💼"
+	case "pets":
+		return "🐾"
+	case "school supplies":
+		return "🎒"
 	case "shopping discussion":
 		return "🛍️"
 	case "request-a-deal":
 		return "❓"
-	case "careers":
+	case "careers", "services":
 		return "👔"
 	case "expired offers":
 		return "⏳"
+	case "other", "equipment":
+		return "🏷️"
 	}
 	return "❌" // Unmapped category tag emoji
 }

@@ -6,6 +6,7 @@
         },
         "elements": {
             "title_link": ".thread_title_link",
+            "category": ".thread_category",
             "posted_time": ".thread_inner_footer .author_info time",
             "author_link": ".thread_inner_footer .author_info .author",
             "author_name": ".author_name",

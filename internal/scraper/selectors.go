@@ -94,7 +94,7 @@ func DefaultSelectors() SelectorConfig {
 			},
 			Elements: ListElements{
 				TitleLink:            ".thread_title_link",
-				Category:             "a.pill.thread_category",
+				Category:             ".thread_category",
 				PostedTime:           ".thread_inner_footer .author_info time",
 				AuthorLink:           ".thread_inner_footer .author_info .author",
 				AuthorName:           ".author_name",
