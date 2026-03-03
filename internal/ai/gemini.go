@@ -82,7 +82,7 @@ Output JSON adhering to the schema.
 			Required: []string{"clean_title", "is_lava_hot"},
 		},
 		Tools: []*genai.Tool{
-			{GoogleSearchRetrieval: &genai.GoogleSearchRetrieval{}},
+			{GoogleSearch: &genai.GoogleSearch{}},
 		},
 	}
 

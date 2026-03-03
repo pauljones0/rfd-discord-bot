@@ -370,7 +370,9 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 	}
 
 	// 2. Update existing channels
-	if len(existing.DiscordMessageIDs) > 0 && time.Since(existing.DiscordLastUpdatedTime) >= p.updateInterval {
+	// To avoid Discord rate limits ("Maximum number of edits to messages older than 1 hour reached"),
+	// stop updating Discord messages for deals published more than an hour ago.
+	if len(existing.DiscordMessageIDs) > 0 && time.Since(existing.DiscordLastUpdatedTime) >= p.updateInterval && time.Since(existing.PublishedTimestamp) < time.Hour {
 		if err := p.notifier.Update(ctx, *existing); err == nil {
 			existing.DiscordLastUpdatedTime = time.Now()
 		} else {
