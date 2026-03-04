@@ -26,7 +26,6 @@ func TestFormatDealToEmbed(t *testing.T) {
 		ViewCount:          100,
 		ThreadImageURL:     "https://example.com/image.jpg",
 		PublishedTimestamp: time.Unix(1770954490, 0), // Stable timestamp for testing
-		AuthorName:         "testuser",
 		AIProcessed:        true,
 		IsLavaHot:          true,
 	}
@@ -51,12 +50,9 @@ func TestFormatDealToEmbed(t *testing.T) {
 	}
 
 	// Check Engagement Field
-	// Default footer logic is "RFD Bot", no Author field in footer anymore, it's a field or similar?
-	// formatDealToEmbed creates a "Posted By" field if AuthorName is present.
-
 	// Check Fields
-	if len(embed.Fields) != 2 {
-		t.Errorf("Expected 2 fields (Posted By + Engagement), got %d fields", len(embed.Fields))
+	if len(embed.Fields) != 1 {
+		t.Errorf("Expected 1 field (Engagement), got %d fields", len(embed.Fields))
 	}
 
 	// Check Engagement Field

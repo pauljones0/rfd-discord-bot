@@ -13,8 +13,6 @@ type DealInfo struct {
 	Title                  string            `firestore:"title" validate:"required"`
 	PostURL                string            `firestore:"postURL" validate:"required,url"`
 	Category               string            `firestore:"category,omitempty"`
-	AuthorName             string            `firestore:"authorName"`
-	AuthorURL              string            `firestore:"authorURL"`
 	ThreadImageURL         string            `firestore:"threadImageURL,omitempty" validate:"omitempty,url"`
 	LikeCount              int               `firestore:"likeCount"`
 	CommentCount           int               `firestore:"commentCount" validate:"gte=0"`

@@ -143,8 +143,6 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 	updates := []firestore.Update{
 		{Path: "title", Value: deal.Title},
 		{Path: "postURL", Value: deal.PostURL},
-		{Path: "authorName", Value: deal.AuthorName},
-		{Path: "authorURL", Value: deal.AuthorURL},
 		{Path: "threadImageURL", Value: deal.ThreadImageURL},
 		{Path: "likeCount", Value: deal.LikeCount},
 		{Path: "commentCount", Value: deal.CommentCount},
@@ -285,8 +283,6 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 		updates := []firestore.Update{
 			{Path: "title", Value: d.Title},
 			{Path: "postURL", Value: d.PostURL},
-			{Path: "authorName", Value: d.AuthorName},
-			{Path: "authorURL", Value: d.AuthorURL},
 			{Path: "threadImageURL", Value: d.ThreadImageURL},
 			{Path: "likeCount", Value: d.LikeCount},
 			{Path: "commentCount", Value: d.CommentCount},

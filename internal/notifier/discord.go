@@ -198,14 +198,6 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		},
 	}
 
-	if deal.AuthorName != "" {
-		emailEmbed.Fields = append(emailEmbed.Fields, discordEmbedField{
-			Name:   "Posted By",
-			Value:  deal.AuthorName,
-			Inline: true,
-		})
-	}
-
 	// Add Engagement Metrics field
 	likeIcon := "👍"
 	if deal.LikeCount < 0 {

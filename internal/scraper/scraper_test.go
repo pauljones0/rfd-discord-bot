@@ -20,7 +20,6 @@ func TestParseDealFromSelection_FullDeal(t *testing.T) {
 		<div class="thread_inner_footer">
 			<span class="author_info">
 				<time datetime="2025-01-15T10:30:00Z">Jan 15, 2025</time>
-				<a class="author" href="/users/testuser"><span class="author_name">TestUser</span></a>
 			</span>
 			<span class="votes">+42</span>
 			<span class="posts">15</span>
@@ -57,9 +56,6 @@ func TestParseDealFromSelection_FullDeal(t *testing.T) {
 	}
 	if deal.ViewCount != 1234 {
 		t.Errorf("ViewCount = %d, want 1234", deal.ViewCount)
-	}
-	if deal.AuthorName != "TestUser" {
-		t.Errorf("AuthorName = %q, want %q", deal.AuthorName, "TestUser")
 	}
 	if deal.PublishedTimestamp.IsZero() {
 		t.Error("PublishedTimestamp should be parsed, but was zero")
@@ -228,8 +224,6 @@ func TestLoadSelectorsFromBytes(t *testing.T) {
 			"elements": {
 				"title_link": ".title",
 				"posted_time": ".time",
-				"author_link": ".author",
-				"author_name": ".name",
 				"thread_image": ".img",
 				"like_count": ".likes",
 				"comment_count": ".comments",

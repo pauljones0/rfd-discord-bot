@@ -320,8 +320,6 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 	existing.CommentCount = scraped.CommentCount
 	existing.ViewCount = scraped.ViewCount
 	existing.ThreadImageURL = scraped.ThreadImageURL
-	existing.AuthorName = scraped.AuthorName
-	existing.AuthorURL = scraped.AuthorURL
 	existing.PublishedTimestamp = scraped.PublishedTimestamp
 	existing.ActualDealURL = scraped.ActualDealURL
 	existing.Description = scraped.Description
@@ -390,7 +388,6 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 		existing.ViewCount != scraped.ViewCount ||
 		existing.Title != scraped.Title ||
 		existing.PostURL != scraped.PostURL ||
-		existing.AuthorName != scraped.AuthorName ||
 		existing.ThreadImageURL != scraped.ThreadImageURL ||
 		existing.ActualDealURL != scraped.ActualDealURL
 }

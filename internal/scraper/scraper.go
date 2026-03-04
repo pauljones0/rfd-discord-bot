@@ -181,25 +181,6 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 		}
 	}
 
-	// Author
-	authorURL, _ := c.resolveLink(s, elems.AuthorLink)
-	deal.AuthorURL = authorURL
-	if authorURL != "" {
-		// Try to find specific author name element within the author link
-		authorSel := s.Find(elems.AuthorLink)
-		if !authorSel.Is("a") {
-			authorSel = authorSel.Find("a").First()
-		}
-		if authorSel.Length() > 0 {
-			nameSel := authorSel.Find(elems.AuthorName)
-			if nameSel.Length() > 0 {
-				deal.AuthorName = strings.TrimSpace(nameSel.Text())
-			} else {
-				deal.AuthorName = strings.TrimSpace(authorSel.Text())
-			}
-		}
-	}
-
 	// Thread Image — only accept http/https URLs
 	imgSelection := s.Find(elems.ThreadImage)
 	if imgSelection.Length() > 0 {
@@ -339,7 +320,7 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 
 					var commentTexts []string
 					for _, c := range p.Comment {
-						commentTexts = append(commentTexts, fmt.Sprintf("- %s: %s", c.Author.Name, cleanHTMLText(c.Text)))
+						commentTexts = append(commentTexts, fmt.Sprintf("- %s", cleanHTMLText(c.Text)))
 					}
 					// Truncate comments to avoid huge tokens
 					maxCommentsLen := 2000

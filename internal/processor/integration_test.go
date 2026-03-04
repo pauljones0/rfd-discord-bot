@@ -30,7 +30,6 @@ func TestIntegration_FullPipeline(t *testing.T) {
 		<div class="thread_inner_footer">
 			<span class="author_info">
 				<time datetime="2025-06-01T12:00:00Z">Jun 1, 2025</time>
-				<a class="author" href="/users/integrationuser"><span class="author_name">IntegrationUser</span></a>
 			</span>
 			<span class="votes">+25</span>
 			<span class="posts">10</span>

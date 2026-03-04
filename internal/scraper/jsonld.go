@@ -10,18 +10,11 @@ type JSONLDDiscussionForumPosting struct {
 	Headline      string          `json:"headline"`
 	Text          string          `json:"text"` // The main post content
 	DatePublished time.Time       `json:"datePublished"`
-	Author        JSONLDPerson    `json:"author"`
 	Comment       []JSONLDComment `json:"comment"`
 }
 
-type JSONLDPerson struct {
-	Type string `json:"@type"`
-	Name string `json:"name"`
-}
-
 type JSONLDComment struct {
-	Type          string       `json:"@type"` // Should be "comment"
-	Text          string       `json:"text"`
-	DatePublished time.Time    `json:"datePublished"`
-	Author        JSONLDPerson `json:"author"`
+	Type          string    `json:"@type"` // Should be "comment"
+	Text          string    `json:"text"`
+	DatePublished time.Time `json:"datePublished"`
 }

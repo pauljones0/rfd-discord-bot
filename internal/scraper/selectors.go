@@ -26,8 +26,6 @@ type ListElements struct {
 	TitleLink            string `json:"title_link"`
 	Category             string `json:"category"`
 	PostedTime           string `json:"posted_time"`
-	AuthorLink           string `json:"author_link"`
-	AuthorName           string `json:"author_name"`
 	ThreadImage          string `json:"thread_image"`
 	LikeCount            string `json:"like_count"`
 	CommentCount         string `json:"comment_count"`
@@ -96,8 +94,6 @@ func DefaultSelectors() SelectorConfig {
 				TitleLink:            ".thread_title_link",
 				Category:             ".thread_category",
 				PostedTime:           ".thread_inner_footer .author_info time",
-				AuthorLink:           ".thread_inner_footer .author_info .author",
-				AuthorName:           ".author_name",
 				ThreadImage:          ".thread_image img",
 				LikeCount:            ".thread_inner_footer .votes",
 				CommentCount:         ".thread_inner_footer .posts",
