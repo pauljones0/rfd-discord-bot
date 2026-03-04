@@ -433,7 +433,7 @@ Once deployed and Cloud Scheduler is active (it might take a minute for the firs
 
 All standard output from your Go application when running on Cloud Run is automatically captured by [Google Cloud Logging](https://console.cloud.google.com/logs/viewer). 
 
-**Structured Logging (`slog`)**: When deployed to Cloud Run, the application automatically switches to structured JSON logging (`slog.JSONHandler`). This is highly beneficial for the Gemini AI integration, as it logs the full AI input prompt and raw output cleanly inside the JSON payload. 
+**Structured Logging (`slog`)**: When deployed to Cloud Run, the application automatically switches to structured JSON logging using a custom `internal/logger` package. This maps Go `slog` levels (Debug, Info, Notice, Warning, Error, Critical, Alert, Emergency) to their proper Google Cloud Logging severity counterparts. It also supports dynamic log-level filtering via the `LOG_LEVEL` environment variable (e.g. `LOG_LEVEL=DEBUG`). This is highly beneficial for both GCP log filtering and the Gemini AI integration, as it logs the full AI input prompt and raw output cleanly inside the JSON payload.
 
 To view logs:
 1.  Go to the GCP Console.

@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
@@ -190,7 +191,7 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 		defer cancel()
 	}
 
-	slog.Info("TrimOldDeals: Entered function", "maxDeals", maxDeals)
+	slog.Debug("TrimOldDeals: Entered function", "maxDeals", maxDeals)
 	collectionRef := c.client.Collection(firestoreCollection)
 
 	// Get current count
@@ -256,7 +257,7 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 
 	if deletedCount > 0 {
 		bulkWriter.Flush()
-		slog.Info("TrimOldDeals: Flushed delete operations", "queued", deletedCount)
+		logger.Notice("TrimOldDeals: Flushed delete operations", "queued", deletedCount)
 	}
 
 	return nil

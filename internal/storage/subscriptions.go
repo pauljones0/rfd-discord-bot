@@ -56,7 +56,7 @@ func (c *Client) GetSubscriptionsByGuild(ctx context.Context, guildID string) ([
 	}
 
 	var subs []models.Subscription
-	iter := c.client.Collection(subscriptionsCollection).Where("GuildID", "==", guildID).Documents(ctx)
+	iter := c.client.Collection(subscriptionsCollection).Where("guildID", "==", guildID).Documents(ctx)
 	defer iter.Stop()
 
 	for {

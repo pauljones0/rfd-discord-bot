@@ -15,6 +15,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/ai"
 	"github.com/pauljones0/rfd-discord-bot/internal/api"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
@@ -30,7 +31,7 @@ type Server struct {
 }
 
 func main() {
-	setupLogger()
+	logger.Setup()
 	slog.Info("Starting RFD Hot Deals Bot server...")
 	cfg, err := config.Load()
 	if err != nil {
@@ -163,23 +164,6 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusAccepted)
 	fmt.Fprintln(w, "Deal processing started.")
-}
-
-func setupLogger() {
-	opts := &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}
-
-	var handler slog.Handler
-	// Use JSONHandler in Cloud Run for proper structured log parsing
-	if os.Getenv("K_SERVICE") != "" {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
-	} else {
-		handler = slog.NewTextHandler(os.Stdout, opts)
-	}
-
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

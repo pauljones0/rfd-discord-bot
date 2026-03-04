@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
@@ -70,11 +71,11 @@ func (c *Client) ScrapeDealList(ctx context.Context) ([]models.DealInfo, error) 
 	})
 
 	if err != nil {
-		slog.Error("All retry attempts failed for ScrapeDealList", "error", err)
+		logger.Critical("All retry attempts failed for ScrapeDealList", "error", err)
 		return nil, fmt.Errorf("failed to scrape hot deals list: %w", err)
 	}
 
-	slog.Info("Scrape completed", "duration", time.Since(start), "deals", len(scrapedDeals))
+	logger.Notice("Scrape completed", "duration", time.Since(start), "deals", len(scrapedDeals))
 	return scrapedDeals, nil
 }
 

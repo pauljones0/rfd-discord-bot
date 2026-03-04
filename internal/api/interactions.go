@@ -245,6 +245,16 @@ func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest
 		return
 	}
 
+	validTypes := map[string]bool{
+		"all": true, "tech": true, "warm_hot_all": true,
+		"warm_hot_tech": true, "hot_all": true, "hot_tech": true,
+	}
+
+	if !validTypes[dealType] {
+		h.respondPrivateMessage(w, "Invalid deal type selected. Please use the autocomplete choices provided by the command.")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 

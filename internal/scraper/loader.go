@@ -4,6 +4,8 @@ import (
 	"embed"
 	"log/slog"
 	"os"
+
+	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 )
 
 //go:embed selectors.json
@@ -19,7 +21,7 @@ func LoadConfig() (SelectorConfig, error) {
 	if err == nil {
 		sel, parseErr := LoadSelectorsFromBytes(data)
 		if parseErr == nil {
-			slog.Info("Loaded selectors from embedded config.")
+			slog.Debug("Loaded selectors from embedded config.")
 			return sel, nil
 		}
 		slog.Warn("Embedded selectors failed to parse. Trying file fallback.", "error", parseErr)
@@ -40,6 +42,6 @@ func LoadConfig() (SelectorConfig, error) {
 	}
 
 	// 3. Fallback to hardcoded defaults
-	slog.Info("Using hardcoded default selectors")
+	logger.Notice("Using hardcoded default selectors")
 	return DefaultSelectors(), nil
 }
