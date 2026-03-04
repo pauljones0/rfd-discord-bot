@@ -61,35 +61,13 @@ Task:
 1. Create a clean, concise title (5-15 words). Remove fluff ("Lava Hot", "Price Error"), store names if redundant, and focus on the product and price/discount.
 2. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
 
-You MUST respond by calling the "submit_analysis" function with your final decision.
+You MUST respond ONLY with a raw JSON object containing exactly two keys: "clean_title" (string) and "is_lava_hot" (boolean). Do not include any other text, markdown formatting, or backticks.
 `, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, deal.Retailer)
 
 	config := &genai.GenerateContentConfig{
 		Temperature: genai.Ptr[float32](0.1),
 		Tools: []*genai.Tool{
 			{GoogleSearch: &genai.GoogleSearch{}},
-			{
-				FunctionDeclarations: []*genai.FunctionDeclaration{
-					{
-						Name:        "submit_analysis",
-						Description: "Submit the final determination of the deal title and whether it is lava hot.",
-						Parameters: &genai.Schema{
-							Type: genai.TypeObject,
-							Properties: map[string]*genai.Schema{
-								"clean_title": {
-									Type:        genai.TypeString,
-									Description: "A concise 5-20 word summary of the product/deal. Remove \"Lava Hot\", price errors, store names (unless critical), and fluff.",
-								},
-								"is_lava_hot": {
-									Type:        genai.TypeBoolean,
-									Description: "A boolean indicating extreme urgency. True ONLY if the deal is an absolute must-buy that would cause FOMO or lost sleep if missed. False for regular good deals.",
-								},
-							},
-							Required: []string{"clean_title", "is_lava_hot"},
-						},
-					},
-				},
-			},
 		},
 	}
 
@@ -111,40 +89,22 @@ You MUST respond by calling the "submit_analysis" function with your final decis
 	var hot bool
 	var found bool
 
+	// With ResponseMIMEType: "application/json", the model outputs a JSON string in the text part.
 	for _, part := range candidate.Content.Parts {
-		if part.FunctionCall != nil && part.FunctionCall.Name == "submit_analysis" {
-			args := part.FunctionCall.Args
-			if titleVal, ok := args["clean_title"]; ok {
-				if title, ok := titleVal.(string); ok {
-					result = title
-				}
-			}
-			if hotVal, ok := args["is_lava_hot"]; ok {
-				if hotBool, ok := hotVal.(bool); ok {
-					hot = hotBool
-				}
-			}
-			found = true
-			break
-		}
-	}
+		if part.Text != "" {
+			jsonStr := strings.TrimSpace(part.Text)
+			// Sometimes the model might still wrap in markdown code blocks despite application/json
+			jsonStr = strings.TrimPrefix(jsonStr, "```json")
+			jsonStr = strings.TrimPrefix(jsonStr, "```")
+			jsonStr = strings.TrimSuffix(jsonStr, "```")
+			jsonStr = strings.TrimSpace(jsonStr)
 
-	if !found {
-		// Fallback if the model writes JSON block as text instead of function calling.
-		for _, part := range candidate.Content.Parts {
-			if part.Text != "" {
-				jsonStr := strings.TrimSpace(part.Text)
-				jsonStr = strings.TrimPrefix(jsonStr, "```json")
-				jsonStr = strings.TrimPrefix(jsonStr, "```")
-				jsonStr = strings.TrimSuffix(jsonStr, "```")
-
-				var extracted AnalysisResult
-				if err := json.Unmarshal([]byte(jsonStr), &extracted); err == nil {
-					result = extracted.CleanTitle
-					hot = extracted.IsLavaHot
-					found = true
-					break
-				}
+			var extracted AnalysisResult
+			if err := json.Unmarshal([]byte(jsonStr), &extracted); err == nil {
+				result = extracted.CleanTitle
+				hot = extracted.IsLavaHot
+				found = true
+				break
 			}
 		}
 	}

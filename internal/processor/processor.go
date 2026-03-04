@@ -242,7 +242,29 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 			// Call AI
 			// Note: This is done sequentially here. For high volume, we might want concurrency,
 			// but for a few deals every 10 mins, sequential is fine and safer for rate limits.
-			cleanedTitle, isHot, err := p.aiClient.AnalyzeDeal(ctx, deal)
+			var cleanedTitle string
+			var isHot bool
+			var err error
+
+			const maxAttempts = 3
+			for attempt := 1; attempt <= maxAttempts; attempt++ {
+				cleanedTitle, isHot, err = p.aiClient.AnalyzeDeal(ctx, deal)
+				if err == nil {
+					break // Success
+				}
+
+				// Retry only on rate limit (429 / quota) errors
+				if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "quota") || strings.Contains(err.Error(), "RESOURCE_EXHAUSTED") {
+					if attempt < maxAttempts {
+						backoff := time.Duration(attempt*5) * time.Second
+						logger.Warn("AI analysis rate limited, retrying", "title", deal.Title, "attempt", attempt, "backoff", backoff)
+						time.Sleep(backoff)
+						continue
+					}
+				}
+				break // Stop retrying on other errors or if max attempts reached
+			}
+
 			if err != nil {
 				// Log error but continue. Deal stays "unprocessed" effectively, or we mark it processed with failure?
 				// For now, just log. Next run will try again if we don't save AIProcessed=true.
