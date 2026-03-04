@@ -43,31 +43,21 @@ func TestFormatDealToEmbed(t *testing.T) {
 		t.Errorf("URL incorrect. Got: %s, Want: %s", embed.URL, deal.ActualDealURL)
 	}
 
-	// Check Description (should contain RFD Thread link and Relative Timestamp)
-	expectedDesc := fmt.Sprintf("[RFD Thread](%s) • Posted <t:%d:R>\n", deal.PostURL, deal.PublishedTimestamp.Unix())
+	// Check Description (should contain RFD Thread link and Engagement Metrics)
+	expectedDesc := fmt.Sprintf("[RFD Thread](%s)\n\n👍 10  💬 5  👀 100", deal.PostURL)
 	if embed.Description != expectedDesc {
-		t.Errorf("Description incorrect. Got: %q, Want: %q", embed.Description, expectedDesc)
+		t.Errorf("Description incorrect.\nGot:  %q\nWant: %q", embed.Description, expectedDesc)
 	}
 
-	// Check Engagement Field
-	// Check Fields
-	if len(embed.Fields) != 1 {
-		t.Errorf("Expected 1 field (Engagement), got %d fields", len(embed.Fields))
+	// Check Timestamp (should be set natively)
+	expectedTimestamp := deal.PublishedTimestamp.Format(time.RFC3339)
+	if embed.Timestamp != expectedTimestamp {
+		t.Errorf("Timestamp incorrect. Got: %s, Want: %s", embed.Timestamp, expectedTimestamp)
 	}
 
-	// Check Engagement Field
-	foundEngagement := false
-	for _, field := range embed.Fields {
-		if field.Name == "Engagement" {
-			foundEngagement = true
-			expectedValue := "👍 10  💬 5  👀 100"
-			if field.Value != expectedValue {
-				t.Errorf("Engagement field value incorrect. Got: %s, Want: %s", field.Value, expectedValue)
-			}
-		}
-	}
-	if !foundEngagement {
-		t.Error("Engagement field not found")
+	// Check Fields (should be empty now since Engagement was moved)
+	if len(embed.Fields) != 0 {
+		t.Errorf("Expected 0 fields, got %d fields", len(embed.Fields))
 	}
 }
 

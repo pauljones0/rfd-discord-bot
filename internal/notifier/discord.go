@@ -159,13 +159,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	var descriptionBuilder strings.Builder
 
 	// Add RFD Thread link always (since title might point to product)
-	descriptionBuilder.WriteString(fmt.Sprintf("[RFD Thread](%s)", deal.PostURL))
-
-	// Add Relative Timestamp
-	if !deal.PublishedTimestamp.IsZero() {
-		descriptionBuilder.WriteString(fmt.Sprintf(" • Posted <t:%d:R>", deal.PublishedTimestamp.Unix()))
-	}
-	descriptionBuilder.WriteString("\n")
+	descriptionBuilder.WriteString(fmt.Sprintf("[RFD Thread](%s)\n\n", deal.PostURL))
 
 	// 5. Heat Color
 	// Don't escalate color for deals with non-positive likes — high engagement
@@ -187,27 +181,29 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		footerText = fmt.Sprintf("%s %s", util.GetCategoryEmoji(deal.Category), deal.Category)
 	}
 
+	// Add Engagement Metrics directly to description
+	likeIcon := "👍"
+	if deal.LikeCount < 0 {
+		likeIcon = "👎"
+	}
+	descriptionBuilder.WriteString(fmt.Sprintf("%s %d  💬 %d  👀 %d", likeIcon, deal.LikeCount, deal.CommentCount, deal.ViewCount))
+
+	var timestampStr string
+	if !deal.PublishedTimestamp.IsZero() {
+		timestampStr = deal.PublishedTimestamp.Format(time.RFC3339)
+	}
+
 	emailEmbed := discordEmbed{
 		Title:       title,
 		URL:         titleURL,
 		Description: descriptionBuilder.String(),
+		Timestamp:   timestampStr,
 		Color:       embedColor,
 		Thumbnail:   thumbnail,
 		Footer: discordEmbedFooter{
 			Text: footerText, // Generalized category footer
 		},
 	}
-
-	// Add Engagement Metrics field
-	likeIcon := "👍"
-	if deal.LikeCount < 0 {
-		likeIcon = "👎"
-	}
-	emailEmbed.Fields = append(emailEmbed.Fields, discordEmbedField{
-		Name:   "Engagement",
-		Value:  fmt.Sprintf("%s %d  💬 %d  👀 %d", likeIcon, deal.LikeCount, deal.CommentCount, deal.ViewCount),
-		Inline: true,
-	})
 
 	return emailEmbed
 }
