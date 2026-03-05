@@ -29,7 +29,7 @@ Adding this bot to your server will automatically post the latest and greatest d
 
 That's it! The bot will now monitor the RedFlagDeals "Hot Deals" forum 24/7 and post beautifully formatted alerts directly to that channel based on your chosen type.
 
-To stop the bot from posting or securely view active subscriptions, an administrator can simply type `/rfd-bot-setup remove` in any channel. This brings up an interactive dashboard with delete buttons for each active channel.
+To stop the bot from posting or securely view active subscriptions, an administrator can simply type `/rfd-bot-setup remove` in any channel. This brings up an interactive message with delete buttons for each active channel. Clicking a button will instantly remove that channel's subscription and update the message to confirm the removal, ensuring a clean and responsive UX.
 
 ---
 

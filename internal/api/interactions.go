@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
@@ -326,7 +327,7 @@ func (h *Handler) handleRemoveCommand(w http.ResponseWriter, req interactionRequ
 					Type:     2, // Button
 					Style:    4, // Danger (Red)
 					Label:    fmt.Sprintf("Delete Channel (%s)", typeLabel),
-					CustomID: fmt.Sprintf("remove_sub_%s", sub.ChannelID),
+					CustomID: fmt.Sprintf("remove_sub_%s_%s", sub.ChannelID, typeLabel),
 				},
 			},
 		})
@@ -354,10 +355,15 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		return
 	}
 
-	// Example: remove_sub_123456789
 	var channelID string
-	if len(req.Data.CustomID) > 11 && req.Data.CustomID[:11] == "remove_sub_" {
-		channelID = req.Data.CustomID[11:]
+	dealType := "all"
+	if strings.HasPrefix(req.Data.CustomID, "remove_sub_") {
+		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_sub_")
+		parts := strings.SplitN(trimmed, "_", 2)
+		channelID = parts[0]
+		if len(parts) > 1 {
+			dealType = parts[1]
+		}
 	} else {
 		h.respondError(w, "Unknown button clicked.")
 		return
@@ -380,7 +386,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		res := interactionResponse{
 			Type: InteractionResponseTypeUpdateMessage,
 			Data: &interactionResponseData{
-				Content:    fmt.Sprintf("🗑️ RFD Bot subscription has been removed from <#%s>.", channelID),
+				Content:    fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>.", dealType, channelID),
 				Components: []discordComponent{}, // Clear the buttons
 			},
 		}
@@ -392,7 +398,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		res := interactionResponse{
 			Type: InteractionResponseTypeUpdateMessage,
 			Data: &interactionResponseData{
-				Content:    fmt.Sprintf("🗑️ RFD Bot subscription has been removed from <#%s>. There are no more active subscriptions for this server.", channelID),
+				Content:    "🗑️ All channels removed, there are no active subscriptions for this server.",
 				Components: []discordComponent{}, // Clear the buttons
 			},
 		}
@@ -424,7 +430,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 					Type:     2, // Button
 					Style:    4, // Danger (Red)
 					Label:    fmt.Sprintf("Delete Channel (%s)", typeLabel),
-					CustomID: fmt.Sprintf("remove_sub_%s", sub.ChannelID),
+					CustomID: fmt.Sprintf("remove_sub_%s_%s", sub.ChannelID, typeLabel),
 				},
 			},
 		})
@@ -433,7 +439,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 	res := interactionResponse{
 		Type: InteractionResponseTypeUpdateMessage,
 		Data: &interactionResponseData{
-			Content:    fmt.Sprintf("🗑️ RFD Bot subscription has been removed from <#%s>. Here are the remaining active deal channels:", channelID),
+			Content:    fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>. Here are the remaining active deal channels:", dealType, channelID),
 			Components: components,
 		},
 	}
