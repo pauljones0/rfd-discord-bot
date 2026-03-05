@@ -301,8 +301,18 @@ func (h *Handler) handleRemoveCommand(w http.ResponseWriter, req interactionRequ
 		return
 	}
 
-	var components []discordComponent
+	// Deduplicate subscriptions by channel ID
+	seenChannels := make(map[string]bool)
+	var uniqueSubs []models.Subscription
 	for _, sub := range subs {
+		if !seenChannels[sub.ChannelID] {
+			seenChannels[sub.ChannelID] = true
+			uniqueSubs = append(uniqueSubs, sub)
+		}
+	}
+
+	var components []discordComponent
+	for _, sub := range uniqueSubs {
 		// Create an ActionRow for each subscription
 		typeLabel := sub.DealType
 		if typeLabel == "" {
@@ -362,11 +372,69 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		return
 	}
 
+	// Fetch remaining subscriptions to update the message
+	subs, err := h.store.GetSubscriptionsByGuild(ctx, req.GuildID)
+	if err != nil {
+		slog.Error("Failed to get remaining subscriptions for guild", "guild", req.GuildID, "error", err)
+		// Fallback to old behavior if we can't fetch remaining
+		res := interactionResponse{
+			Type: InteractionResponseTypeUpdateMessage,
+			Data: &interactionResponseData{
+				Content:    fmt.Sprintf("🗑️ RFD Bot subscription has been removed from <#%s>.", channelID),
+				Components: []discordComponent{}, // Clear the buttons
+			},
+		}
+		json.NewEncoder(w).Encode(res)
+		return
+	}
+
+	if len(subs) == 0 {
+		res := interactionResponse{
+			Type: InteractionResponseTypeUpdateMessage,
+			Data: &interactionResponseData{
+				Content:    fmt.Sprintf("🗑️ RFD Bot subscription has been removed from <#%s>. There are no more active subscriptions for this server.", channelID),
+				Components: []discordComponent{}, // Clear the buttons
+			},
+		}
+		json.NewEncoder(w).Encode(res)
+		return
+	}
+
+	// Deduplicate subscriptions by channel ID
+	seenChannels := make(map[string]bool)
+	var uniqueSubs []models.Subscription
+	for _, sub := range subs {
+		if !seenChannels[sub.ChannelID] {
+			seenChannels[sub.ChannelID] = true
+			uniqueSubs = append(uniqueSubs, sub)
+		}
+	}
+
+	var components []discordComponent
+	for _, sub := range uniqueSubs {
+		typeLabel := sub.DealType
+		if typeLabel == "" {
+			typeLabel = "all"
+		}
+
+		components = append(components, discordComponent{
+			Type: 1, // Action Row
+			Components: []discordComponent{
+				{
+					Type:     2, // Button
+					Style:    4, // Danger (Red)
+					Label:    fmt.Sprintf("Delete Channel (%s)", typeLabel),
+					CustomID: fmt.Sprintf("remove_sub_%s", sub.ChannelID),
+				},
+			},
+		})
+	}
+
 	res := interactionResponse{
 		Type: InteractionResponseTypeUpdateMessage,
 		Data: &interactionResponseData{
-			Content:    fmt.Sprintf("🗑️ RFD Bot subscription has been removed from <#%s>.", channelID),
-			Components: []discordComponent{}, // Clear the buttons
+			Content:    fmt.Sprintf("🗑️ RFD Bot subscription has been removed from <#%s>. Here are the remaining active deal channels:", channelID),
+			Components: components,
 		},
 	}
 	json.NewEncoder(w).Encode(res)

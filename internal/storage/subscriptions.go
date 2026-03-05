@@ -37,11 +37,44 @@ func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID stri
 		defer cancel()
 	}
 
-	docID := fmt.Sprintf("%s_%s", guildID, channelID)
-	docRef := c.client.Collection(subscriptionsCollection).Doc(docID)
-	_, err := docRef.Delete(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to remove subscription %s: %w", docID, err)
+	iter := c.client.Collection(subscriptionsCollection).
+		Where("guildID", "==", guildID).
+		Where("channelID", "==", channelID).
+		Documents(ctx)
+	defer iter.Stop()
+
+	// Keep track of any errors encountered during deletion, but try to delete all
+	var lastErr error
+	count := 0
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to iterate subscriptions for deletion: %w", err)
+		}
+
+		_, err = doc.Ref.Delete(ctx)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to delete subscription doc %s: %w", doc.Ref.ID, err)
+		} else {
+			count++
+		}
+	}
+
+	if lastErr != nil {
+		return lastErr
+	}
+
+	if count == 0 {
+		// If we didn't find any documents by querying, fallback to the expected ID just in case
+		docID := fmt.Sprintf("%s_%s", guildID, channelID)
+		docRef := c.client.Collection(subscriptionsCollection).Doc(docID)
+		_, err := docRef.Delete(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to remove subscription %s: %w", docID, err)
+		}
 	}
 
 	return nil
