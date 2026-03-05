@@ -47,6 +47,14 @@ func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string
 		link = deal.PostURL // Fallback to thread URL if deal URL is not available
 	}
 
+	var optionalFields string
+	if deal.OriginalPrice != "" {
+		optionalFields += fmt.Sprintf("Original Price: \"%s\"\n", deal.OriginalPrice)
+	}
+	if deal.Savings != "" {
+		optionalFields += fmt.Sprintf("Savings: \"%s\"\n", deal.Savings)
+	}
+
 	prompt := fmt.Sprintf(`
 Analyze this deal:
 Title: "%s"
@@ -55,14 +63,14 @@ User Comments Summary: "%s"
 RFD Summary: "%s"
 Deal Link: "%s"
 Price: "%s"
-Retailer: "%s"
+%sRetailer: "%s"
 
 Task:
 1. Create a clean, concise title (5-15 words). Remove fluff ("Lava Hot", "Price Error"), store names if redundant, and focus on the product and price/discount.
 2. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
 
 You MUST respond ONLY with a raw JSON object containing exactly two keys: "clean_title" (string) and "is_lava_hot" (boolean). Do not include any other text, markdown formatting, or backticks.
-`, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, deal.Retailer)
+`, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, optionalFields, deal.Retailer)
 
 	config := &genai.GenerateContentConfig{
 		Temperature: genai.Ptr[float32](0.1),
@@ -122,6 +130,8 @@ You MUST respond ONLY with a raw JSON object containing exactly two keys: "clean
 		"clean_title", result,
 		"is_lava_hot", hot,
 		"price", deal.Price,
+		"original_price", deal.OriginalPrice,
+		"savings", deal.Savings,
 		"retailer", deal.Retailer,
 	)
 

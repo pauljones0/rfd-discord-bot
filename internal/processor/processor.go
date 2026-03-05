@@ -318,8 +318,20 @@ func (p *DealProcessor) processNewDeal(ctx context.Context, deal *models.DealInf
 	dealToSave := deal
 	dealToSave.LastUpdated = time.Now()
 
+	// Initialize rank tracking
+	dealToSave.HasBeenWarm = p.notifier.IsWarm(*dealToSave)
+	dealToSave.HasBeenHot = p.notifier.IsHot(*dealToSave)
+
+	// Filter subscriptions for this new deal
+	var eligibleSubs []models.Subscription
+	for _, sub := range subs {
+		if p.isDealEligibleForSubscription(*dealToSave, sub) {
+			eligibleSubs = append(eligibleSubs, sub)
+		}
+	}
+
 	// Send to Discord to get ID
-	msgIDs, err := p.notifier.Send(ctx, *dealToSave, subs)
+	msgIDs, err := p.notifier.Send(ctx, *dealToSave, eligibleSubs)
 	if err != nil {
 		return err
 	}
@@ -347,6 +359,14 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 	existing.Description = scraped.Description
 	existing.Comments = scraped.Comments
 	existing.Summary = scraped.Summary
+
+	// Update historical rank tracking
+	if !existing.HasBeenWarm && p.notifier.IsWarm(*scraped) {
+		existing.HasBeenWarm = true
+	}
+	if !existing.HasBeenHot && p.notifier.IsHot(*scraped) {
+		existing.HasBeenHot = true
+	}
 
 	// AI fields
 	if scraped.AIProcessed {
@@ -416,8 +436,8 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 
 func (p *DealProcessor) isDealEligibleForSubscription(deal models.DealInfo, sub models.Subscription) bool {
 	isTech := deal.Category != "" && util.IsTechCategory(deal.Category)
-	isWarm := p.notifier.IsWarm(deal)
-	isHot := p.notifier.IsHot(deal)
+	isWarm := deal.HasBeenWarm || p.notifier.IsWarm(deal)
+	isHot := deal.HasBeenHot || p.notifier.IsHot(deal)
 
 	switch sub.DealType {
 	case "all", "": // Empty means legacy fallback which is "all deals"

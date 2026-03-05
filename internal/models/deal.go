@@ -25,13 +25,19 @@ type DealInfo struct {
 	PublishedTimestamp     time.Time         `firestore:"publishedTimestamp" validate:"required"` // Parsed from PostedTime
 	DiscordLastUpdatedTime time.Time         `firestore:"discordLastUpdatedTime,omitempty"`
 
-	Price    string `firestore:"price,omitempty"`
-	Retailer string `firestore:"retailer,omitempty"`
+	Price         string `firestore:"price,omitempty"`
+	OriginalPrice string `firestore:"originalPrice,omitempty"`
+	Savings       string `firestore:"savings,omitempty"`
+	Retailer      string `firestore:"retailer,omitempty"`
 
 	// AI Enriched Fields
 	CleanTitle  string `firestore:"cleanTitle,omitempty"`
 	IsLavaHot   bool   `firestore:"isLavaHot,omitempty"`
 	AIProcessed bool   `firestore:"aiProcessed"`
+
+	// Rank Tracking
+	HasBeenWarm bool `firestore:"hasBeenWarm,omitempty"`
+	HasBeenHot  bool `firestore:"hasBeenHot,omitempty"`
 
 	// Detailed Content
 	Description string `firestore:"description,omitempty"`

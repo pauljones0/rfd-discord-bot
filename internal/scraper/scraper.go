@@ -232,7 +232,7 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 		}
 
 		g.Go(func() error {
-			actualURL, description, comments, summary, price, retailer, err := c.scrapeDealDetailPage(ctx, deal.PostURL)
+			actualURL, description, comments, summary, price, originalPrice, savings, retailer, err := c.scrapeDealDetailPage(ctx, deal.PostURL)
 			if err != nil {
 				if errors.Is(err, ErrDealLinkNotFound) {
 					slog.Info("No external deal link found", "postURL", deal.PostURL)
@@ -250,6 +250,8 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 			deal.Comments = comments
 			deal.Summary = summary
 			deal.Price = price
+			deal.OriginalPrice = originalPrice
+			deal.Savings = savings
 			deal.Retailer = retailer
 
 			if deal.ActualDealURL != "" {
@@ -270,10 +272,10 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 	}
 }
 
-func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, string, string, string, string, string, error) {
+func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, string, string, string, string, string, string, string, error) {
 	doc, err := c.fetchHTMLContent(ctx, dealURL)
 	if err != nil {
-		return "", "", "", "", "", "", err
+		return "", "", "", "", "", "", "", "", err
 	}
 
 	// 1. Get Deal Link
@@ -305,7 +307,7 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		// or return error if link is strictly required. Original logic returned error.
 		// Let's return error for now to maintain behavior, but maybe AI can find it?
 		// Stick to strict behavior for now.
-		return "", "", "", "", "", "", ErrDealLinkNotFound
+		return "", "", "", "", "", "", "", "", ErrDealLinkNotFound
 	}
 
 	// 2. Extract JSON-LD for Description and Comments
@@ -343,12 +345,17 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 	summary := strings.TrimSpace(doc.Find("#rfd_topic_summary").Text())
 
 	// 4. Extract Price and Retailer
-	var price, retailer string
+	var price, originalPrice, savings, retailer string
 
 	// Extract Price
 	doc.Find("dt").Each(func(i int, s *goquery.Selection) {
-		if strings.TrimSpace(s.Text()) == "Price:" {
+		text := strings.TrimSpace(s.Text())
+		if text == "Price:" {
 			price = strings.TrimSpace(s.Next().Text())
+		} else if text == "Original Price:" {
+			originalPrice = strings.TrimSpace(s.Next().Text())
+		} else if text == "Savings:" {
+			savings = strings.TrimSpace(s.Next().Text())
 		}
 	})
 
@@ -364,7 +371,7 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		})
 	}
 
-	return dealLink, description, commentsStr, summary, price, retailer, nil
+	return dealLink, description, commentsStr, summary, price, originalPrice, savings, retailer, nil
 }
 
 // cleanHTMLText allows stripping HTML tags from a string.

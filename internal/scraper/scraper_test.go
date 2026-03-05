@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -283,7 +284,7 @@ func TestScrapeDealDetailPage_PrimaryLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	url, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	url, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
@@ -308,7 +309,7 @@ func TestScrapeDealDetailPage_FallbackLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	url, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	url, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
@@ -333,9 +334,84 @@ func TestScrapeDealDetailPage_NoLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	_, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	_, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != ErrDealLinkNotFound {
 		t.Errorf("Expected ErrDealLinkNotFound, got %v", err)
+	}
+}
+
+func TestScrapeDealDetailPage_PriceExtraction(t *testing.T) {
+	html := `<!DOCTYPE html>
+<html><body>
+	<div class="deal_link"><a href="https://amazon.ca/dp/B001">Get Deal</a></div>
+	<dl>
+		<dt>Price:</dt><dd>$79.99</dd>
+		<dt>Original Price:</dt><dd>$129.99</dd>
+		<dt>Savings:</dt><dd>$50.00</dd>
+	</dl>
+</body></html>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	_, _, _, _, price, originalPrice, savings, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if price != "$79.99" {
+		t.Errorf("price = %q, want %q", price, "$79.99")
+	}
+	if originalPrice != "$129.99" {
+		t.Errorf("originalPrice = %q, want %q", originalPrice, "$129.99")
+	}
+	if savings != "$50.00" {
+		t.Errorf("savings = %q, want %q", savings, "$50.00")
+	}
+}
+
+func TestScrapeDealDetailPage_OriginalPriceAndSavings_Soundcore(t *testing.T) {
+	// A new test checking if we can parse the testdata/soundcore.html file correctly
+	// Read testdata/soundcore.html
+	htmlBytes, err := os.ReadFile("../../testdata/soundcore.html")
+	if err != nil {
+		t.Skipf("Skipping test because testdata/soundcore.html is missing: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(htmlBytes)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	dealLink, _, _, _, price, originalPrice, savings, retailer, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if price != "$79.99" {
+		t.Errorf("price = %q, want %q", price, "$79.99")
+	}
+	if originalPrice != "$129.99" {
+		t.Errorf("originalPrice = %q, want %q", originalPrice, "$129.99")
+	}
+	if savings != "Save 38%" {
+		t.Errorf("savings = %q, want %q", savings, "Save 38%")
+	}
+	if retailer != "Amazon.ca" {
+		t.Errorf("retailer = %q, want %q", retailer, "Amazon.ca")
+	}
+	if !strings.Contains(dealLink, "amazon.ca") {
+		t.Errorf("dealLink = %q, want something containing amazon.ca", dealLink)
 	}
 }
 

@@ -167,7 +167,13 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	heatScore := CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
 	embedColor := colorColdDeal
 	if deal.LikeCount > 0 {
-		embedColor = getHeatColor(heatScore)
+		if deal.HasBeenHot {
+			embedColor = colorHotDeal
+		} else if deal.HasBeenWarm {
+			embedColor = colorWarmDeal
+		} else {
+			embedColor = getHeatColor(heatScore)
+		}
 	}
 
 	// 6. Thumbnail
