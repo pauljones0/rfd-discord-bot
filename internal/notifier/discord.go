@@ -162,11 +162,11 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	descriptionBuilder.WriteString(fmt.Sprintf("[RFD Thread](%s)\n\n", deal.PostURL))
 
 	// 5. Heat Color
-	// Don't escalate color for deals with non-positive likes — high engagement
+	// Don't escalate color for deals with < 2 likes — high engagement
 	// on a downvoted deal means people hate it, not that it's a good deal.
 	heatScore := CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
 	embedColor := colorColdDeal
-	if deal.LikeCount > 0 {
+	if deal.LikeCount >= 2 {
 		if deal.HasBeenHot {
 			embedColor = colorHotDeal
 		} else if deal.HasBeenWarm {
@@ -310,12 +310,12 @@ func CalculateHeatScore(likes, comments, views int) float64 {
 
 // IsWarm determines if a deal is considered warm.
 func (c *Client) IsWarm(deal models.DealInfo) bool {
-	return deal.LikeCount > 0 && CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount) > heatScoreThresholdWarm
+	return deal.LikeCount >= 2 && CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount) > heatScoreThresholdWarm
 }
 
 // IsHot determines if a deal is considered hot.
 func (c *Client) IsHot(deal models.DealInfo) bool {
-	return deal.LikeCount > 0 && CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount) > heatScoreThresholdHot
+	return deal.LikeCount >= 2 && CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount) > heatScoreThresholdHot
 }
 
 func getHeatColor(heatScore float64) int {
