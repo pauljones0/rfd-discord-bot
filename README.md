@@ -26,6 +26,7 @@ Adding this bot to your server will automatically post the latest and greatest d
      *   `All warm + hot tech deals`
      *   `All hot deals`
      *   `All hot tech deals`
+   * *Note: "Warm" and "Hot" deals require at least 2 likes and high engagement relative to views.*
 
 That's it! The bot will now monitor the RedFlagDeals "Hot Deals" forum 24/7 and post beautifully formatted alerts directly to that channel based on your chosen type.
 
