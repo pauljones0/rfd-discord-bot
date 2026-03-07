@@ -21,9 +21,13 @@ func TestValidator_ValidateStruct(t *testing.T) {
 				Title:              "Test Deal",
 				PostURL:            "https://example.com/deal",
 				PublishedTimestamp: time.Now(),
-				LikeCount:          10,
-				CommentCount:       5,
-				ViewCount:          100,
+				Threads: []models.ThreadContext{
+					{
+						LikeCount:    10,
+						CommentCount: 5,
+						ViewCount:    100,
+					},
+				},
 			},
 			wantErr: false,
 		},
@@ -50,7 +54,11 @@ func TestValidator_ValidateStruct(t *testing.T) {
 				Title:              "Test Deal",
 				PostURL:            "https://example.com/deal",
 				PublishedTimestamp: time.Now(),
-				LikeCount:          -1,
+				Threads: []models.ThreadContext{
+					{
+						LikeCount: -1,
+					},
+				},
 			},
 			wantErr: false,
 		},

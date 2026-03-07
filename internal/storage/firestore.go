@@ -143,11 +143,7 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 
 	updates := []firestore.Update{
 		{Path: "title", Value: deal.Title},
-		{Path: "postURL", Value: deal.PostURL},
 		{Path: "threadImageURL", Value: deal.ThreadImageURL},
-		{Path: "likeCount", Value: deal.LikeCount},
-		{Path: "commentCount", Value: deal.CommentCount},
-		{Path: "viewCount", Value: deal.ViewCount},
 		{Path: "actualDealURL", Value: deal.ActualDealURL},
 		{Path: "lastUpdated", Value: deal.LastUpdated},
 		{Path: "discordMessageID", Value: deal.DiscordMessageID},
@@ -157,6 +153,8 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 		{Path: "cleanTitle", Value: deal.CleanTitle},
 		{Path: "isLavaHot", Value: deal.IsLavaHot},
 		{Path: "aiProcessed", Value: deal.AIProcessed},
+		{Path: "threads", Value: deal.Threads},
+		{Path: "searchTokens", Value: deal.SearchTokens},
 	}
 
 	// Handle optional fields that should be deleted if empty to save space
@@ -283,11 +281,7 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 		doc := col.Doc(d.FirestoreID)
 		updates := []firestore.Update{
 			{Path: "title", Value: d.Title},
-			{Path: "postURL", Value: d.PostURL},
 			{Path: "threadImageURL", Value: d.ThreadImageURL},
-			{Path: "likeCount", Value: d.LikeCount},
-			{Path: "commentCount", Value: d.CommentCount},
-			{Path: "viewCount", Value: d.ViewCount},
 			{Path: "actualDealURL", Value: d.ActualDealURL},
 			{Path: "lastUpdated", Value: d.LastUpdated},
 			{Path: "discordMessageID", Value: d.DiscordMessageID},
@@ -297,6 +291,8 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 			{Path: "cleanTitle", Value: d.CleanTitle},
 			{Path: "isLavaHot", Value: d.IsLavaHot},
 			{Path: "aiProcessed", Value: d.AIProcessed},
+			{Path: "threads", Value: d.Threads},
+			{Path: "searchTokens", Value: d.SearchTokens},
 		}
 
 		if d.Description == "" {
@@ -335,4 +331,39 @@ func (c *Client) Ping(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// GetRecentDeals fetches deals published within the given duration ago from now.
+func (c *Client) GetRecentDeals(ctx context.Context, d time.Duration) ([]models.DealInfo, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
+	since := time.Now().Add(-d)
+	iter := c.client.Collection(firestoreCollection).
+		Where("publishedTimestamp", ">=", since).
+		OrderBy("publishedTimestamp", firestore.Desc).
+		Documents(ctx)
+	defer iter.Stop()
+
+	var deals []models.DealInfo
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate recent deals: %w", err)
+		}
+		var deal models.DealInfo
+		if err := doc.DataTo(&deal); err != nil {
+			slog.Warn("Failed to unmarshal recent deal", "id", doc.Ref.ID, "error", err)
+			continue
+		}
+		deal.FirestoreID = doc.Ref.ID
+		deals = append(deals, deal)
+	}
+	return deals, nil
 }

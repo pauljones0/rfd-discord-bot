@@ -68,6 +68,14 @@ func (m *mockStore) GetDealsByIDs(_ context.Context, ids []string) (map[string]*
 	return result, nil
 }
 
+func (m *mockStore) GetRecentDeals(_ context.Context, duration time.Duration) ([]models.DealInfo, error) {
+	var recent []models.DealInfo
+	for _, deal := range m.deals {
+		recent = append(recent, *deal)
+	}
+	return recent, nil
+}
+
 func (m *mockStore) TrimOldDeals(_ context.Context, _ int) error {
 	m.trimCalled = true
 	return nil
@@ -219,9 +227,9 @@ func TestProcessDeals_SkipsInvalidDeal(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "", PostURL: "", PublishedTimestamp: testTime1},      // empty title and URL
-			{Title: "   ", PostURL: "  ", PublishedTimestamp: testTime2}, // whitespace only
-			{Title: "Valid", PostURL: "https://rfd.com/deal", PublishedTimestamp: testTime1},
+			{Title: "", PostURL: "", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{}}},      // empty title and URL
+			{Title: "   ", PostURL: "  ", PublishedTimestamp: testTime2, Threads: []models.ThreadContext{{}}}, // whitespace only
+			{Title: "Valid", PostURL: "https://rfd.com/deal", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{}}},
 		},
 	}
 
@@ -241,8 +249,8 @@ func TestProcessDeals_SkipsZeroTimestamp(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "No Timestamp", PostURL: "https://rfd.com/deal-no-ts"},
-			{Title: "Has Timestamp", PostURL: "https://rfd.com/deal-ts", PublishedTimestamp: testTime1},
+			{Title: "No Timestamp", PostURL: "https://rfd.com/deal-no-ts", Threads: []models.ThreadContext{{}}},
+			{Title: "Has Timestamp", PostURL: "https://rfd.com/deal-ts", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{}}},
 		},
 	}
 
@@ -263,7 +271,12 @@ func TestProcessDeals_UpdateExistingDeal(t *testing.T) {
 
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Original Title", PostURL: "https://forums.redflagdeals.com/deal-1", LikeCount: 10, PublishedTimestamp: testTime1},
+			{
+				Title:              "Original Title",
+				PostURL:            "https://forums.redflagdeals.com/deal-1",
+				PublishedTimestamp: testTime1,
+				Threads:            []models.ThreadContext{{LikeCount: 10, PostURL: "https://forums.redflagdeals.com/deal-1"}},
+			},
 		},
 	}
 
@@ -277,7 +290,12 @@ func TestProcessDeals_UpdateExistingDeal(t *testing.T) {
 
 	// Now update the scraper with changed data (same timestamp = same deal)
 	scraper.deals = []models.DealInfo{
-		{Title: "Updated Title", PostURL: "https://forums.redflagdeals.com/deal-1", LikeCount: 20, PublishedTimestamp: testTime1},
+		{
+			Title:              "Updated Title",
+			PostURL:            "https://forums.redflagdeals.com/deal-1",
+			PublishedTimestamp: testTime1,
+			Threads:            []models.ThreadContext{{LikeCount: 20, PostURL: "https://forums.redflagdeals.com/deal-1"}},
+		},
 	}
 	store.updateCount = 0
 
@@ -298,7 +316,7 @@ func TestProcessDeals_URLChangedDealsUpdated(t *testing.T) {
 	// First run: create the deal
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-old-url", PublishedTimestamp: testTime1},
+			{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-old-url", ActualDealURL: "https://amazon.ca/old-url", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-old-url"}}},
 		},
 	}
 	p := newTestProcessor(store, notif, scraper)
@@ -313,7 +331,7 @@ func TestProcessDeals_URLChangedDealsUpdated(t *testing.T) {
 
 	// Second run: same timestamp but URL changed (user edited the post)
 	scraper.deals = []models.DealInfo{
-		{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-new-url", PublishedTimestamp: testTime1},
+		{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-new-url", ActualDealURL: "https://amazon.ca/new-url", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-new-url"}}},
 	}
 	store.updateCount = 0
 
@@ -326,13 +344,13 @@ func TestProcessDeals_URLChangedDealsUpdated(t *testing.T) {
 		t.Errorf("Expected 1 deal (URL change should update, not duplicate), got %d", len(store.deals))
 	}
 	if store.updateCount == 0 {
-		t.Error("Expected UpdateDeal to be called when PostURL changed")
+		t.Error("Expected UpdateDeal to be called when ActualDealURL changed")
 	}
 
 	// Verify the stored deal has the new URL
 	for _, deal := range store.deals {
-		if deal.PostURL != "https://forums.redflagdeals.com/deal-new-url" {
-			t.Errorf("Expected PostURL to be updated, got %q", deal.PostURL)
+		if deal.ActualDealURL != "https://amazon.ca/new-url" {
+			t.Errorf("Expected ActualDealURL to be updated, got %q", deal.ActualDealURL)
 		}
 	}
 }
@@ -343,7 +361,7 @@ func TestProcessDeals_TitleChangedDealsUpdated(t *testing.T) {
 
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Original Title", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1},
+			{Title: "Original Title", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-1"}}},
 		},
 	}
 	p := newTestProcessor(store, notif, scraper)
@@ -353,7 +371,7 @@ func TestProcessDeals_TitleChangedDealsUpdated(t *testing.T) {
 
 	// Second run: same timestamp but title changed
 	scraper.deals = []models.DealInfo{
-		{Title: "Updated Title - Price Drop!", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1},
+		{Title: "Updated Title - Price Drop!", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-1"}}},
 	}
 	store.updateCount = 0
 
@@ -380,7 +398,12 @@ func TestProcessDeals_UnchangedDealSkipped(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Same Deal", PostURL: "https://forums.redflagdeals.com/deal-1", LikeCount: 5, PublishedTimestamp: testTime1},
+			{
+				Title:              "Same Deal",
+				PostURL:            "https://forums.redflagdeals.com/deal-1",
+				PublishedTimestamp: testTime1,
+				Threads:            []models.ThreadContext{{LikeCount: 5, PostURL: "https://forums.redflagdeals.com/deal-1"}},
+			},
 		},
 	}
 
@@ -420,7 +443,7 @@ func TestProcessDeals_TrimOnlyOnNewDeals(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Deal", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1},
+			{Title: "Deal", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-1"}}},
 		},
 	}
 
@@ -450,7 +473,7 @@ func TestProcessDeals_RaceConditionHandling(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Race Deal", PostURL: "https://forums.redflagdeals.com/race-1", PublishedTimestamp: testTime1},
+			{Title: "Race Deal", PostURL: "https://forums.redflagdeals.com/race-1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/race-1"}}},
 		},
 	}
 
@@ -470,7 +493,7 @@ func TestConsolidatedFirestoreWrite(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Deal", PostURL: "https://forums.redflagdeals.com/deal-fw", PublishedTimestamp: testTime1},
+			{Title: "Deal", PostURL: "https://forums.redflagdeals.com/deal-fw", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-fw"}}},
 		},
 	}
 
@@ -484,7 +507,12 @@ func TestConsolidatedFirestoreWrite(t *testing.T) {
 	// Now update with changed data — the deal has a DiscordMessageID and old timestamp,
 	// so both data update and Discord update should happen in a SINGLE write.
 	scraper.deals = []models.DealInfo{
-		{Title: "Deal Updated", PostURL: "https://forums.redflagdeals.com/deal-fw", LikeCount: 99, PublishedTimestamp: testTime1},
+		{
+			Title:              "Deal Updated",
+			PostURL:            "https://forums.redflagdeals.com/deal-fw",
+			PublishedTimestamp: testTime1,
+			Threads:            []models.ThreadContext{{LikeCount: 99, PostURL: "https://forums.redflagdeals.com/deal-fw"}},
+		},
 	}
 
 	// Set DiscordLastUpdatedTime to long ago in the stored deal
@@ -526,8 +554,8 @@ func TestScrapeAndValidate_SubFunction(t *testing.T) {
 	notif := newMockNotifier()
 	scraper := &mockScraper{
 		deals: []models.DealInfo{
-			{Title: "Valid Deal", PostURL: "http://example.com/1", PublishedTimestamp: testTime1},
-			{Title: "", PostURL: "", PublishedTimestamp: testTime2}, // Invalid
+			{Title: "Valid Deal", PostURL: "http://example.com/1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{}}},
+			{Title: "", PostURL: "", PublishedTimestamp: testTime2, Threads: []models.ThreadContext{{}}}, // Invalid
 		},
 	}
 	p := newTestProcessor(store, notif, scraper)
@@ -562,19 +590,19 @@ func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
 	// Existing Changed (LikeCount Only): In existingDeals, changed LikeCount -> Should NOT fetch (Optimization)
 	// Existing Unchanged: In existingDeals, same data -> Should NOT fetch
 
-	newDeal := models.DealInfo{Title: "New", FirestoreID: "id1", LikeCount: 5}
-	urlChangedDeal := models.DealInfo{Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://new.url", LikeCount: 10}
-	onlyMetricsChangedDeal := models.DealInfo{Title: "MetricsChanged", FirestoreID: "id3", LikeCount: 100} // was 50
-	unchangedDeal := models.DealInfo{Title: "Same", FirestoreID: "id4", LikeCount: 5}
+	newDeal := models.DealInfo{Title: "New", FirestoreID: "id1", Threads: []models.ThreadContext{{LikeCount: 5}}}
+	urlChangedDeal := models.DealInfo{Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://new.url", Threads: []models.ThreadContext{{LikeCount: 10}}}
+	onlyMetricsChangedDeal := models.DealInfo{Title: "MetricsChanged", FirestoreID: "id3", Threads: []models.ThreadContext{{LikeCount: 100}}} // was 50
+	unchangedDeal := models.DealInfo{Title: "Same", FirestoreID: "id4", Threads: []models.ThreadContext{{LikeCount: 5}}}
 
 	existingDeals := map[string]*models.DealInfo{
-		"id2": {Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://old.url", LikeCount: 10, ActualDealURL: "http://old.url/item", Description: "desc"},
-		"id3": {Title: "MetricsChanged", FirestoreID: "id3", LikeCount: 50, ActualDealURL: "http://deal.url/item", Description: "desc"},
-		"id4": {Title: "Same", FirestoreID: "id4", LikeCount: 5, ActualDealURL: "http://deal.url/item", Description: "desc"},
+		"id2": {Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://old.url", ActualDealURL: "http://old.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 10}}},
+		"id3": {Title: "MetricsChanged", FirestoreID: "id3", ActualDealURL: "http://deal.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 50}}},
+		"id4": {Title: "Same", FirestoreID: "id4", ActualDealURL: "http://deal.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 5}}},
 		"id5": {Title: "OldTitle", FirestoreID: "id5", Description: "desc", ActualDealURL: "http://deal.url/item"},
 	}
 
-	titleChangedDeal := models.DealInfo{Title: "TitleChanged", FirestoreID: "id5", LikeCount: 5}
+	titleChangedDeal := models.DealInfo{Title: "TitleChanged", FirestoreID: "id5", Threads: []models.ThreadContext{{LikeCount: 5}}}
 	validDeals := []models.DealInfo{newDeal, urlChangedDeal, onlyMetricsChangedDeal, unchangedDeal, titleChangedDeal}
 
 	p.enrichDealsWithDetails(context.Background(), validDeals, existingDeals, slog.Default())

@@ -64,17 +64,26 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	runID := time.Now().Format("20060102-150405")
 	logger := slog.With("runID", runID)
 
+	// Fetch Recent Deals for deduplication
+	recentDeals, err := p.store.GetRecentDeals(ctx, 48*time.Hour)
+	if err != nil {
+		logger.Warn("Failed to get recent deals for deduplication", "error", err)
+	}
+
 	// 1. Scrape and Validate
-	validDeals, err := p.scrapeAndValidate(ctx, logger)
+	scrapedDeals, err := p.scrapeAndValidate(ctx, logger)
 	if err != nil {
 		return err
 	}
 
-	// 2. Load Existing Deals
-	existingDeals, err := p.loadExistingDeals(ctx, validDeals, logger)
+	// 2. Load Existing Deals (Strict ID check)
+	existingDeals, err := p.loadExistingDeals(ctx, scrapedDeals, logger)
 	if err != nil {
 		return err
 	}
+
+	// 3. Deduplicate
+	validDeals := p.deduplicateDeals(ctx, scrapedDeals, existingDeals, recentDeals, logger)
 
 	// 3. Fetch Details for New/Changed Deals
 	p.enrichDealsWithDetails(ctx, validDeals, existingDeals, logger)
@@ -109,6 +118,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 		}
 	}
 	if len(newDeals) > 0 || len(updatedDeals) > 0 {
+		// 11. Consolidated batch write
 		if err := p.store.BatchWrite(ctx, newDeals, updatedDeals); err != nil {
 			return fmt.Errorf("batch write failed: %w", err)
 		}
@@ -147,6 +157,10 @@ func (p *DealProcessor) scrapeAndValidate(ctx context.Context, logger *slog.Logg
 		}
 
 		deal.FirestoreID = generateDealID(deal.PublishedTimestamp)
+		if len(deal.Threads) > 0 {
+			deal.Threads[0].FirestoreID = deal.FirestoreID
+		}
+
 		validDeals = append(validDeals, *deal)
 	}
 	return validDeals, nil
@@ -295,28 +309,41 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 	var updatedDeals []models.DealInfo
 	var errorMessages []string
 
-	for i := range validDeals {
-		deal := &validDeals[i]
-		existing := existingDeals[deal.FirestoreID]
+	// We need to group validDeals by FirestoreID because deduplication might map multiple
+	// scraped deals to the same ID.
+	groupedDeals := make(map[string][]models.DealInfo)
+	for _, deal := range validDeals {
+		groupedDeals[deal.FirestoreID] = append(groupedDeals[deal.FirestoreID], deal)
+	}
+
+	for firestoreID, dealsGroup := range groupedDeals {
+		// Use the first deal in the group as the base
+		baseDeal := &dealsGroup[0]
+		existing := existingDeals[firestoreID]
 
 		if existing == nil {
-			if err := p.processNewDeal(ctx, deal, &newDeals, subs); err != nil {
-				slog.Error("Failed to process new deal", "title", deal.Title, "error", err)
-				errorMessages = append(errorMessages, fmt.Sprintf("new deal error %s: %v", deal.Title, err))
+			if err := p.processNewDeal(ctx, baseDeal, dealsGroup, &newDeals, subs); err != nil {
+				slog.Error("Failed to process new deal", "title", baseDeal.Title, "error", err)
+				errorMessages = append(errorMessages, fmt.Sprintf("new deal error %s: %v", baseDeal.Title, err))
 			}
 		} else {
-			if err := p.processExistingDeal(ctx, existing, deal, &updatedDeals, subs); err != nil {
-				slog.Error("Failed to process existing deal", "title", deal.Title, "error", err)
-				errorMessages = append(errorMessages, fmt.Sprintf("existing deal error %s: %v", deal.Title, err))
+			if err := p.processExistingDeal(ctx, existing, dealsGroup, &updatedDeals, subs); err != nil {
+				slog.Error("Failed to process existing deal", "title", baseDeal.Title, "error", err)
+				errorMessages = append(errorMessages, fmt.Sprintf("existing deal error %s: %v", baseDeal.Title, err))
 			}
 		}
 	}
 	return newDeals, updatedDeals, errorMessages
 }
 
-func (p *DealProcessor) processNewDeal(ctx context.Context, deal *models.DealInfo, newDeals *[]models.DealInfo, subs []models.Subscription) error {
-	dealToSave := deal
+func (p *DealProcessor) processNewDeal(ctx context.Context, dealToSave *models.DealInfo, scrapedDuplicates []models.DealInfo, newDeals *[]models.DealInfo, subs []models.Subscription) error {
 	dealToSave.LastUpdated = time.Now()
+
+	// Merge any scraped duplicates' threads into this new deal
+	for i := 1; i < len(scrapedDuplicates); i++ {
+		p.mergeThread(dealToSave, scrapedDuplicates[i].Threads[0])
+	}
+	p.sortThreads(dealToSave)
 
 	// Initialize rank tracking
 	dealToSave.HasBeenWarm = p.notifier.IsWarm(*dealToSave)
@@ -341,41 +368,50 @@ func (p *DealProcessor) processNewDeal(ctx context.Context, deal *models.DealInf
 	return nil
 }
 
-func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *models.DealInfo, scraped *models.DealInfo, updatedDeals *[]models.DealInfo, subs []models.Subscription) error {
-	// Check if changed
-	if !p.dealChanged(existing, scraped) {
+func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *models.DealInfo, scrapedDuplicates []models.DealInfo, updatedDeals *[]models.DealInfo, subs []models.Subscription) error {
+	// Merge all threads from the scraped group into existing
+	changed := false
+	for _, scraped := range scrapedDuplicates {
+		if p.mergeThread(existing, scraped.Threads[0]) {
+			changed = true
+		}
+	}
+
+	// Check if main content changed (use [0] deal since titles/urls are same for dupes within batch)
+	scrapedBase := &scrapedDuplicates[0]
+	if p.dealChanged(existing, scrapedBase) {
+		changed = true
+		// Merge changes into existing
+		existing.Title = scrapedBase.Title
+		existing.ThreadImageURL = scrapedBase.ThreadImageURL
+		existing.PublishedTimestamp = scrapedBase.PublishedTimestamp
+		existing.ActualDealURL = scrapedBase.ActualDealURL
+		existing.Description = scrapedBase.Description
+		existing.Comments = scrapedBase.Comments
+		existing.Summary = scrapedBase.Summary
+		existing.SearchTokens = scrapedBase.SearchTokens
+
+		// AI fields
+		if scrapedBase.AIProcessed {
+			existing.CleanTitle = scrapedBase.CleanTitle
+			existing.IsLavaHot = scrapedBase.IsLavaHot
+			existing.AIProcessed = scrapedBase.AIProcessed
+		}
+	}
+
+	if !changed {
 		return nil
 	}
 
-	// Merge changes into existing
-	existing.Title = scraped.Title
-	existing.PostURL = scraped.PostURL
-	existing.LikeCount = scraped.LikeCount
-	existing.CommentCount = scraped.CommentCount
-	existing.ViewCount = scraped.ViewCount
-	existing.ThreadImageURL = scraped.ThreadImageURL
-	existing.PublishedTimestamp = scraped.PublishedTimestamp
-	existing.ActualDealURL = scraped.ActualDealURL
-	existing.Description = scraped.Description
-	existing.Comments = scraped.Comments
-	existing.Summary = scraped.Summary
+	p.sortThreads(existing)
 
-	// Update historical rank tracking
-	if !existing.HasBeenWarm && p.notifier.IsWarm(*scraped) {
+	// Update historical rank tracking using aggregated stats
+	if !existing.HasBeenWarm && p.notifier.IsWarm(*existing) {
 		existing.HasBeenWarm = true
 	}
-	if !existing.HasBeenHot && p.notifier.IsHot(*scraped) {
+	if !existing.HasBeenHot && p.notifier.IsHot(*existing) {
 		existing.HasBeenHot = true
 	}
-
-	// AI fields
-	if scraped.AIProcessed {
-		existing.CleanTitle = scraped.CleanTitle
-		existing.IsLavaHot = scraped.IsLavaHot
-		existing.AIProcessed = scraped.AIProcessed
-	}
-
-	existing.LastUpdated = time.Now()
 
 	existing.LastUpdated = time.Now()
 
@@ -425,13 +461,43 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 }
 
 func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.DealInfo) bool {
-	return existing.LikeCount != scraped.LikeCount ||
-		existing.CommentCount != scraped.CommentCount ||
-		existing.ViewCount != scraped.ViewCount ||
-		existing.Title != scraped.Title ||
-		existing.PostURL != scraped.PostURL ||
+	// Stats changes are handled by mergeThread now, so we only check content fields.
+	return existing.Title != scraped.Title ||
 		existing.ThreadImageURL != scraped.ThreadImageURL ||
 		existing.ActualDealURL != scraped.ActualDealURL
+}
+
+// mergeThread updates the stats for an existing thread or appends a new one.
+// Returns true if stats actually changed.
+func (p *DealProcessor) mergeThread(deal *models.DealInfo, newThread models.ThreadContext) bool {
+	for i := range deal.Threads {
+		if deal.Threads[i].PostURL == newThread.PostURL {
+			changed := deal.Threads[i].LikeCount != newThread.LikeCount ||
+				deal.Threads[i].CommentCount != newThread.CommentCount ||
+				deal.Threads[i].ViewCount != newThread.ViewCount
+
+			deal.Threads[i].LikeCount = newThread.LikeCount
+			deal.Threads[i].CommentCount = newThread.CommentCount
+			deal.Threads[i].ViewCount = newThread.ViewCount
+			return changed
+		}
+	}
+	// New thread duplicate found
+	deal.Threads = append(deal.Threads, newThread)
+	return true
+}
+
+// sortThreads sorts a deal's threads array descending by LikeCount, then by CommentCount
+func (p *DealProcessor) sortThreads(deal *models.DealInfo) {
+	for i := 0; i < len(deal.Threads)-1; i++ {
+		for j := i + 1; j < len(deal.Threads); j++ {
+			ti := deal.Threads[i]
+			tj := deal.Threads[j]
+			if tj.LikeCount > ti.LikeCount || (tj.LikeCount == ti.LikeCount && tj.CommentCount > ti.CommentCount) {
+				deal.Threads[i], deal.Threads[j] = deal.Threads[j], deal.Threads[i]
+			}
+		}
+	}
 }
 
 func (p *DealProcessor) isDealEligibleForSubscription(deal models.DealInfo, sub models.Subscription) bool {

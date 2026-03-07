@@ -136,6 +136,7 @@ func (c *Client) attemptScrapeList(ctx context.Context, targetURL string) ([]mod
 
 func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements) models.DealInfo {
 	var deal models.DealInfo
+	var thread models.ThreadContext
 	var parseErrors []string
 
 	// Published Timestamp from <time datetime="...">
@@ -169,6 +170,7 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 			}
 		}
 		deal.PostURL = postURL
+		thread.PostURL = postURL
 	} else {
 		parseErrors = append(parseErrors, "title/post URL element not found")
 	}
@@ -195,28 +197,30 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 	// Like Count
 	likeCountSelection := s.Find(elems.LikeCount)
 	if likeCountSelection.Length() > 0 {
-		deal.LikeCount = util.SafeAtoi(util.ParseSignedNumericString(likeCountSelection.First().Text()))
+		thread.LikeCount = util.SafeAtoi(util.ParseSignedNumericString(likeCountSelection.First().Text()))
 	}
 
 	// Comment Count (with fallback)
 	commentCountSelection := s.Find(elems.CommentCount)
 	if commentCountSelection.Length() > 0 {
-		deal.CommentCount = util.SafeAtoi(util.CleanNumericString(commentCountSelection.First().Text()))
+		thread.CommentCount = util.SafeAtoi(util.CleanNumericString(commentCountSelection.First().Text()))
 	} else {
 		fallback := s.Find(elems.CommentCountFallback)
 		if fallback.Length() > 0 {
-			deal.CommentCount = util.SafeAtoi(util.CleanNumericString(fallback.First().Text()))
+			thread.CommentCount = util.SafeAtoi(util.CleanNumericString(fallback.First().Text()))
 		}
 	}
 
 	// View Count
 	viewCountSelection := s.Find(elems.ViewCount)
 	if viewCountSelection.Length() > 0 {
-		deal.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.First().Text()))
+		thread.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.First().Text()))
 	}
 
+	deal.Threads = []models.ThreadContext{thread}
+
 	if len(parseErrors) > 0 {
-		slog.Warn("Parsing issues for deal", "title", deal.Title, "url", deal.PostURL, "errors", strings.Join(parseErrors, "; "))
+		slog.Warn("Parsing issues for deal", "title", deal.Title, "url", deal.PrimaryPostURL(), "errors", strings.Join(parseErrors, "; "))
 	}
 	return deal
 }
@@ -227,17 +231,17 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 
 	for i := range deals {
 		deal := deals[i] // explicit local copy for clarity in the closure
-		if deal.PostURL == "" {
+		if deal.PrimaryPostURL() == "" {
 			continue
 		}
 
 		g.Go(func() error {
-			actualURL, description, comments, summary, price, originalPrice, savings, retailer, err := c.scrapeDealDetailPage(ctx, deal.PostURL)
+			actualURL, description, comments, summary, price, originalPrice, savings, retailer, err := c.scrapeDealDetailPage(ctx, deal.PrimaryPostURL())
 			if err != nil {
 				if errors.Is(err, ErrDealLinkNotFound) {
-					slog.Info("No external deal link found", "postURL", deal.PostURL)
+					slog.Info("No external deal link found", "postURL", deal.PrimaryPostURL())
 				} else {
-					slog.Warn("Failed to scrape detail page", "url", deal.PostURL, "error", err)
+					slog.Warn("Failed to scrape detail page", "url", deal.PrimaryPostURL(), "error", err)
 				}
 				// We don't fail the group, just don't update fields if failed
 				// However, if we got partial data (e.g. description but no link), we might want to keep it?
@@ -261,7 +265,7 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 				}
 			}
 			if deal.ActualDealURL == "" {
-				slog.Warn("ActualDealURL was empty after parsing", "postURL", deal.PostURL)
+				slog.Warn("ActualDealURL was empty after parsing", "postURL", deal.PrimaryPostURL())
 			}
 			return nil
 		})

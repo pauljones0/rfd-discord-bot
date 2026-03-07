@@ -49,14 +49,14 @@ func TestParseDealFromSelection_FullDeal(t *testing.T) {
 	if deal.ThreadImageURL != "https://example.com/image.jpg" {
 		t.Errorf("ThreadImageURL = %q, want %q", deal.ThreadImageURL, "https://example.com/image.jpg")
 	}
-	if deal.LikeCount != 42 {
-		t.Errorf("LikeCount = %d, want 42", deal.LikeCount)
+	if deal.Threads[0].LikeCount != 42 {
+		t.Errorf("LikeCount = %d, want 42", deal.Threads[0].LikeCount)
 	}
-	if deal.CommentCount != 15 {
-		t.Errorf("CommentCount = %d, want 15", deal.CommentCount)
+	if deal.Threads[0].CommentCount != 15 {
+		t.Errorf("CommentCount = %d, want 15", deal.Threads[0].CommentCount)
 	}
-	if deal.ViewCount != 1234 {
-		t.Errorf("ViewCount = %d, want 1234", deal.ViewCount)
+	if deal.Threads[0].ViewCount != 1234 {
+		t.Errorf("ViewCount = %d, want 1234", deal.Threads[0].ViewCount)
 	}
 	if deal.PublishedTimestamp.IsZero() {
 		t.Error("PublishedTimestamp should be parsed, but was zero")
@@ -83,14 +83,14 @@ func TestParseDealFromSelection_MinimalDeal(t *testing.T) {
 	if deal.Title != "Minimal Deal" {
 		t.Errorf("Title = %q, want %q", deal.Title, "Minimal Deal")
 	}
-	if deal.LikeCount != 0 {
-		t.Errorf("LikeCount = %d, want 0", deal.LikeCount)
+	if deal.Threads[0].LikeCount != 0 {
+		t.Errorf("LikeCount = %d, want 0", deal.Threads[0].LikeCount)
 	}
-	if deal.CommentCount != 0 {
-		t.Errorf("CommentCount = %d, want 0", deal.CommentCount)
+	if deal.Threads[0].CommentCount != 0 {
+		t.Errorf("CommentCount = %d, want 0", deal.Threads[0].CommentCount)
 	}
-	if deal.ViewCount != 0 {
-		t.Errorf("ViewCount = %d, want 0", deal.ViewCount)
+	if deal.Threads[0].ViewCount != 0 {
+		t.Errorf("ViewCount = %d, want 0", deal.Threads[0].ViewCount)
 	}
 }
 
@@ -114,8 +114,8 @@ func TestParseDealFromSelection_NegativeLikes(t *testing.T) {
 	}}
 	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
 
-	if deal.LikeCount != -5 {
-		t.Errorf("LikeCount = %d, want -5", deal.LikeCount)
+	if deal.Threads[0].LikeCount != -5 {
+		t.Errorf("LikeCount = %d, want -5", deal.Threads[0].LikeCount)
 	}
 }
 

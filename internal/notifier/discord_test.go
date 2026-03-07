@@ -21,13 +21,18 @@ func TestFormatDealToEmbed(t *testing.T) {
 		Title:              "Great Deal",
 		PostURL:            "https://forums.redflagdeals.com/deal-1",
 		ActualDealURL:      "https://amazon.ca/item",
-		LikeCount:          10,
-		CommentCount:       5,
-		ViewCount:          100,
 		ThreadImageURL:     "https://example.com/image.jpg",
 		PublishedTimestamp: time.Unix(1770954490, 0), // Stable timestamp for testing
 		AIProcessed:        true,
 		IsLavaHot:          true,
+		Threads: []models.ThreadContext{
+			{
+				PostURL:      "https://forums.redflagdeals.com/deal-1",
+				LikeCount:    10,
+				CommentCount: 5,
+				ViewCount:    100,
+			},
+		},
 	}
 
 	embed := formatDealToEmbed(deal)
@@ -44,7 +49,7 @@ func TestFormatDealToEmbed(t *testing.T) {
 	}
 
 	// Check Description (should contain RFD Thread link and Engagement Metrics)
-	expectedDesc := fmt.Sprintf("[RFD Thread](%s)\n\n👍 10  💬 5  👀 100", deal.PostURL)
+	expectedDesc := fmt.Sprintf("[[RFD]](%s) \n\n👍 10  💬 5  👀 100", deal.Threads[0].PostURL)
 	if embed.Description != expectedDesc {
 		t.Errorf("Description incorrect.\nGot:  %q\nWant: %q", embed.Description, expectedDesc)
 	}
@@ -95,11 +100,16 @@ func TestFormatDealToEmbed_NegativeLikesStaysCold(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deal := models.DealInfo{
-				Title:        "Test Deal",
-				PostURL:      "https://forums.redflagdeals.com/test",
-				LikeCount:    tt.likes,
-				CommentCount: tt.comments,
-				ViewCount:    tt.views,
+				Title:   "Test Deal",
+				PostURL: "https://forums.redflagdeals.com/test",
+				Threads: []models.ThreadContext{
+					{
+						PostURL:      "https://forums.redflagdeals.com/test",
+						LikeCount:    tt.likes,
+						CommentCount: tt.comments,
+						ViewCount:    tt.views,
+					},
+				},
 			}
 
 			embed := formatDealToEmbed(deal)
@@ -144,7 +154,7 @@ func TestClient_Send(t *testing.T) {
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1) // Inf usually doesn't work well with URL override in the mock anymore without hacking the domain
 	// Actually we didn't mock the endpoint properly since it's hardcoded to discord.com! Let's just mock the HTTP Client Transport.
 
-	deal := models.DealInfo{Title: "Test Deal", PostURL: "http://example.com", LikeCount: 1}
+	deal := models.DealInfo{Title: "Test Deal", PostURL: "http://example.com", Threads: []models.ThreadContext{{LikeCount: 1}}}
 	ctx := context.Background()
 
 	// Need to override the URL in doRequest? In discord.go, the target URL is absolute.
@@ -199,8 +209,8 @@ func TestClient_Update(t *testing.T) {
 	deal := models.DealInfo{
 		Title:             "Updated Deal",
 		PostURL:           "http://example.com",
-		LikeCount:         1,
 		DiscordMessageIDs: map[string]string{"67890": messageID},
+		Threads:           []models.ThreadContext{{LikeCount: 1}},
 	}
 	ctx := context.Background()
 
@@ -230,7 +240,7 @@ func TestClient_Send_RetriesOn5xx(t *testing.T) {
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
 	client.client.Transport = &rewriteTransport{target: server.URL}
 
-	deal := models.DealInfo{Title: "Retry Deal", PostURL: "http://example.com", LikeCount: 1}
+	deal := models.DealInfo{Title: "Retry Deal", PostURL: "http://example.com", Threads: []models.ThreadContext{{LikeCount: 1}}}
 	ctx := context.Background()
 	subs := []models.Subscription{{ChannelID: "67890"}}
 
@@ -267,7 +277,7 @@ func TestClient_Send_RetriesOn429(t *testing.T) {
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
 	client.client.Transport = &rewriteTransport{target: server.URL}
 
-	deal := models.DealInfo{Title: "Rate Limited Deal", PostURL: "http://example.com", LikeCount: 1}
+	deal := models.DealInfo{Title: "Rate Limited Deal", PostURL: "http://example.com", Threads: []models.ThreadContext{{LikeCount: 1}}}
 	ctx := context.Background()
 	subs := []models.Subscription{{ChannelID: "67890"}}
 
@@ -294,7 +304,7 @@ func TestClient_Send_NoRetryOn4xx(t *testing.T) {
 	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
 	client.client.Transport = &rewriteTransport{target: server.URL}
 
-	deal := models.DealInfo{Title: "Bad Deal", PostURL: "http://example.com", LikeCount: 1}
+	deal := models.DealInfo{Title: "Bad Deal", PostURL: "http://example.com", Threads: []models.ThreadContext{{LikeCount: 1}}}
 	ctx := context.Background()
 	subs := []models.Subscription{{ChannelID: "67890"}}
 

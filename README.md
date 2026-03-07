@@ -43,6 +43,7 @@ To stop the bot from posting or securely view active subscriptions, an administr
     *   *Note: Implements exponential backoff to handle free-tier API rate limits gracefully.*
 *   **Deep Scraping:** Extracts detailed deal content, including descriptions and comments from deal pages for AI context.
 *   **Discord Bot Notifications:** Sends detailed notifications to multiple subscribed Discord servers, complete with native Discord timestamps, actual deal URLs, concise engagement metrics, and categorized emojis for improved visual clarity (e.g. 💻, 🛒, 🍔).
+*   **Smart Deduplication:** Automatically detects when identical deals are posted in multiple forum threads by fuzzy matching titles and target URLs. It gracefully merges their engagement metrics, sorts the threads by popularity, and appends all tracking links into a single unified Discord alert.
 *   **Live Updates:** Discord embed colors change based on deal metrics (likes/views/hotness) and will retain the highest "heat" rank achieved even if the ratios drop later. Embeds are dynamically patched to keep likes, comments, and views accurate for up to 1 hour after publication to respect Discord's rate limits on editing old messages.
 *   **Zero-Config For Users:** Just invite, set the channel via a Slash Command, and enjoy the deals.
 

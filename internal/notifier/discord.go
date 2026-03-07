@@ -155,18 +155,25 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		title += " 🔥"
 	}
 
+	likes, comments, views := deal.Stats()
+
 	// Construct Description
 	var descriptionBuilder strings.Builder
 
-	// Add RFD Thread link always (since title might point to product)
-	descriptionBuilder.WriteString(fmt.Sprintf("[RFD Thread](%s)\n\n", deal.PostURL))
+	// Add RFD Thread link(s)
+	// Because processor.sortThreads() orders these by LikeCount desc, the links
+	// here naturally print in order of most popular to least popular.
+	for _, thread := range deal.Threads {
+		descriptionBuilder.WriteString(fmt.Sprintf("[[RFD]](%s) ", thread.PostURL))
+	}
+	descriptionBuilder.WriteString("\n\n")
 
 	// 5. Heat Color
 	// Don't escalate color for deals with < 2 likes — high engagement
 	// on a downvoted deal means people hate it, not that it's a good deal.
-	heatScore := CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount)
+	heatScore := CalculateHeatScore(likes, comments, views)
 	embedColor := colorColdDeal
-	if deal.LikeCount >= 2 {
+	if likes >= 2 {
 		if deal.HasBeenHot {
 			embedColor = colorHotDeal
 		} else if deal.HasBeenWarm {
@@ -189,10 +196,10 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 
 	// Add Engagement Metrics directly to description
 	likeIcon := "👍"
-	if deal.LikeCount < 0 {
+	if likes < 0 {
 		likeIcon = "👎"
 	}
-	descriptionBuilder.WriteString(fmt.Sprintf("%s %d  💬 %d  👀 %d", likeIcon, deal.LikeCount, deal.CommentCount, deal.ViewCount))
+	descriptionBuilder.WriteString(fmt.Sprintf("%s %d  💬 %d  👀 %d", likeIcon, likes, comments, views))
 
 	var timestampStr string
 	if !deal.PublishedTimestamp.IsZero() {
@@ -310,12 +317,14 @@ func CalculateHeatScore(likes, comments, views int) float64 {
 
 // IsWarm determines if a deal is considered warm.
 func (c *Client) IsWarm(deal models.DealInfo) bool {
-	return deal.LikeCount >= 2 && CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount) > heatScoreThresholdWarm
+	likes, comments, views := deal.Stats()
+	return likes >= 2 && CalculateHeatScore(likes, comments, views) > heatScoreThresholdWarm
 }
 
 // IsHot determines if a deal is considered hot.
 func (c *Client) IsHot(deal models.DealInfo) bool {
-	return deal.LikeCount >= 2 && CalculateHeatScore(deal.LikeCount, deal.CommentCount, deal.ViewCount) > heatScoreThresholdHot
+	likes, comments, views := deal.Stats()
+	return likes >= 2 && CalculateHeatScore(likes, comments, views) > heatScoreThresholdHot
 }
 
 func getHeatColor(heatScore float64) int {
