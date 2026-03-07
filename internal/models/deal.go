@@ -37,7 +37,8 @@ type DealInfo struct {
 
 	// Rank Tracking
 	HasBeenWarm bool `firestore:"hasBeenWarm,omitempty"`
-	HasBeenHot  bool `firestore:"hasBeenHot,omitempty"`
+	// Deprecated: AI is now the sole source of truth for hotness (IsLavaHot).
+	HasBeenHot bool `firestore:"hasBeenHot,omitempty"`
 
 	// Detailed Content
 	Description string `firestore:"description,omitempty"`
