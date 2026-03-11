@@ -164,7 +164,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	// Because processor.sortThreads() orders these by LikeCount desc, the links
 	// here naturally print in order of most popular to least popular.
 	for _, thread := range deal.Threads {
-		descriptionBuilder.WriteString(fmt.Sprintf("[[RFD]](%s) ", thread.PostURL))
+		descriptionBuilder.WriteString(fmt.Sprintf("[RFD](%s) ", thread.PostURL))
 	}
 	descriptionBuilder.WriteString("\n\n")
 
