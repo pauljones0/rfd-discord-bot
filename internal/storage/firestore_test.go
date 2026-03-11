@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"context"
 	"testing"
 
+	"cloud.google.com/go/firestore"
 	"cloud.google.com/go/firestore/apiv1/firestorepb"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -74,3 +76,37 @@ func TestErrDealExists(t *testing.T) {
 	}
 }
 
+func BenchmarkTrimOldDealsQuery_Current(b *testing.B) {
+	ctx := context.Background()
+	c, _ := firestore.NewClient(ctx, "test-project")
+	if c == nil {
+		b.Skip("Failed to create client")
+	}
+	defer c.Close()
+
+	col := c.Collection("deals")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Current approach: build aggregation query and then an OrderBy query
+		_ = col.NewAggregationQuery().WithCount("all")
+		_ = col.OrderBy("lastUpdated", firestore.Asc).Limit(100)
+	}
+}
+
+func BenchmarkTrimOldDealsQuery_Optimized(b *testing.B) {
+	ctx := context.Background()
+	c, _ := firestore.NewClient(ctx, "test-project")
+	if c == nil {
+		b.Skip("Failed to create client")
+	}
+	defer c.Close()
+
+	col := c.Collection("deals")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Optimized approach: skip aggregation and just use Offset and Limit
+		_ = col.OrderBy("lastUpdated", firestore.Desc).Offset(500).Limit(100)
+	}
+}
