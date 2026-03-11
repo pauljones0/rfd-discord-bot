@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
-	"cloud.google.com/go/firestore/apiv1/firestorepb"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -192,70 +191,88 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 	slog.Debug("TrimOldDeals: Entered function", "maxDeals", maxDeals)
 	collectionRef := c.client.Collection(firestoreCollection)
 
-	// Get current count
-	countSnapshot, err := collectionRef.NewAggregationQuery().WithCount("all").Get(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get deal count for trimming: %w", err)
-	}
+	// To avoid the cost and latency of querying the count of the entire collection,
+	// we first find the boundary document that represents the oldest deal we want to keep.
+	// By ordering descending and offsetting by maxDeals, we skip the newest `maxDeals` deals.
+	// The first document returned is the newest deal that should be deleted.
+	boundaryIter := collectionRef.
+		OrderBy("lastUpdated", firestore.Desc).
+		Offset(maxDeals).
+		Limit(1).
+		Documents(ctx)
 
-	countValue, ok := countSnapshot["all"]
-	if !ok {
-		return fmt.Errorf("count aggregation result for trimming was invalid: 'all' key missing")
-	}
+	boundaryDoc, err := boundaryIter.Next()
+	boundaryIter.Stop()
 
-	var currentDealCountInt64 int64
-	switch val := countValue.(type) {
-	case int64:
-		currentDealCountInt64 = val
-	case *firestorepb.Value:
-		currentDealCountInt64 = val.GetIntegerValue()
-	default:
-		return fmt.Errorf("count aggregation result has unexpected type %T", countValue)
-	}
-
-	currentDealCount := int(currentDealCountInt64)
-
-	if currentDealCount <= maxDeals {
+	if err == iterator.Done {
+		// No boundary document found, meaning we have <= maxDeals documents in total.
+		// Nothing to trim.
 		return nil
 	}
-
-	numToDelete := currentDealCount - maxDeals
-	slog.Info("TrimOldDeals: Trimming needed", "current", currentDealCount, "max", maxDeals, "deleting", numToDelete)
-
-	// Query for the oldest deals to delete
-	iter := collectionRef.
-		OrderBy("lastUpdated", firestore.Asc). // Ascending to get oldest first
-		Limit(numToDelete).
-		Documents(ctx)
-	defer iter.Stop()
-
-	deletedCount := 0
-	bulkWriter := c.client.BulkWriter(ctx)
-
-	defer func() {
-		bulkWriter.End()
-	}()
-
-	for {
-		doc, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("failed to iterate deals for trimming: %w", err)
-		}
-
-		_, delErr := bulkWriter.Delete(doc.Ref)
-		if delErr != nil {
-			slog.Error("TrimOldDeals: Error queueing delete", "id", doc.Ref.ID, "error", delErr)
-			continue
-		}
-		deletedCount++
+	if err != nil {
+		return fmt.Errorf("failed to get boundary document for trimming: %w", err)
 	}
 
-	if deletedCount > 0 {
-		bulkWriter.Flush()
-		logger.Notice("TrimOldDeals: Flushed delete operations", "queued", deletedCount)
+	// Safely retrieve the boundary timestamp
+	boundaryData := boundaryDoc.Data()
+	lastUpdatedRaw, ok := boundaryData["lastUpdated"]
+	if !ok {
+		return fmt.Errorf("boundary document missing lastUpdated field")
+	}
+	boundaryTime, ok := lastUpdatedRaw.(time.Time)
+	if !ok {
+		return fmt.Errorf("boundary document lastUpdated is not a time.Time, got %T", lastUpdatedRaw)
+	}
+
+	batchSize := 500
+	totalDeletedCount := 0
+
+	// Now delete all documents that are older than or equal to the boundary document's timestamp.
+	// We do this in a loop with a limit to avoid unbounded memory usage or timeouts.
+	for {
+		iter := collectionRef.
+			Where("lastUpdated", "<=", boundaryTime).
+			OrderBy("lastUpdated", firestore.Asc). // Ascending: delete oldest first
+			Limit(batchSize).
+			Documents(ctx)
+
+		deletedCount := 0
+		bulkWriter := c.client.BulkWriter(ctx)
+
+		for {
+			doc, iterErr := iter.Next()
+			if iterErr == iterator.Done {
+				break
+			}
+			if iterErr != nil {
+				iter.Stop()
+				return fmt.Errorf("failed to iterate deals for trimming: %w", iterErr)
+			}
+
+			_, delErr := bulkWriter.Delete(doc.Ref)
+			if delErr != nil {
+				slog.Error("TrimOldDeals: Error queueing delete", "id", doc.Ref.ID, "error", delErr)
+				continue
+			}
+			deletedCount++
+		}
+		iter.Stop()
+
+		if deletedCount > 0 {
+			bulkWriter.Flush()
+			totalDeletedCount += deletedCount
+			// If we deleted fewer than the batch size, we're done.
+			if deletedCount < batchSize {
+				break
+			}
+		} else {
+			// Nothing left to delete
+			break
+		}
+	}
+
+	if totalDeletedCount > 0 {
+		logger.Notice("TrimOldDeals: Completed delete operations", "total_deleted", totalDeletedCount)
 	}
 
 	return nil
