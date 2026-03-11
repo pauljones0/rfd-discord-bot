@@ -132,6 +132,33 @@ func TestFormatDealToEmbed_NegativeLikesStaysCold(t *testing.T) {
 	}
 }
 
+func TestCalculateHeatScore(t *testing.T) {
+	tests := []struct {
+		name     string
+		likes    int
+		comments int
+		views    int
+		expected float64
+	}{
+		{"happy path", 10, 5, 100, 0.2},                // (10 + 2*5) / 100 = 0.2
+		{"zero views", 10, 5, 0, 0.0},                  // returns 0.0
+		{"negative likes clamped", -5, 5, 100, 0.1},    // (0 + 2*5) / 100 = 0.1
+		{"negative comments clamped", 10, -5, 100, 0.1},// (10 + 0) / 100 = 0.1
+		{"both negative", -10, -10, 100, 0.0},          // (0 + 0) / 100 = 0.0
+		{"all zeros", 0, 0, 0, 0.0},                    // returns 0.0
+		{"large numbers", 1000, 500, 10000, 0.2},       // (1000 + 1000) / 10000 = 0.2
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := CalculateHeatScore(tt.likes, tt.comments, tt.views)
+			if score != tt.expected {
+				t.Errorf("CalculateHeatScore(%d, %d, %d) = %v; expected %v", tt.likes, tt.comments, tt.views, score, tt.expected)
+			}
+		})
+	}
+}
+
 func TestClient_IsHot(t *testing.T) {
 	c := New("token")
 
