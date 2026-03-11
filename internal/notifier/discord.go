@@ -316,13 +316,14 @@ func CalculateHeatScore(likes, comments, views int) float64 {
 
 // IsWarm determines if a deal is considered warm.
 func (c *Client) IsWarm(deal models.DealInfo) bool {
-	likes, comments, views := deal.Stats()
-	return likes >= 2 && CalculateHeatScore(likes, comments, views) > heatScoreThresholdWarm
+	score := CalculateHeatScore(deal.Stats())
+	return score >= 15.0 && score < 30.0
 }
 
 // IsHot determines if a deal is considered hot.
 func (c *Client) IsHot(deal models.DealInfo) bool {
-	return deal.IsLavaHot
+	score := CalculateHeatScore(deal.Stats())
+	return score >= 30.0
 }
 
 func getHeatColor(heatScore float64) int {

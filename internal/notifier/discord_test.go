@@ -132,24 +132,6 @@ func TestFormatDealToEmbed_NegativeLikesStaysCold(t *testing.T) {
 	}
 }
 
-func TestClient_IsHot(t *testing.T) {
-	c := New("token")
-
-	dealWithLikes := models.DealInfo{
-		Threads: []models.ThreadContext{{LikeCount: 100, CommentCount: 100, ViewCount: 100}},
-	}
-	if c.IsHot(dealWithLikes) {
-		t.Error("IsHot should no longer be driven by like counts")
-	}
-
-	dealLavaHot := models.DealInfo{
-		IsLavaHot: true,
-		Threads:   []models.ThreadContext{{LikeCount: -1, CommentCount: 0, ViewCount: 100}},
-	}
-	if !c.IsHot(dealLavaHot) {
-		t.Error("IsHot should be true when AI thinks it's Lava Hot")
-	}
-}
 
 func TestClient_Send(t *testing.T) {
 	// Mock Discord Server
@@ -396,5 +378,199 @@ func TestClient_Send_EmptyToken(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Errorf("Send() with empty token should return empty map, got %v", ids)
+	}
+}
+
+func TestCalculateHeatScore(t *testing.T) {
+	tests := []struct {
+		name     string
+		likes    int
+		comments int
+		views    int
+		expected float64
+	}{
+		{
+			name:     "normal case",
+			likes:    10,
+			comments: 5,
+			views:    100,
+			expected: (10.0 + 2.0*5.0) / 100.0, // 0.2
+		},
+		{
+			name:     "zero views",
+			likes:    10,
+			comments: 5,
+			views:    0,
+			expected: 0.0,
+		},
+		{
+			name:     "negative likes",
+			likes:    -5,
+			comments: 5,
+			views:    100,
+			expected: (0.0 + 2.0*5.0) / 100.0, // 0.1
+		},
+		{
+			name:     "negative comments",
+			likes:    10,
+			comments: -2,
+			views:    100,
+			expected: (10.0 + 2.0*0.0) / 100.0, // 0.1
+		},
+		{
+			name:     "both negative",
+			likes:    -10,
+			comments: -5,
+			views:    100,
+			expected: 0.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := CalculateHeatScore(tt.likes, tt.comments, tt.views)
+			if result != tt.expected {
+				t.Errorf("CalculateHeatScore(%d, %d, %d) = %v; want %v", tt.likes, tt.comments, tt.views, result, tt.expected)
+			}
+		})
+	}
+}
+
+
+func TestClient_IsWarm(t *testing.T) {
+	c := New("token")
+
+	tests := []struct {
+		name     string
+		deal     models.DealInfo
+		expected bool
+	}{
+		{
+			name: "score exactly 15 is warm",
+			deal: models.DealInfo{
+				Threads: []models.ThreadContext{
+					{
+						LikeCount:    150,
+						CommentCount: 0,
+						ViewCount:    10,
+					},
+				},
+			},
+			// heat = 150 / 10 = 15.0
+			expected: true,
+		},
+		{
+			name: "score between 15 and 30 is warm",
+			deal: models.DealInfo{
+				Threads: []models.ThreadContext{
+					{
+						LikeCount:    200,
+						CommentCount: 0,
+						ViewCount:    10,
+					},
+				},
+			},
+			// heat = 200 / 10 = 20.0
+			expected: true,
+		},
+		{
+			name: "score exactly 30 is not warm",
+			deal: models.DealInfo{
+				Threads: []models.ThreadContext{
+					{
+						LikeCount:    300,
+						CommentCount: 0,
+						ViewCount:    10,
+					},
+				},
+			},
+			// heat = 300 / 10 = 30.0
+			expected: false,
+		},
+		{
+			name: "score below 15 is not warm",
+			deal: models.DealInfo{
+				Threads: []models.ThreadContext{
+					{
+						LikeCount:    140,
+						CommentCount: 0,
+						ViewCount:    10,
+					},
+				},
+			},
+			// heat = 140 / 10 = 14.0
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := c.IsWarm(tt.deal)
+			if result != tt.expected {
+				t.Errorf("IsWarm() = %v; want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestClient_IsHot(t *testing.T) {
+	c := New("token")
+
+	tests := []struct {
+		name     string
+		deal     models.DealInfo
+		expected bool
+	}{
+		{
+			name: "score exactly 30 is hot",
+			deal: models.DealInfo{
+				Threads: []models.ThreadContext{
+					{
+						LikeCount:    300,
+						CommentCount: 0,
+						ViewCount:    10,
+					},
+				},
+			},
+			// heat = 300 / 10 = 30.0
+			expected: true,
+		},
+		{
+			name: "score above 30 is hot",
+			deal: models.DealInfo{
+				Threads: []models.ThreadContext{
+					{
+						LikeCount:    400,
+						CommentCount: 0,
+						ViewCount:    10,
+					},
+				},
+			},
+			// heat = 400 / 10 = 40.0
+			expected: true,
+		},
+		{
+			name: "score below 30 is not hot",
+			deal: models.DealInfo{
+				Threads: []models.ThreadContext{
+					{
+						LikeCount:    290,
+						CommentCount: 0,
+						ViewCount:    10,
+					},
+				},
+			},
+			// heat = 290 / 10 = 29.0
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := c.IsHot(tt.deal)
+			if result != tt.expected {
+				t.Errorf("IsHot() = %v; want %v", result, tt.expected)
+			}
+		})
 	}
 }
