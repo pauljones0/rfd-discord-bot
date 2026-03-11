@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
@@ -227,80 +229,93 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 
 // analyzeDeals runs AI analysis on deals that haven't been processed yet.
 func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, logger *slog.Logger) {
+	eg, egCtx := errgroup.WithContext(ctx)
+	// Limit concurrency to 3 to provide speedup while respecting API quotas
+	eg.SetLimit(3)
+
 	for i := range validDeals {
+		// Capture loop variable locally
 		deal := &validDeals[i]
-		existing := existingDeals[deal.FirestoreID]
-		isNew := existing == nil
 
-		// We analyze if:
-		// 1. It's a new deal.
-		// 2. Or existing deal hasn't been processed.
-		// 3. Or significant fields changed (Title/URL) which invalidates previous AI analysis.
-		shouldAnalyze := isNew || !existing.AIProcessed
+		eg.Go(func() error {
+			existing := existingDeals[deal.FirestoreID]
+			isNew := existing == nil
 
-		if !shouldAnalyze && existing != nil {
-			if deal.Title != existing.Title || deal.PostURL != existing.PostURL {
-				shouldAnalyze = true
-				logger.Info("Re-analyzing deal due to content change", "title", deal.Title)
-			}
-		}
+			// We analyze if:
+			// 1. It's a new deal.
+			// 2. Or existing deal hasn't been processed.
+			// 3. Or significant fields changed (Title/URL) which invalidates previous AI analysis.
+			shouldAnalyze := isNew || !existing.AIProcessed
 
-		if shouldAnalyze {
-			// Double check if we already have a clean title from somewhere else (unlikely with current flow)
-			// But if we are re-analyzing, we ignore the existing clean title.
-			if !isNew && deal.CleanTitle != "" && deal.AIProcessed {
-				// This case shouldn't really happen with current flow unless we set it manually before here
-				continue
+			if !shouldAnalyze && existing != nil {
+				if deal.Title != existing.Title || deal.PostURL != existing.PostURL {
+					shouldAnalyze = true
+					logger.Info("Re-analyzing deal due to content change", "title", deal.Title)
+				}
 			}
 
-			// Call AI
-			// Note: This is done sequentially here. For high volume, we might want concurrency,
-			// but for a few deals every 10 mins, sequential is fine and safer for rate limits.
-			var cleanedTitle string
-			var isHot bool
-			var err error
-
-			const maxAttempts = 3
-			for attempt := 1; attempt <= maxAttempts; attempt++ {
-				cleanedTitle, isHot, err = p.aiClient.AnalyzeDeal(ctx, deal)
-				if err == nil {
-					break // Success
+			if shouldAnalyze {
+				// Double check if we already have a clean title from somewhere else (unlikely with current flow)
+				// But if we are re-analyzing, we ignore the existing clean title.
+				if !isNew && deal.CleanTitle != "" && deal.AIProcessed {
+					// This case shouldn't really happen with current flow unless we set it manually before here
+					return nil
 				}
 
-				// Retry only on rate limit (429 / quota) errors
-				if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "quota") || strings.Contains(err.Error(), "RESOURCE_EXHAUSTED") {
-					if attempt < maxAttempts {
-						backoff := time.Duration(attempt*5) * time.Second
-						logger.Warn("AI analysis rate limited, retrying", "title", deal.Title, "attempt", attempt, "backoff", backoff)
-						time.Sleep(backoff)
-						continue
+				// Call AI
+				var cleanedTitle string
+				var isHot bool
+				var err error
+
+				const maxAttempts = 3
+				for attempt := 1; attempt <= maxAttempts; attempt++ {
+					cleanedTitle, isHot, err = p.aiClient.AnalyzeDeal(egCtx, deal)
+					if err == nil {
+						break // Success
 					}
+
+					// Retry only on rate limit (429 / quota) errors
+					if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "quota") || strings.Contains(err.Error(), "RESOURCE_EXHAUSTED") {
+						if attempt < maxAttempts {
+							backoff := time.Duration(attempt*5) * time.Second
+							logger.Warn("AI analysis rate limited, retrying", "title", deal.Title, "attempt", attempt, "backoff", backoff)
+							time.Sleep(backoff)
+							continue
+						}
+					}
+					break // Stop retrying on other errors or if max attempts reached
 				}
-				break // Stop retrying on other errors or if max attempts reached
+
+				if err != nil {
+					// Log error but continue. Deal stays "unprocessed" effectively, or we mark it processed with failure?
+					// For now, just log. Next run will try again if we don't save AIProcessed=true.
+					// However, to avoid infinite loops on bad deals, we could mark as processed?
+					// Let's NOT mark as processed so it retries, but maybe we need a retry count later.
+					logger.Warn("AI analysis failed", "title", deal.Title, "error", err)
+
+					// Fallback: use original title if we must, but here we just leave CleanTitle empty.
+					// The notifier will handle empty CleanTitle by using Title.
+				} else {
+					deal.CleanTitle = cleanedTitle
+					deal.IsLavaHot = isHot
+					deal.AIProcessed = true
+					logger.Info("AI analysis complete", "original", deal.Title, "clean", cleanedTitle, "hot", isHot)
+				}
+			} else if existing != nil {
+				// Carry over existing AI data
+				deal.CleanTitle = existing.CleanTitle
+				deal.IsLavaHot = existing.IsLavaHot
+				deal.AIProcessed = existing.AIProcessed
 			}
 
-			if err != nil {
-				// Log error but continue. Deal stays "unprocessed" effectively, or we mark it processed with failure?
-				// For now, just log. Next run will try again if we don't save AIProcessed=true.
-				// However, to avoid infinite loops on bad deals, we could mark as processed?
-				// Let's NOT mark as processed so it retries, but maybe we need a retry count later.
-				logger.Warn("AI analysis failed", "title", deal.Title, "error", err)
-
-				// Fallback: use original title if we must, but here we just leave CleanTitle empty.
-				// The notifier will handle empty CleanTitle by using Title.
-			} else {
-				deal.CleanTitle = cleanedTitle
-				deal.IsLavaHot = isHot
-				deal.AIProcessed = true
-				logger.Info("AI analysis complete", "original", deal.Title, "clean", cleanedTitle, "hot", isHot)
-			}
-		} else if existing != nil {
-			// Carry over existing AI data
-			deal.CleanTitle = existing.CleanTitle
-			deal.IsLavaHot = existing.IsLavaHot
-			deal.AIProcessed = existing.AIProcessed
-		}
+			return nil
+		})
 	}
+
+	// Wait for all analyses to complete.
+	// Since we always return nil from the eg.Go func, we don't strictly need to check err,
+	// but it's good practice.
+	_ = eg.Wait()
 }
 
 // processNotificationsAndPrepareUpdates sends/updates Discord notifications and prepares lists for DB persistence.
