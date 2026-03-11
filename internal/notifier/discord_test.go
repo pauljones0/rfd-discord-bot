@@ -49,7 +49,7 @@ func TestFormatDealToEmbed(t *testing.T) {
 	}
 
 	// Check Description (should contain RFD Thread link and Engagement Metrics)
-	expectedDesc := fmt.Sprintf("[[RFD]](%s) \n\n👍 10  💬 5  👀 100", deal.Threads[0].PostURL)
+	expectedDesc := fmt.Sprintf("[RFD](%s) \n\n👍 10  💬 5  👀 100", deal.Threads[0].PostURL)
 	if embed.Description != expectedDesc {
 		t.Errorf("Description incorrect.\nGot:  %q\nWant: %q", embed.Description, expectedDesc)
 	}
