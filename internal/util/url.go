@@ -52,4 +52,3 @@ func NormalizeURL(rawURL string, allowedDomains []string) (string, error) {
 	parsedURL.RawQuery = queryParams.Encode()
 	return parsedURL.String(), nil
 }
-

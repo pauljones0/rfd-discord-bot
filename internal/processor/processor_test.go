@@ -187,7 +187,16 @@ func newTestProcessor(store DealStore, notifier DealNotifier, scraper DealScrape
 	}
 	v := validator.New()
 	ai := &mockDealAnalyzer{cleanTitle: "Clean Title", isHot: true}
-	return New(store, notifier, scraper, v, cfg, ai)
+
+	deps := Dependencies{
+		Store:     store,
+		Notifier:  notifier,
+		Scraper:   scraper,
+		Validator: v,
+		Config:    cfg,
+		AIClient:  ai,
+	}
+	return New(deps)
 }
 
 // Helper: fixed timestamp for test deals
