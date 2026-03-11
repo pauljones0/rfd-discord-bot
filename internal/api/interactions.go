@@ -122,35 +122,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify signature if configured
-	var body []byte
-	var err error
-	if len(h.pubKey) > 0 {
-		signature := r.Header.Get("X-Signature-Ed25519")
-		timestamp := r.Header.Get("X-Signature-Timestamp")
+	// Verify signature
+	if len(h.pubKey) == 0 {
+		http.Error(w, "Server not configured to verify signatures", http.StatusInternalServerError)
+		return
+	}
 
-		if signature == "" || timestamp == "" {
-			http.Error(w, "Missing signature headers", http.StatusUnauthorized)
-			return
-		}
+	signature := r.Header.Get("X-Signature-Ed25519")
+	timestamp := r.Header.Get("X-Signature-Timestamp")
 
-		body, err = io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "Failed to read body", http.StatusInternalServerError)
-			return
-		}
+	if signature == "" || timestamp == "" {
+		http.Error(w, "Missing signature headers", http.StatusUnauthorized)
+		return
+	}
 
-		if !h.verifySignature(signature, timestamp, body) {
-			http.Error(w, "Invalid request signature", http.StatusUnauthorized)
-			return
-		}
-	} else {
-		// Just read it
-		body, err = io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "Failed to read body", http.StatusInternalServerError)
-			return
-		}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read body", http.StatusInternalServerError)
+		return
+	}
+
+	if !h.verifySignature(signature, timestamp, body) {
+		http.Error(w, "Invalid request signature", http.StatusUnauthorized)
+		return
 	}
 
 	var req interactionRequest
