@@ -101,41 +101,51 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	newDeals, updatedDeals, errorMessages := p.processNotificationsAndPrepareUpdates(ctx, validDeals, existingDeals, subs)
 
 	// 6. Batch Save
-	// Optimization: Clear large text fields for AI processed deals to save storage
-	// This prevents "leaky bucket" storage growth as requested
-	for i := range newDeals {
-		if newDeals[i].AIProcessed {
-			newDeals[i].Description = ""
-			newDeals[i].Comments = ""
-			newDeals[i].Summary = ""
-		}
-	}
-	for i := range updatedDeals {
-		if updatedDeals[i].AIProcessed {
-			updatedDeals[i].Description = ""
-			updatedDeals[i].Comments = ""
-			updatedDeals[i].Summary = ""
-		}
-	}
-	if len(newDeals) > 0 || len(updatedDeals) > 0 {
-		// 11. Consolidated batch write
-		if err := p.store.BatchWrite(ctx, newDeals, updatedDeals); err != nil {
-			return fmt.Errorf("batch write failed: %w", err)
-		}
-		logger.Info("Batch write completed", "created", len(newDeals), "updated", len(updatedDeals))
+	if err := p.batchSaveDeals(ctx, newDeals, updatedDeals, logger); err != nil {
+		return err
 	}
 
-	// 6. Cleanup Old Deals
+	// 7. Cleanup Old Deals
 	if len(newDeals) > 0 {
-		if err := p.store.TrimOldDeals(ctx, p.config.MaxStoredDeals); err != nil {
-			logger.Warn("Failed to trim old deals", "error", err)
-		}
+		p.cleanupOldDeals(ctx, logger)
 	}
 
 	if len(errorMessages) > 0 {
 		return fmt.Errorf("processed with errors: %s", strings.Join(errorMessages, "; "))
 	}
 	return nil
+}
+
+// batchSaveDeals clears large text fields to save storage and performs a batch write.
+func (p *DealProcessor) batchSaveDeals(ctx context.Context, newDeals, updatedDeals []models.DealInfo, logger *slog.Logger) error {
+	p.clearLargeTextFields(newDeals)
+	p.clearLargeTextFields(updatedDeals)
+
+	if len(newDeals) > 0 || len(updatedDeals) > 0 {
+		if err := p.store.BatchWrite(ctx, newDeals, updatedDeals); err != nil {
+			return fmt.Errorf("batch write failed: %w", err)
+		}
+		logger.Info("Batch write completed", "created", len(newDeals), "updated", len(updatedDeals))
+	}
+	return nil
+}
+
+// clearLargeTextFields prevents "leaky bucket" storage growth by removing text data for AI processed deals.
+func (p *DealProcessor) clearLargeTextFields(deals []models.DealInfo) {
+	for i := range deals {
+		if deals[i].AIProcessed {
+			deals[i].Description = ""
+			deals[i].Comments = ""
+			deals[i].Summary = ""
+		}
+	}
+}
+
+// cleanupOldDeals trims old deals from the database to maintain size limits.
+func (p *DealProcessor) cleanupOldDeals(ctx context.Context, logger *slog.Logger) {
+	if err := p.store.TrimOldDeals(ctx, p.config.MaxStoredDeals); err != nil {
+		logger.Warn("Failed to trim old deals", "error", err)
+	}
 }
 
 // scrapeAndValidate scrapes the deal list and performs initial validation and ID assignment.
