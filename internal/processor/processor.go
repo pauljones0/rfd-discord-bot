@@ -34,15 +34,25 @@ type DealAnalyzer interface {
 	AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, error)
 }
 
-func New(store DealStore, n DealNotifier, s DealScraper, v DealValidator, cfg *config.Config, ai DealAnalyzer) *DealProcessor {
+// Dependencies holds the external dependencies required by DealProcessor.
+type Dependencies struct {
+	Store     DealStore
+	Notifier  DealNotifier
+	Scraper   DealScraper
+	Validator DealValidator
+	Config    *config.Config
+	AIClient  DealAnalyzer
+}
+
+func New(deps Dependencies) *DealProcessor {
 	return &DealProcessor{
-		store:          store,
-		notifier:       n,
-		scraper:        s,
-		validator:      v,
-		config:         cfg,
-		aiClient:       ai,
-		updateInterval: cfg.DiscordUpdateInterval,
+		store:          deps.Store,
+		notifier:       deps.Notifier,
+		scraper:        deps.Scraper,
+		validator:      deps.Validator,
+		config:         deps.Config,
+		aiClient:       deps.AIClient,
+		updateInterval: deps.Config.DiscordUpdateInterval,
 	}
 }
 
