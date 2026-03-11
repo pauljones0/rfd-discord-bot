@@ -96,11 +96,12 @@ func main() {
 	})
 
 	httpServer := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      loggingMiddleware(mux),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 5 * time.Minute,
-		IdleTimeout:  60 * time.Second,
+			Addr:              ":" + cfg.Port,
+			Handler:           loggingMiddleware(mux),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      5 * time.Minute,
+			IdleTimeout:       60 * time.Second,
 	}
 
 	// Graceful shutdown on SIGTERM/SIGINT
