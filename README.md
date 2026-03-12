@@ -37,10 +37,10 @@ To stop the bot from posting or securely view active subscriptions, an administr
 ## 🌟 Features
 
 *   **Identifies RFD Hot Deals:** Scrapes the latest deals from the Hot Deals forum natively (extensively supporting the modern card-based layout structure) with fallback support.
-*   **Gemini AI Integration:** Uses Google Gemini AI (`gemini-2.5-flash-lite`) with **Google Search Grounding** to:
+*   **Gemini AI Integration:** Uses Google Gemini AI with **Google Search Grounding** to:
     *   Clean up and summarize messy deal titles based on extracted deal details.
     *   Determine if a deal is "Lava Hot" (adds 🔥 emojis and escalates the Discord alert color to hot pink).
-    *   *Note: Implements exponential backoff to handle free-tier API rate limits gracefully.*
+    *   *Note: Automatically handles 429 quota rate limits by dynamically upgrading to higher-tier models (e.g., from `gemini-2.5-flash-lite` to `gemini-2.5-pro`) and resetting at midnight Pacific Time to maintain 100% uptime.*
 *   **Deep Scraping:** Extracts detailed deal content, including descriptions and comments from deal pages for AI context.
 *   **Intelligent Link Cleaner:** Features a robust, rules-based URL cleaner that automatically strips unwanted tracking parameters (`cmp`, `ref`, `_trkparms`, etc.) from Amazon, BestBuy, and eBay links while preserving crucial identifiers like ASINs and Item IDs, before applying our own affiliate tags.
 *   **Discord Bot Notifications:** Sends detailed notifications to multiple subscribed Discord servers, complete with native Discord timestamps, actual deal URLs, concise engagement metrics, and categorized emojis for improved visual clarity (e.g. 💻, 🛒, 🍔).

@@ -58,7 +58,7 @@ func main() {
 	v := validator.New()
 
 	// Initialize AI client (gracefully handles missing key)
-	aiClient, err := ai.NewClient(ctx, cfg.GeminiAPIKey, cfg.GeminiModelID)
+	aiClient, err := ai.NewClient(ctx, cfg.GeminiAPIKey, cfg.GeminiFallbackModels, store)
 	if err != nil {
 		slog.Warn("Failed to initialize Gemini client (AI features disabled)", "error", err)
 	}

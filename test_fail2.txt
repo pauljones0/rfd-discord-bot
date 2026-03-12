@@ -1,0 +1,4 @@
+# github.com/pauljones0/rfd-discord-bot/internal/ai [github.com/pauljones0/rfd-discord-bot/internal/ai.test]
+internal\ai\gemini_test.go:7:2: "time" imported and not used
+FAIL	github.com/pauljones0/rfd-discord-bot/internal/ai [build failed]
+FAIL

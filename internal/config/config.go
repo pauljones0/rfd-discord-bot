@@ -20,6 +20,7 @@ type Config struct {
 	UserAgent              string
 	GeminiAPIKey           string
 	GeminiModelID          string
+	GeminiFallbackModels   []string
 
 	// Discord App Auth
 	DiscordAppID     string
@@ -91,6 +92,13 @@ func Load() (*Config, error) {
 		UserAgent:              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		GeminiAPIKey:           os.Getenv("GEMINI_API_KEY"),
 		GeminiModelID:          geminiModelID,
+		GeminiFallbackModels:   []string{
+			"gemini-2.5-flash-lite", 
+			"gemini-3.1-flash-lite-preview",
+			"gemini-2.5-flash", 
+			"gemini-3-flash-preview",
+			"gemini-2.5-pro",
+		},
 		DiscordAppID:           os.Getenv("DISCORD_APP_ID"),
 		DiscordPublicKey:       discordPublicKey,
 		DiscordBotToken:        discordBotToken,

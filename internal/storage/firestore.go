@@ -367,3 +367,44 @@ func (c *Client) GetRecentDeals(ctx context.Context, d time.Duration) ([]models.
 	}
 	return deals, nil
 }
+
+// GetGeminiQuotaStatus retrieves the Gemini fallback state.
+func (c *Client) GetGeminiQuotaStatus(ctx context.Context) (*models.GeminiQuotaStatus, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
+	doc, err := c.client.Collection("bot_config").Doc("gemini_quota").Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, nil // Not found is not an error, we just initialize it
+		}
+		return nil, fmt.Errorf("failed to get gemini quota status: %w", err)
+	}
+
+	var quota models.GeminiQuotaStatus
+	if err := doc.DataTo(&quota); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal gemini quota status: %w", err)
+	}
+
+	return &quota, nil
+}
+
+// UpdateGeminiQuotaStatus updates the Gemini fallback state.
+func (c *Client) UpdateGeminiQuotaStatus(ctx context.Context, quota models.GeminiQuotaStatus) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
+	quota.LastUpdated = time.Now()
+	_, err := c.client.Collection("bot_config").Doc("gemini_quota").Set(ctx, quota)
+	if err != nil {
+		return fmt.Errorf("failed to update gemini quota status: %w", err)
+	}
+
+	return nil
+}

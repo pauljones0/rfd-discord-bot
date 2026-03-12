@@ -6,14 +6,23 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"google.golang.org/genai"
 )
 
+type QuotaStore interface {
+	GetGeminiQuotaStatus(ctx context.Context) (*models.GeminiQuotaStatus, error)
+	UpdateGeminiQuotaStatus(ctx context.Context, quota models.GeminiQuotaStatus) error
+}
+
 type Client struct {
-	client  *genai.Client
-	modelID string
+	client         *genai.Client
+	store          QuotaStore
+	fallbackModels []string
+	currentModel   string
+	currentDay     string
 }
 
 type AnalysisResult struct {
@@ -22,9 +31,13 @@ type AnalysisResult struct {
 	IsLavaHot  bool   `json:"is_lava_hot"`
 }
 
-func NewClient(ctx context.Context, apiKey, modelID string) (*Client, error) {
+func NewClient(ctx context.Context, apiKey string, fallbackModels []string, store QuotaStore) (*Client, error) {
 	if apiKey == "" {
 		return nil, nil // Return nil client if no key provided
+	}
+
+	if len(fallbackModels) == 0 {
+		return nil, fmt.Errorf("fallback models list is empty")
 	}
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
@@ -35,13 +48,110 @@ func NewClient(ctx context.Context, apiKey, modelID string) (*Client, error) {
 		return nil, fmt.Errorf("failed to create gemini client: %w", err)
 	}
 
-	return &Client{client: client, modelID: modelID}, nil
+	c := &Client{
+		client:         client,
+		store:          store,
+		fallbackModels: fallbackModels,
+	}
+
+	// Load initial state
+	c.initQuotaState(ctx)
+
+	return c, nil
+}
+
+func (c *Client) initQuotaState(ctx context.Context) {
+	if c.store == nil {
+		c.currentModel = c.fallbackModels[0]
+		return
+	}
+
+    c.checkDayRollover(ctx)
+}
+
+func getPacificDate() string {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		// Fallback if system missing tzdata
+		loc = time.FixedZone("PST", -8*60*60)
+	}
+	return time.Now().In(loc).Format("2006-01-02")
+}
+
+func (c *Client) checkDayRollover(ctx context.Context) string {
+	if c.store == nil || len(c.fallbackModels) == 0 {
+		return c.fallbackModels[0]
+	}
+
+	today := getPacificDate()
+	
+	if c.currentDay == today && c.currentModel != "" {
+		return c.currentModel
+	}
+
+	quota, err := c.store.GetGeminiQuotaStatus(ctx)
+	if err != nil {
+		slog.Warn("Failed to get Gemini quota status, using default model", "error", err)
+		c.currentModel = c.fallbackModels[0]
+		c.currentDay = today
+		return c.currentModel
+	}
+
+	if quota == nil {
+		c.currentModel = c.fallbackModels[0]
+		c.currentDay = today
+		c.updateFirestoreQuota(ctx)
+		return c.currentModel
+	}
+
+	if quota.CurrentDay != today {
+		c.currentDay = today
+		c.currentModel = c.fallbackModels[0]
+		slog.Info("Day rolled over or restarted, resetting to lowest tier model", "model", c.currentModel)
+		c.updateFirestoreQuota(ctx)
+	} else {
+		c.currentDay = quota.CurrentDay
+		c.currentModel = quota.CurrentModel
+	}
+
+	return c.currentModel
+}
+
+func (c *Client) updateFirestoreQuota(ctx context.Context) {
+    if c.store == nil {
+        return
+    }
+	err := c.store.UpdateGeminiQuotaStatus(ctx, models.GeminiQuotaStatus{
+		CurrentDay:   c.currentDay,
+		CurrentModel: c.currentModel,
+	})
+	if err != nil {
+		slog.Error("Failed to update gemini quota status in firestore", "error", err)
+	}
+}
+
+func (c *Client) upgradeModelTier(ctx context.Context) error {
+	for i, m := range c.fallbackModels {
+		if m == c.currentModel {
+			if i+1 < len(c.fallbackModels) {
+				c.currentModel = c.fallbackModels[i+1]
+				slog.Info("Quota exhausted, upgrading model tier", "new_model", c.currentModel)
+				c.updateFirestoreQuota(ctx)
+				return nil
+			}
+			break
+		}
+	}
+	return fmt.Errorf("all model tiers exhausted for the day")
 }
 
 func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error) {
 	if c == nil || c.client == nil {
 		return "", false, false, nil // Graceful degradation
 	}
+
+    // Always ensure we are using the correct model for the current day
+    activeModel := c.checkDayRollover(ctx)
 
 	link := deal.ActualDealURL
 	if link == "" {
@@ -50,9 +160,6 @@ func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string
 
 	var optionalFields string
 	if deal.OriginalPrice != "" {
-		optionalFields += fmt.Sprintf("Original Price: \"%s\"\n", deal.OriginalPrice)
-	}
-	if deal.Savings != "" {
 		optionalFields += fmt.Sprintf("Savings: \"%s\"\n", deal.Savings)
 	}
 
@@ -86,8 +193,25 @@ You MUST respond ONLY with a raw JSON object containing exactly three keys: "cle
 		},
 	}
 
-	resp, err := c.client.Models.GenerateContent(ctx, c.modelID, genai.Text(prompt), config)
-	if err != nil {
+	var resp *genai.GenerateContentResponse
+	var err error
+
+	for {
+		resp, err = c.client.Models.GenerateContent(ctx, activeModel, genai.Text(prompt), config)
+		if err == nil {
+			break
+		}
+
+		if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "quota") || strings.Contains(err.Error(), "RESOURCE_EXHAUSTED") {
+			slog.Warn("AI quota exceeded or rate limited for model", "model", activeModel, "error", err)
+			upgradeErr := c.upgradeModelTier(ctx)
+			if upgradeErr != nil {
+				return "", false, false, fmt.Errorf("gemini generation failed, all fallback quotas exhausted: %w", err)
+			}
+			activeModel = c.currentModel // Retry with upgraded model
+			continue
+		}
+
 		return "", false, false, fmt.Errorf("gemini generation failed: %w", err)
 	}
 
