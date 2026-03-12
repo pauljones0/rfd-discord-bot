@@ -68,7 +68,7 @@ func main() {
 	srv := &Server{
 		processor: p,
 		store:     store,
-		sem:       make(chan struct{}, 1), // Allow only 1 concurrent request processing attempt
+		sem:       make(chan struct{}, 2), // Allow up to 2 concurrent request processing attempts
 	}
 
 	apiHandler, err := api.NewHandler(cfg, store)
@@ -138,7 +138,7 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 	case s.sem <- struct{}{}:
 		// acquired
 	default:
-		slog.Warn("ProcessDealsHandler: dropped request due to concurrency limit")
+		slog.Info("ProcessDealsHandler: dropped request due to concurrency limit")
 		w.WriteHeader(http.StatusTooManyRequests)
 		fmt.Fprintln(w, `{"status":"busy", "details": "server is busy processing deals"}`)
 		return

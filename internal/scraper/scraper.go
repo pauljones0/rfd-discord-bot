@@ -264,8 +264,10 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 			if err != nil {
 				if errors.Is(err, ErrDealLinkNotFound) {
 					slog.Info("No external deal link found", "postURL", deal.PrimaryPostURL())
+				} else if strings.Contains(err.Error(), "status code 404") {
+					slog.Info("Failed to fetch detail page (404)", "url", deal.PrimaryPostURL())
 				} else {
-					slog.Warn("Failed to scrape detail page", "url", deal.PrimaryPostURL(), "error", err)
+					slog.Warn("Failed to fetch detail page", "url", deal.PrimaryPostURL(), "error", err)
 				}
 				// We don't fail the group, just don't update fields if failed
 				// However, if we got partial data (e.g. description but no link), we might want to keep it?

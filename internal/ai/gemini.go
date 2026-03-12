@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 	"google.golang.org/genai"
 )
 
@@ -186,11 +187,11 @@ Task:
    Standard sales, generic clearance items, and deals with lukewarm/indifferent comments should be False.
 3. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
 
-You MUST respond ONLY with a raw JSON object containing exactly three keys: "clean_title" (string), "is_warm" (boolean), and "is_lava_hot" (boolean). Do not include any other text, markdown formatting, or backticks.
 `, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, optionalFields, deal.Retailer)
-
+	
 	config := &genai.GenerateContentConfig{
-		Temperature: genai.Ptr[float32](0.1),
+		Temperature:      genai.Ptr[float32](0.1),
+		ResponseMIMEType: "application/json",
 		Tools: []*genai.Tool{
 			{GoogleSearch: &genai.GoogleSearch{}},
 		},
@@ -199,23 +200,41 @@ You MUST respond ONLY with a raw JSON object containing exactly three keys: "cle
 	var resp *genai.GenerateContentResponse
 	var err error
 
-	for {
+	err = util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		resp, err = c.client.Models.GenerateContent(ctx, activeModel, genai.Text(prompt), config)
 		if err == nil {
-			break
+			return nil
 		}
 
-		if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "quota") || strings.Contains(err.Error(), "RESOURCE_EXHAUSTED") {
+		errStr := err.Error()
+		// Quota / Rate limit errors -> Upgrade tier and retry immediately (the loop in AnalyzeDeal handles the logic)
+		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") {
 			slog.Warn("AI quota exceeded or rate limited for model", "model", activeModel, "error", err)
 			upgradeErr := c.upgradeModelTier(ctx)
 			if upgradeErr != nil {
-				return "", false, false, fmt.Errorf("gemini generation failed, all fallback quotas exhausted: %w", err)
+				return fmt.Errorf("gemini generation failed, all fallback quotas exhausted: %w", err)
 			}
-			activeModel = c.currentModel // Retry with upgraded model
-			continue
+			activeModel = c.currentModel // Update activeModel for the next attempt within RetryWithBackoff
+			return err                   // Return original error to trigger retry
 		}
 
-		return "", false, false, fmt.Errorf("gemini generation failed: %w", err)
+		// Transient network/service errors -> Retry with backoff
+		if strings.Contains(errStr, "connection reset by peer") ||
+			strings.Contains(errStr, "INTERNAL") ||
+			strings.Contains(errStr, "Service Unavailable") ||
+			strings.Contains(errStr, "503") ||
+			strings.Contains(errStr, "504") ||
+			strings.Contains(errStr, "deadline exceeded") {
+			slog.Warn("Transient Gemini error, retrying", "model", activeModel, "attempt", attempt, "error", err)
+			return err
+		}
+
+		// Permanent errors
+		return fmt.Errorf("permanent gemini error: %w", err)
+	})
+
+	if err != nil {
+		return "", false, false, err
 	}
 
 	if len(resp.Candidates) == 0 {
