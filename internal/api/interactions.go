@@ -96,6 +96,7 @@ type Store interface {
 	SaveSubscription(ctx context.Context, sub models.Subscription) error
 	RemoveSubscription(ctx context.Context, guildID, channelID string) error
 	GetSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
+	GetSubscription(ctx context.Context, guildID, channelID string) (*models.Subscription, error)
 }
 
 // Handler holds the dependencies for the interaction endpoint.
@@ -275,6 +276,45 @@ func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	// Check if a subscription already exists for this channel
+	existing, err := h.store.GetSubscription(ctx, req.GuildID, channelID)
+	if err != nil {
+		slog.Error("Failed to check for existing subscription", "guild", req.GuildID, "channel", channelID, "error", err)
+		// Proceed anyway, worst case we overwrite without warning
+	}
+
+	if existing != nil && existing.DealType != dealType {
+		// Found an existing subscription with a different type, ask for confirmation
+		res := interactionResponse{
+			Type: InteractionResponseTypeChannelMessageWithSource,
+			Data: &interactionResponseData{
+				Content: fmt.Sprintf("⚠️ <#%s> is already set up to receive **%s** deals. Do you want to overwrite it with **%s** deals?", channelID, existing.DealType, dealType),
+				Flags:   64,
+				Components: &[]discordComponent{
+					{
+						Type: 1, // Action Row
+						Components: []discordComponent{
+							{
+								Type:     2, // Button
+								Style:    1, // Primary (Blue)
+								Label:    "Confirm Update",
+								CustomID: fmt.Sprintf("confirm_update_%s_%s_%s", channelID, dealType, channelName),
+							},
+							{
+								Type:     2, // Button
+								Style:    2, // Secondary (Grey)
+								Label:    "Cancel",
+								CustomID: "confirm_cancel",
+							},
+						},
+					},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(res)
+		return
+	}
+
 	username := "Unknown"
 	if req.Member != nil {
 		username = req.Member.User.Username
@@ -379,6 +419,8 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 
 	var channelID string
 	dealType := "all"
+	channelName := ""
+
 	if strings.HasPrefix(req.Data.CustomID, "remove_sub_") {
 		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_sub_")
 		parts := strings.SplitN(trimmed, "_", 2)
@@ -386,6 +428,61 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		if len(parts) > 1 {
 			dealType = parts[1]
 		}
+	} else if strings.HasPrefix(req.Data.CustomID, "confirm_update_") {
+		trimmed := strings.TrimPrefix(req.Data.CustomID, "confirm_update_")
+		parts := strings.SplitN(trimmed, "_", 3)
+		if len(parts) < 2 {
+			h.respondError(w, "Invalid confirmation data.")
+			return
+		}
+		channelID = parts[0]
+		dealType = parts[1]
+		if len(parts) > 2 {
+			channelName = parts[2]
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		username := "Unknown"
+		if req.Member != nil {
+			username = req.Member.User.Username
+		}
+
+		sub := models.Subscription{
+			GuildID:     req.GuildID,
+			ChannelID:   channelID,
+			ChannelName: channelName,
+			DealType:    dealType,
+			AddedBy:     username,
+			AddedAt:     time.Now(),
+		}
+
+		if err := h.store.SaveSubscription(ctx, sub); err != nil {
+			slog.Error("Failed to update subscription", "guild", req.GuildID, "channel", channelID, "error", err)
+			h.respondPrivateMessage(w, "Failed to update subscription due to an internal error.")
+			return
+		}
+
+		res := interactionResponse{
+			Type: InteractionResponseTypeUpdateMessage,
+			Data: &interactionResponseData{
+				Content:    fmt.Sprintf("✅ RFD Bot has been successfully updated to post **%s** deals in <#%s>!", dealType, channelID),
+				Components: &[]discordComponent{}, // Clear buttons
+			},
+		}
+		json.NewEncoder(w).Encode(res)
+		return
+	} else if req.Data.CustomID == "confirm_cancel" {
+		res := interactionResponse{
+			Type: InteractionResponseTypeUpdateMessage,
+			Data: &interactionResponseData{
+				Content:    "❌ Update cancelled. No changes were made.",
+				Components: &[]discordComponent{}, // Clear buttons
+			},
+		}
+		json.NewEncoder(w).Encode(res)
+		return
 	} else {
 		h.respondError(w, "Unknown button clicked.")
 		return
