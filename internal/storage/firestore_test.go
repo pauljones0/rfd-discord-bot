@@ -107,6 +107,7 @@ func BenchmarkTrimOldDealsQuery_Optimized(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Optimized approach: skip aggregation and just use Offset and Limit
-		_ = col.OrderBy("lastUpdated", firestore.Desc).Offset(500).Limit(100)
+		_ = col.OrderBy("lastUpdated", firestore.Desc).Offset(500).Limit(1)
+		// We can't really mock the second query without execution, but it's just a Where.OrderBy.Limit
 	}
 }
