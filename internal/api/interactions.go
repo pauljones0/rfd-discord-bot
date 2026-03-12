@@ -63,9 +63,9 @@ type interactionResponse struct {
 }
 
 type interactionResponseData struct {
-	Content    string             `json:"content"`
-	Flags      int                `json:"flags,omitempty"`
-	Components []discordComponent `json:"components,omitempty"`
+	Content    string              `json:"content"`
+	Flags      int                 `json:"flags,omitempty"`
+	Components *[]discordComponent `json:"components,omitempty"`
 }
 
 type discordComponent struct {
@@ -338,7 +338,7 @@ func (h *Handler) handleRemoveCommand(w http.ResponseWriter, req interactionRequ
 		Data: &interactionResponseData{
 			Content:    "Here are the active deal channels for this server. Click the button below to remove them individually.",
 			Flags:      64,
-			Components: components,
+			Components: &components,
 		},
 	}
 	json.NewEncoder(w).Encode(res)
@@ -387,7 +387,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 			Type: InteractionResponseTypeUpdateMessage,
 			Data: &interactionResponseData{
 				Content:    fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>.", dealType, channelID),
-				Components: []discordComponent{}, // Clear the buttons
+				Components: &[]discordComponent{}, // Clear the buttons
 			},
 		}
 		json.NewEncoder(w).Encode(res)
@@ -399,7 +399,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 			Type: InteractionResponseTypeUpdateMessage,
 			Data: &interactionResponseData{
 				Content:    "🗑️ All channels removed, there are no active subscriptions for this server.",
-				Components: []discordComponent{}, // Clear the buttons
+				Components: &[]discordComponent{}, // Clear the buttons
 			},
 		}
 		json.NewEncoder(w).Encode(res)
@@ -440,7 +440,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		Type: InteractionResponseTypeUpdateMessage,
 		Data: &interactionResponseData{
 			Content:    fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>. Here are the remaining active deal channels:", dealType, channelID),
-			Components: components,
+			Components: &components,
 		},
 	}
 	json.NewEncoder(w).Encode(res)

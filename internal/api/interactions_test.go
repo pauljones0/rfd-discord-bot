@@ -79,12 +79,16 @@ func TestHandleRemoveCommand(t *testing.T) {
 		t.Errorf("expected response type %d, got %d", InteractionResponseTypeChannelMessageWithSource, res.Type)
 	}
 
-	if len(res.Data.Components) != 2 {
-		t.Fatalf("expected 2 components, got %d", len(res.Data.Components))
+	if res.Data.Components == nil || len(*res.Data.Components) != 2 {
+		compLen := 0
+		if res.Data.Components != nil {
+			compLen = len(*res.Data.Components)
+		}
+		t.Fatalf("expected 2 components, got %d", compLen)
 	}
 
 	// Verify the CustomID format has dealType
-	customIDChan1 := res.Data.Components[0].Components[0].CustomID
+	customIDChan1 := (*res.Data.Components)[0].Components[0].CustomID
 	if customIDChan1 != "remove_sub_chan1_warm_hot_all" {
 		t.Errorf("expected CustomID 'remove_sub_chan1_warm_hot_all', got %s", customIDChan1)
 	}
@@ -123,8 +127,12 @@ func TestHandleComponent_Remaining(t *testing.T) {
 		t.Errorf("expected message to start with %q, but got %q", expectedPrefix, res.Data.Content)
 	}
 
-	if len(res.Data.Components) != 1 {
-		t.Errorf("expected 1 remaining component button for chan2, got %d", len(res.Data.Components))
+	if res.Data.Components == nil || len(*res.Data.Components) != 1 {
+		compLen := 0
+		if res.Data.Components != nil {
+			compLen = len(*res.Data.Components)
+		}
+		t.Errorf("expected 1 remaining component button for chan2, got %d", compLen)
 	}
 }
 
@@ -160,7 +168,11 @@ func TestHandleComponent_AllRemoved(t *testing.T) {
 		t.Errorf("expected message to be %q, but got %q", expectedContent, res.Data.Content)
 	}
 
-	if len(res.Data.Components) != 0 {
-		t.Errorf("expected 0 components (cleared buttons), got %d", len(res.Data.Components))
+	if res.Data.Components == nil || len(*res.Data.Components) != 0 {
+		compLen := 0
+		if res.Data.Components != nil {
+			compLen = len(*res.Data.Components)
+		}
+		t.Errorf("expected 0 components (cleared buttons), got %d", compLen)
 	}
 }

@@ -45,3 +45,21 @@ ok  	github.com/pauljones0/rfd-discord-bot/internal/validator	(cached)
 ```
 
 No more annoying spam notifications for the identical `Galaxy S24` deals!
+
+---
+
+# Walkthrough: Fixing Discord Channel Removal Buttons
+
+## What was Accomplished
+
+We fixed a bug where the Discord interaction buttons for removing an active deal channel would persist in the Discord UI even after the user successfully removed the last channel for the server.
+
+### The Issue
+When no active channels remained for a server, the interaction handler was sending an empty component array `[]discordComponent{}`. However, because the `Components` field on `interactionResponseData` was specified with `omitempty` in its JSON tags, Go's JSON encoder completely stripped the empty slice from the payload. Given that the `components` array was omitted during the message update `PATCH`, the Discord API chose to leave the existing message components intact rather than clear them.
+
+### Resolution
+1. **Pointer Type Update**: We updated the type of the `Components` field in `interactionResponseData` from a slice (`[]discordComponent`) to a slice pointer (`*[]discordComponent`).
+2. **Serialization Fix**: Passing a reference to an empty slice `&[]discordComponent{}` ensures that it is no longer evaluated as "empty" by the `omitempty` tag mechanism. Consequently, the JSON encoder now correctly serializes the empty array into the API payload (`"components": []`).
+3. **Safe Nil Handling**: Added proper nil-pointer checking and dereferencing handling for the `Components` slice in the `/internal/api` tests to prevent panics in the test suite.
+
+The buttons are now successfully stripped from the embed text on the final channel removal interaction.
