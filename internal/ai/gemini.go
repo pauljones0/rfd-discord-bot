@@ -160,6 +160,9 @@ func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string
 
 	var optionalFields string
 	if deal.OriginalPrice != "" {
+		optionalFields += fmt.Sprintf("Original Price: \"%s\"\n", deal.OriginalPrice)
+	}
+	if deal.Savings != "" {
 		optionalFields += fmt.Sprintf("Savings: \"%s\"\n", deal.Savings)
 	}
 

@@ -230,6 +230,17 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 		thread.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.First().Text()))
 	}
 
+	// List price/savings fallback (if available on card)
+	if priceSel := s.Find(".savings"); priceSel.Length() > 0 {
+		cardPrice := strings.TrimSpace(priceSel.First().Contents().Not("span").Text())
+		if cardPrice != "" {
+			deal.Price = cardPrice
+		}
+		if savingsSel := priceSel.Find("span"); savingsSel.Length() > 0 {
+			deal.OriginalPrice = strings.TrimSpace(savingsSel.Text())
+		}
+	}
+
 	deal.Threads = []models.ThreadContext{thread}
 
 	if len(parseErrors) > 0 {
@@ -339,6 +350,8 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 
 	// 2. Extract JSON-LD for Description and Comments
 	var description, commentsStr string
+	var ldPrice, ldRetailer string
+
 	doc.Find("script[type='application/ld+json']").Each(func(i int, s *goquery.Selection) {
 		text := s.Text()
 		var postings []JSONLDDiscussionForumPosting
@@ -359,12 +372,23 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 						fullComments = fullComments[:maxCommentsLen] + "...(truncated)"
 					}
 					commentsStr = fullComments
+
+					// Fallback from Product schema in JSON-LD
+					if p.About != nil {
+						if p.About.Offers != nil && p.About.Offers.Price != "" {
+							ldPrice = p.About.Offers.Price
+							if p.About.Offers.PriceCurrency == "CAD" {
+								ldPrice = "$" + ldPrice
+							}
+						}
+						if p.About.Brand != nil && p.About.Brand.Name != "" {
+							ldRetailer = p.About.Brand.Name
+						}
+					}
 					return // Found the main posting
 				}
 			}
 		}
-		// If array fail, try single object? RFD usually arrays.
-		// Let's stick to array as per observation.
 	})
 
 	// 3. Extract Summary (if available)
@@ -386,6 +410,11 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		}
 	})
 
+	// JSON-LD Fallback for Price
+	if price == "" && ldPrice != "" {
+		price = ldPrice
+	}
+
 	// Extract Retailer and Category
 	if badge := doc.Find(".retailer_badge"); badge.Length() > 0 {
 		retailer = strings.TrimSpace(badge.Text())
@@ -396,6 +425,11 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 				retailer = strings.TrimSpace(s.Next().Text())
 			}
 		})
+	}
+
+	// JSON-LD Fallback for Retailer
+	if retailer == "" && ldRetailer != "" {
+		retailer = ldRetailer
 	}
 
 	// Extract Category

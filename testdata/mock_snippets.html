@@ -86,5 +86,26 @@
 			<dt>Savings:</dt><dd>$50.00</dd>
 		</dl>
 	</div>
+
+	<!-- Deal Details JSON-LD Fallback -->
+	<div id="json-ld-fallback">
+		<div class="deal_link"><a href="https://amazon.ca/dp/B002">Get Deal</a></div>
+		<script type="application/ld+json">
+		[
+			{
+				"@type": "DiscussionForumPosting",
+				"text": "Post content",
+				"about": {
+					"@type": "Product",
+					"brand": { "name": "JSON-LD Store" },
+					"offers": {
+						"price": "99.99",
+						"priceCurrency": "CAD"
+					}
+				}
+			}
+		]
+		</script>
+	</div>
 </body>
 </html>

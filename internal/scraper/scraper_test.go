@@ -426,6 +426,66 @@ func TestParseDealFromSelection_RetailerCleanup(t *testing.T) {
 	}
 }
 
+func TestScrapeDealDetailPage_JSONLDFallback(t *testing.T) {
+	html := getMockSnippetHTML(t, "json-ld-fallback")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	_, _, _, _, price, _, _, retailer, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+
+	if price != "$99.99" {
+		t.Errorf("price = %q, want %q", price, "$99.99")
+	}
+	if retailer != "JSON-LD Store" {
+		t.Errorf("retailer = %q, want %q", retailer, "JSON-LD Store")
+	}
+}
+
+func TestParseDealFromSelection_ListPrice(t *testing.T) {
+	html := `
+	<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal">
+			<div class="thread_inner_header">
+				<div class="savings"> $119.99 <span> $149.99</span></div>
+				<div class="pill thread_dealer">at Costco Business Centre</div>
+			</div>
+			<h3 class="thread_title">Title</h3>
+		</a>
+		<div class="thread_extra_info">
+			<span class="votes">+3</span>
+		</div>
+	</li>`
+	doc, _ := goquery.NewDocumentFromReader(strings.NewReader(html))
+	sel := doc.Find("li.topic").First()
+
+	defaults := DefaultSelectors()
+	c := &Client{
+		selectors: defaults,
+		config: &config.Config{
+			RFDBaseURL: "https://forums.redflagdeals.com",
+		},
+	}
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
+
+	if deal.Price != "$119.99" {
+		t.Errorf("Price = %q, want %q", deal.Price, "$119.99")
+	}
+	if deal.OriginalPrice != "$149.99" {
+		t.Errorf("OriginalPrice = %q, want %q", deal.OriginalPrice, "$149.99")
+	}
+}
+
 func TestFetchHTMLContent_DomainAllowlist(t *testing.T) {
 	cfg := &config.Config{
 		AllowedDomains: []string{"redflagdeals.com"},
