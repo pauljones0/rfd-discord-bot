@@ -18,6 +18,7 @@ type Client struct {
 
 type AnalysisResult struct {
 	CleanTitle string `json:"clean_title"`
+	IsWarm     bool   `json:"is_warm"`
 	IsLavaHot  bool   `json:"is_lava_hot"`
 }
 
@@ -37,9 +38,9 @@ func NewClient(ctx context.Context, apiKey, modelID string) (*Client, error) {
 	return &Client{client: client, modelID: modelID}, nil
 }
 
-func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, error) {
+func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error) {
 	if c == nil || c.client == nil {
-		return "", false, nil // Graceful degradation
+		return "", false, false, nil // Graceful degradation
 	}
 
 	link := deal.ActualDealURL
@@ -67,9 +68,10 @@ Price: "%s"
 
 Task:
 1. Create a clean, concise title (5-15 words). Remove fluff ("Lava Hot", "Price Error"), store names if redundant, and focus on the product and price/discount.
-2. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
+2. Determine if this is a "warm" deal. A warm deal should feel like a good deal, but something that you wouldn't FOMO or lose sleep over.
+3. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
 
-You MUST respond ONLY with a raw JSON object containing exactly two keys: "clean_title" (string) and "is_lava_hot" (boolean). Do not include any other text, markdown formatting, or backticks.
+You MUST respond ONLY with a raw JSON object containing exactly three keys: "clean_title" (string), "is_warm" (boolean), and "is_lava_hot" (boolean). Do not include any other text, markdown formatting, or backticks.
 `, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, optionalFields, deal.Retailer)
 
 	config := &genai.GenerateContentConfig{
@@ -81,20 +83,21 @@ You MUST respond ONLY with a raw JSON object containing exactly two keys: "clean
 
 	resp, err := c.client.Models.GenerateContent(ctx, c.modelID, genai.Text(prompt), config)
 	if err != nil {
-		return "", false, fmt.Errorf("gemini generation failed: %w", err)
+		return "", false, false, fmt.Errorf("gemini generation failed: %w", err)
 	}
 
 	if len(resp.Candidates) == 0 {
-		return "", false, fmt.Errorf("no response candidates from gemini")
+		return "", false, false, fmt.Errorf("no response candidates from gemini")
 	}
 
 	candidate := resp.Candidates[0]
 	if candidate.Content == nil || len(candidate.Content.Parts) == 0 {
-		return "", false, fmt.Errorf("no response content from gemini")
+		return "", false, false, fmt.Errorf("no response content from gemini")
 	}
 
 	var result string
 	var hot bool
+	var warm bool
 	var found bool
 
 	// With ResponseMIMEType: "application/json", the model outputs a JSON string in the text part.
@@ -110,6 +113,7 @@ You MUST respond ONLY with a raw JSON object containing exactly two keys: "clean
 			var extracted AnalysisResult
 			if err := json.Unmarshal([]byte(jsonStr), &extracted); err == nil {
 				result = extracted.CleanTitle
+				warm = extracted.IsWarm
 				hot = extracted.IsLavaHot
 				found = true
 				break
@@ -118,7 +122,7 @@ You MUST respond ONLY with a raw JSON object containing exactly two keys: "clean
 	}
 
 	if !found {
-		return "", false, fmt.Errorf("no valid function call or text response from gemini")
+		return "", false, false, fmt.Errorf("no valid function call or text response from gemini")
 	}
 
 	// Log the input prompt and output response as a single message
@@ -128,6 +132,7 @@ You MUST respond ONLY with a raw JSON object containing exactly two keys: "clean
 		"prompt", prompt,
 		"response_title", result,
 		"clean_title", result,
+		"is_warm", warm,
 		"is_lava_hot", hot,
 		"price", deal.Price,
 		"original_price", deal.OriginalPrice,
@@ -135,5 +140,5 @@ You MUST respond ONLY with a raw JSON object containing exactly two keys: "clean
 		"retailer", deal.Retailer,
 	)
 
-	return result, hot, nil
+	return result, warm, hot, nil
 }

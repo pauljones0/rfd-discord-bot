@@ -31,7 +31,7 @@ type DealProcessor struct {
 }
 
 type DealAnalyzer interface {
-	AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, error)
+	AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error)
 }
 
 func New(store DealStore, n DealNotifier, s DealScraper, v DealValidator, cfg *config.Config, ai DealAnalyzer) *DealProcessor {
@@ -257,12 +257,13 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 			// Note: This is done sequentially here. For high volume, we might want concurrency,
 			// but for a few deals every 10 mins, sequential is fine and safer for rate limits.
 			var cleanedTitle string
+			var isWarm bool
 			var isHot bool
 			var err error
 
 			const maxAttempts = 3
 			for attempt := 1; attempt <= maxAttempts; attempt++ {
-				cleanedTitle, isHot, err = p.aiClient.AnalyzeDeal(ctx, deal)
+				cleanedTitle, isWarm, isHot, err = p.aiClient.AnalyzeDeal(ctx, deal)
 				if err == nil {
 					break // Success
 				}
@@ -290,13 +291,15 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 				// The notifier will handle empty CleanTitle by using Title.
 			} else {
 				deal.CleanTitle = cleanedTitle
+				deal.IsWarm = isWarm
 				deal.IsLavaHot = isHot
 				deal.AIProcessed = true
-				logger.Info("AI analysis complete", "original", deal.Title, "clean", cleanedTitle, "hot", isHot)
+				logger.Info("AI analysis complete", "original", deal.Title, "clean", cleanedTitle, "warm", isWarm, "hot", isHot)
 			}
 		} else if existing != nil {
 			// Carry over existing AI data
 			deal.CleanTitle = existing.CleanTitle
+			deal.IsWarm = existing.IsWarm
 			deal.IsLavaHot = existing.IsLavaHot
 			deal.AIProcessed = existing.AIProcessed
 		}
@@ -394,6 +397,7 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		// AI fields
 		if scrapedBase.AIProcessed {
 			existing.CleanTitle = scrapedBase.CleanTitle
+			existing.IsWarm = scrapedBase.IsWarm
 			existing.IsLavaHot = scrapedBase.IsLavaHot
 			existing.AIProcessed = scrapedBase.AIProcessed
 		}

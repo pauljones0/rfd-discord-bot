@@ -169,17 +169,12 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	descriptionBuilder.WriteString("\n\n")
 
 	// 5. Heat Color
-	heatScore := CalculateHeatScore(likes, comments, views)
 	embedColor := colorColdDeal
 
 	if deal.HasBeenHot || deal.IsLavaHot {
 		embedColor = colorHotDeal
-	} else if likes >= 2 {
-		if deal.HasBeenWarm {
-			embedColor = colorWarmDeal
-		} else {
-			embedColor = getHeatColor(heatScore)
-		}
+	} else if deal.HasBeenWarm || deal.IsWarm {
+		embedColor = colorWarmDeal
 	}
 
 	// 6. Thumbnail
@@ -316,18 +311,10 @@ func CalculateHeatScore(likes, comments, views int) float64 {
 
 // IsWarm determines if a deal is considered warm.
 func (c *Client) IsWarm(deal models.DealInfo) bool {
-	likes, comments, views := deal.Stats()
-	return likes >= 2 && CalculateHeatScore(likes, comments, views) > heatScoreThresholdWarm
+	return deal.IsWarm
 }
 
 // IsHot determines if a deal is considered hot.
 func (c *Client) IsHot(deal models.DealInfo) bool {
 	return deal.IsLavaHot
-}
-
-func getHeatColor(heatScore float64) int {
-	if heatScore > heatScoreThresholdWarm {
-		return colorWarmDeal
-	}
-	return colorColdDeal
 }

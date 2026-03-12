@@ -66,41 +66,34 @@ func TestFormatDealToEmbed(t *testing.T) {
 	}
 }
 
-func TestFormatDealToEmbed_NegativeLikesStaysCold(t *testing.T) {
+func TestFormatDealToEmbed_Colors(t *testing.T) {
 	tests := []struct {
 		name      string
-		likes     int
-		comments  int
-		views     int
+		isWarm    bool
 		isLavaHot bool
 		wantColor int
 	}{
 		{
-			name:      "zero likes with high engagement stays cold",
-			likes:     0,
-			comments:  100,
-			views:     5000,
+			name:      "cold deal",
+			isWarm:    false,
+			isLavaHot: false,
 			wantColor: colorColdDeal,
 		},
 		{
-			name:      "negative likes with high engagement stays cold",
-			likes:     -20,
-			comments:  200,
-			views:     10000,
-			wantColor: colorColdDeal,
+			name:      "warm deal gets warm color",
+			isWarm:    true,
+			isLavaHot: false,
+			wantColor: colorWarmDeal,
 		},
 		{
-			name:      "positive likes with high engagement gets warm color",
-			likes:     50,
-			comments:  100,
-			views:     500,
-			wantColor: colorWarmDeal, // (50 + 200) / 500 = 0.5, well above 0.20 threshold
+			name:      "hot deal gets hot color",
+			isWarm:    false,
+			isLavaHot: true,
+			wantColor: colorHotDeal,
 		},
 		{
-			name:      "negative likes but AI says hot gets hot color",
-			likes:     -20,
-			comments:  200,
-			views:     10000,
+			name:      "hot deal overrides warm",
+			isWarm:    true,
 			isLavaHot: true,
 			wantColor: colorHotDeal,
 		},
@@ -112,15 +105,8 @@ func TestFormatDealToEmbed_NegativeLikesStaysCold(t *testing.T) {
 				Title:       "Test Deal",
 				PostURL:     "https://forums.redflagdeals.com/test",
 				AIProcessed: true,
+				IsWarm:      tt.isWarm,
 				IsLavaHot:   tt.isLavaHot,
-				Threads: []models.ThreadContext{
-					{
-						PostURL:      "https://forums.redflagdeals.com/test",
-						LikeCount:    tt.likes,
-						CommentCount: tt.comments,
-						ViewCount:    tt.views,
-					},
-				},
 			}
 
 			embed := formatDealToEmbed(deal)
@@ -135,19 +121,22 @@ func TestFormatDealToEmbed_NegativeLikesStaysCold(t *testing.T) {
 func TestClient_IsHot(t *testing.T) {
 	c := New("token")
 
-	dealWithLikes := models.DealInfo{
-		Threads: []models.ThreadContext{{LikeCount: 100, CommentCount: 100, ViewCount: 100}},
-	}
-	if c.IsHot(dealWithLikes) {
-		t.Error("IsHot should no longer be driven by like counts")
-	}
-
 	dealLavaHot := models.DealInfo{
 		IsLavaHot: true,
-		Threads:   []models.ThreadContext{{LikeCount: -1, CommentCount: 0, ViewCount: 100}},
 	}
 	if !c.IsHot(dealLavaHot) {
 		t.Error("IsHot should be true when AI thinks it's Lava Hot")
+	}
+}
+
+func TestClient_IsWarm(t *testing.T) {
+	c := New("token")
+
+	dealWarm := models.DealInfo{
+		IsWarm: true,
+	}
+	if !c.IsWarm(dealWarm) {
+		t.Error("IsWarm should be true when AI thinks it's warm")
 	}
 }
 

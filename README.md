@@ -26,7 +26,7 @@ Adding this bot to your server will automatically post the latest and greatest d
      *   `All warm + hot tech deals`
      *   `All hot deals`
      *   `All hot tech deals`
-   * *Note: "Warm" deals require at least 2 likes and high organic engagement. "Hot" deals are determined entirely by the Gemini AI's "Lava Hot" analysis.*
+   * *Note: "Warm" and "Hot" deals are determined entirely by the Gemini AI's analysis of the deal content, completely independent of organic user engagement.*
 
 That's it! The bot will now monitor the RedFlagDeals "Hot Deals" forum 24/7 and post beautifully formatted alerts directly to that channel based on your chosen type.
 
@@ -44,7 +44,7 @@ To stop the bot from posting or securely view active subscriptions, an administr
 *   **Deep Scraping:** Extracts detailed deal content, including descriptions and comments from deal pages for AI context.
 *   **Discord Bot Notifications:** Sends detailed notifications to multiple subscribed Discord servers, complete with native Discord timestamps, actual deal URLs, concise engagement metrics, and categorized emojis for improved visual clarity (e.g. 💻, 🛒, 🍔).
 *   **Smart Deduplication:** Automatically detects when identical deals are posted in multiple forum threads by fuzzy matching titles and target URLs. It gracefully merges their engagement metrics, sorts the threads by popularity, and appends all tracking links into a single unified Discord alert.
-*   **Live Updates:** Discord embed colors escalate to warm based on deal metrics (likes/views) or to hot based on AI analysis, and will retain the highest "heat" rank achieved even if the ratios drop later. Embeds are dynamically patched to keep likes, comments, and views accurate for up to 1 hour after publication to respect Discord's rate limits on editing old messages.
+*   **Live Updates:** Discord embed colors escalate to warm or hot strictly based on AI analysis. Embeds are dynamically patched to keep likes, comments, and views accurate for up to 1 hour after publication to respect Discord's rate limits on editing old messages.
 *   **Zero-Config For Users:** Just invite, set the channel via a Slash Command, and enjoy the deals.
 
 ---
