@@ -40,6 +40,15 @@ type interactionData struct {
 	Name     string              `json:"name,omitempty"`
 	Options  []interactionOption `json:"options,omitempty"`
 	CustomID string              `json:"custom_id,omitempty"` // For components
+	Resolved *interactionResolved `json:"resolved,omitempty"`
+}
+
+type interactionResolved struct {
+	Channels map[string]struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Type int    `json:"type"`
+	} `json:"channels"`
 }
 
 type interactionOption struct {
@@ -228,11 +237,18 @@ func (h *Handler) handleCommand(w http.ResponseWriter, req interactionRequest) {
 
 func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
 	var channelID string
+	var channelName string
 	var dealType string
 	for _, opt := range options {
 		if opt.Name == "channel" {
 			if val, ok := opt.Value.(string); ok {
 				channelID = val
+				// Try to get channel name from resolved data
+				if req.Data != nil && req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
+					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
+						channelName = ch.Name
+					}
+				}
 			}
 		} else if opt.Name == "type" {
 			if val, ok := opt.Value.(string); ok {
@@ -265,11 +281,12 @@ func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest
 	}
 
 	sub := models.Subscription{
-		GuildID:   req.GuildID,
-		ChannelID: channelID,
-		DealType:  dealType,
-		AddedBy:   username,
-		AddedAt:   time.Now(),
+		GuildID:     req.GuildID,
+		ChannelID:   channelID,
+		ChannelName: channelName,
+		DealType:    dealType,
+		AddedBy:     username,
+		AddedAt:     time.Now(),
 	}
 
 	if err := h.store.SaveSubscription(ctx, sub); err != nil {
@@ -320,13 +337,18 @@ func (h *Handler) handleRemoveCommand(w http.ResponseWriter, req interactionRequ
 			typeLabel = "all"
 		}
 
+		label := fmt.Sprintf("Delete Channel (%s)", typeLabel)
+		if sub.ChannelName != "" {
+			label = fmt.Sprintf("Delete %s from #%s", typeLabel, sub.ChannelName)
+		}
+
 		components = append(components, discordComponent{
 			Type: 1, // Action Row
 			Components: []discordComponent{
 				{
 					Type:     2, // Button
 					Style:    4, // Danger (Red)
-					Label:    fmt.Sprintf("Delete Channel (%s)", typeLabel),
+					Label:    label,
 					CustomID: fmt.Sprintf("remove_sub_%s_%s", sub.ChannelID, typeLabel),
 				},
 			},
@@ -423,13 +445,18 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 			typeLabel = "all"
 		}
 
+		label := fmt.Sprintf("Delete Channel (%s)", typeLabel)
+		if sub.ChannelName != "" {
+			label = fmt.Sprintf("Delete %s from #%s", typeLabel, sub.ChannelName)
+		}
+
 		components = append(components, discordComponent{
 			Type: 1, // Action Row
 			Components: []discordComponent{
 				{
 					Type:     2, // Button
 					Style:    4, // Danger (Red)
-					Label:    fmt.Sprintf("Delete Channel (%s)", typeLabel),
+					Label:    label,
 					CustomID: fmt.Sprintf("remove_sub_%s_%s", sub.ChannelID, typeLabel),
 				},
 			},
