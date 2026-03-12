@@ -26,7 +26,7 @@ Adding this bot to your server will automatically post the latest and greatest d
      *   `All warm + hot tech deals`
      *   `All hot deals`
      *   `All hot tech deals`
-   * *Note: "Warm" and "Hot" deals are determined entirely by the Gemini AI's analysis of the deal content, completely independent of organic user engagement.*
+   * *Note: "Warm" and "Hot" deals are determined entirely by the Gemini AI's analysis of the deal content. The criteria for "Warm" are highly selective, requiring significant discounts (e.g., 25%+) or strong positive user resonance to minimize excessive pings.*
 
 That's it! The bot will now monitor the RedFlagDeals "Hot Deals" forum 24/7 and post beautifully formatted alerts directly to that channel based on your chosen type.
 
