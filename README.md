@@ -36,7 +36,7 @@ To stop the bot from posting or securely view active subscriptions, an administr
 
 ## 🌟 Features
 
-*   **Identifies RFD Hot Deals:** Scrapes the latest deals from the Hot Deals forum natively with fallback support.
+*   **Identifies RFD Hot Deals:** Scrapes the latest deals from the Hot Deals forum natively (extensively supporting the modern card-based layout structure) with fallback support.
 *   **Gemini AI Integration:** Uses Google Gemini AI (`gemini-2.5-flash-lite`) with **Google Search Grounding** to:
     *   Clean up and summarize messy deal titles based on extracted deal details.
     *   Determine if a deal is "Lava Hot" (adds 🔥 emojis and escalates the Discord alert color to hot pink).

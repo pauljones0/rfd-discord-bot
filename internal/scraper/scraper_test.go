@@ -14,31 +14,43 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 )
 
-func TestParseDealFromSelection_FullDeal(t *testing.T) {
-	html := `<li class="topic">
-		<a class="thread_title_link" href="/great-deal-12345">Great Deal Title</a>
-		<div class="thread_image"><img src="https://example.com/image.jpg" /></div>
-		<div class="thread_inner_footer">
-			<span class="author_info">
-				<time datetime="2025-01-15T10:30:00Z">Jan 15, 2025</time>
-			</span>
-			<span class="votes">+42</span>
-			<span class="posts">15</span>
-			<span class="views">1,234</span>
-		</div>
-	</li>`
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+func getMockSnippet(t *testing.T, id string) *goquery.Selection {
+	t.Helper()
+	f, err := os.Open("../../testdata/mock_snippets.html")
 	if err != nil {
-		t.Fatalf("Failed to parse test HTML: %v", err)
+		t.Fatalf("Failed to open mock_snippets.html: %v", err)
+	}
+	defer f.Close()
+
+	doc, err := goquery.NewDocumentFromReader(f)
+	if err != nil {
+		t.Fatalf("Failed to parse mock_snippets.html: %v", err)
 	}
 
+	sel := doc.Find("#" + id)
+	if sel.Length() == 0 {
+		t.Fatalf("Could not find #%s in mock_snippets.html", id)
+	}
+	return sel
+}
+
+func getMockSnippetHTML(t *testing.T, id string) string {
+	t.Helper()
+	html, err := getMockSnippet(t, id).Html()
+	if err != nil {
+		t.Fatalf("Failed to get HTML for #%s: %v", id, err)
+	}
+	return html
+}
+
+func TestParseDealFromSelection_FullDeal(t *testing.T) {
 	defaults := DefaultSelectors()
 	c := &Client{selectors: defaults, config: &config.Config{
 		AllowedDomains: []string{"forums.redflagdeals.com"},
 		RFDBaseURL:     "https://forums.redflagdeals.com",
 	}}
-	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
+	sel := getMockSnippet(t, "full-deal").Find("li.topic").First()
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
 
 	if deal.Title != "Great Deal Title" {
 		t.Errorf("Title = %q, want %q", deal.Title, "Great Deal Title")
@@ -64,21 +76,13 @@ func TestParseDealFromSelection_FullDeal(t *testing.T) {
 }
 
 func TestParseDealFromSelection_MinimalDeal(t *testing.T) {
-	html := `<li class="topic">
-		<a class="thread_title_link" href="/some-deal-999">Minimal Deal</a>
-	</li>`
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	defaults := DefaultSelectors()
 	c := &Client{selectors: defaults, config: &config.Config{
 		AllowedDomains: []string{"forums.redflagdeals.com"},
 		RFDBaseURL:     "https://forums.redflagdeals.com",
 	}}
-	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
+	sel := getMockSnippet(t, "minimal-deal").Find("li.topic").First()
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
 
 	if deal.Title != "Minimal Deal" {
 		t.Errorf("Title = %q, want %q", deal.Title, "Minimal Deal")
@@ -95,24 +99,13 @@ func TestParseDealFromSelection_MinimalDeal(t *testing.T) {
 }
 
 func TestParseDealFromSelection_NegativeLikes(t *testing.T) {
-	html := `<li class="topic">
-		<a class="thread_title_link" href="/bad-deal-1">Bad Deal</a>
-		<div class="thread_inner_footer">
-			<span class="votes">-5</span>
-		</div>
-	</li>`
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	defaults := DefaultSelectors()
 	c := &Client{selectors: defaults, config: &config.Config{
 		AllowedDomains: []string{"forums.redflagdeals.com"},
 		RFDBaseURL:     "https://forums.redflagdeals.com",
 	}}
-	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
+	sel := getMockSnippet(t, "negative-likes").Find("li.topic").First()
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
 
 	if deal.Threads[0].LikeCount != -5 {
 		t.Errorf("LikeCount = %d, want -5", deal.Threads[0].LikeCount)
@@ -120,22 +113,13 @@ func TestParseDealFromSelection_NegativeLikes(t *testing.T) {
 }
 
 func TestParseDealFromSelection_DataURIImageFiltered(t *testing.T) {
-	html := `<li class="topic">
-		<a class="thread_title_link" href="/deal-with-data-uri">Deal With Data URI</a>
-		<div class="thread_image"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" /></div>
-	</li>`
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	defaults := DefaultSelectors()
 	c := &Client{selectors: defaults, config: &config.Config{
 		AllowedDomains: []string{"forums.redflagdeals.com"},
 		RFDBaseURL:     "https://forums.redflagdeals.com",
 	}}
-	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
+	sel := getMockSnippet(t, "data-uri-image").Find("li.topic").First()
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
 
 	if deal.ThreadImageURL != "" {
 		t.Errorf("ThreadImageURL should be empty for data: URI, got %q", deal.ThreadImageURL)
@@ -143,22 +127,13 @@ func TestParseDealFromSelection_DataURIImageFiltered(t *testing.T) {
 }
 
 func TestParseDealFromSelection_RelativeImageFiltered(t *testing.T) {
-	html := `<li class="topic">
-		<a class="thread_title_link" href="/deal-relative-img">Deal With Relative Image</a>
-		<div class="thread_image"><img src="/images/placeholder.jpg" /></div>
-	</li>`
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	defaults := DefaultSelectors()
 	c := &Client{selectors: defaults, config: &config.Config{
 		AllowedDomains: []string{"forums.redflagdeals.com"},
 		RFDBaseURL:     "https://forums.redflagdeals.com",
 	}}
-	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
+	sel := getMockSnippet(t, "relative-image").Find("li.topic").First()
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
 
 	if deal.ThreadImageURL != "" {
 		t.Errorf("ThreadImageURL should be empty for relative URL, got %q", deal.ThreadImageURL)
@@ -260,8 +235,8 @@ func TestLoadSelectorsFromBytes_InvalidJSON(t *testing.T) {
 
 func TestDefaultSelectors(t *testing.T) {
 	sel := DefaultSelectors()
-	if sel.HotDealsList.Container.Item != "li.topic" {
-		t.Errorf("Default Container.Item = %q, want %q", sel.HotDealsList.Container.Item, "li.topic")
+	if sel.HotDealsList.Container.Item != "li.topic-card.topic" {
+		t.Errorf("Default Container.Item = %q, want %q", sel.HotDealsList.Container.Item, "li.topic-card.topic")
 	}
 	if sel.DealDetails.PrimaryLink != ".deal_link a" {
 		t.Errorf("Default PrimaryLink = %q, want %q", sel.DealDetails.PrimaryLink, ".deal_link a")
@@ -269,10 +244,7 @@ func TestDefaultSelectors(t *testing.T) {
 }
 
 func TestScrapeDealDetailPage_PrimaryLink(t *testing.T) {
-	html := `<!DOCTYPE html>
-<html><body>
-	<div class="deal_link"><a href="https://amazon.ca/dp/B001">Get Deal</a></div>
-</body></html>`
+	html := getMockSnippetHTML(t, "primary-link")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, html)
@@ -294,10 +266,7 @@ func TestScrapeDealDetailPage_PrimaryLink(t *testing.T) {
 }
 
 func TestScrapeDealDetailPage_FallbackLink(t *testing.T) {
-	html := `<!DOCTYPE html>
-<html><body>
-	<a class="postlink" href="https://bestbuy.ca/product">Buy Now</a>
-</body></html>`
+	html := getMockSnippetHTML(t, "fallback-link")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, html)
@@ -319,10 +288,7 @@ func TestScrapeDealDetailPage_FallbackLink(t *testing.T) {
 }
 
 func TestScrapeDealDetailPage_NoLink(t *testing.T) {
-	html := `<!DOCTYPE html>
-<html><body>
-	<p>No deal link on this page</p>
-</body></html>`
+	html := getMockSnippetHTML(t, "no-link")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, html)
@@ -341,15 +307,7 @@ func TestScrapeDealDetailPage_NoLink(t *testing.T) {
 }
 
 func TestScrapeDealDetailPage_PriceExtraction(t *testing.T) {
-	html := `<!DOCTYPE html>
-<html><body>
-	<div class="deal_link"><a href="https://amazon.ca/dp/B001">Get Deal</a></div>
-	<dl>
-		<dt>Price:</dt><dd>$79.99</dd>
-		<dt>Original Price:</dt><dd>$129.99</dd>
-		<dt>Savings:</dt><dd>$50.00</dd>
-	</dl>
-</body></html>`
+	html := getMockSnippetHTML(t, "price-extraction")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, html)

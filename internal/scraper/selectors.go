@@ -24,6 +24,7 @@ type ListContainer struct {
 
 type ListElements struct {
 	TitleLink            string `json:"title_link"`
+	TitleText            string `json:"title_text"`
 	Category             string `json:"category"`
 	PostedTime           string `json:"posted_time"`
 	ThreadImage          string `json:"thread_image"`
@@ -87,18 +88,19 @@ func DefaultSelectors() SelectorConfig {
 	return SelectorConfig{
 		HotDealsList: ListSelectors{
 			Container: ListContainer{
-				Item:           "li.topic",
-				IgnoreModifier: ".sticky",
+				Item:           "li.topic-card.topic",
+				IgnoreModifier: ".sticky, :has(.sponsored-offer)",
 			},
 			Elements: ListElements{
-				TitleLink:            ".thread_title_link",
-				Category:             ".thread_category",
-				PostedTime:           ".thread_inner_footer .author_info time",
+				TitleLink:            "a.topic-card-info.thread_info",
+				TitleText:            ".thread_title",
+				Category:             ".thread_dealer",
+				PostedTime:           ".thread_outer_header .author_info time.topic_time",
 				ThreadImage:          ".thread_image img",
-				LikeCount:            ".thread_inner_footer .votes",
-				CommentCount:         ".thread_inner_footer .posts",
+				LikeCount:            ".thread_extra_info .votes",
+				CommentCount:         ".thread_extra_info .posts",
 				CommentCountFallback: ".posts_count",
-				ViewCount:            ".thread_inner_footer .views",
+				ViewCount:            ".thread_extra_info .views",
 			},
 		},
 		DealDetails: DetailSelectors{

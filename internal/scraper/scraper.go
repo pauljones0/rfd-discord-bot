@@ -161,6 +161,15 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 
 	// Title & Post URL
 	postURL, title := c.resolveLink(s, elems.TitleLink)
+	if elems.TitleText != "" {
+		titleSel := s.Find(elems.TitleText)
+		if titleSel.Length() > 0 {
+			title = strings.TrimSpace(titleSel.Text())
+		} else {
+			title = ""
+		}
+	}
+
 	if title != "" {
 		deal.Title = title
 		if postURL != "" {

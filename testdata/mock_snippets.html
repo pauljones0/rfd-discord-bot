@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<body>
+	<!-- Full Deal -->
+	<div id="full-deal">
+		<li class="topic-card topic">
+			<a class="topic-card-info thread_info" href="/great-deal-12345">
+				<h3 class="thread_title">Great Deal Title</h3>
+			</a>
+			<div class="thread_image"><img src="https://example.com/image.jpg" /></div>
+			<div class="thread_outer_header">
+				<span class="author_info">
+					<time class="topic_time" datetime="2025-01-15T10:30:00Z">Jan 15, 2025</time>
+				</span>
+			</div>
+			<div class="thread_extra_info">
+				<span class="votes">+42</span>
+				<span class="posts">15</span>
+				<span class="views">1,234</span>
+			</div>
+		</li>
+	</div>
+
+	<!-- Minimal Deal -->
+	<div id="minimal-deal">
+		<li class="topic-card topic">
+			<a class="topic-card-info thread_info" href="/some-deal-999">
+				<h3 class="thread_title">Minimal Deal</h3>
+			</a>
+		</li>
+	</div>
+
+	<!-- Negative Likes -->
+	<div id="negative-likes">
+		<li class="topic-card topic">
+			<a class="topic-card-info thread_info" href="/bad-deal-1">
+				<h3 class="thread_title">Bad Deal</h3>
+			</a>
+			<div class="thread_extra_info">
+				<span class="votes">-5</span>
+			</div>
+		</li>
+	</div>
+
+	<!-- Data URI Image -->
+	<div id="data-uri-image">
+		<li class="topic-card topic">
+			<a class="topic-card-info thread_info" href="/deal-with-data-uri">
+				<h3 class="thread_title">Deal With Data URI</h3>
+			</a>
+			<div class="thread_image"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" /></div>
+		</li>
+	</div>
+
+	<!-- Relative Image -->
+	<div id="relative-image">
+		<li class="topic-card topic">
+			<a class="topic-card-info thread_info" href="/deal-relative-img">
+				<h3 class="thread_title">Deal With Relative Image</h3>
+			</a>
+			<div class="thread_image"><img src="/images/placeholder.jpg" /></div>
+		</li>
+	</div>
+
+	<!-- Deal Details Primary Link -->
+	<div id="primary-link">
+		<div class="deal_link"><a href="https://amazon.ca/dp/B001">Get Deal</a></div>
+	</div>
+
+	<!-- Deal Details Fallback Link -->
+	<div id="fallback-link">
+		<a class="postlink" href="https://bestbuy.ca/product">Buy Now</a>
+	</div>
+
+	<!-- Deal Details No Link -->
+	<div id="no-link">
+		<p>No deal link on this page</p>
+	</div>
+
+	<!-- Deal Details Price Extraction -->
+	<div id="price-extraction">
+		<div class="deal_link"><a href="https://amazon.ca/dp/B001">Get Deal</a></div>
+		<dl>
+			<dt>Price:</dt><dd>$79.99</dd>
+			<dt>Original Price:</dt><dd>$129.99</dd>
+			<dt>Savings:</dt><dd>$50.00</dd>
+		</dl>
+	</div>
+</body>
+</html>

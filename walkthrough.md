@@ -1,5 +1,22 @@
-# Walkthrough: Smart Deal Deduplication
+# Walkthrough: RedFlagDeals Layout Modernization
 
+## What was Accomplished
+
+The RedFlagDeals Hot Deals layout recently underwent a major structural change, transitioning from a list-based format (`li.topic`) to a highly structured card format (`li.topic-card.topic`). We updated the scraper's DOM parsing logic and Go models to adapt to this new layout seamlessly.
+
+### Layout Adaptations
+
+1. **Card Layout Shift**: The parser container was updated to `li.topic-card.topic` to match the new card-centric view.
+2. **Title Extraction Overhaul**: The title is no longer simply the root text of the link. The primary link (`a.topic-card-info.thread_info`) now wraps the entire structural card. We implemented a new `TitleText` parameter targeting `.thread_title` (an `<h3>` tag) to cleanly extract only the title string.
+3. **Sponsored Card Demarcation**: Sponsored posts are no longer visually distinguished only by a sticky header, they are now natively mixed into the UI with a `.sponsored-offer` class. The parser's `IgnoreModifier` was updated to specifically utilize the `:has(.sponsored-offer)` CSS-pseudo selector alongside `.sticky` to seamlessly bypass native advertisements.
+4. **Relocated Metrics**: Engagement metrics shifted into a new `.thread_extra_info` generic block. The selectors were mapped to `.thread_extra_info .votes` and `.thread_extra_info .posts` for high-fidelity extraction.
+
+### Test Validation
+We successfully captured the new DOM structure and rewrote the Go test cases in `internal/scraper/scraper_test.go` to simulate the updated `topic-card` mock environments. The verification tests validate end-to-end extraction against both mock data and live RFD endpoints.
+
+---
+
+# Walkthrough: Smart Deal Deduplication
 ## What was Accomplished
 
 We successfully implemented a robust **Smart Deal Deduplication** feature for the RFD Discord bot. The objective was to eliminate duplicate notifications when users submit the identical deal multiple times (a common occurrence on RedFlagDeals), without sacrificing any important metric aggregations or link availability.
