@@ -127,6 +127,10 @@ func (c *Client) attemptScrapeList(ctx context.Context, targetURL string) ([]mod
 			return
 		}
 
+		if ls.Elements.TitleText != "" && s.Find(ls.Elements.TitleText).Length() == 0 {
+			return
+		}
+
 		deal := c.parseDealFromSelection(s, ls.Elements)
 		deals = append(deals, deal)
 	})

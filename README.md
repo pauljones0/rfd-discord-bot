@@ -496,7 +496,7 @@ Cloud Logging automatically manages log retention according to configured polici
     2.  **Cloud Scheduler to Cloud Run (for private services):** If your service is private, ensure the Scheduler's service account has "Cloud Run Invoker" permission. (Not applicable if `--allow-unauthenticated` was used).
 
 *   **Incorrect Environment Variables:**
-    *   Verify `GOOGLE_CLOUD_PROJECT` and `DISCORD_WEBHOOK_URL` are correctly set in the Cloud Run service's environment variables (check the "Revisions" tab of your service in Cloud Run, select the active revision, and look at "Variables").
+    *   Verify `GOOGLE_CLOUD_PROJECT` is correctly set in the Cloud Run service's environment variables (check the "Revisions" tab of your service in Cloud Run, select the active revision, and look at "Variables").
 
 ### How to Diagnose
 

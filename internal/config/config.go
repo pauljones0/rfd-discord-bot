@@ -10,7 +10,6 @@ import (
 
 type Config struct {
 	ProjectID              string
-	DiscordWebhookURL      string
 	Port                   string
 	AmazonAffiliateTag     string
 	BestBuyAffiliatePrefix string
@@ -32,11 +31,6 @@ func Load() (*Config, error) {
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if projectID == "" {
 		return nil, fmt.Errorf("GOOGLE_CLOUD_PROJECT environment variable is required but not set")
-	}
-
-	discordWebhookURL := os.Getenv("DISCORD_WEBHOOK_URL")
-	if discordWebhookURL == "" {
-		slog.Warn("DISCORD_WEBHOOK_URL not set, Discord notifications will be skipped")
 	}
 
 	port := os.Getenv("PORT")
@@ -87,7 +81,6 @@ func Load() (*Config, error) {
 
 	return &Config{
 		ProjectID:              projectID,
-		DiscordWebhookURL:      discordWebhookURL,
 		Port:                   port,
 		AmazonAffiliateTag:     amazonAffiliateTag,
 		BestBuyAffiliatePrefix: bestBuyAffiliatePrefix,
