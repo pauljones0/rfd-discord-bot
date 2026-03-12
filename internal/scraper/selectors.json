@@ -7,7 +7,7 @@
         "elements": {
             "title_link": "a.topic-card-info.thread_info",
             "title_text": ".thread_title",
-            "category": ".thread_dealer",
+            "retailer": ".thread_dealer",
             "posted_time": ".thread_outer_header .author_info time.topic_time",
             "author_link": ".thread_outer_header .author_info .author",
             "author_name": ".author_name",
@@ -20,6 +20,7 @@
     },
     "deal_details": {
         "primary_link": ".deal_link a",
-        "fallback_link": ".postlink"
+        "fallback_link": ".postlink",
+        "category": ".thread_category"
     }
 }

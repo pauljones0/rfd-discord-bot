@@ -256,7 +256,7 @@ func TestScrapeDealDetailPage_PrimaryLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	url, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	url, _, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
@@ -278,7 +278,7 @@ func TestScrapeDealDetailPage_FallbackLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	url, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	url, _, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
@@ -300,7 +300,7 @@ func TestScrapeDealDetailPage_NoLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	_, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	_, _, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != ErrDealLinkNotFound {
 		t.Errorf("Expected ErrDealLinkNotFound, got %v", err)
 	}
@@ -319,7 +319,7 @@ func TestScrapeDealDetailPage_PriceExtraction(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	_, _, _, _, price, originalPrice, savings, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	_, _, _, _, price, originalPrice, savings, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
@@ -352,7 +352,7 @@ func TestScrapeDealDetailPage_OriginalPriceAndSavings_Soundcore(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	dealLink, _, _, _, price, originalPrice, savings, retailer, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	dealLink, _, _, _, price, originalPrice, savings, retailer, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
@@ -370,6 +370,59 @@ func TestScrapeDealDetailPage_OriginalPriceAndSavings_Soundcore(t *testing.T) {
 	}
 	if !strings.Contains(dealLink, "amazon.ca") {
 		t.Errorf("dealLink = %q, want something containing amazon.ca", dealLink)
+	}
+}
+
+func TestScrapeDealDetailPage_RetailerAndCategory(t *testing.T) {
+	htmlBytes, err := os.ReadFile("./../../testdata/page.html")
+	if err != nil {
+		t.Fatalf("Failed to read testdata/page.html: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(htmlBytes)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	_, _, _, _, _, _, _, retailer, category, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if retailer != "KLM" {
+		t.Errorf("retailer = %q, want %q", retailer, "KLM")
+	}
+	if category != "Travel" {
+		t.Errorf("category = %q, want %q", category, "Travel")
+	}
+}
+
+func TestParseDealFromSelection_RetailerCleanup(t *testing.T) {
+	html := `
+	<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal">
+			<div class="pill thread_dealer">at Costco Business Centre</div>
+			<h3 class="thread_title">Title</h3>
+		</a>
+	</li>`
+	doc, _ := goquery.NewDocumentFromReader(strings.NewReader(html))
+	sel := doc.Find("li.topic").First()
+
+	defaults := DefaultSelectors()
+	c := &Client{
+		selectors: defaults,
+		config: &config.Config{
+			RFDBaseURL: "https://forums.redflagdeals.com",
+		},
+	}
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
+
+	if deal.Retailer != "Costco Business Centre" {
+		t.Errorf("Retailer = %q, want %q", deal.Retailer, "Costco Business Centre")
 	}
 }
 

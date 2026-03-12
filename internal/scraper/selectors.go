@@ -25,7 +25,7 @@ type ListContainer struct {
 type ListElements struct {
 	TitleLink            string `json:"title_link"`
 	TitleText            string `json:"title_text"`
-	Category             string `json:"category"`
+	Retailer             string `json:"retailer"`
 	PostedTime           string `json:"posted_time"`
 	ThreadImage          string `json:"thread_image"`
 	LikeCount            string `json:"like_count"`
@@ -37,6 +37,7 @@ type ListElements struct {
 type DetailSelectors struct {
 	PrimaryLink  string `json:"primary_link"`
 	FallbackLink string `json:"fallback_link"`
+	Category     string `json:"category"`
 }
 
 // LoadSelectors loads the selector configuration from the specified JSON file.
@@ -94,7 +95,7 @@ func DefaultSelectors() SelectorConfig {
 			Elements: ListElements{
 				TitleLink:            "a.topic-card-info.thread_info",
 				TitleText:            ".thread_title",
-				Category:             ".thread_dealer",
+				Retailer:             ".thread_dealer",
 				PostedTime:           ".thread_outer_header .author_info time.topic_time",
 				ThreadImage:          ".thread_image img",
 				LikeCount:            ".thread_extra_info .votes",
@@ -106,6 +107,7 @@ func DefaultSelectors() SelectorConfig {
 		DealDetails: DetailSelectors{
 			PrimaryLink:  ".deal_link a",
 			FallbackLink: ".postlink",
+			Category:     ".thread_category",
 		},
 	}
 }

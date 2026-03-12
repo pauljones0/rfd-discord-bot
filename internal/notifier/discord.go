@@ -183,9 +183,17 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		thumbnail.URL = deal.ThreadImageURL
 	}
 
-	footerText := "❌ Unknown"
+	footerParts := []string{}
 	if deal.Category != "" {
-		footerText = fmt.Sprintf("%s %s", util.GetCategoryEmoji(deal.Category), deal.Category)
+		footerParts = append(footerParts, fmt.Sprintf("%s %s", util.GetCategoryEmoji(deal.Category), deal.Category))
+	}
+	if deal.Retailer != "" {
+		footerParts = append(footerParts, deal.Retailer)
+	}
+
+	footerText := "❌ Unknown"
+	if len(footerParts) > 0 {
+		footerText = strings.Join(footerParts, " • ")
 	}
 
 	// Add Engagement Metrics directly to description
