@@ -33,7 +33,7 @@ type DealProcessor struct {
 }
 
 type DealAnalyzer interface {
-	AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, error)
+	AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error)
 }
 
 func New(store DealStore, n DealNotifier, s DealScraper, v DealValidator, cfg *config.Config, ai DealAnalyzer) *DealProcessor {
@@ -255,55 +255,23 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 			}
 
 			if shouldAnalyze {
-				// Double check if we already have a clean title from somewhere else (unlikely with current flow)
-				// But if we are re-analyzing, we ignore the existing clean title.
-				if !isNew && deal.CleanTitle != "" && deal.AIProcessed {
-					// This case shouldn't really happen with current flow unless we set it manually before here
-					return nil
-				}
-
 				// Call AI
-				var cleanedTitle string
-				var isHot bool
-				var err error
-
-				const maxAttempts = 3
-				for attempt := 1; attempt <= maxAttempts; attempt++ {
-					cleanedTitle, isHot, err = p.aiClient.AnalyzeDeal(egCtx, deal)
-					if err == nil {
-						break // Success
-					}
-
-					// Retry only on rate limit (429 / quota) errors
-					if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "quota") || strings.Contains(err.Error(), "RESOURCE_EXHAUSTED") {
-						if attempt < maxAttempts {
-							backoff := time.Duration(attempt*5) * time.Second
-							logger.Warn("AI analysis rate limited, retrying", "title", deal.Title, "attempt", attempt, "backoff", backoff)
-							time.Sleep(backoff)
-							continue
-						}
-					}
-					break // Stop retrying on other errors or if max attempts reached
-				}
+				cleanedTitle, isWarm, isHot, err := p.aiClient.AnalyzeDeal(egCtx, deal)
 
 				if err != nil {
-					// Log error but continue. Deal stays "unprocessed" effectively, or we mark it processed with failure?
-					// For now, just log. Next run will try again if we don't save AIProcessed=true.
-					// However, to avoid infinite loops on bad deals, we could mark as processed?
-					// Let's NOT mark as processed so it retries, but maybe we need a retry count later.
+					// Log error but continue. Deal stays "unprocessed" effectively.
 					logger.Warn("AI analysis failed", "title", deal.Title, "error", err)
-
-					// Fallback: use original title if we must, but here we just leave CleanTitle empty.
-					// The notifier will handle empty CleanTitle by using Title.
 				} else {
 					deal.CleanTitle = cleanedTitle
+					deal.IsWarm = isWarm
 					deal.IsLavaHot = isHot
 					deal.AIProcessed = true
-					logger.Info("AI analysis complete", "original", deal.Title, "clean", cleanedTitle, "hot", isHot)
+					logger.Info("AI analysis complete", "original", deal.Title, "clean", cleanedTitle, "warm", isWarm, "hot", isHot)
 				}
 			} else if existing != nil {
 				// Carry over existing AI data
 				deal.CleanTitle = existing.CleanTitle
+				deal.IsWarm = existing.IsWarm
 				deal.IsLavaHot = existing.IsLavaHot
 				deal.AIProcessed = existing.AIProcessed
 			}
@@ -409,6 +377,7 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		// AI fields
 		if scrapedBase.AIProcessed {
 			existing.CleanTitle = scrapedBase.CleanTitle
+			existing.IsWarm = scrapedBase.IsWarm
 			existing.IsLavaHot = scrapedBase.IsLavaHot
 			existing.AIProcessed = scrapedBase.AIProcessed
 		}

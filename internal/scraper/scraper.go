@@ -127,6 +127,10 @@ func (c *Client) attemptScrapeList(ctx context.Context, targetURL string) ([]mod
 			return
 		}
 
+		if ls.Elements.TitleText != "" && s.Find(ls.Elements.TitleText).Length() == 0 {
+			return
+		}
+
 		deal := c.parseDealFromSelection(s, ls.Elements)
 		deals = append(deals, deal)
 	})
@@ -161,6 +165,15 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 
 	// Title & Post URL
 	postURL, title := c.resolveLink(s, elems.TitleLink)
+	if elems.TitleText != "" {
+		titleSel := s.Find(elems.TitleText)
+		if titleSel.Length() > 0 {
+			title = strings.TrimSpace(titleSel.Text())
+		} else {
+			title = ""
+		}
+	}
+
 	if title != "" {
 		deal.Title = title
 		if postURL != "" {
@@ -175,13 +188,13 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 		parseErrors = append(parseErrors, "title/post URL element not found")
 	}
 
-	// Category
-	categorySel := s.Find(elems.Category)
-	if categorySel.Length() > 0 {
-		deal.Category = strings.TrimSpace(categorySel.Text())
-		if deal.Category == "" {
-			deal.Category = strings.TrimSpace(categorySel.AttrOr("data-name", ""))
-		}
+	// Retailer (Store)
+	retailerSel := s.Find(elems.Retailer)
+	if retailerSel.Length() > 0 {
+		retailer := strings.TrimSpace(retailerSel.First().Text())
+		// Clean up "at " prefix
+		retailer = strings.TrimPrefix(retailer, "at ")
+		deal.Retailer = strings.TrimSpace(retailer)
 	}
 
 	// Thread Image — only accept http/https URLs
@@ -217,6 +230,17 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 		thread.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.First().Text()))
 	}
 
+	// List price/savings fallback (if available on card)
+	if priceSel := s.Find(".savings"); priceSel.Length() > 0 {
+		cardPrice := strings.TrimSpace(priceSel.First().Contents().Not("span").Text())
+		if cardPrice != "" {
+			deal.Price = cardPrice
+		}
+		if savingsSel := priceSel.Find("span"); savingsSel.Length() > 0 {
+			deal.OriginalPrice = strings.TrimSpace(savingsSel.Text())
+		}
+	}
+
 	deal.Threads = []models.ThreadContext{thread}
 
 	if len(parseErrors) > 0 {
@@ -236,7 +260,7 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 		}
 
 		g.Go(func() error {
-			actualURL, description, comments, summary, price, originalPrice, savings, retailer, err := c.scrapeDealDetailPage(ctx, deal.PrimaryPostURL())
+			actualURL, description, comments, summary, price, originalPrice, savings, retailer, category, err := c.scrapeDealDetailPage(ctx, deal.PrimaryPostURL())
 			if err != nil {
 				if errors.Is(err, ErrDealLinkNotFound) {
 					slog.Info("No external deal link found", "postURL", deal.PrimaryPostURL())
@@ -256,9 +280,17 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 			deal.Price = price
 			deal.OriginalPrice = originalPrice
 			deal.Savings = savings
-			deal.Retailer = retailer
+			if retailer != "" {
+				deal.Retailer = retailer
+			}
+			if category != "" {
+				deal.Category = category
+			}
 
 			if deal.ActualDealURL != "" {
+				slog.Debug("Original Product URL", "url", deal.ActualDealURL)
+				deal.ActualDealURL = util.CleanProductURL(deal.ActualDealURL)
+				slog.Debug("Cleaned Product URL", "url", deal.ActualDealURL)
 				cleanedURL, changed := util.CleanReferralLink(deal.ActualDealURL, c.config.AmazonAffiliateTag, c.config.BestBuyAffiliatePrefix)
 				if changed {
 					deal.ActualDealURL = cleanedURL
@@ -276,10 +308,10 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 	}
 }
 
-func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, string, string, string, string, string, string, string, error) {
+func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, string, string, string, string, string, string, string, string, error) {
 	doc, err := c.fetchHTMLContent(ctx, dealURL)
 	if err != nil {
-		return "", "", "", "", "", "", "", "", err
+		return "", "", "", "", "", "", "", "", "", err
 	}
 
 	// 1. Get Deal Link
@@ -311,11 +343,15 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		// or return error if link is strictly required. Original logic returned error.
 		// Let's return error for now to maintain behavior, but maybe AI can find it?
 		// Stick to strict behavior for now.
-		return "", "", "", "", "", "", "", "", ErrDealLinkNotFound
+		return "", "", "", "", "", "", "", "", "", ErrDealLinkNotFound
 	}
+
+	var retailer, category string
 
 	// 2. Extract JSON-LD for Description and Comments
 	var description, commentsStr string
+	var ldPrice, ldRetailer string
+
 	doc.Find("script[type='application/ld+json']").Each(func(i int, s *goquery.Selection) {
 		text := s.Text()
 		var postings []JSONLDDiscussionForumPosting
@@ -336,12 +372,23 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 						fullComments = fullComments[:maxCommentsLen] + "...(truncated)"
 					}
 					commentsStr = fullComments
+
+					// Fallback from Product schema in JSON-LD
+					if p.About != nil {
+						if p.About.Offers != nil && p.About.Offers.Price != "" {
+							ldPrice = p.About.Offers.Price
+							if p.About.Offers.PriceCurrency == "CAD" {
+								ldPrice = "$" + ldPrice
+							}
+						}
+						if p.About.Brand != nil && p.About.Brand.Name != "" {
+							ldRetailer = p.About.Brand.Name
+						}
+					}
 					return // Found the main posting
 				}
 			}
 		}
-		// If array fail, try single object? RFD usually arrays.
-		// Let's stick to array as per observation.
 	})
 
 	// 3. Extract Summary (if available)
@@ -349,7 +396,7 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 	summary := strings.TrimSpace(doc.Find("#rfd_topic_summary").Text())
 
 	// 4. Extract Price and Retailer
-	var price, originalPrice, savings, retailer string
+	var price, originalPrice, savings string
 
 	// Extract Price
 	doc.Find("dt").Each(func(i int, s *goquery.Selection) {
@@ -363,7 +410,12 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		}
 	})
 
-	// Extract Retailer
+	// JSON-LD Fallback for Price
+	if price == "" && ldPrice != "" {
+		price = ldPrice
+	}
+
+	// Extract Retailer and Category
 	if badge := doc.Find(".retailer_badge"); badge.Length() > 0 {
 		retailer = strings.TrimSpace(badge.Text())
 	}
@@ -375,7 +427,27 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		})
 	}
 
-	return dealLink, description, commentsStr, summary, price, originalPrice, savings, retailer, nil
+	// JSON-LD Fallback for Retailer
+	if retailer == "" && ldRetailer != "" {
+		retailer = ldRetailer
+	}
+
+	// Extract Category
+	if categoryBtn := doc.Find(ds.Category); categoryBtn.Length() > 0 {
+		category = strings.TrimSpace(categoryBtn.Text())
+		// Strip "Category:" prefix if present
+		category = strings.TrimPrefix(category, "Category:")
+		category = strings.TrimSpace(category)
+	}
+	if category == "" {
+		doc.Find("dt").Each(func(i int, s *goquery.Selection) {
+			if strings.TrimSpace(s.Text()) == "Category:" {
+				category = strings.TrimSpace(s.Next().Text())
+			}
+		})
+	}
+
+	return dealLink, description, commentsStr, summary, price, originalPrice, savings, retailer, category, nil
 }
 
 // cleanHTMLText allows stripping HTML tags from a string.

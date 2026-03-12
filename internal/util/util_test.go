@@ -87,6 +87,35 @@ func TestCleanReferralLink(t *testing.T) {
 	}
 }
 
+func TestIsHTTPURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		want   bool
+	}{
+		{"Valid HTTPS", "https://example.com", true},
+		{"Valid HTTP", "http://example.com", true},
+		{"Case sensitive HTTPS (fail)", "HTTPS://example.com", false},
+		{"Case sensitive HTTP (fail)", "HTTP://example.com", false},
+		{"FTP scheme", "ftp://example.com", false},
+		{"Javascript scheme", "javascript:alert(1)", false},
+		{"Empty string", "", false},
+		{"Just prefix HTTPS", "https://", true},
+		{"Just prefix HTTP", "http://", true},
+		{"Leading space", " https://example.com", false},
+		{"Malformed - missing slashes", "https:example.com", false},
+		{"No scheme", "example.com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isHTTPURL(tt.input); got != tt.want {
+				t.Errorf("isHTTPURL(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeURL(t *testing.T) {
 	allowedDomains := []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com", "www.forums.redflagdeals.com"}
 

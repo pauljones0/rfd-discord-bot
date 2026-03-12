@@ -169,14 +169,15 @@ func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealIn
 
 type mockDealAnalyzer struct {
 	cleanTitle string
+	isWarm     bool
 	isHot      bool
 	err        error
 	called     bool
 }
 
-func (m *mockDealAnalyzer) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, error) {
+func (m *mockDealAnalyzer) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error) {
 	m.called = true
-	return m.cleanTitle, m.isHot, m.err
+	return m.cleanTitle, m.isWarm, m.isHot, m.err
 }
 
 func newTestProcessor(store DealStore, notifier DealNotifier, scraper DealScraper) *DealProcessor {

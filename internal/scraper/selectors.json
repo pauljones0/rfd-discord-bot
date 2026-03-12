@@ -1,24 +1,26 @@
 {
     "hot_deals_list": {
         "container": {
-            "item": "li.topic",
-            "ignore_modifier": ".sticky"
+            "item": "li.topic-card.topic",
+            "ignore_modifier": ".sticky, :has(.sponsored-offer)"
         },
         "elements": {
-            "title_link": ".thread_title_link",
-            "category": ".thread_category",
-            "posted_time": ".thread_inner_footer .author_info time",
-            "author_link": ".thread_inner_footer .author_info .author",
+            "title_link": "a.topic-card-info.thread_info",
+            "title_text": ".thread_title",
+            "retailer": ".thread_dealer",
+            "posted_time": ".thread_outer_header .author_info time.topic_time",
+            "author_link": ".thread_outer_header .author_info .author",
             "author_name": ".author_name",
             "thread_image": ".thread_image img",
-            "like_count": ".thread_inner_footer .votes",
-            "comment_count": ".thread_inner_footer .posts",
+            "like_count": ".thread_extra_info .votes",
+            "comment_count": ".thread_extra_info .posts",
             "comment_count_fallback": ".posts_count",
-            "view_count": ".thread_inner_footer .views"
+            "view_count": ".thread_extra_info .views"
         }
     },
     "deal_details": {
         "primary_link": ".deal_link a",
-        "fallback_link": ".postlink"
+        "fallback_link": ".postlink",
+        "category": ".thread_category"
     }
 }
