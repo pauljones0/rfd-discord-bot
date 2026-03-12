@@ -268,6 +268,9 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 			deal.Retailer = retailer
 
 			if deal.ActualDealURL != "" {
+				slog.Debug("Original Product URL", "url", deal.ActualDealURL)
+				deal.ActualDealURL = util.CleanProductURL(deal.ActualDealURL)
+				slog.Debug("Cleaned Product URL", "url", deal.ActualDealURL)
 				cleanedURL, changed := util.CleanReferralLink(deal.ActualDealURL, c.config.AmazonAffiliateTag, c.config.BestBuyAffiliatePrefix)
 				if changed {
 					deal.ActualDealURL = cleanedURL
