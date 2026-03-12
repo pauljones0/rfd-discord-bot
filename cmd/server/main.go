@@ -58,7 +58,7 @@ func main() {
 	v := validator.New()
 
 	// Initialize AI client (gracefully handles missing key)
-	aiClient, err := ai.NewClient(ctx, cfg.GeminiAPIKey, cfg.GeminiModelID)
+	aiClient, err := ai.NewClient(ctx, cfg.GeminiAPIKey, cfg.GeminiFallbackModels, store)
 	if err != nil {
 		slog.Warn("Failed to initialize Gemini client (AI features disabled)", "error", err)
 	}
@@ -96,11 +96,12 @@ func main() {
 	})
 
 	httpServer := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      loggingMiddleware(mux),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 5 * time.Minute,
-		IdleTimeout:  60 * time.Second,
+			Addr:              ":" + cfg.Port,
+			Handler:           loggingMiddleware(mux),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      5 * time.Minute,
+			IdleTimeout:       60 * time.Second,
 	}
 
 	// Graceful shutdown on SIGTERM/SIGINT

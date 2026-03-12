@@ -32,10 +32,12 @@ type DealInfo struct {
 
 	// AI Enriched Fields
 	CleanTitle  string `firestore:"cleanTitle,omitempty"`
+	IsWarm      bool   `firestore:"isWarm,omitempty"`
 	IsLavaHot   bool   `firestore:"isLavaHot,omitempty"`
 	AIProcessed bool   `firestore:"aiProcessed"`
 
 	// Rank Tracking
+	// Deprecated: AI is now the sole source of truth for warmth (IsWarm).
 	HasBeenWarm bool `firestore:"hasBeenWarm,omitempty"`
 	// Deprecated: AI is now the sole source of truth for hotness (IsLavaHot).
 	HasBeenHot bool `firestore:"hasBeenHot,omitempty"`

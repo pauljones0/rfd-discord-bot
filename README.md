@@ -26,7 +26,7 @@ Adding this bot to your server will automatically post the latest and greatest d
      *   `All warm + hot tech deals`
      *   `All hot deals`
      *   `All hot tech deals`
-   * *Note: "Warm" deals require at least 2 likes and high organic engagement. "Hot" deals are determined entirely by the Gemini AI's "Lava Hot" analysis.*
+   * *Note: "Warm" and "Hot" deals are determined entirely by the Gemini AI's analysis of the deal content. The criteria for "Warm" are highly selective, requiring significant discounts (e.g., 25%+) or strong positive user resonance to minimize excessive pings.*
 
 That's it! The bot will now monitor the RedFlagDeals "Hot Deals" forum 24/7 and post beautifully formatted alerts directly to that channel based on your chosen type.
 
@@ -36,15 +36,16 @@ To stop the bot from posting or securely view active subscriptions, an administr
 
 ## 🌟 Features
 
-*   **Identifies RFD Hot Deals:** Scrapes the latest deals from the Hot Deals forum natively with fallback support.
-*   **Gemini AI Integration:** Uses Google Gemini AI (`gemini-2.5-flash-lite`) with **Google Search Grounding** to:
+*   **Identifies RFD Hot Deals:** Scrapes the latest deals from the Hot Deals forum natively (extensively supporting the modern card-based layout structure) with fallback support.
+*   **Gemini AI Integration:** Uses Google Gemini AI with **Google Search Grounding** to:
     *   Clean up and summarize messy deal titles based on extracted deal details.
     *   Determine if a deal is "Lava Hot" (adds 🔥 emojis and escalates the Discord alert color to hot pink).
-    *   *Note: Implements exponential backoff to handle free-tier API rate limits gracefully.*
-*   **Deep Scraping:** Extracts detailed deal content, including descriptions and comments from deal pages for AI context.
-*   **Discord Bot Notifications:** Sends detailed notifications to multiple subscribed Discord servers, complete with native Discord timestamps, actual deal URLs, concise engagement metrics, and categorized emojis for improved visual clarity (e.g. 💻, 🛒, 🍔).
+    *   *Note: Automatically handles 429 quota rate limits by dynamically upgrading to higher-tier models (e.g., from `gemini-2.5-flash-lite` to `gemini-2.5-pro`) and resetting at midnight Pacific Time to maintain 100% uptime.*
+*   **Deep Scraping:** Extracts detailed deal content from individual deal pages, including descriptions, comments, and **categories** (which RFD recently moved to detail pages) for better AI context and filtering. Features multi-layered fallbacks (visible HTML `dt/dd` tags, JSON-LD `Product/Offer` schema, and list-level extraction) to ensure pricing and retailer accuracy even when page structures vary.
+*   **Intelligent Link Cleaner:** Features a robust, rules-based URL cleaner that automatically strips unwanted tracking parameters (`cmp`, `ref`, `_trkparms`, etc.) from Amazon, BestBuy, and eBay links while preserving crucial identifiers like ASINs and Item IDs, before applying our own affiliate tags.
+*   **Discord Bot Notifications:** Sends detailed notifications to multiple subscribed Discord servers, complete with native Discord timestamps, actual deal URLs, concise engagement metrics, and categorized emojis for improved visual clarity. Includes the **Retailer/Store name** directly in the footer for instant context, with support for extracting retailer names from both CSS badges and structured JSON-LD.
 *   **Smart Deduplication:** Automatically detects when identical deals are posted in multiple forum threads by fuzzy matching titles and target URLs. It gracefully merges their engagement metrics, sorts the threads by popularity, and appends all tracking links into a single unified Discord alert.
-*   **Live Updates:** Discord embed colors escalate to warm based on deal metrics (likes/views) or to hot based on AI analysis, and will retain the highest "heat" rank achieved even if the ratios drop later. Embeds are dynamically patched to keep likes, comments, and views accurate for up to 1 hour after publication to respect Discord's rate limits on editing old messages.
+*   **Live Updates:** Discord embed colors escalate to warm or hot strictly based on AI analysis. Embeds are dynamically patched to keep likes, comments, and views accurate for up to 1 hour after publication to respect Discord's rate limits on editing old messages.
 *   **Zero-Config For Users:** Just invite, set the channel via a Slash Command, and enjoy the deals.
 
 ---
@@ -495,7 +496,7 @@ Cloud Logging automatically manages log retention according to configured polici
     2.  **Cloud Scheduler to Cloud Run (for private services):** If your service is private, ensure the Scheduler's service account has "Cloud Run Invoker" permission. (Not applicable if `--allow-unauthenticated` was used).
 
 *   **Incorrect Environment Variables:**
-    *   Verify `GOOGLE_CLOUD_PROJECT` and `DISCORD_WEBHOOK_URL` are correctly set in the Cloud Run service's environment variables (check the "Revisions" tab of your service in Cloud Run, select the active revision, and look at "Variables").
+    *   Verify `GOOGLE_CLOUD_PROJECT` is correctly set in the Cloud Run service's environment variables (check the "Revisions" tab of your service in Cloud Run, select the active revision, and look at "Variables").
 
 ### How to Diagnose
 

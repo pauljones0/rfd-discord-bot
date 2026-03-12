@@ -10,7 +10,6 @@ import (
 
 type Config struct {
 	ProjectID              string
-	DiscordWebhookURL      string
 	Port                   string
 	AmazonAffiliateTag     string
 	BestBuyAffiliatePrefix string
@@ -21,6 +20,7 @@ type Config struct {
 	UserAgent              string
 	GeminiAPIKey           string
 	GeminiModelID          string
+	GeminiFallbackModels   []string
 
 	// Discord App Auth
 	DiscordAppID     string
@@ -32,11 +32,6 @@ func Load() (*Config, error) {
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if projectID == "" {
 		return nil, fmt.Errorf("GOOGLE_CLOUD_PROJECT environment variable is required but not set")
-	}
-
-	discordWebhookURL := os.Getenv("DISCORD_WEBHOOK_URL")
-	if discordWebhookURL == "" {
-		slog.Warn("DISCORD_WEBHOOK_URL not set, Discord notifications will be skipped")
 	}
 
 	port := os.Getenv("PORT")
@@ -87,7 +82,6 @@ func Load() (*Config, error) {
 
 	return &Config{
 		ProjectID:              projectID,
-		DiscordWebhookURL:      discordWebhookURL,
 		Port:                   port,
 		AmazonAffiliateTag:     amazonAffiliateTag,
 		BestBuyAffiliatePrefix: bestBuyAffiliatePrefix,
@@ -98,6 +92,13 @@ func Load() (*Config, error) {
 		UserAgent:              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		GeminiAPIKey:           os.Getenv("GEMINI_API_KEY"),
 		GeminiModelID:          geminiModelID,
+		GeminiFallbackModels:   []string{
+			"gemini-2.5-flash-lite",
+			"gemini-3.1-flash-lite-preview",
+			"gemini-2.5-flash",
+			"gemini-3-flash-preview",
+			"gemini-2.5-pro",
+		},
 		DiscordAppID:           os.Getenv("DISCORD_APP_ID"),
 		DiscordPublicKey:       discordPublicKey,
 		DiscordBotToken:        discordBotToken,

@@ -55,3 +55,6 @@ venv/
 #logs
 logs/
 *_output.txt
+
+#playwright
+.playwright-mcp

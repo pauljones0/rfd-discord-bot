@@ -3,8 +3,9 @@ package storage
 import (
 	"context"
 	"fmt"
-
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -140,4 +141,27 @@ func (c *Client) GetAllSubscriptions(ctx context.Context) ([]models.Subscription
 	}
 
 	return subs, nil
+}
+// GetSubscription retrieves a specific subscription by its guild and channel.
+func (c *Client) GetSubscription(ctx context.Context, guildID, channelID string) (*models.Subscription, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
+	docID := fmt.Sprintf("%s_%s", guildID, channelID)
+	doc, err := c.client.Collection(subscriptionsCollection).Doc(docID).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get subscription %s: %w", docID, err)
+	}
+
+	var sub models.Subscription
+	if err := doc.DataTo(&sub); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal subscription: %w", err)
+	}
+	return &sub, nil
 }
