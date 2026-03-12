@@ -68,7 +68,12 @@ Price: "%s"
 
 Task:
 1. Create a clean, concise title (5-15 words). Remove fluff ("Lava Hot", "Price Error"), store names if redundant, and focus on the product and price/discount.
-2. Determine if this is a "warm" deal. A warm deal should feel like a good deal, but something that you wouldn't FOMO or lose sleep over.
+2. Determine if this is a "warm" deal (is_warm). A warm deal is a solid discount or good find, but not a frantic "buy it right now" emergency. 
+   Signals of a Warm deal:
+   - The price is noticeably better than average retail, but maybe not an All-Time Low (ATL).
+   - User comments are generally positive (e.g., "good find", "decent price", "I picked one up") rather than euphoric or dismissive.
+   - It's a product people actually want or need, not just junk on clearance.
+   Regular, unremarkable sales or deals with highly negative/indifferent comments should be False.
 3. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
 
 You MUST respond ONLY with a raw JSON object containing exactly three keys: "clean_title" (string), "is_warm" (boolean), and "is_lava_hot" (boolean). Do not include any other text, markdown formatting, or backticks.
