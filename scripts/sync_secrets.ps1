@@ -4,7 +4,8 @@
 
 .DESCRIPTION
     This script parses a .env file and uses the GitHub CLI (gh) to upload each key-value pair
-    as a repository secret. It handles multiline values (like JSON keys) correctly.
+    as a repository secret. It handles multiline values (like JSON keys) correctly by writing
+    each secret to a temporary file before uploading.
 
 .PARAMETER EnvFile
     The path to the .env file. Defaults to ".env" in the current directory.
@@ -43,15 +44,8 @@ if (-not $ghCommand) {
     exit 1
 }
 
-# Force UTF-8 encoding for pipes to ensure secrets aren't corrupted
-$OutputEncoding = [System.Text.Encoding]::UTF8
-
-# Fix: PowerShell functions don't automatically forward stdin.
-# Using $input | ... handles the pipeline gracefully.
-function gh { $input | & $ghCommand @args }
-
 # Check if logged in
-gh auth status
+& $ghCommand auth status
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Error: Not logged into GitHub CLI. Run 'gh auth login' first."
     exit 1
@@ -63,72 +57,54 @@ $content = Get-Content $EnvFile -Raw
 $lines = $content -split "`r?`n"
 $currentKey = $null
 $currentValue = @()
-$isQuoted = $false
 
-$secrets = @{}
+$secrets = [ordered]@{}
 
 foreach ($line in $lines) {
     # Match a new key-value pair. Handles optional 'export ' prefix.
-    if ($line -match '^\s*(?:export\s+)?(?<key>[A-Z0-9_]+)=(?<val>.*)') {
+    # Keys must be ALL_CAPS_WITH_UNDERSCORES followed by '='.
+    if ($line -match '^\s*(?:export\s+)?(?<key>[A-Z][A-Z0-9_]*)=(?<val>.*)') {
         if ($currentKey) {
             # Save previous secret
-            $secrets[$currentKey] = ($currentValue -join "`n").Trim()
+            $secrets[$currentKey] = ($currentValue -join "`n")
         }
         $currentKey = $Matches.key
         $val = $Matches.val
-        
-        # Check for quoted multiline start or single-line quoted value
-        if ($val -match '^"(?<inner>.*)"$') {
-            # Single line quoted: strip outer quotes only, preserve content as-is
-            $secrets[$currentKey] = $Matches.inner
-            $currentKey = $null
-            $currentValue = @()
-        } elseif ($val -match '^"(?<inner>.*)$') {
-            # Multiline quoted start
-            $currentValue = @($Matches.inner)
-            $isQuoted = $true
-        } else {
-            # Unquoted value
-            $currentValue = @($val)
-            $isQuoted = $false
-        }
+        $currentValue = @($val)
     } elseif ($currentKey) {
-        if ($isQuoted -and $line -match '^(?<inner>.*)"$') {
-            # End of multiline quoted value
-            $currentValue += $Matches.inner
-            $secrets[$currentKey] = ($currentValue -join "`n").Trim()
-            $currentKey = $null
-            $currentValue = @()
-            $isQuoted = $false
-        } else {
-            # Continue current secret
-            $currentValue += $line
-        }
+        # Continue current multiline secret
+        $currentValue += $line
     }
 }
-# Final secret if not already closed
+# Save final secret
 if ($currentKey) {
-    $secrets[$currentKey] = ($currentValue -join "`n").Trim()
+    $secrets[$currentKey] = ($currentValue -join "`n")
 }
 
-# Sync secrets
+# Sync secrets using temp files (avoids all PowerShell pipe encoding issues)
 foreach ($key in $secrets.Keys) {
-    $value = $secrets[$key]
+    $value = $secrets[$key].Trim()
     
-    # Validation preview (User requested full view)
-    $preview = $value.Trim()
+    Write-Host "`n--- $key ($($value.Length) bytes) ---" -ForegroundColor Yellow
+    Write-Host $value -ForegroundColor Gray
+    Write-Host "--- end $key ---" -ForegroundColor Yellow
 
-    Write-Host "Syncing secret: $key... ($( $value.Length ) bytes)" -ForegroundColor Yellow
-    Write-Host "Value:`n$preview" -ForegroundColor Gray
+    # Write to a temp file with UTF-8 no BOM encoding
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllText($tempFile, $value, [System.Text.UTF8Encoding]::new($false))
     
-    # Use --body - to read from stdin. The 'gh' function handles the pipe.
-    $value | gh secret set $key --body -
-    
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "Successfully synced $key" -ForegroundColor Green
-    } else {
-        Write-Host "Failed to sync $key" -ForegroundColor Red
+    try {
+        # Use file redirection instead of piping to avoid PowerShell encoding issues
+        Get-Content $tempFile -Raw | & $ghCommand secret set $key
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Successfully synced $key" -ForegroundColor Green
+        } else {
+            Write-Host "Failed to sync $key" -ForegroundColor Red
+        }
+    } finally {
+        Remove-Item $tempFile -ErrorAction SilentlyContinue
     }
 }
 
-Write-Host "Finished syncing secrets." -ForegroundColor Cyan
+Write-Host "`nFinished syncing secrets." -ForegroundColor Cyan
