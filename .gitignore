@@ -31,9 +31,9 @@ go.work.sum
 Thumbs.db
 
 # Compiled binary
-main
-server
-rfd-discord-bot
+/main
+/server
+/rfd-discord-bot
 
 # Python cache
 __pycache__/
