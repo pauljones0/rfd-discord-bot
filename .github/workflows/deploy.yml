@@ -11,6 +11,17 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      GOOGLE_CLOUD_PROJECT_ID: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+      DISCORD_APP_ID: ${{ secrets.DISCORD_APP_ID }}
+      DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+      DISCORD_PUBLIC_KEY: ${{ secrets.DISCORD_PUBLIC_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,8 +38,8 @@ jobs:
           region: ${{ env.REGION }}
           source: ./
           env_vars: |
-            GOOGLE_CLOUD_PROJECT=${{ secrets.GOOGLE_CLOUD_PROJECT }}
-            DISCORD_APP_ID=${{ secrets.DISCORD_APP_ID }}
-            DISCORD_BOT_TOKEN=${{ secrets.DISCORD_BOT_TOKEN }}
-            DISCORD_PUBLIC_KEY=${{ secrets.DISCORD_PUBLIC_KEY }}
-            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT_ID }}
+            DISCORD_APP_ID=${{ env.DISCORD_APP_ID }}
+            DISCORD_BOT_TOKEN=${{ env.DISCORD_BOT_TOKEN }}
+            DISCORD_PUBLIC_KEY=${{ env.DISCORD_PUBLIC_KEY }}
+            GEMINI_API_KEY=${{ env.GEMINI_API_KEY }}
