@@ -62,21 +62,21 @@ $currentValue = @()
 $secrets = @{}
 
 foreach ($line in $lines) {
-    # Match a new key-value pair
-    if ($line -match "^([A-Z0-9_]+)=(.*)") {
+    # Match a new key-value pair. A key must be at the start of the line, 
+    # all uppercase/numbers/underscores, and followed immediately by '='.
+    if ($line -match "^(?<key>[A-Z0-9_]+)=(?<val>.*)") {
         if ($currentKey) {
             # Save previous secret
             $secrets[$currentKey] = ($currentValue -join "`n").Trim()
         }
-        $currentKey = $matches[1]
-        $val = $matches[2]
+        $currentKey = $Matches.key
+        $val = $Matches.val
         
-        # Check if the value starts with a quote but doesn't end with one on the same line
-        # This handles quoted multiline values specifically
-        if ($val -match '^"(.*)"$') {
-            $currentValue = @($matches[1].Replace('\"', '"'))
+        # Check if the value is a single-line quoted value
+        if ($val -match '^"(?<inner>.*)"$') {
+            $secrets[$currentKey] = $Matches.inner.Replace('\"', '"')
             $currentKey = $null # Mark as done immediately
-            $secrets[$matches[1]] = $currentValue[0] # Actually, wait, let's simplify
+            $currentValue = @()
         } else {
             $currentValue = @($val)
         }
@@ -90,13 +90,14 @@ if ($currentKey) {
     $secrets[$currentKey] = ($currentValue -join "`n").Trim()
 }
 
-# Correctly handle quoted values and sync
+# Correctly handle multiline quoted values and sync
 foreach ($key in $secrets.Keys) {
     $value = $secrets[$key]
     
-    # Final cleanup for quoted strings if they were multiline
-    if ($value -match '^"(.*)"$') {
-        $value = $value.Substring(1, $value.Length - 2).Replace('\"', '"')
+    # Final cleanup for multiline quoted strings. 
+    # Use (?s) to allow . to match newlines.
+    if ($value -match '(?s)^"(?<inner>.*)"$') {
+        $value = $Matches.inner.Replace('\"', '"')
     }
 
     Write-Host "Syncing secret: $key... ($( $value.Length ) bytes)" -ForegroundColor Yellow
