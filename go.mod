@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go/firestore v1.18.0
 	github.com/PuerkitoBio/goquery v1.10.3
 	github.com/go-playground/validator/v10 v10.30.1
+	github.com/joho/godotenv v1.5.1
 	golang.org/x/sync v0.19.0
 	golang.org/x/time v0.14.0
 	google.golang.org/api v0.235.0
@@ -31,7 +32,6 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.2 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.60.0 // indirect

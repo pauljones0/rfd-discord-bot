@@ -77,6 +77,28 @@ graph LR
     F --> G[Update Firestore State]
 ```
 
+## 🤖 GitHub Actions CI/CD
+
+The repository includes a GitHub Action in `.github/workflows/deploy.yml` that automatically builds and deploys the bot to Cloud Run on every push to the `main` branch.
+
+### Required GitHub Secrets
+
+To use the automated deployment, you MUST add the following as **Repository Secrets** in your GitHub settings (**Settings > Secrets and variables > Actions > Secrets tab > New repository secret**). 
+
+> [!IMPORTANT]
+> Do NOT add these under the "Variables" tab. Secrets are encrypted and hidden, which is required for API keys and Service Account tokens.
+
+*   `GCP_SA_KEY`: The **entire JSON content** of your Google Cloud Service Account key.
+*   `GOOGLE_CLOUD_PROJECT`: Your Google Cloud Project ID (e.g., `may2025-01`).
+*   `DISCORD_APP_ID`: Your Discord Application ID.
+*   `DISCORD_BOT_TOKEN`: Your Discord Bot Token.
+*   `DISCORD_PUBLIC_KEY`: Your Discord Public Key.
+*   `GEMINI_API_KEY`: Your Google Gemini API key.
+
+> [!WARNING]
+> If `GCP_SA_KEY` is missing or empty, the workflow will fail with an error like:
+> `google-github-actions/auth failed with: the GitHub Action workflow must specify exactly one of "workload_identity_provider" or "credentials_json"!`
+
 ## Local Development
 
 ### Clone Repository
@@ -501,3 +523,25 @@ Cloud Logging automatically manages log retention according to configured polici
 ---
 
 This README provides a comprehensive guide for developers to understand, set up, deploy, and manage the Multi-Server RFD Hot Deals Discord Bot on Google Cloud.
+
+## Secrets Management
+
+To securely and automatically synchronize your local `.env` secrets to GitHub Action repository secrets, you can use the provided PowerShell script.
+
+### Prerequisites
+
+1. **GitHub CLI (`gh`)**: Install using `winget install --id GitHub.cli` or from [cli.github.com](https://cli.github.com/).
+2. **Authentication**: Run `gh auth login` to authenticate with your GitHub account.
+
+### Synchronizing Secrets
+
+Run the following command from the root of the repository:
+
+```powershell
+.\scripts\sync_secrets.ps1
+```
+
+The script will:
+1. Read key-value pairs from your `.env` file.
+2. Handle multiline secrets (like `GCP_SA_KEY`) correctly.
+3. Upload each secret to your GitHub repository using the official GitHub CLI.
