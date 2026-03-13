@@ -50,6 +50,13 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 # Using $input | ... handles the pipeline gracefully.
 function gh { $input | & $ghCommand @args }
 
+# Check if logged in
+gh auth status
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Error: Not logged into GitHub CLI. Run 'gh auth login' first."
+    exit 1
+}
+
 Write-Host "Reading secrets from $EnvFile..." -ForegroundColor Cyan
 
 $content = Get-Content $EnvFile -Raw
@@ -72,8 +79,8 @@ foreach ($line in $lines) {
         
         # Check for quoted multiline start or single-line quoted value
         if ($val -match '^"(?<inner>.*)"$') {
-            # Single line quoted: strip quotes and handle escapes
-            $secrets[$currentKey] = $Matches.inner.Replace('\"', '"').Replace('\n', "`n")
+            # Single line quoted: strip outer quotes only, preserve content as-is
+            $secrets[$currentKey] = $Matches.inner
             $currentKey = $null
             $currentValue = @()
         } elseif ($val -match '^"(?<inner>.*)$') {
@@ -89,7 +96,7 @@ foreach ($line in $lines) {
         if ($isQuoted -and $line -match '^(?<inner>.*)"$') {
             # End of multiline quoted value
             $currentValue += $Matches.inner
-            $secrets[$currentKey] = ($currentValue -join "`n").Replace('\"', '"').Replace('\n', "`n").Trim()
+            $secrets[$currentKey] = ($currentValue -join "`n").Trim()
             $currentKey = $null
             $currentValue = @()
             $isQuoted = $false
