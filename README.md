@@ -125,11 +125,9 @@ export PORT="8080"
 Replace placeholder values with your real tokens from the Discord Developer Portal and Google Cloud.
 
 **Load Environment Variables:**
-Before running the application, source the `.env` file:
-```bash
-source .env
-```
-Alternatively, you can set these variables directly in your shell session:
+The application now automatically loads environment variables from a `.env` file in the project root using `godotenv`. You no longer need to manually source the file. Simply create the `.env` file as described above and run the application.
+
+If you still prefer to set them manually in your shell session:
 ```bash
 export GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
 export DISCORD_APP_ID="your-discord-app-id"

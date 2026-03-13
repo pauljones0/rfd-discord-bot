@@ -66,6 +66,53 @@ func TestFormatDealToEmbed(t *testing.T) {
 	}
 }
 
+func TestFormatDealToEmbed_Footer(t *testing.T) {
+	tests := []struct {
+		name       string
+		category   string
+		retailer   string
+		wantFooter string
+	}{
+		{
+			name:       "Category and Retailer",
+			category:   "Sports & Fitness",
+			retailer:   "Walmart.ca",
+			wantFooter: "⚽ Walmart.ca",
+		},
+		{
+			name:       "Only Category",
+			category:   "Sports & Fitness",
+			retailer:   "",
+			wantFooter: "⚽",
+		},
+		{
+			name:       "Only Retailer",
+			category:   "",
+			retailer:   "Amazon.ca",
+			wantFooter: "Amazon.ca",
+		},
+		{
+			name:       "Neither",
+			category:   "",
+			retailer:   "",
+			wantFooter: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deal := models.DealInfo{
+				Category: tt.category,
+				Retailer: tt.retailer,
+			}
+			embed := formatDealToEmbed(deal)
+			if embed.Footer.Text != tt.wantFooter {
+				t.Errorf("Footer.Text = %q, want %q", embed.Footer.Text, tt.wantFooter)
+			}
+		})
+	}
+}
+
 func TestFormatDealToEmbed_Colors(t *testing.T) {
 	tests := []struct {
 		name      string

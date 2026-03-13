@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -29,6 +31,9 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
+	// Try loading from .env file (ignore error if it doesn't exist)
+	_ = godotenv.Load()
+
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if projectID == "" {
 		return nil, fmt.Errorf("GOOGLE_CLOUD_PROJECT environment variable is required but not set")
