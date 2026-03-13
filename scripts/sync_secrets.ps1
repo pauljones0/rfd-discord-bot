@@ -55,25 +55,53 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "Reading secrets from $EnvFile..." -ForegroundColor Cyan
 
 $content = Get-Content $EnvFile -Raw
-# Regex to match KEY=VALUE pairs, including multiline values
-# It looks for KEY= followed by either a quoted string (with potential newlines) or a single line value
-$matches = [regex]::Matches($content, '(?m)^([A-Z0-9_]+)=(.*?(?:(?<=")(?:[^"\\]|\\.)*?"|.*$))')
+$lines = $content -split "`r?`n"
+$currentKey = $null
+$currentValue = @()
 
-foreach ($match in $matches) {
-    $key = $match.Groups[1].Value
-    $rawValue = $match.Groups[2].Value.Trim()
+$secrets = @{}
 
-    # Determine the actual value (handle quotes and escaping)
-    if ($rawValue -match '^"(.*)"$') {
-        $value = $matches.Groups[1].Value.Replace('\"', '"')
-    } else {
-        $value = $rawValue
+foreach ($line in $lines) {
+    # Match a new key-value pair
+    if ($line -match "^([A-Z0-9_]+)=(.*)") {
+        if ($currentKey) {
+            # Save previous secret
+            $secrets[$currentKey] = ($currentValue -join "`n").Trim()
+        }
+        $currentKey = $matches[1]
+        $val = $matches[2]
+        
+        # Check if the value starts with a quote but doesn't end with one on the same line
+        # This handles quoted multiline values specifically
+        if ($val -match '^"(.*)"$') {
+            $currentValue = @($matches[1].Replace('\"', '"'))
+            $currentKey = $null # Mark as done immediately
+            $secrets[$matches[1]] = $currentValue[0] # Actually, wait, let's simplify
+        } else {
+            $currentValue = @($val)
+        }
+    } elseif ($currentKey) {
+        # Continue current secret
+        $currentValue += $line
+    }
+}
+# Final secret
+if ($currentKey) {
+    $secrets[$currentKey] = ($currentValue -join "`n").Trim()
+}
+
+# Correctly handle quoted values and sync
+foreach ($key in $secrets.Keys) {
+    $value = $secrets[$key]
+    
+    # Final cleanup for quoted strings if they were multiline
+    if ($value -match '^"(.*)"$') {
+        $value = $value.Substring(1, $value.Length - 2).Replace('\"', '"')
     }
 
-    Write-Host "Syncing secret: $key..." -ForegroundColor Yellow
+    Write-Host "Syncing secret: $key... ($( $value.Length ) bytes)" -ForegroundColor Yellow
     
-    # Use --body - to read from stdin, ensuring no interactive prompt
-    # and avoiding command-line argument limits/escaping issues
+    # Use --body - to read from stdin
     $value | gh secret set $key --body -
     
     if ($LASTEXITCODE -eq 0) {
