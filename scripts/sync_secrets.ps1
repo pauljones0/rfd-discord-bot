@@ -94,8 +94,10 @@ foreach ($key in $secrets.Keys) {
     [System.IO.File]::WriteAllText($tempFile, $value, [System.Text.UTF8Encoding]::new($false))
     
     try {
-        # Use file redirection instead of piping to avoid PowerShell encoding issues
-        Get-Content $tempFile -Raw | & $ghCommand secret set $key
+        # Use cmd /c with native '<' redirection to completely bypass PowerShell's pipeline.
+        # PowerShell pipes break multiline strings - this is the only reliable way.
+        $ghPath = if ($ghCommand -is [System.Management.Automation.ApplicationInfo]) { $ghCommand.Source } else { $ghCommand }
+        cmd /c "`"$ghPath`" secret set $key < `"$tempFile`""
         
         if ($LASTEXITCODE -eq 0) {
             Write-Host "Successfully synced $key" -ForegroundColor Green
