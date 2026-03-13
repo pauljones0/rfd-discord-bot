@@ -43,14 +43,12 @@ if (-not $ghCommand) {
     exit 1
 }
 
-function gh { & $ghCommand $args }
+# Force UTF-8 encoding for pipes to ensure secrets aren't corrupted
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Check if logged in
-gh auth status
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Error: Not logged into GitHub CLI. Run 'gh auth login' first."
-    exit 1
-}
+# Fix: PowerShell functions don't automatically forward stdin.
+# Using $input | ... handles the pipeline gracefully.
+function gh { $input | & $ghCommand @args }
 
 Write-Host "Reading secrets from $EnvFile..." -ForegroundColor Cyan
 
@@ -58,13 +56,13 @@ $content = Get-Content $EnvFile -Raw
 $lines = $content -split "`r?`n"
 $currentKey = $null
 $currentValue = @()
+$isQuoted = $false
 
 $secrets = @{}
 
 foreach ($line in $lines) {
-    # Match a new key-value pair. A key must be at the start of the line, 
-    # all uppercase/numbers/underscores, and followed immediately by '='.
-    if ($line -match "^(?<key>[A-Z0-9_]+)=(?<val>.*)") {
+    # Match a new key-value pair. Handles optional 'export ' prefix.
+    if ($line -match '^\s*(?:export\s+)?(?<key>[A-Z0-9_]+)=(?<val>.*)') {
         if ($currentKey) {
             # Save previous secret
             $secrets[$currentKey] = ($currentValue -join "`n").Trim()
@@ -72,37 +70,51 @@ foreach ($line in $lines) {
         $currentKey = $Matches.key
         $val = $Matches.val
         
-        # Check if the value is a single-line quoted value
+        # Check for quoted multiline start or single-line quoted value
         if ($val -match '^"(?<inner>.*)"$') {
-            $secrets[$currentKey] = $Matches.inner.Replace('\"', '"')
-            $currentKey = $null # Mark as done immediately
+            # Single line quoted: strip quotes and handle escapes
+            $secrets[$currentKey] = $Matches.inner.Replace('\"', '"').Replace('\n', "`n")
+            $currentKey = $null
             $currentValue = @()
+        } elseif ($val -match '^"(?<inner>.*)$') {
+            # Multiline quoted start
+            $currentValue = @($Matches.inner)
+            $isQuoted = $true
         } else {
+            # Unquoted value
             $currentValue = @($val)
+            $isQuoted = $false
         }
     } elseif ($currentKey) {
-        # Continue current secret
-        $currentValue += $line
+        if ($isQuoted -and $line -match '^(?<inner>.*)"$') {
+            # End of multiline quoted value
+            $currentValue += $Matches.inner
+            $secrets[$currentKey] = ($currentValue -join "`n").Replace('\"', '"').Replace('\n', "`n").Trim()
+            $currentKey = $null
+            $currentValue = @()
+            $isQuoted = $false
+        } else {
+            # Continue current secret
+            $currentValue += $line
+        }
     }
 }
-# Final secret
+# Final secret if not already closed
 if ($currentKey) {
     $secrets[$currentKey] = ($currentValue -join "`n").Trim()
 }
 
-# Correctly handle multiline quoted values and sync
+# Sync secrets
 foreach ($key in $secrets.Keys) {
     $value = $secrets[$key]
     
-    # Final cleanup for multiline quoted strings. 
-    # Use (?s) to allow . to match newlines.
-    if ($value -match '(?s)^"(?<inner>.*)"$') {
-        $value = $Matches.inner.Replace('\"', '"')
-    }
+    # Validation preview (User requested full view)
+    $preview = $value.Trim()
 
     Write-Host "Syncing secret: $key... ($( $value.Length ) bytes)" -ForegroundColor Yellow
+    Write-Host "Value:`n$preview" -ForegroundColor Gray
     
-    # Use --body - to read from stdin
+    # Use --body - to read from stdin. The 'gh' function handles the pipe.
     $value | gh secret set $key --body -
     
     if ($LASTEXITCODE -eq 0) {
