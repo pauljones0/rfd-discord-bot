@@ -151,6 +151,8 @@ func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string
 		return "", false, false, nil // Graceful degradation
 	}
 
+	startTime := time.Now()
+
     // Always ensure we are using the correct model for the current day
     activeModel := c.checkDayRollover(ctx)
 
@@ -188,7 +190,14 @@ Task:
 3. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
 
 `, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, optionalFields, deal.Retailer)
-	
+
+	slog.Debug("Starting AI deal analysis",
+		"deal_id", deal.FirestoreID,
+		"deal_title", deal.Title,
+		"model", activeModel,
+		"prompt", prompt,
+	)
+
 	config := &genai.GenerateContentConfig{
 		Temperature:      genai.Ptr[float32](0.1),
 		ResponseMIMEType: "application/json",
@@ -254,7 +263,8 @@ Task:
 	// With ResponseMIMEType: "application/json", the model outputs a JSON string in the text part.
 	for _, part := range candidate.Content.Parts {
 		if part.Text != "" {
-			jsonStr := strings.TrimSpace(part.Text)
+			rawResponse := part.Text
+			jsonStr := strings.TrimSpace(rawResponse)
 			// Sometimes the model might still wrap in markdown code blocks despite application/json
 			jsonStr = strings.TrimPrefix(jsonStr, "```json")
 			jsonStr = strings.TrimPrefix(jsonStr, "```")
@@ -267,6 +277,11 @@ Task:
 				warm = extracted.IsWarm
 				hot = extracted.IsLavaHot
 				found = true
+
+				slog.Debug("AI raw response",
+					"deal_id", deal.FirestoreID,
+					"raw_response", rawResponse,
+				)
 				break
 			}
 		}
@@ -276,19 +291,16 @@ Task:
 		return "", false, false, fmt.Errorf("no valid function call or text response from gemini")
 	}
 
-	// Log the input prompt and output response as a single message
-	slog.Info("Completed Gemini AI Deal Analysis",
+	duration := time.Since(startTime)
+
+	slog.Info("AI deal analysis complete",
 		"deal_id", deal.FirestoreID,
-		"deal_title", deal.Title,
-		"prompt", prompt,
-		"response_title", result,
+		"original_title", deal.Title,
 		"clean_title", result,
 		"is_warm", warm,
 		"is_lava_hot", hot,
-		"price", deal.Price,
-		"original_price", deal.OriginalPrice,
-		"savings", deal.Savings,
-		"retailer", deal.Retailer,
+		"model", activeModel,
+		"duration_ms", duration.Milliseconds(),
 	)
 
 	return result, warm, hot, nil
