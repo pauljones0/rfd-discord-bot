@@ -446,8 +446,9 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 // mergeThread updates the stats for an existing thread or appends a new one.
 // Returns true if stats actually changed.
 func (p *DealProcessor) mergeThread(deal *models.DealInfo, newThread models.ThreadContext) bool {
+	newKey := threadKey(newThread.PostURL)
 	for i := range deal.Threads {
-		if deal.Threads[i].PostURL == newThread.PostURL {
+		if threadKey(deal.Threads[i].PostURL) == newKey {
 			changed := deal.Threads[i].LikeCount != newThread.LikeCount ||
 				deal.Threads[i].CommentCount != newThread.CommentCount ||
 				deal.Threads[i].ViewCount != newThread.ViewCount
@@ -461,6 +462,16 @@ func (p *DealProcessor) mergeThread(deal *models.DealInfo, newThread models.Thre
 	// New thread duplicate found
 	deal.Threads = append(deal.Threads, newThread)
 	return true
+}
+
+// threadKey normalizes a PostURL for deduplication by stripping trailing slashes
+// and fragments so that e.g. "/deal-123456/" and "/deal-123456/#p999" match.
+func threadKey(rawURL string) string {
+	// Strip fragment
+	if idx := strings.Index(rawURL, "#"); idx != -1 {
+		rawURL = rawURL[:idx]
+	}
+	return strings.TrimRight(rawURL, "/")
 }
 
 // sortThreads sorts a deal's threads array descending by LikeCount, then by CommentCount

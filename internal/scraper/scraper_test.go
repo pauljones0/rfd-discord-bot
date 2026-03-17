@@ -300,9 +300,12 @@ func TestScrapeDealDetailPage_NoLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	_, _, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
-	if err != ErrDealLinkNotFound {
-		t.Errorf("Expected ErrDealLinkNotFound, got %v", err)
+	dealLink, _, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if dealLink != "" {
+		t.Errorf("Expected empty deal link, got %q", dealLink)
 	}
 }
 

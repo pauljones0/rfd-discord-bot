@@ -3,7 +3,6 @@ package scraper
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -23,9 +22,6 @@ import (
 const (
 // hotDealsURL and rfdBase are now in config
 )
-
-// ErrDealLinkNotFound is returned when a deal detail page does not contain an external deal link.
-var ErrDealLinkNotFound = errors.New("deal link not found on detail page")
 
 type Client struct {
 	httpClient *http.Client
@@ -262,16 +258,11 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 		g.Go(func() error {
 			actualURL, description, comments, summary, price, originalPrice, savings, retailer, category, err := c.scrapeDealDetailPage(ctx, deal.PrimaryPostURL())
 			if err != nil {
-				if errors.Is(err, ErrDealLinkNotFound) {
-					slog.Info("No external deal link found", "postURL", deal.PrimaryPostURL())
-				} else if strings.Contains(err.Error(), "status code 404") {
+				if strings.Contains(err.Error(), "status code 404") {
 					slog.Info("Failed to fetch detail page (404)", "url", deal.PrimaryPostURL())
 				} else {
 					slog.Warn("Failed to fetch detail page", "url", deal.PrimaryPostURL(), "error", err)
 				}
-				// We don't fail the group, just don't update fields if failed
-				// However, if we got partial data (e.g. description but no link), we might want to keep it?
-				// For now, assume error means fail.
 				return nil
 			}
 
@@ -297,9 +288,8 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 				if changed {
 					deal.ActualDealURL = cleanedURL
 				}
-			}
-			if deal.ActualDealURL == "" {
-				slog.Warn("ActualDealURL was empty after parsing", "postURL", deal.PrimaryPostURL())
+			} else {
+				slog.Info("No external deal link found", "postURL", deal.PrimaryPostURL())
 			}
 			return nil
 		})
@@ -340,13 +330,9 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		}
 	}
 
-	if dealLink == "" {
-		// Log but continue, as we might still want description/comments for AI analysis
-		// or return error if link is strictly required. Original logic returned error.
-		// Let's return error for now to maintain behavior, but maybe AI can find it?
-		// Stick to strict behavior for now.
-		return "", "", "", "", "", "", "", "", "", ErrDealLinkNotFound
-	}
+	// No early return — continue extracting metadata (description, category, etc.)
+	// even when no external deal link exists. Many RFD posts (coupons, in-store deals,
+	// discussions) don't have external links but still have useful metadata.
 
 	var retailer, category string
 
