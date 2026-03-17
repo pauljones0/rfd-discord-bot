@@ -260,13 +260,12 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 
 			if err != nil {
 				// Log error but continue. Deal stays "unprocessed" effectively.
-				logger.Warn("AI analysis failed", "title", deal.Title, "error", err)
+				logger.Warn("AI analysis failed", "deal_id", deal.FirestoreID, "title", deal.Title, "error", err)
 			} else {
 				deal.CleanTitle = cleanedTitle
 				deal.IsWarm = isWarm
 				deal.IsLavaHot = isHot
 				deal.AIProcessed = true
-				logger.Info("AI analysis complete", "original", deal.Title, "clean", cleanedTitle, "warm", isWarm, "hot", isHot)
 			}
 		} else if existing != nil {
 			// Carry over existing AI data
