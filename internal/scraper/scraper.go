@@ -489,9 +489,8 @@ func (c *Client) fetchHTMLContent(ctx context.Context, urlStr string) (*goquery.
 		return nil, fmt.Errorf("failed to create request for URL %s: %w", urlStr, err)
 	}
 
-	req.Header.Set("User-Agent", c.config.UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	profile := randomProfile()
+	applyStealthHeaders(req, profile)
 
 	res, err := c.httpClient.Do(req)
 	if err != nil {
