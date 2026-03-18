@@ -228,6 +228,167 @@ func TestGenerateSearchTokens_URLDomainNoise(t *testing.T) {
 	}
 }
 
+func TestDeduplicateDeals_Layer1_ExactIDSkipsSilently(t *testing.T) {
+	// Layer 1: When a scraped deal's FirestoreID already exists in existingDeals,
+	// it should be passed through without fuzzy matching or logging "deduplicated".
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+
+	// Simulate deals already in Firestore (loaded by loadExistingDeals)
+	existingDeals := map[string]*models.DealInfo{
+		"known-id-1": {
+			FirestoreID:   "known-id-1",
+			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
+		},
+		"known-id-2": {
+			FirestoreID:   "known-id-2",
+			Title:         "Apple AirPods Pro 2 - $249",
+			ActualDealURL: "https://amazon.ca/airpods",
+			SearchTokens:  []string{"apple", "airpods", "pro", "249"},
+		},
+	}
+
+	// Scraped deals have the same FirestoreIDs (same PublishedTimestamp = same posts)
+	scrapedDeals := []models.DealInfo{
+		{
+			FirestoreID:   "known-id-1",
+			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Threads:       []models.ThreadContext{{PostURL: "thread-1"}},
+		},
+		{
+			FirestoreID:   "known-id-2",
+			Title:         "Apple AirPods Pro 2 - $249",
+			ActualDealURL: "https://amazon.ca/airpods",
+			Threads:       []models.ThreadContext{{PostURL: "thread-2"}},
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, nil, logger)
+
+	// Both should pass through, keeping their original FirestoreIDs
+	if len(deduped) != 2 {
+		t.Fatalf("Expected 2 deals, got %d", len(deduped))
+	}
+	if deduped[0].FirestoreID != "known-id-1" {
+		t.Errorf("Expected known-id-1, got %s", deduped[0].FirestoreID)
+	}
+	if deduped[1].FirestoreID != "known-id-2" {
+		t.Errorf("Expected known-id-2, got %s", deduped[1].FirestoreID)
+	}
+
+	// SearchTokens should NOT be generated (Layer 1 skips before token generation)
+	if len(deduped[0].SearchTokens) > 0 {
+		t.Errorf("Layer 1 should skip token generation, but tokens were set: %v", deduped[0].SearchTokens)
+	}
+}
+
+func TestDeduplicateDeals_Layer2_FuzzyMatchForDifferentPosts(t *testing.T) {
+	// Layer 2: When a scraped deal has a NEW FirestoreID (not in existingDeals),
+	// but fuzzy-matches a recent deal, it should be remapped to the existing ID.
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+
+	existingDeals := make(map[string]*models.DealInfo)
+
+	recentDeals := []models.DealInfo{
+		{
+			FirestoreID:   "original-post-id",
+			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
+		},
+	}
+
+	// Different user posted a very similar deal (different timestamp = different FirestoreID)
+	scrapedDeals := []models.DealInfo{
+		{
+			FirestoreID:   "new-post-different-timestamp",
+			Title:         "[Samsung] Galaxy S24 Ultra 512GB Price Drop $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Threads:       []models.ThreadContext{{PostURL: "thread-new"}},
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, recentDeals, logger)
+
+	if len(deduped) != 1 {
+		t.Fatalf("Expected 1 deal, got %d", len(deduped))
+	}
+	// Should be remapped to the original post's ID
+	if deduped[0].FirestoreID != "original-post-id" {
+		t.Errorf("Expected FirestoreID to be remapped to original-post-id, got %s", deduped[0].FirestoreID)
+	}
+}
+
+func TestDeduplicateDeals_MixedLayers(t *testing.T) {
+	// Mix of Layer 1 (exact ID match) and Layer 2 (fuzzy match) in same batch
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+
+	existingDeals := map[string]*models.DealInfo{
+		"known-id": {
+			FirestoreID:  "known-id",
+			Title:        "AirPods Pro 2 - $249",
+			SearchTokens: []string{"airpods", "pro", "249"},
+		},
+	}
+
+	recentDeals := []models.DealInfo{
+		{
+			FirestoreID:   "recent-samsung",
+			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
+		},
+	}
+
+	scrapedDeals := []models.DealInfo{
+		{
+			// Layer 1: exact ID match, should skip fuzzy matching
+			FirestoreID:   "known-id",
+			Title:         "AirPods Pro 2 - $249",
+			ActualDealURL: "https://amazon.ca/airpods",
+			Threads:       []models.ThreadContext{{PostURL: "thread-1"}},
+		},
+		{
+			// Layer 2: new post, should fuzzy match against recentDeals
+			FirestoreID:   "brand-new-id",
+			Title:         "Samsung Galaxy S24 Ultra 512GB on sale",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Threads:       []models.ThreadContext{{PostURL: "thread-2"}},
+		},
+		{
+			// Brand new deal, no match anywhere
+			FirestoreID:   "totally-new",
+			Title:         "Costco Kirkland Batteries 48pk $15",
+			ActualDealURL: "https://costco.ca/batteries",
+			Threads:       []models.ThreadContext{{PostURL: "thread-3"}},
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, recentDeals, logger)
+
+	if len(deduped) != 3 {
+		t.Fatalf("Expected 3 deals, got %d", len(deduped))
+	}
+
+	// Deal 1: Layer 1 pass-through, keeps original ID
+	if deduped[0].FirestoreID != "known-id" {
+		t.Errorf("Deal 1 should keep known-id, got %s", deduped[0].FirestoreID)
+	}
+	// Deal 2: Layer 2 remapped to recent deal
+	if deduped[1].FirestoreID != "recent-samsung" {
+		t.Errorf("Deal 2 should be remapped to recent-samsung, got %s", deduped[1].FirestoreID)
+	}
+	// Deal 3: No match, keeps its own ID
+	if deduped[2].FirestoreID != "totally-new" {
+		t.Errorf("Deal 3 should keep totally-new, got %s", deduped[2].FirestoreID)
+	}
+}
+
 func TestDeduplicateDeals_ThreeWayMerge(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	p := &DealProcessor{}
