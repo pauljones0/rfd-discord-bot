@@ -75,7 +75,7 @@ func Load() (*Config, error) {
 
 	geminiModelID := os.Getenv("GEMINI_MODEL_ID")
 	if geminiModelID == "" {
-		geminiModelID = "gemini-2.5-flash-lite"
+		geminiModelID = "gemini-3.1-flash-lite-preview"
 	}
 
 	discordPublicKey := os.Getenv("DISCORD_PUBLIC_KEY")
@@ -96,11 +96,9 @@ func Load() (*Config, error) {
 		GeminiAPIKey:           os.Getenv("GEMINI_API_KEY"),
 		GeminiModelID:          geminiModelID,
 		GeminiFallbackModels:   []string{
-			"gemini-2.5-flash-lite", 
 			"gemini-3.1-flash-lite-preview",
-			"gemini-2.5-flash", 
 			"gemini-3-flash-preview",
-			"gemini-2.5-pro",
+			"gemini-3.1-pro-preview",
 		},
 		DiscordAppID:           os.Getenv("DISCORD_APP_ID"),
 		DiscordPublicKey:       discordPublicKey,
