@@ -6,8 +6,18 @@ import "time"
 type EbaySeller struct {
 	Username    string    `firestore:"username"`
 	DisplayName string    `firestore:"displayName,omitempty"`
+	Marketplace string    `firestore:"marketplace,omitempty"` // "EBAY_CA" or "EBAY_US"; defaults to EBAY_CA
 	IsActive    bool      `firestore:"isActive"`
 	AddedAt     time.Time `firestore:"addedAt"`
+}
+
+// MarketplaceID returns the eBay marketplace ID for the seller.
+// Defaults to "EBAY_CA" when not set (backward-compatible with existing Firestore documents).
+func (s EbaySeller) MarketplaceID() string {
+	if s.Marketplace == "" {
+		return "EBAY_CA"
+	}
+	return s.Marketplace
 }
 
 // EbayItem represents an eBay listing stored in Firestore (only warm/hot items are persisted).
@@ -101,35 +111,45 @@ type EbayVerifyResult struct {
 // DefaultSellers returns the hardcoded default seller list for initial Firestore seeding.
 func DefaultSellers() []EbaySeller {
 	now := time.Now()
-	usernames := []string{
-		"vipoutletcanada",
-		"themobilebase",
-		"helloworld2003",
-		"uventure",
-		"shanikuma6",
-		"calgarycomputerwholesale",
-		"originallaptoppartsandelectronics",
-		"acer",
-		"itworkstations",
-		"richyhub",
-		"neweggcanada",
-		"surplusbydesign",
-		"deltaserverstore",
-		"ssdwholesale",
-		"fsanchez89",
-		"jz.cpu1",
-		"qnrvr17",
-		"buythatapple",
-		"vipoutlet",
-		"officialbestbuy",
+
+	type entry struct {
+		username    string
+		marketplace string // empty = EBAY_CA (default)
 	}
 
-	sellers := make([]EbaySeller, len(usernames))
-	for i, u := range usernames {
+	entries := []entry{
+		// Canadian sellers (ebay.ca)
+		{username: "vipoutletcanada"},
+		{username: "themobilebase"},
+		{username: "helloworld2003"},
+		{username: "uventure"},
+		{username: "shanikuma6"},
+		{username: "calgarycomputerwholesale"},
+		{username: "originallaptoppartsandelectronics"},
+		{username: "richyhub"},
+		{username: "neweggcanada"},
+		{username: "surplusbydesign"},
+		{username: "ssdwholesale"},
+		{username: "fsanchez89"},
+		{username: "qnrvr17"},
+		{username: "buythatapple"},
+
+		// US sellers (ebay.com)
+		{username: "vipoutlet", marketplace: "EBAY_US"},
+		{username: "itworkstations", marketplace: "EBAY_US"},
+		{username: "deltaserverstore", marketplace: "EBAY_US"},
+		{username: "officialbestbuy", marketplace: "EBAY_US"},
+		{username: "acer", marketplace: "EBAY_US"},
+		{username: "jz.cpu1", marketplace: "EBAY_US"},
+	}
+
+	sellers := make([]EbaySeller, len(entries))
+	for i, e := range entries {
 		sellers[i] = EbaySeller{
-			Username: u,
-			IsActive: true,
-			AddedAt:  now,
+			Username:    e.username,
+			Marketplace: e.marketplace,
+			IsActive:    true,
+			AddedAt:     now,
 		}
 	}
 	return sellers

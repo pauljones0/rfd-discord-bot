@@ -120,7 +120,7 @@ func (c *Client) invalidateToken() {
 
 // SearchSellerListings fetches Buy It Now listings from the given sellers.
 // Queries each seller individually to keep result sets within Browse API limits.
-func (c *Client) SearchSellerListings(ctx context.Context, sellers []string) ([]BrowseAPIItem, error) {
+func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller) ([]BrowseAPIItem, error) {
 	if c == nil {
 		return nil, fmt.Errorf("eBay client not initialized")
 	}
@@ -132,7 +132,7 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []string) ([]
 	for _, seller := range sellers {
 		items, err := c.fetchSellerListings(ctx, seller)
 		if err != nil {
-			slog.Warn("Failed to fetch listings for eBay seller", "seller", seller, "error", err)
+			slog.Warn("Failed to fetch listings for eBay seller", "seller", seller.Username, "error", err)
 			continue // skip this seller, don't fail the whole run
 		}
 		allItems = append(allItems, items...)
@@ -142,12 +142,12 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []string) ([]
 }
 
 // fetchSellerListings fetches all BIN listings for a single seller with pagination.
-func (c *Client) fetchSellerListings(ctx context.Context, seller string) ([]BrowseAPIItem, error) {
+func (c *Client) fetchSellerListings(ctx context.Context, seller EbaySeller) ([]BrowseAPIItem, error) {
 	var allItems []BrowseAPIItem
 	offset := 0
 
 	for {
-		items, hasMore, err := c.fetchSellerPage(ctx, seller, offset)
+		items, hasMore, err := c.fetchSellerPage(ctx, seller.Username, seller.MarketplaceID(), offset)
 		if err != nil {
 			return allItems, err
 		}
@@ -158,12 +158,16 @@ func (c *Client) fetchSellerListings(ctx context.Context, seller string) ([]Brow
 		offset += browsePageLimit
 	}
 
-	slog.Info("Fetched eBay seller listings", "seller", seller, "total_items", len(allItems))
+	slog.Info("Fetched eBay seller listings",
+		"seller", seller.Username,
+		"marketplace", seller.MarketplaceID(),
+		"total_items", len(allItems),
+	)
 	return allItems, nil
 }
 
 // fetchSellerPage fetches one page of BIN listings for a single seller from the Browse API.
-func (c *Client) fetchSellerPage(ctx context.Context, seller string, offset int) ([]BrowseAPIItem, bool, error) {
+func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string, offset int) ([]BrowseAPIItem, bool, error) {
 	token, err := c.getToken(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to get eBay token: %w", err)
@@ -185,7 +189,7 @@ func (c *Client) fetchSellerPage(ctx context.Context, seller string, offset int)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-EBAY-C-MARKETPLACE-ID", "EBAY_CA")
+	req.Header.Set("X-EBAY-C-MARKETPLACE-ID", marketplace)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -211,7 +215,7 @@ func (c *Client) fetchSellerPage(ctx context.Context, seller string, offset int)
 
 		req, _ = http.NewRequestWithContext(ctx, "GET", reqURL, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-EBAY-C-MARKETPLACE-ID", "EBAY_CA")
+		req.Header.Set("X-EBAY-C-MARKETPLACE-ID", marketplace)
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err = c.httpClient.Do(req)

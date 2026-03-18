@@ -94,14 +94,10 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		return nil
 	}
 
-	sellerUsernames := make([]string, len(sellers))
-	for i, s := range sellers {
-		sellerUsernames[i] = s.Username
-	}
-	logger.Info("Loaded active eBay sellers", "count", len(sellerUsernames))
+	logger.Info("Loaded active eBay sellers", "count", len(sellers))
 
 	// 3. Fetch listings from eBay API
-	apiItems, err := p.client.SearchSellerListings(ctx, sellerUsernames)
+	apiItems, err := p.client.SearchSellerListings(ctx, sellers)
 	if err != nil {
 		pollErr := err.Error()
 		p.store.UpdateEbayPollState(ctx, EbayPollState{
