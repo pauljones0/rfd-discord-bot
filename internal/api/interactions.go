@@ -264,8 +264,14 @@ func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest
 	}
 
 	validTypes := map[string]bool{
-		"all": true, "tech": true, "warm_hot_all": true,
-		"warm_hot_tech": true, "hot_all": true, "hot_tech": true,
+		// RFD types
+		"rfd_all": true, "rfd_tech": true,
+		"rfd_warm_hot": true, "rfd_warm_hot_tech": true,
+		"rfd_hot": true, "rfd_hot_tech": true,
+		// eBay types
+		"ebay_warm_hot": true, "ebay_hot": true,
+		// Cross-source types
+		"warm_hot_all": true, "hot_all": true,
 	}
 
 	if !validTypes[dealType] {
@@ -298,7 +304,7 @@ func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest
 								Type:     2, // Button
 								Style:    1, // Primary (Blue)
 								Label:    "Confirm Update",
-								CustomID: fmt.Sprintf("confirm_update_%s_%s_%s", channelID, dealType, channelName),
+								CustomID: fmt.Sprintf("confirm_update::%s::%s::%s", channelID, dealType, channelName),
 							},
 							{
 								Type:     2, // Button
@@ -389,7 +395,7 @@ func (h *Handler) handleRemoveCommand(w http.ResponseWriter, req interactionRequ
 					Type:     2, // Button
 					Style:    4, // Danger (Red)
 					Label:    label,
-					CustomID: fmt.Sprintf("remove_sub_%s_%s", sub.ChannelID, typeLabel),
+					CustomID: fmt.Sprintf("remove_sub::%s::%s", sub.ChannelID, typeLabel),
 				},
 			},
 		})
@@ -421,16 +427,16 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 	dealType := "all"
 	channelName := ""
 
-	if strings.HasPrefix(req.Data.CustomID, "remove_sub_") {
-		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_sub_")
-		parts := strings.SplitN(trimmed, "_", 2)
+	if strings.HasPrefix(req.Data.CustomID, "remove_sub::") {
+		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_sub::")
+		parts := strings.SplitN(trimmed, "::", 2)
 		channelID = parts[0]
 		if len(parts) > 1 {
 			dealType = parts[1]
 		}
-	} else if strings.HasPrefix(req.Data.CustomID, "confirm_update_") {
-		trimmed := strings.TrimPrefix(req.Data.CustomID, "confirm_update_")
-		parts := strings.SplitN(trimmed, "_", 3)
+	} else if strings.HasPrefix(req.Data.CustomID, "confirm_update::") {
+		trimmed := strings.TrimPrefix(req.Data.CustomID, "confirm_update::")
+		parts := strings.SplitN(trimmed, "::", 3)
 		if len(parts) < 2 {
 			h.respondError(w, "Invalid confirmation data.")
 			return
@@ -554,7 +560,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 					Type:     2, // Button
 					Style:    4, // Danger (Red)
 					Label:    label,
-					CustomID: fmt.Sprintf("remove_sub_%s_%s", sub.ChannelID, typeLabel),
+					CustomID: fmt.Sprintf("remove_sub::%s::%s", sub.ChannelID, typeLabel),
 				},
 			},
 		})

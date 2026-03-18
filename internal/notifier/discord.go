@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
@@ -321,4 +322,107 @@ func (c *Client) IsWarm(deal models.DealInfo) bool {
 // IsHot determines if a deal is considered hot.
 func (c *Client) IsHot(deal models.DealInfo) bool {
 	return deal.IsLavaHot
+}
+
+// --- eBay Deal Notifications ---
+
+// SendEbayDeal sends a new eBay deal notification to all subscribed channels.
+// Returns a map of ChannelID -> MessageID.
+func (c *Client) SendEbayDeal(ctx context.Context, item ebay.EbayItem, subs []models.Subscription) (map[string]string, error) {
+	if c.botToken == "" {
+		return nil, nil
+	}
+
+	payload := createEbayPayload(item)
+	results := make(map[string]string)
+
+	for _, sub := range subs {
+		urlStr := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", sub.ChannelID)
+		body, err := c.doRequest(ctx, "POST", urlStr, payload)
+		if err != nil {
+			slog.Error("Failed to send eBay deal to channel", "channel", sub.ChannelID, "item", item.Title, "error", err)
+			continue
+		}
+
+		var msgResponse discordMessageResponse
+		if err := json.Unmarshal(body, &msgResponse); err != nil {
+			slog.Error("Failed to parse discord message response for eBay deal", "error", err)
+			continue
+		}
+		results[sub.ChannelID] = msgResponse.ID
+	}
+
+	return results, nil
+}
+
+func createEbayPayload(item ebay.EbayItem) discordWebhookPayload {
+	embed := formatEbayEmbed(item)
+	return discordWebhookPayload{
+		Content: "",
+		Embeds:  []discordEmbed{embed},
+	}
+}
+
+func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
+	// Title
+	title := item.Title
+	if item.CleanTitle != "" {
+		title = item.CleanTitle
+	}
+
+	if item.IsLavaHot {
+		title += " 🔥"
+	}
+
+	// Color
+	embedColor := colorWarmDeal // Only warm/hot items get stored, so minimum is warm
+	if item.IsLavaHot {
+		embedColor = colorHotDeal
+	}
+
+	// Description
+	var descBuilder strings.Builder
+
+	// Seller info
+	if item.Seller != "" {
+		descBuilder.WriteString(fmt.Sprintf("**Seller:** [%s](https://www.ebay.ca/usr/%s)\n", item.Seller, item.Seller))
+	}
+
+	// Condition
+	if item.Condition != "" {
+		descBuilder.WriteString(fmt.Sprintf("**Condition:** %s\n", item.Condition))
+	}
+
+	// Price
+	if item.Price != "" {
+		currency := item.Currency
+		if currency == "" {
+			currency = "CAD"
+		}
+		descBuilder.WriteString(fmt.Sprintf("\n💰 **%s %s**", currency, item.Price))
+	}
+
+	// Thumbnail
+	var thumbnail discordEmbedThumbnail
+	if item.ImageURL != "" {
+		thumbnail.URL = item.ImageURL
+	}
+
+	// Timestamp
+	var timestampStr string
+	if !item.ListingDate.IsZero() {
+		timestampStr = item.ListingDate.Format(time.RFC3339)
+	}
+
+	return discordEmbed{
+		Title:       title,
+		URL:         item.ItemURL,
+		Description: descBuilder.String(),
+		Timestamp:   timestampStr,
+		Color:       embedColor,
+		Thumbnail:   thumbnail,
+		Footer: discordEmbedFooter{
+			Text: "🛒 eBay Canada",
+		},
+	}
 }

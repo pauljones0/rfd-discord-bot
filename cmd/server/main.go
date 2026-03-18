@@ -15,6 +15,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/ai"
 	"github.com/pauljones0/rfd-discord-bot/internal/api"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
@@ -24,10 +25,12 @@ import (
 )
 
 type Server struct {
-	processor processor.Processor
-	store     processor.DealStore
-	wg        sync.WaitGroup
-	sem       chan struct{} // Semaphore to limit concurrent processing requests
+	processor      processor.Processor
+	ebayProcessor  *ebay.Processor
+	store          processor.DealStore
+	wg             sync.WaitGroup
+	sem            chan struct{} // Semaphore to limit concurrent RFD processing requests
+	ebaySem        chan struct{} // Semaphore to limit concurrent eBay processing requests
 }
 
 func main() {
@@ -65,10 +68,22 @@ func main() {
 
 	p := processor.New(store, n, s, v, cfg, aiClient)
 
+	// Initialize eBay client (gracefully handles missing credentials)
+	ebayClient := ebay.NewClient(cfg.EbayClientID, cfg.EbayClientSecret)
+	var ebayProc *ebay.Processor
+	if ebayClient != nil {
+		ebayProc = ebay.NewProcessor(store, ebayClient, aiClient, n)
+		slog.Info("eBay deal processor initialized")
+	} else {
+		slog.Info("eBay features disabled (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set)")
+	}
+
 	srv := &Server{
-		processor: p,
-		store:     store,
-		sem:       make(chan struct{}, 2), // Allow up to 2 concurrent request processing attempts
+		processor:     p,
+		ebayProcessor: ebayProc,
+		store:         store,
+		sem:           make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
+		ebaySem:       make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
 	}
 
 	apiHandler, err := api.NewHandler(cfg, store)
@@ -80,6 +95,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", srv.ProcessDealsHandler)
 	mux.HandleFunc("/process-deals", srv.ProcessDealsHandler)
+	mux.HandleFunc("/process-ebay", srv.ProcessEbayHandler)
 	mux.Handle("/discord/interactions", apiHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -165,6 +181,44 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusAccepted)
 	fmt.Fprintln(w, "Deal processing started.")
+}
+
+func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
+	if s.ebayProcessor == nil {
+		slog.Info("ProcessEbayHandler: eBay processor not configured, skipping")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{"status":"skipped", "details": "eBay features not configured"}`)
+		return
+	}
+
+	select {
+	case s.ebaySem <- struct{}{}:
+	default:
+		slog.Info("ProcessEbayHandler: dropped request due to concurrency limit")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprintln(w, `{"status":"busy", "details": "server is busy processing eBay deals"}`)
+		return
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() { <-s.ebaySem }()
+
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Panic in ProcessEbayDeals", "panic", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		if err := s.ebayProcessor.ProcessEbayDeals(ctx); err != nil {
+			slog.Error("Error processing eBay deals", "error", err)
+		}
+	}()
+
+	w.WriteHeader(http.StatusAccepted)
+	fmt.Fprintln(w, "eBay deal processing started.")
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

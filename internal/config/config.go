@@ -27,6 +27,10 @@ type Config struct {
 	DiscordAppID     string
 	DiscordPublicKey string
 	DiscordBotToken  string
+
+	// eBay API (optional — eBay features disabled if not set)
+	EbayClientID     string
+	EbayClientSecret string
 }
 
 func Load() (*Config, error) {
@@ -103,5 +107,7 @@ func Load() (*Config, error) {
 		DiscordAppID:           os.Getenv("DISCORD_APP_ID"),
 		DiscordPublicKey:       discordPublicKey,
 		DiscordBotToken:        discordBotToken,
+		EbayClientID:           os.Getenv("EBAY_CLIENT_ID"),
+		EbayClientSecret:       os.Getenv("EBAY_CLIENT_SECRET"),
 	}, nil
 }

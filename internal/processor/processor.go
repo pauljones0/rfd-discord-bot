@@ -492,18 +492,34 @@ func (p *DealProcessor) isDealEligibleForSubscription(deal models.DealInfo, sub 
 	isHot := deal.HasBeenHot || p.notifier.IsHot(deal)
 
 	switch sub.DealType {
-	case "all", "": // Empty means legacy fallback which is "all deals"
-		return true // Send everything, even 0/negative likes
-	case "tech":
+	// RFD: all deals
+	case "rfd_all":
+		return true
+	// RFD: tech only
+	case "rfd_tech":
 		return isTech
+	// RFD: warm + hot (all categories)
+	case "rfd_warm_hot":
+		return isWarm || isHot
+	// RFD: warm + hot tech only
+	case "rfd_warm_hot_tech":
+		return (isWarm || isHot) && isTech
+	// RFD: hot only
+	case "rfd_hot":
+		return isHot
+	// RFD: hot tech only
+	case "rfd_hot_tech":
+		return isHot && isTech
+
+	// Cross-source: RFD deals are eligible
 	case "warm_hot_all":
 		return isWarm || isHot
-	case "warm_hot_tech":
-		return (isWarm || isHot) && isTech
 	case "hot_all":
 		return isHot
-	case "hot_tech":
-		return isHot && isTech
+
+	// eBay-only: RFD deals are NOT eligible
+	case "ebay_warm_hot", "ebay_hot":
+		return false
 	}
-	return true
+	return false
 }

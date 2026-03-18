@@ -1,6 +1,6 @@
-# RFD Hot Deals Discord Bot
+# RFD & eBay Deals Discord Bot
 
-The ultimate companion for your Discord server to catch the hottest deals from RedFlagDeals!
+The ultimate companion for your Discord server to catch the hottest deals from RedFlagDeals and eBay Canada!
 
 Adding this bot to your server will automatically post the latest and greatest deals directly into the channel of your choice. Never miss another price error or "Lava Hot" deal again.
 
@@ -20,15 +20,22 @@ Adding this bot to your server will automatically post the latest and greatest d
 2. **Choose a channel:** Go to the channel where you want the bot to post deals.
 3. **Run the setup command:** Type `/rfd-bot-setup set channel:#your-channel-name type:your-preference` and hit Enter!
    * The `type` option allows you to choose exactly what deals you want:
-     *   `All deals`
-     *   `Tech only deals`
-     *   `All warm + hot deals`
-     *   `All warm + hot tech deals`
-     *   `All hot deals`
-     *   `All hot tech deals`
-   * *Note: "Warm" and "Hot" deals are determined entirely by the Gemini AI's analysis of the deal content. The criteria for "Warm" are highly selective, requiring significant discounts (e.g., 25%+) or strong positive user resonance to minimize excessive pings.*
+     * **RFD (RedFlagDeals):**
+       *   `RFD: All deals` — Every deal posted
+       *   `RFD: Tech only` — Tech category deals only
+       *   `RFD: Warm + Hot (all categories)` — AI-selected best deals
+       *   `RFD: Warm + Hot (tech only)` — AI-selected best tech deals
+       *   `RFD: Hot only (all categories)` — Only the absolute best deals
+       *   `RFD: Hot only (tech only)` — Only the absolute best tech deals
+     * **eBay Canada:**
+       *   `eBay: Warm + Hot deals` — AI-verified eBay deals from tracked sellers
+       *   `eBay: Hot deals only` — Only the absolute best eBay deals
+     * **All Sources (RFD + eBay):**
+       *   `All Sources: Warm + Hot` — Best deals from all sources
+       *   `All Sources: Hot only` — Only the absolute best deals from all sources
+   * *Note: "Warm" and "Hot" deals are determined entirely by the Gemini AI's analysis. For RFD, this includes deal content and user comments. For eBay, a two-tier AI system first screens batches for promising deals, then individually verifies each candidate against current market prices using Google Search grounding.*
 
-That's it! The bot will now monitor the RedFlagDeals "Hot Deals" forum 24/7 and post beautifully formatted alerts directly to that channel based on your chosen type.
+That's it! The bot will now monitor RedFlagDeals and tracked eBay sellers 24/7 and post beautifully formatted alerts directly to that channel based on your chosen type.
 
 To stop the bot from posting or securely view active subscriptions, an administrator can simply type `/rfd-bot-setup remove` in any channel. This brings up an interactive message with delete buttons for each active channel. Clicking a button will instantly remove that channel's subscription and update the message to confirm the removal, ensuring a clean and responsive UX.
 
@@ -46,6 +53,10 @@ To stop the bot from posting or securely view active subscriptions, an administr
 *   **Discord Bot Notifications:** Sends detailed notifications to multiple subscribed Discord servers, complete with native Discord timestamps, actual deal URLs, concise engagement metrics, and categorized emojis for improved visual clarity. Includes the **Retailer/Store name** directly in the footer for instant context, with support for extracting retailer names from both CSS badges and structured JSON-LD.
 *   **Smart Deduplication:** Automatically detects when identical deals are posted in multiple forum threads by fuzzy matching titles and target URLs. It gracefully merges their engagement metrics, sorts the threads by popularity, and appends all tracking links into a single unified Discord alert.
 *   **Live Updates:** Discord embed colors escalate to warm or hot strictly based on AI analysis. Embeds are dynamically patched to keep likes, comments, and views accurate for up to 1 hour after publication to respect Discord's rate limits on editing old messages.
+*   **eBay Seller Monitoring:** Tracks Buy It Now listings from a curated list of 20+ eBay Canada sellers via the official eBay Browse API. Polls every 30 minutes, identifies new listings, and runs them through a two-tier AI pipeline:
+    1.  **Tier 1 (Batch Screening):** Groups items into batches of 10, asks Gemini to identify the top ~30% most promising deals without grounding (fast, cheap).
+    2.  **Tier 2 (Grounded Verification):** For each tier-1 candidate, performs an individual Gemini call with Google Search grounding to verify the price against current Canadian retail prices. Only warm/hot deals are stored and sent to Discord.
+*   **Admin-Managed Seller List:** eBay sellers are stored in Firestore and seeded with defaults on first run. Sellers can be added/removed via Firestore console without redeploying.
 *   **Zero-Config For Users:** Just invite, set the channel via a Slash Command, and enjoy the deals.
 
 ---
@@ -69,12 +80,18 @@ The bot operates with a simple, serverless architecture on Google Cloud:
 
 ```mermaid
 graph LR
-    A[Cloud Scheduler: Runs every minute] --> B(Cloud Run: Go Server)
+    A[Cloud Scheduler: Every minute] --> B(Cloud Run: Go Server)
     B --> C{Scrape RFD List}
-    C --> D{Check/Fetch heavily detailed info}
+    C --> D{Fetch deal details}
     D --> E{Gemini AI Analysis}
-    E --> F{Format & Post to Discord}
-    F --> G[Update Firestore State]
+    E --> F{Post to Discord}
+    F --> G[Update Firestore]
+
+    H[Cloud Scheduler: Every 30 min] --> B
+    B --> I{eBay Browse API}
+    I --> J{Tier-1: Batch Screen}
+    J --> K{Tier-2: Grounded Verify}
+    K --> F
 ```
 
 ## 🤖 GitHub Actions CI/CD
@@ -94,6 +111,8 @@ To use the automated deployment, you MUST add the following as **Repository Secr
 *   `DISCORD_BOT_TOKEN`: Your Discord Bot Token.
 *   `DISCORD_PUBLIC_KEY`: Your Discord Public Key.
 *   `GEMINI_API_KEY`: Your Google Gemini API key.
+*   `EBAY_CLIENT_ID`: (Optional) Your eBay Developer App Client ID. If omitted, eBay features are disabled.
+*   `EBAY_CLIENT_SECRET`: (Optional) Your eBay Developer App Client Secret.
 
 > [!WARNING]
 > If `GCP_SA_KEY` is missing or empty, the workflow will fail with an error like:
@@ -130,6 +149,8 @@ The application requires the following environment variables to run locally:
 *   `DISCORD_PUBLIC_KEY`: The Discord Public Key (for Ed25519 Interaction signature validation).
 *   `DISCORD_BOT_TOKEN`: The Discord Bot Token used for API authorization.
 *   `GEMINI_API_KEY`: (Optional) Your Google Gemini API key. If omitted, AI features like grounded title cleaning and hotness rating are disabled.
+*   `EBAY_CLIENT_ID`: (Optional) Your eBay Developer App Client ID. If omitted, eBay features are disabled.
+*   `EBAY_CLIENT_SECRET`: (Optional) Your eBay Developer App Client Secret.
 *   `PORT`: (Optional) The port the HTTP server should listen on. Defaults to 8080.
 
 It's recommended to create a `.env` file in the project root to store these variables. This file is included in `.gitignore` to prevent accidental commits of sensitive information.
@@ -142,6 +163,8 @@ export DISCORD_APP_ID="your-discord-app-id"
 export DISCORD_PUBLIC_KEY="your-discord-public-key"
 export DISCORD_BOT_TOKEN="your-discord-bot-token"
 export GEMINI_API_KEY="your-gemini-api-key"
+export EBAY_CLIENT_ID="your-ebay-client-id"
+export EBAY_CLIENT_SECRET="your-ebay-client-secret"
 export PORT="8080"
 ```
 Replace placeholder values with your real tokens from the Discord Developer Portal and Google Cloud.
@@ -337,7 +360,36 @@ To set up Firestore for the bot, follow these steps in the [Google Cloud Console
     *   *Justification:* Co-locating Firestore and your Cloud Run service minimizes network latency and potential egress costs. This choice is permanent.
 9.  **Finalize Creation:** Click **"Create Database"**.
 
-The bot will automatically create the necessary collections (`deals` and `subscriptions`) within Firestore.
+The bot will automatically create the necessary collections (`deals`, `subscriptions`, `ebay_sellers`, `ebay_items`) within Firestore. The `ebay_sellers` collection is automatically seeded with the default seller list on first run if empty.
+
+### eBay API Setup (Optional)
+
+To enable eBay deal monitoring, you need an eBay Developer account with Production API keys:
+
+1.  **Create an eBay Developer account:** Go to [developer.ebay.com](https://developer.ebay.com) and sign up.
+2.  **Create an Application:** In the eBay Developer Portal, create a new application to get your Production keys.
+3.  **Get your credentials:** Copy the **Client ID** (App ID) and **Client Secret** (Cert ID) from the Production keyset.
+4.  **Add to your `.env` file:**
+    ```bash
+    EBAY_CLIENT_ID=your-production-client-id
+    EBAY_CLIENT_SECRET=your-production-client-secret
+    ```
+5.  **Sync to GitHub Secrets:** Run the secret sync script to push them to your repository:
+    ```powershell
+    .\scripts\sync_secrets.ps1
+    ```
+
+If the eBay credentials are not set (or set to placeholder values), the bot will start normally with eBay features disabled. You can add real keys later without any code changes.
+
+> [!NOTE]
+> The eBay Browse API has a free tier of 5,000 calls/day. With 21 sellers batched into a single query, polling every 30 minutes uses ~50 calls/day — well within limits.
+
+**Cloud Scheduler for eBay (Optional):** Once you have eBay credentials configured and deployed, create a second Cloud Scheduler job to trigger eBay processing:
+```bash
+# For Linux/macOS:
+gcloud scheduler jobs create http ebay-deal-trigger --location "$REGION" --schedule "*/30 * * * *" --uri YOUR_CLOUD_RUN_SERVICE_URL/process-ebay --http-method GET --time-zone "America/Toronto" --description "Triggers eBay deal processing every 30 minutes" --project "$PROJECT_ID"
+```
+You can adjust the schedule to be more or less frequent (the API rate limits can easily handle every 15 minutes).
 
 ### Configure Environment Variables for Deployment
 

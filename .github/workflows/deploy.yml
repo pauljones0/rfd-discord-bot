@@ -27,6 +27,8 @@ jobs:
       DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
       DISCORD_PUBLIC_KEY: ${{ secrets.DISCORD_PUBLIC_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
 
     steps:
       - name: Checkout
@@ -49,3 +51,5 @@ jobs:
             DISCORD_BOT_TOKEN=${{ env.DISCORD_BOT_TOKEN }}
             DISCORD_PUBLIC_KEY=${{ env.DISCORD_PUBLIC_KEY }}
             GEMINI_API_KEY=${{ env.GEMINI_API_KEY }}
+            EBAY_CLIENT_ID=${{ env.EBAY_CLIENT_ID }}
+            EBAY_CLIENT_SECRET=${{ env.EBAY_CLIENT_SECRET }}

@@ -29,7 +29,7 @@ func main() {
 	// Restrict to admins: Manage Server permission is 0x20
 	payload := map[string]interface{}{
 		"name":                       "rfd-bot-setup",
-		"description":                "Configure the RFD bot for this server.",
+		"description":                "Configure the RFD & eBay deal bot for this server.",
 		"default_member_permissions": "32", // 0x20 Manage Server
 		"options": []map[string]interface{}{
 			{
@@ -50,29 +50,48 @@ func main() {
 						"type":        3, // STRING
 						"required":    true,
 						"choices": []map[string]interface{}{
+							// RFD-specific
 							{
-								"name":  "All deals",
-								"value": "all",
+								"name":  "RFD: All deals",
+								"value": "rfd_all",
 							},
 							{
-								"name":  "Tech only deals",
-								"value": "tech",
+								"name":  "RFD: Tech only",
+								"value": "rfd_tech",
 							},
 							{
-								"name":  "All warm + hot deals",
+								"name":  "RFD: Warm + Hot (all categories)",
+								"value": "rfd_warm_hot",
+							},
+							{
+								"name":  "RFD: Warm + Hot (tech only)",
+								"value": "rfd_warm_hot_tech",
+							},
+							{
+								"name":  "RFD: Hot only (all categories)",
+								"value": "rfd_hot",
+							},
+							{
+								"name":  "RFD: Hot only (tech only)",
+								"value": "rfd_hot_tech",
+							},
+							// eBay-specific
+							{
+								"name":  "eBay: Warm + Hot deals",
+								"value": "ebay_warm_hot",
+							},
+							{
+								"name":  "eBay: Hot deals only",
+								"value": "ebay_hot",
+							},
+							// Cross-source
+							{
+								"name":  "All Sources: Warm + Hot",
 								"value": "warm_hot_all",
 							},
 							{
-								"name":  "All warm + hot tech deals",
-								"value": "warm_hot_tech",
-							},
-							{
-								"name":  "All hot deals",
+								"name":  "All Sources: Hot only",
 								"value": "hot_all",
-							},
-							{
-								"name":  "All hot tech deals",
-								"value": "hot_tech",
 							},
 						},
 					},
