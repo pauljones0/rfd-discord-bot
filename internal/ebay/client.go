@@ -187,10 +187,11 @@ func (c *Client) searchPage(ctx context.Context, sellers []string, offset int) (
 	sellersFilter := "{" + strings.Join(sellers, "|") + "}"
 
 	params := url.Values{
-		"filter":      {fmt.Sprintf("sellers:%s,buyingOptions:{FIXED_PRICE}", sellersFilter)},
-		"sort":        {"newlyListed"},
-		"limit":       {fmt.Sprintf("%d", browsePageLimit)},
-		"offset":      {fmt.Sprintf("%d", offset)},
+		"q":      {"*"},
+		"filter": {fmt.Sprintf("sellers:%s,buyingOptions:{FIXED_PRICE}", sellersFilter)},
+		"sort":   {"newlyListed"},
+		"limit":  {fmt.Sprintf("%d", browsePageLimit)},
+		"offset": {fmt.Sprintf("%d", offset)},
 	}
 
 	reqURL := ebayBrowseURL + "?" + params.Encode()
