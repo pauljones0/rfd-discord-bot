@@ -178,10 +178,18 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 
 		dealA := &scrapedDeals[i]
 
+		// Layer 1: Exact ID match — same PublishedTimestamp means same post, skip silently.
+		// This is the normal case: the same deal appears on the page every scrape cycle.
+		if _, alreadyKnown := existingDeals[dealA.FirestoreID]; alreadyKnown {
+			dedupedScraped = append(dedupedScraped, *dealA)
+			continue
+		}
+
 		// 1. Ensure DealA has tokens.
 		dealA.SearchTokens = GenerateSearchTokens(dealA)
 
-		// 2. Check against recent existing deals
+		// Layer 2: Fuzzy match against recent deals — catches different RFD threads
+		// about the same product (different users posting the same deal).
 		var matchedExisting *models.DealInfo
 		for rIdx := range recentDeals {
 			rDeal := &recentDeals[rIdx]
