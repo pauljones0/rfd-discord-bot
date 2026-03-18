@@ -22,6 +22,9 @@ const (
 
 	// browsePageLimit is the maximum items per page from the Browse API.
 	browsePageLimit = 200
+
+	// browseMaxPages caps pagination per seller to avoid context timeouts on large stores.
+	browseMaxPages = 20 // 20 × 200 = 4,000 items per seller max
 )
 
 // Client handles eBay OAuth and Browse API interactions.
@@ -142,11 +145,12 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller)
 }
 
 // fetchSellerListings fetches all BIN listings for a single seller with pagination.
+// Stops after browseMaxPages to avoid context timeouts on very large stores.
 func (c *Client) fetchSellerListings(ctx context.Context, seller EbaySeller) ([]BrowseAPIItem, error) {
 	var allItems []BrowseAPIItem
 	offset := 0
 
-	for {
+	for page := 0; page < browseMaxPages; page++ {
 		items, hasMore, err := c.fetchSellerPage(ctx, seller.Username, seller.MarketplaceID(), offset)
 		if err != nil {
 			return allItems, err

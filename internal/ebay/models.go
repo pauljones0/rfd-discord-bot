@@ -120,22 +120,22 @@ func DefaultSellers() []EbaySeller {
 	entries := []entry{
 		// Canadian sellers (ebay.ca)
 		{username: "vipoutletcanada"},
-		{username: "themobilebase"},
 		{username: "helloworld2003"},
 		{username: "uventure"},
 		{username: "shanikuma6"},
 		{username: "calgarycomputerwholesale"},
 		{username: "originallaptoppartsandelectronics"},
-		{username: "richyhub"},
 		{username: "neweggcanada"},
 		{username: "surplusbydesign"},
 		{username: "ssdwholesale"},
 		{username: "fsanchez89"},
 		{username: "qnrvr17"},
 		{username: "buythatapple"},
+		{username: "vipoutlet"}, // US seller that ships to CA; works on EBAY_CA
 
 		// US sellers (ebay.com)
-		{username: "vipoutlet", marketplace: "EBAY_US"},
+		{username: "themobilebase", marketplace: "EBAY_US"},
+		{username: "richyhub", marketplace: "EBAY_US"},
 		{username: "itworkstations", marketplace: "EBAY_US"},
 		{username: "deltaserverstore", marketplace: "EBAY_US"},
 		{username: "officialbestbuy", marketplace: "EBAY_US"},
