@@ -32,9 +32,9 @@ type AnalysisResult struct {
 	IsLavaHot  bool   `json:"is_lava_hot"`
 }
 
-func NewClient(ctx context.Context, apiKey string, fallbackModels []string, store QuotaStore) (*Client, error) {
-	if apiKey == "" {
-		return nil, nil // Return nil client if no key provided
+func NewClient(ctx context.Context, projectID, location string, fallbackModels []string, store QuotaStore) (*Client, error) {
+	if projectID == "" {
+		return nil, nil // Return nil client if no project provided
 	}
 
 	if len(fallbackModels) == 0 {
@@ -42,8 +42,9 @@ func NewClient(ctx context.Context, apiKey string, fallbackModels []string, stor
 	}
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
+		Project:  projectID,
+		Location: location,
+		Backend:  genai.BackendVertexAI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gemini client: %w", err)
@@ -210,7 +211,9 @@ Task:
 	var err error
 
 	err = util.RetryWithBackoff(ctx, 3, func(attempt int) error {
-		resp, err = c.client.Models.GenerateContent(ctx, activeModel, genai.Text(prompt), config)
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		resp, err = c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
 		if err == nil {
 			return nil
 		}

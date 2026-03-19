@@ -19,7 +19,7 @@ type Config struct {
 	MaxStoredDeals         int
 	AllowedDomains         []string
 	RFDBaseURL             string
-	GeminiAPIKey           string
+	GeminiLocation         string
 	GeminiModelID          string
 	GeminiFallbackModels   []string
 
@@ -88,6 +88,11 @@ func Load() (*Config, error) {
 		slog.Warn("DISCORD_BOT_TOKEN not set, Discord application features may be disabled")
 	}
 
+	geminiLocation := os.Getenv("GEMINI_LOCATION")
+	if geminiLocation == "" {
+		geminiLocation = "us-central1"
+	}
+
 	return &Config{
 		ProjectID:              projectID,
 		Port:                   port,
@@ -97,7 +102,7 @@ func Load() (*Config, error) {
 		MaxStoredDeals:         maxStoredDeals,
 		AllowedDomains:         []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com", "bestbuy.ca"},
 		RFDBaseURL:             "https://forums.redflagdeals.com",
-		GeminiAPIKey:           os.Getenv("GEMINI_API_KEY"),
+		GeminiLocation:         geminiLocation,
 		GeminiModelID:          geminiModelID,
 		GeminiFallbackModels:   []string{
 			"gemini-3.1-flash-lite-preview",

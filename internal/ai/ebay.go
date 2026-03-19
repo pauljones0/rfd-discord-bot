@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
@@ -73,7 +74,9 @@ Return a JSON array with ALL items, marking the top deals:
 	var err error
 
 	err = util.RetryWithBackoff(ctx, 3, func(attempt int) error {
-		resp, err = c.client.Models.GenerateContent(ctx, activeModel, genai.Text(prompt), config)
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		resp, err = c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
 		if err == nil {
 			return nil
 		}
@@ -176,7 +179,9 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 	var err error
 
 	err = util.RetryWithBackoff(ctx, 3, func(attempt int) error {
-		resp, err = c.client.Models.GenerateContent(ctx, activeModel, genai.Text(prompt), config)
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		resp, err = c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
 		if err == nil {
 			return nil
 		}

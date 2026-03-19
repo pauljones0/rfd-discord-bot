@@ -60,8 +60,8 @@ func main() {
 	s := scraper.New(cfg, selectors)
 	v := validator.New()
 
-	// Initialize AI client (gracefully handles missing key)
-	aiClient, err := ai.NewClient(ctx, cfg.GeminiAPIKey, cfg.GeminiFallbackModels, store)
+	// Initialize AI client (uses Vertex AI with Application Default Credentials)
+	aiClient, err := ai.NewClient(ctx, cfg.ProjectID, cfg.GeminiLocation, cfg.GeminiFallbackModels, store)
 	if err != nil {
 		slog.Warn("Failed to initialize Gemini client (AI features disabled)", "error", err)
 	}

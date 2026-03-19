@@ -133,7 +133,10 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller,
 	}
 
 	var allItems []BrowseAPIItem
-	for _, seller := range sellers {
+	for i, seller := range sellers {
+		if i > 0 {
+			time.Sleep(1 * time.Second) // Avoid eBay rate limiting between sellers
+		}
 		items, err := c.fetchSellerListings(ctx, seller, sinceTime)
 		if err != nil {
 			slog.Warn("Failed to fetch listings for eBay seller", "seller", seller.Username, "error", err)
@@ -238,6 +241,39 @@ func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string
 		body, err = io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to read retry response: %w", err)
+		}
+	}
+
+	// Handle 429 rate limiting with a single retry after backoff
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := 5 * time.Second
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			var secs int
+			if _, parseErr := fmt.Sscanf(ra, "%d", &secs); parseErr == nil && secs > 0 {
+				retryAfter = time.Duration(secs) * time.Second
+			}
+		}
+		slog.Warn("eBay Browse API rate limited (429), retrying after backoff",
+			"seller", seller,
+			"retry_after", retryAfter,
+		)
+		time.Sleep(retryAfter)
+
+		req, _ = http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		token, _ = c.getToken(ctx)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-EBAY-C-MARKETPLACE-ID", marketplace)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err = c.httpClient.Do(req)
+		if err != nil {
+			return nil, false, fmt.Errorf("429 retry request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		body, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to read 429 retry response: %w", err)
 		}
 	}
 
