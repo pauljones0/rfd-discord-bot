@@ -408,17 +408,10 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		thumbnail.URL = item.ImageURL
 	}
 
-	// Timestamp
-	var timestampStr string
-	if !item.ListingDate.IsZero() {
-		timestampStr = item.ListingDate.Format(time.RFC3339)
-	}
-
 	return discordEmbed{
 		Title:       title,
 		URL:         item.ItemURL,
 		Description: descBuilder.String(),
-		Timestamp:   timestampStr,
 		Color:       embedColor,
 		Thumbnail:   thumbnail,
 		Footer: discordEmbedFooter{

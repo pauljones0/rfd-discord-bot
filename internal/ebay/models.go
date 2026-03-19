@@ -20,28 +20,20 @@ func (s EbaySeller) MarketplaceID() string {
 	return s.Marketplace
 }
 
-// EbayItem represents an eBay listing stored in Firestore (only warm/hot items are persisted).
+// EbayItem represents an eBay listing that passed AI analysis (used for Discord notifications).
 type EbayItem struct {
-	ItemID    string `firestore:"itemID"`
-	Title     string `firestore:"title"`
-	CleanTitle string `firestore:"cleanTitle,omitempty"`
-	Price      string `firestore:"price,omitempty"`
-	Currency   string `firestore:"currency,omitempty"`
-	ItemURL    string `firestore:"itemURL"`
-	ImageURL   string `firestore:"imageURL,omitempty"`
-	Seller     string `firestore:"seller"`
-	Condition  string `firestore:"condition,omitempty"`
-	CategoryID string `firestore:"categoryID,omitempty"`
+	ItemID     string
+	Title      string
+	CleanTitle string
+	Price      string
+	Currency   string
+	ItemURL    string
+	ImageURL   string
+	Seller     string
+	Condition  string
 
-	IsWarm    bool `firestore:"isWarm,omitempty"`
-	IsLavaHot bool `firestore:"isLavaHot,omitempty"`
-
-	ListingDate time.Time `firestore:"listingDate"`          // When eBay says it was listed
-	FirstSeenAt time.Time `firestore:"firstSeenAt"`          // When our bot first discovered it
-	LastCheckedAt time.Time `firestore:"lastCheckedAt"`      // Last API poll that returned this item
-
-	DiscordMessageIDs map[string]string `firestore:"discordMessageIDs,omitempty"`
-	LastUpdated       time.Time         `firestore:"lastUpdated"`
+	IsWarm    bool
+	IsLavaHot bool
 }
 
 // EbayPollState tracks the state of the last eBay polling run (singleton in bot_config).
