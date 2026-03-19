@@ -96,7 +96,7 @@ func DefaultSelectors() SelectorConfig {
 				TitleLink:            "a.topic-card-info.thread_info",
 				TitleText:            ".thread_title",
 				Retailer:             ".thread_dealer",
-				PostedTime:           ".thread_outer_header .author_info time.topic_time",
+				PostedTime:           "time.topic_time",
 				ThreadImage:          ".thread_image img",
 				LikeCount:            ".thread_extra_info .votes",
 				CommentCount:         ".thread_extra_info .posts",
