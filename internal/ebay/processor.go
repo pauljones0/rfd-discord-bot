@@ -73,8 +73,37 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	}
 	defer p.mu.Unlock()
 
-	runID := time.Now().Format("20060102-150405")
+	start := time.Now()
+	runID := start.Format("20060102-150405")
 	logger := slog.With("runID", runID, "source", "ebay")
+
+	// Pipeline stats for end-of-run summary
+	var stats struct {
+		sellers      int
+		fetched      int
+		newItems     int
+		tier1Passed  int
+		tier2Passed  int
+		notified     int
+		notifyErrors int
+		storeErrors  int
+		exitReason   string
+	}
+
+	defer func() {
+		logger.Info("eBay pipeline run complete",
+			"duration", time.Since(start).Round(time.Millisecond).String(),
+			"sellers", stats.sellers,
+			"fetched", stats.fetched,
+			"new_items", stats.newItems,
+			"tier1_passed", stats.tier1Passed,
+			"tier2_passed", stats.tier2Passed,
+			"notified", stats.notified,
+			"notify_errors", stats.notifyErrors,
+			"store_errors", stats.storeErrors,
+			"exit_reason", stats.exitReason,
+		)
+	}()
 
 	// 1. Seed sellers if needed
 	seeded, err := p.store.SeedEbaySellers(ctx)
@@ -87,18 +116,32 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	// 2. Get active sellers
 	sellers, err := p.store.GetActiveEbaySellers(ctx)
 	if err != nil {
+		stats.exitReason = "seller_load_error"
 		return fmt.Errorf("failed to get active eBay sellers: %w", err)
 	}
 	if len(sellers) == 0 {
+		stats.exitReason = "no_active_sellers"
 		logger.Info("No active eBay sellers configured")
 		return nil
 	}
+	stats.sellers = len(sellers)
 
 	logger.Info("Loaded active eBay sellers", "count", len(sellers))
 
-	// 3. Fetch listings from eBay API
-	apiItems, err := p.client.SearchSellerListings(ctx, sellers)
+	// 3. Determine time window — only fetch items listed since last successful poll
+	var sinceTime time.Time
+	pollState, err := p.store.GetEbayPollState(ctx)
 	if err != nil {
+		logger.Warn("Failed to get eBay poll state, fetching all listings", "error", err)
+	} else if pollState != nil && !pollState.LastPollTime.IsZero() && pollState.LastError == "" {
+		sinceTime = pollState.LastPollTime
+		logger.Info("Fetching items listed since last poll", "since", sinceTime.Format(time.RFC3339))
+	}
+
+	// 4. Fetch listings from eBay API
+	apiItems, err := p.client.SearchSellerListings(ctx, sellers, sinceTime)
+	if err != nil {
+		stats.exitReason = "api_fetch_error"
 		pollErr := err.Error()
 		p.store.UpdateEbayPollState(ctx, EbayPollState{
 			LastPollTime: time.Now(),
@@ -106,6 +149,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		})
 		return fmt.Errorf("failed to fetch eBay listings: %w", err)
 	}
+	stats.fetched = len(apiItems)
 	logger.Info("Fetched eBay listings", "total_items", len(apiItems))
 
 	// 4. Diff against Firestore to find new items
@@ -130,28 +174,30 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			newAPIItems = append(newAPIItems, item)
 		}
 	}
+	stats.newItems = len(newAPIItems)
 	logger.Info("New eBay items to analyze", "new", len(newAPIItems), "existing", len(existingItems))
 
 	if len(newAPIItems) == 0 {
-		// Update poll state even when no new items
+		stats.exitReason = "no_new_items"
 		p.store.UpdateEbayPollState(ctx, EbayPollState{
 			LastPollTime:  time.Now(),
 			LastPollItems: len(apiItems),
 		})
-		logger.Info("No new eBay items to process")
 		return nil
 	}
 
 	// 5. Tiered AI Analysis
-	warmHotItems := p.analyzeNewItems(ctx, newAPIItems, logger)
+	warmHotItems, t1Passed := p.analyzeNewItems(ctx, newAPIItems, logger)
+	stats.tier1Passed = t1Passed
+	stats.tier2Passed = len(warmHotItems)
 	logger.Info("AI analysis complete", "warm_hot_count", len(warmHotItems))
 
 	if len(warmHotItems) == 0 {
+		stats.exitReason = "no_warm_hot"
 		p.store.UpdateEbayPollState(ctx, EbayPollState{
 			LastPollTime:  time.Now(),
 			LastPollItems: len(apiItems),
 		})
-		logger.Info("No warm/hot eBay deals found this cycle")
 		return nil
 	}
 
@@ -176,8 +222,10 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			msgIDs, err := p.notifier.SendEbayDeal(ctx, *item, eligibleSubs)
 			if err != nil {
 				logger.Error("Failed to send eBay deal to Discord", "item", item.Title, "error", err)
+				stats.notifyErrors++
 			} else {
 				item.DiscordMessageIDs = msgIDs
+				stats.notified++
 			}
 		}
 	}
@@ -185,6 +233,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	// 7. Persist warm/hot items to Firestore
 	if err := p.store.BatchWriteEbayItems(ctx, warmHotItems); err != nil {
 		logger.Error("Failed to batch write eBay items", "error", err)
+		stats.storeErrors++
 	} else {
 		logger.Info("Persisted warm/hot eBay items", "count", len(warmHotItems))
 	}
@@ -200,13 +249,15 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		LastPollItems: len(apiItems),
 	})
 
+	stats.exitReason = "success"
 	return nil
 }
 
 // analyzeNewItems runs the tiered AI analysis pipeline on new items.
-// Returns only items that passed both tiers and are warm or hot.
-func (p *Processor) analyzeNewItems(ctx context.Context, items []BrowseAPIItem, logger *slog.Logger) []EbayItem {
+// Returns items that passed both tiers (warm or hot) and the total tier-1 pass count.
+func (p *Processor) analyzeNewItems(ctx context.Context, items []BrowseAPIItem, logger *slog.Logger) ([]EbayItem, int) {
 	var warmHotItems []EbayItem
+	totalTier1 := 0
 
 	// Process in batches of ebayBatchSize
 	for i := 0; i < len(items); i += ebayBatchSize {
@@ -216,27 +267,29 @@ func (p *Processor) analyzeNewItems(ctx context.Context, items []BrowseAPIItem, 
 		}
 		batch := items[i:end]
 
-		batchResults := p.processBatch(ctx, batch, logger)
+		batchResults, t1Count := p.processBatch(ctx, batch, logger)
 		warmHotItems = append(warmHotItems, batchResults...)
+		totalTier1 += t1Count
 	}
 
-	return warmHotItems
+	return warmHotItems, totalTier1
 }
 
 // processBatch handles a single batch through both AI tiers.
-func (p *Processor) processBatch(ctx context.Context, batch []BrowseAPIItem, logger *slog.Logger) []EbayItem {
+// Returns warm/hot items and the count of items that passed tier 1.
+func (p *Processor) processBatch(ctx context.Context, batch []BrowseAPIItem, logger *slog.Logger) ([]EbayItem, int) {
 	var results []EbayItem
 
 	if p.analyzer == nil {
 		logger.Warn("AI analyzer not available, skipping eBay batch analysis")
-		return results
+		return results, 0
 	}
 
 	// Tier 1: Batch screening
 	screenResults, err := p.analyzer.ScreenEbayBatch(ctx, batch)
 	if err != nil {
 		logger.Error("Tier-1 eBay batch screening failed", "batch_size", len(batch), "error", err)
-		return results
+		return results, 0
 	}
 
 	// Build lookup of screen results by item ID
@@ -301,7 +354,7 @@ func (p *Processor) processBatch(ctx context.Context, batch []BrowseAPIItem, log
 		)
 	}
 
-	return results
+	return results, len(tier1Passed)
 }
 
 // apiItemToEbayItem converts a Browse API item + verification result into a storable EbayItem.

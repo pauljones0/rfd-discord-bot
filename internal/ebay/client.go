@@ -123,7 +123,8 @@ func (c *Client) invalidateToken() {
 
 // SearchSellerListings fetches Buy It Now listings from the given sellers.
 // Queries each seller individually to keep result sets within Browse API limits.
-func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller) ([]BrowseAPIItem, error) {
+// If sinceTime is non-zero, only items listed after that time are returned.
+func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller, sinceTime time.Time) ([]BrowseAPIItem, error) {
 	if c == nil {
 		return nil, fmt.Errorf("eBay client not initialized")
 	}
@@ -133,7 +134,7 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller)
 
 	var allItems []BrowseAPIItem
 	for _, seller := range sellers {
-		items, err := c.fetchSellerListings(ctx, seller)
+		items, err := c.fetchSellerListings(ctx, seller, sinceTime)
 		if err != nil {
 			slog.Warn("Failed to fetch listings for eBay seller", "seller", seller.Username, "error", err)
 			continue // skip this seller, don't fail the whole run
@@ -146,12 +147,12 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller)
 
 // fetchSellerListings fetches all BIN listings for a single seller with pagination.
 // Stops after browseMaxPages to avoid context timeouts on very large stores.
-func (c *Client) fetchSellerListings(ctx context.Context, seller EbaySeller) ([]BrowseAPIItem, error) {
+func (c *Client) fetchSellerListings(ctx context.Context, seller EbaySeller, sinceTime time.Time) ([]BrowseAPIItem, error) {
 	var allItems []BrowseAPIItem
 	offset := 0
 
 	for page := 0; page < browseMaxPages; page++ {
-		items, hasMore, err := c.fetchSellerPage(ctx, seller.Username, seller.MarketplaceID(), offset)
+		items, hasMore, err := c.fetchSellerPage(ctx, seller.Username, seller.MarketplaceID(), offset, sinceTime)
 		if err != nil {
 			return allItems, err
 		}
@@ -171,15 +172,21 @@ func (c *Client) fetchSellerListings(ctx context.Context, seller EbaySeller) ([]
 }
 
 // fetchSellerPage fetches one page of BIN listings for a single seller from the Browse API.
-func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string, offset int) ([]BrowseAPIItem, bool, error) {
+func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string, offset int, sinceTime time.Time) ([]BrowseAPIItem, bool, error) {
 	token, err := c.getToken(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to get eBay token: %w", err)
 	}
 
+	filterParts := fmt.Sprintf("sellers:{%s},buyingOptions:{FIXED_PRICE}", seller)
+	if !sinceTime.IsZero() {
+		// itemStartDate filter: only items listed after sinceTime
+		filterParts += fmt.Sprintf(",itemStartDate:[%s..]", sinceTime.UTC().Format(time.RFC3339))
+	}
+
 	params := url.Values{
 		"category_ids": {"0"},
-		"filter":       {fmt.Sprintf("sellers:{%s},buyingOptions:{FIXED_PRICE}", seller)},
+		"filter":       {filterParts},
 		"sort":   {"newlyListed"},
 		"limit":  {fmt.Sprintf("%d", browsePageLimit)},
 		"offset": {fmt.Sprintf("%d", offset)},
