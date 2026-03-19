@@ -82,8 +82,9 @@ Return a JSON array with ALL items, marking the top deals:
 		}
 
 		errStr := err.Error()
-		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") {
-			slog.Warn("AI quota exceeded during eBay batch screening", "model", activeModel, "error", err)
+		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
+			strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
+			slog.Warn("AI model unavailable or quota exceeded during eBay batch screening", "model", activeModel, "error", err)
 			upgradeErr := c.upgradeModelTier(ctx)
 			if upgradeErr != nil {
 				return fmt.Errorf("all model tiers exhausted during eBay batch screening: %w", err)
@@ -168,8 +169,7 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 `, item.Title, screenTitle, price, seller, item.Condition, item.ItemWebURL)
 
 	config := &genai.GenerateContentConfig{
-		Temperature:      genai.Ptr[float32](0.1),
-		ResponseMIMEType: "application/json",
+		Temperature: genai.Ptr[float32](0.1),
 		Tools: []*genai.Tool{
 			{GoogleSearch: &genai.GoogleSearch{}},
 		},
@@ -187,8 +187,9 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 		}
 
 		errStr := err.Error()
-		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") {
-			slog.Warn("AI quota exceeded during eBay deal verification",
+		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
+			strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
+			slog.Warn("AI model unavailable or quota exceeded during eBay deal verification",
 				"model", activeModel,
 				"item", item.Title,
 				"error", err,

@@ -202,9 +202,6 @@ Task:
 	config := &genai.GenerateContentConfig{
 		Temperature:      genai.Ptr[float32](0.1),
 		ResponseMIMEType: "application/json",
-		Tools: []*genai.Tool{
-			{GoogleSearch: &genai.GoogleSearch{}},
-		},
 	}
 
 	var resp *genai.GenerateContentResponse
@@ -220,8 +217,9 @@ Task:
 
 		errStr := err.Error()
 		// Quota / Rate limit errors -> Upgrade tier and retry immediately (the loop in AnalyzeDeal handles the logic)
-		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") {
-			slog.Warn("AI quota exceeded or rate limited for model", "model", activeModel, "error", err)
+		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
+			strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
+			slog.Warn("AI model unavailable or quota exceeded, upgrading tier", "model", activeModel, "error", err)
 			upgradeErr := c.upgradeModelTier(ctx)
 			if upgradeErr != nil {
 				return fmt.Errorf("gemini generation failed, all fallback quotas exhausted: %w", err)
