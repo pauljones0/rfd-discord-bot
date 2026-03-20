@@ -268,6 +268,7 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 	}
 
 	bw := c.client.BulkWriter(ctx)
+	defer bw.End()
 	col := c.client.Collection(firestoreCollection)
 
 	for _, d := range creates {

@@ -190,9 +190,9 @@ func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string
 	params := url.Values{
 		"category_ids": {"0"},
 		"filter":       {filterParts},
-		"sort":   {"newlyListed"},
-		"limit":  {fmt.Sprintf("%d", browsePageLimit)},
-		"offset": {fmt.Sprintf("%d", offset)},
+		"sort":         {"newlyListed"},
+		"limit":        {fmt.Sprintf("%d", browsePageLimit)},
+		"offset":       {fmt.Sprintf("%d", offset)},
 	}
 
 	reqURL := ebayBrowseURL + "?" + params.Encode()
@@ -227,7 +227,10 @@ func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string
 			return nil, false, fmt.Errorf("failed to refresh eBay token: %w", err)
 		}
 
-		req, _ = http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		req, err = http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to create retry request: %w", err)
+		}
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("X-EBAY-C-MARKETPLACE-ID", marketplace)
 		req.Header.Set("Content-Type", "application/json")
@@ -257,10 +260,20 @@ func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string
 			"seller", seller,
 			"retry_after", retryAfter,
 		)
-		time.Sleep(retryAfter)
+		select {
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		case <-time.After(retryAfter):
+		}
 
-		req, _ = http.NewRequestWithContext(ctx, "GET", reqURL, nil)
-		token, _ = c.getToken(ctx)
+		req, err = http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to create 429 retry request: %w", err)
+		}
+		token, err = c.getToken(ctx)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to get token for 429 retry: %w", err)
+		}
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("X-EBAY-C-MARKETPLACE-ID", marketplace)
 		req.Header.Set("Content-Type", "application/json")
