@@ -169,6 +169,11 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	}
 
 	for i := range warmHotItems {
+		if ctx.Err() != nil {
+			logger.Warn("Context cancelled, stopping Discord notifications")
+			break
+		}
+
 		item := &warmHotItems[i]
 
 		var eligibleSubs []models.Subscription
@@ -205,6 +210,11 @@ func (p *Processor) analyzeNewItems(ctx context.Context, items []BrowseAPIItem, 
 	totalTier1 := 0
 
 	for i := 0; i < len(items); i += ebayBatchSize {
+		if ctx.Err() != nil {
+			logger.Warn("Context cancelled, stopping batch analysis", "processed", i, "total", len(items))
+			break
+		}
+
 		end := i + ebayBatchSize
 		if end > len(items) {
 			end = len(items)
@@ -265,6 +275,11 @@ func (p *Processor) processBatch(ctx context.Context, batch []BrowseAPIItem, log
 
 	// Tier 2: Individual verification with grounded search
 	for _, candidate := range tier1Passed {
+		if ctx.Err() != nil {
+			logger.Warn("Context cancelled, stopping tier-2 verification")
+			break
+		}
+
 		verifyResult, err := p.analyzer.VerifyEbayDeal(ctx, candidate.apiItem, candidate.screenResult.CleanTitle)
 		if err != nil {
 			logger.Warn("Tier-2 eBay deal verification failed",
