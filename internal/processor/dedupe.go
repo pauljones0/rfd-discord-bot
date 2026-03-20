@@ -16,6 +16,9 @@ var (
 	// Covers things like "40", "250gb", "5g", "3.14", "4k", "144hz"
 	tokenRegex = regexp.MustCompile(`[a-z0-9]+(?:\.[a-z0-9]+)*`)
 
+	// urlDelimReplacer replaces common URL delimiters with spaces for tokenization.
+	urlDelimReplacer = strings.NewReplacer("/", " ", "?", " ", "&", " ", "=", " ", "-", " ", "_", " ", ".", " ")
+
 	// ignorableTokens are common fluff words filtered from deal titles.
 	// Kept at package level to avoid re-allocation on every call.
 	ignorableTokens = map[string]bool{
@@ -118,8 +121,7 @@ func extractTokensFromURL(urlStr string) []string {
 	urlStr = strings.TrimPrefix(urlStr, "http://")
 
 	// Replace typical URL delimiters with spaces
-	replacer := strings.NewReplacer("/", " ", "?", " ", "&", " ", "=", " ", "-", " ", "_", " ", ".", " ")
-	urlStr = replacer.Replace(urlStr)
+	urlStr = urlDelimReplacer.Replace(urlStr)
 
 	return extractWords(urlStr)
 }

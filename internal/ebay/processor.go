@@ -274,7 +274,13 @@ func (p *Processor) processBatch(ctx context.Context, batch []BrowseAPIItem, log
 			continue
 		}
 
-		if verifyResult == nil || (!verifyResult.IsWarm && !verifyResult.IsLavaHot) {
+		if verifyResult == nil {
+			logger.Info("Item failed tier-2 verification (nil result)",
+				"item", candidate.apiItem.Title,
+			)
+			continue
+		}
+		if !verifyResult.IsWarm && !verifyResult.IsLavaHot {
 			logger.Info("Item failed tier-2 verification (not warm/hot)",
 				"item", candidate.apiItem.Title,
 				"clean_title", verifyResult.CleanTitle,
