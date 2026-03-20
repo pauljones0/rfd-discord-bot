@@ -19,10 +19,6 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
-const (
-// hotDealsURL and rfdBase are now in config
-)
-
 type Client struct {
 	httpClient *http.Client
 	config     *config.Config

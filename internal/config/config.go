@@ -19,9 +19,8 @@ type Config struct {
 	MaxStoredDeals         int
 	AllowedDomains         []string
 	RFDBaseURL             string
-	GeminiLocation         string
-	GeminiModelID          string
-	GeminiFallbackModels   []string
+	GeminiLocation       string
+	GeminiFallbackModels []string
 
 	// Discord App Auth
 	DiscordAppID     string
@@ -77,11 +76,6 @@ func Load() (*Config, error) {
 		maxStoredDeals = parsed
 	}
 
-	geminiModelID := os.Getenv("GEMINI_MODEL_ID")
-	if geminiModelID == "" {
-		geminiModelID = "gemini-2.5-flash-lite"
-	}
-
 	discordPublicKey := os.Getenv("DISCORD_PUBLIC_KEY")
 	discordBotToken := os.Getenv("DISCORD_BOT_TOKEN")
 	if discordBotToken == "" {
@@ -102,9 +96,8 @@ func Load() (*Config, error) {
 		MaxStoredDeals:         maxStoredDeals,
 		AllowedDomains:         []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com", "bestbuy.ca"},
 		RFDBaseURL:             "https://forums.redflagdeals.com",
-		GeminiLocation:         geminiLocation,
-		GeminiModelID:          geminiModelID,
-		GeminiFallbackModels:   []string{
+		GeminiLocation: geminiLocation,
+		GeminiFallbackModels: []string{
 			"gemini-2.5-flash-lite",
 			"gemini-2.5-flash",
 			"gemini-2.5-pro",

@@ -68,7 +68,7 @@ func (c *Client) initQuotaState(ctx context.Context) {
 		return
 	}
 
-    c.checkDayRollover(ctx)
+	c.checkDayRollover(ctx)
 }
 
 func getPacificDate() string {
@@ -81,12 +81,15 @@ func getPacificDate() string {
 }
 
 func (c *Client) checkDayRollover(ctx context.Context) string {
-	if c.store == nil || len(c.fallbackModels) == 0 {
+	if len(c.fallbackModels) == 0 {
+		return ""
+	}
+	if c.store == nil {
 		return c.fallbackModels[0]
 	}
 
 	today := getPacificDate()
-	
+
 	if c.currentDay == today && c.currentModel != "" {
 		return c.currentModel
 	}
@@ -138,9 +141,9 @@ func (c *Client) isKnownModel(model string) bool {
 }
 
 func (c *Client) updateFirestoreQuota(ctx context.Context) {
-    if c.store == nil {
-        return
-    }
+	if c.store == nil {
+		return
+	}
 	err := c.store.UpdateGeminiQuotaStatus(ctx, models.GeminiQuotaStatus{
 		CurrentDay:   c.currentDay,
 		CurrentModel: c.currentModel,
@@ -180,8 +183,8 @@ func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string
 
 	startTime := time.Now()
 
-    // Always ensure we are using the correct model for the current day
-    activeModel := c.checkDayRollover(ctx)
+	// Always ensure we are using the correct model for the current day
+	activeModel := c.checkDayRollover(ctx)
 
 	link := deal.ActualDealURL
 	if link == "" {

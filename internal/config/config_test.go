@@ -31,8 +31,8 @@ func TestLoad(t *testing.T) {
 	if cfg.MaxStoredDeals != 500 {
 		t.Errorf("Expected default MaxStoredDeals 500, got %d", cfg.MaxStoredDeals)
 	}
-	if cfg.GeminiModelID != "gemini-2.5-flash-lite" {
-		t.Errorf("Expected default gemini-2.5-flash-lite, got %s", cfg.GeminiModelID)
+	if len(cfg.GeminiFallbackModels) == 0 || cfg.GeminiFallbackModels[0] != "gemini-2.5-flash-lite" {
+		t.Errorf("Expected first fallback model gemini-2.5-flash-lite, got %v", cfg.GeminiFallbackModels)
 	}
 }
 
