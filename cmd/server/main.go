@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -25,12 +25,12 @@ import (
 )
 
 type Server struct {
-	processor      processor.Processor
-	ebayProcessor  *ebay.Processor
-	store          processor.DealStore
-	wg             sync.WaitGroup
-	sem            chan struct{} // Semaphore to limit concurrent RFD processing requests
-	ebaySem        chan struct{} // Semaphore to limit concurrent eBay processing requests
+	processor     processor.Processor
+	ebayProcessor *ebay.Processor
+	store         processor.DealStore
+	wg            sync.WaitGroup
+	sem           chan struct{} // Semaphore to limit concurrent RFD processing requests
+	ebaySem       chan struct{} // Semaphore to limit concurrent eBay processing requests
 }
 
 func main() {
@@ -103,7 +103,7 @@ func main() {
 		if err := srv.store.Ping(r.Context()); err != nil {
 			slog.Error("Health check failed", "error", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, `{"status":"error", "details": "%v"}`, err)
+			json.NewEncoder(w).Encode(map[string]string{"status": "error", "details": err.Error()})
 			return
 		}
 
@@ -112,12 +112,12 @@ func main() {
 	})
 
 	httpServer := &http.Server{
-			Addr:              ":" + cfg.Port,
-			Handler:           loggingMiddleware(mux),
-			ReadHeaderTimeout: 10 * time.Second,
-			ReadTimeout:       15 * time.Second,
-			WriteTimeout:      5 * time.Minute,
-			IdleTimeout:       60 * time.Second,
+		Addr:              ":" + cfg.Port,
+		Handler:           loggingMiddleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// Graceful shutdown on SIGTERM/SIGINT

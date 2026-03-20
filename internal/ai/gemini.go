@@ -219,6 +219,9 @@ Task:
    Standard sales, generic clearance items, and deals with lukewarm/indifferent comments should be False.
 3. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
 
+Respond with exactly this JSON format:
+{"clean_title": "your clean title here", "is_warm": true/false, "is_lava_hot": true/false}
+
 `, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, optionalFields, deal.Retailer)
 
 	slog.Debug("Starting AI deal analysis",

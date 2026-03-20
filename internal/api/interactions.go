@@ -16,6 +16,13 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
+// writeJSON encodes v as JSON to w and logs any encoding error.
+func writeJSON(w http.ResponseWriter, v any) {
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("Failed to encode JSON response", "error", err)
+	}
+}
+
 // Interaction constants
 const (
 	InteractionResponseTypePong                     = 1
@@ -49,9 +56,9 @@ type interactionRequest struct {
 }
 
 type interactionData struct {
-	Name     string              `json:"name,omitempty"`
-	Options  []interactionOption `json:"options,omitempty"`
-	CustomID string              `json:"custom_id,omitempty"` // For components
+	Name     string               `json:"name,omitempty"`
+	Options  []interactionOption  `json:"options,omitempty"`
+	CustomID string               `json:"custom_id,omitempty"` // For components
 	Resolved *interactionResolved `json:"resolved,omitempty"`
 }
 
@@ -186,7 +193,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// PING -> PONG
 	if req.Type == InteractionTypePing {
-		json.NewEncoder(w).Encode(interactionResponse{Type: InteractionResponseTypePong})
+		writeJSON(w, interactionResponse{Type: InteractionResponseTypePong})
 		return
 	}
 
@@ -329,7 +336,7 @@ func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest
 				},
 			},
 		}
-		json.NewEncoder(w).Encode(res)
+		writeJSON(w, res)
 		return
 	}
 
@@ -387,7 +394,7 @@ func (h *Handler) handleRemoveCommand(w http.ResponseWriter, req interactionRequ
 			Components: &components,
 		},
 	}
-	json.NewEncoder(w).Encode(res)
+	writeJSON(w, res)
 }
 
 func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest) {
@@ -455,7 +462,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 				Components: &[]discordComponent{}, // Clear buttons
 			},
 		}
-		json.NewEncoder(w).Encode(res)
+		writeJSON(w, res)
 		return
 	} else if req.Data.CustomID == "confirm_cancel" {
 		res := interactionResponse{
@@ -465,7 +472,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 				Components: &[]discordComponent{}, // Clear buttons
 			},
 		}
-		json.NewEncoder(w).Encode(res)
+		writeJSON(w, res)
 		return
 	} else {
 		h.respondError(w, "Unknown button clicked.")
@@ -493,7 +500,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 				Components: &[]discordComponent{}, // Clear the buttons
 			},
 		}
-		json.NewEncoder(w).Encode(res)
+		writeJSON(w, res)
 		return
 	}
 
@@ -505,7 +512,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 				Components: &[]discordComponent{}, // Clear the buttons
 			},
 		}
-		json.NewEncoder(w).Encode(res)
+		writeJSON(w, res)
 		return
 	}
 
@@ -518,7 +525,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 			Components: &components,
 		},
 	}
-	json.NewEncoder(w).Encode(res)
+	writeJSON(w, res)
 }
 
 func (h *Handler) respondPrivateMessage(w http.ResponseWriter, msg string) {
@@ -529,7 +536,7 @@ func (h *Handler) respondPrivateMessage(w http.ResponseWriter, msg string) {
 			Flags:   MessageFlagEphemeral,
 		},
 	}
-	json.NewEncoder(w).Encode(res)
+	writeJSON(w, res)
 }
 
 func (h *Handler) respondError(w http.ResponseWriter, msg string) {
