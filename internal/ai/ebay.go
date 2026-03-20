@@ -70,45 +70,49 @@ Return a JSON array with ALL items, marking the top deals:
 		ResponseMIMEType: "application/json",
 	}
 
-	var resp *genai.GenerateContentResponse
-	var err error
+	var results []ebay.EbayBatchScreenResult
 
-	err = util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		resp, err = c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
-		if err == nil {
-			return nil
-		}
-
-		errStr := err.Error()
-		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
-			strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
-			slog.Warn("AI model unavailable or quota exceeded during eBay batch screening", "model", activeModel, "error", err)
-			upgradeErr := c.upgradeModelTier(ctx)
-			if upgradeErr != nil {
-				return fmt.Errorf("all model tiers exhausted during eBay batch screening: %w", err)
+		resp, genErr := c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
+		if genErr != nil {
+			errStr := genErr.Error()
+			if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
+				strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
+				slog.Warn("AI model unavailable or quota exceeded during eBay batch screening", "model", activeModel, "error", genErr)
+				upgradeErr := c.upgradeModelTier(ctx)
+				if upgradeErr != nil {
+					return fmt.Errorf("all model tiers exhausted during eBay batch screening: %w", genErr)
+				}
+				activeModel = c.currentModel
+				return genErr
 			}
-			activeModel = c.currentModel
-			return err
+
+			if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "INTERNAL") ||
+				strings.Contains(errStr, "503") || strings.Contains(errStr, "504") || strings.Contains(errStr, "deadline exceeded") {
+				slog.Warn("Transient Gemini error during eBay batch screening", "model", activeModel, "attempt", attempt, "error", genErr)
+				return genErr
+			}
+
+			return fmt.Errorf("permanent gemini error during eBay batch screening: %w", genErr)
 		}
 
-		if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "INTERNAL") ||
-			strings.Contains(errStr, "503") || strings.Contains(errStr, "504") || strings.Contains(errStr, "deadline exceeded") {
-			slog.Warn("Transient Gemini error during eBay batch screening", "model", activeModel, "attempt", attempt, "error", err)
-			return err
+		parsed, parseErr := parseEbayBatchResponse(resp)
+		if parseErr != nil {
+			// Empty/missing response from Gemini is transient — retry
+			if strings.Contains(parseErr.Error(), "no text response") || strings.Contains(parseErr.Error(), "no response candidates") {
+				slog.Warn("Gemini returned empty response during eBay batch screening, retrying", "model", activeModel, "attempt", attempt, "error", parseErr)
+				return parseErr
+			}
+			return fmt.Errorf("failed to parse eBay batch screening response: %w", parseErr)
 		}
-
-		return fmt.Errorf("permanent gemini error during eBay batch screening: %w", err)
+		results = parsed
+		return nil
 	})
 
 	if err != nil {
 		return nil, err
-	}
-
-	results, err := parseEbayBatchResponse(resp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse eBay batch screening response: %w", err)
 	}
 
 	topCount := 0
@@ -175,49 +179,54 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 		},
 	}
 
-	var resp *genai.GenerateContentResponse
-	var err error
+	var result *ebay.EbayVerifyResult
 
-	err = util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		resp, err = c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
-		if err == nil {
-			return nil
-		}
-
-		errStr := err.Error()
-		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
-			strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
-			slog.Warn("AI model unavailable or quota exceeded during eBay deal verification",
-				"model", activeModel,
-				"item", item.Title,
-				"error", err,
-			)
-			upgradeErr := c.upgradeModelTier(ctx)
-			if upgradeErr != nil {
-				return fmt.Errorf("all model tiers exhausted during eBay deal verification: %w", err)
+		resp, genErr := c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
+		if genErr != nil {
+			errStr := genErr.Error()
+			if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
+				strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
+				slog.Warn("AI model unavailable or quota exceeded during eBay deal verification",
+					"model", activeModel,
+					"item", item.Title,
+					"error", genErr,
+				)
+				upgradeErr := c.upgradeModelTier(ctx)
+				if upgradeErr != nil {
+					return fmt.Errorf("all model tiers exhausted during eBay deal verification: %w", genErr)
+				}
+				activeModel = c.currentModel
+				return genErr
 			}
-			activeModel = c.currentModel
-			return err
+
+			if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "INTERNAL") ||
+				strings.Contains(errStr, "503") || strings.Contains(errStr, "504") || strings.Contains(errStr, "deadline exceeded") {
+				slog.Warn("Transient Gemini error during eBay deal verification", "model", activeModel, "attempt", attempt, "error", genErr)
+				return genErr
+			}
+
+			return fmt.Errorf("permanent gemini error during eBay deal verification: %w", genErr)
 		}
 
-		if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "INTERNAL") ||
-			strings.Contains(errStr, "503") || strings.Contains(errStr, "504") || strings.Contains(errStr, "deadline exceeded") {
-			slog.Warn("Transient Gemini error during eBay deal verification", "model", activeModel, "attempt", attempt, "error", err)
-			return err
+		parsed, parseErr := parseEbayVerifyResponse(resp)
+		if parseErr != nil {
+			// Empty/missing response from Gemini is transient — retry
+			if strings.Contains(parseErr.Error(), "no text response") || strings.Contains(parseErr.Error(), "no response candidates") {
+				slog.Warn("Gemini returned empty response during eBay deal verification, retrying",
+					"model", activeModel, "item", item.Title, "attempt", attempt, "error", parseErr)
+				return parseErr
+			}
+			return fmt.Errorf("failed to parse eBay verification response: %w", parseErr)
 		}
-
-		return fmt.Errorf("permanent gemini error during eBay deal verification: %w", err)
+		result = parsed
+		return nil
 	})
 
 	if err != nil {
 		return nil, err
-	}
-
-	result, err := parseEbayVerifyResponse(resp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse eBay verification response: %w", err)
 	}
 
 	itemID := ebay.ExtractItemID(item.ItemID)
@@ -229,7 +238,6 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 		"is_lava_hot", result.IsLavaHot,
 		"price", price,
 		"model", activeModel,
-		"prompt", prompt,
 	)
 
 	return result, nil
