@@ -89,9 +89,9 @@ func TestCleanReferralLink(t *testing.T) {
 
 func TestIsHTTPURL(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		want   bool
+		name  string
+		input string
+		want  bool
 	}{
 		{"Valid HTTPS", "https://example.com", true},
 		{"Valid HTTP", "http://example.com", true},

@@ -21,11 +21,11 @@ type JSONLDComment struct {
 }
 
 type JSONLDProduct struct {
-	Type            string               `json:"@type"` // Should be "Product"
-	Name            string               `json:"name"`
-	Description     string               `json:"description"`
-	Offers          *JSONLDOffer         `json:"offers,omitempty"`
-	Brand           *JSONLDBrand         `json:"brand,omitempty"`
+	Type            string                 `json:"@type"` // Should be "Product"
+	Name            string                 `json:"name"`
+	Description     string                 `json:"description"`
+	Offers          *JSONLDOffer           `json:"offers,omitempty"`
+	Brand           *JSONLDBrand           `json:"brand,omitempty"`
 	AggregateRating *JSONLDAggregateRating `json:"aggregateRating,omitempty"`
 }
 

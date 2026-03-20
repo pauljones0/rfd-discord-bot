@@ -73,4 +73,3 @@ func TestErrDealExists(t *testing.T) {
 		t.Errorf("ErrDealExists message = %q, want %q", models.ErrDealExists.Error(), "deal already exists")
 	}
 }
-

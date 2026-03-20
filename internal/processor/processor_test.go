@@ -635,3 +635,189 @@ func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
 		t.Error("Expected Unchanged deal to NOT be fetched")
 	}
 }
+
+// --- threadKey tests ---
+
+func TestThreadKey_RFDSlugVariants(t *testing.T) {
+	// All of these are the same RFD thread (ID 2806520) with different slugs.
+	urls := []string{
+		"https://forums.redflagdeals.com/firehouse-subs-firehouse-subs-hotsubs-5-off-no-minimum-purchase-2806520",
+		"https://forums.redflagdeals.com/firehouse-subs-hotsubs-5-off-no-minimum-purchase-2806520",
+		"https://forums.redflagdeals.com/firehouse-subs-hotsubs-5-off-no-minimum-2806520",
+	}
+
+	expected := "rfd:2806520"
+	for _, u := range urls {
+		got := threadKey(u)
+		if got != expected {
+			t.Errorf("threadKey(%q) = %q, want %q", u, got, expected)
+		}
+	}
+}
+
+func TestThreadKey_RFDWithFragmentAndTrailingSlash(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://forums.redflagdeals.com/deal-slug-123456/", "rfd:123456"},
+		{"https://forums.redflagdeals.com/deal-slug-123456/#post999", "rfd:123456"},
+		{"https://forums.redflagdeals.com/deal-slug-123456#p100", "rfd:123456"},
+	}
+	for _, tt := range tests {
+		got := threadKey(tt.url)
+		if got != tt.want {
+			t.Errorf("threadKey(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestThreadKey_NonRFDURLsUnchanged(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://www.ebay.ca/itm/12345", "https://www.ebay.ca/itm/12345"},
+		{"https://example.com/deal-999", "https://example.com/deal-999"},
+	}
+	for _, tt := range tests {
+		got := threadKey(tt.url)
+		if got != tt.want {
+			t.Errorf("threadKey(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestThreadKey_EdgeCases(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"", ""},
+		// RFD listing page (no thread ID) falls back to full URL
+		{"https://forums.redflagdeals.com/hot-deals-f9", "https://forums.redflagdeals.com/hot-deals-f9"},
+	}
+	for _, tt := range tests {
+		got := threadKey(tt.url)
+		if got != tt.want {
+			t.Errorf("threadKey(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestMergeThread_SlugVariants(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/old-slug-2806520", LikeCount: 10, CommentCount: 5},
+		},
+	}
+
+	// Merge a thread with a different slug but same thread ID
+	newThread := models.ThreadContext{
+		PostURL:      "https://forums.redflagdeals.com/new-slug-2806520",
+		LikeCount:    20,
+		CommentCount: 8,
+	}
+
+	changed := p.mergeThread(deal, newThread)
+	if !changed {
+		t.Error("Expected mergeThread to report changed")
+	}
+	if len(deal.Threads) != 1 {
+		t.Errorf("Expected 1 thread (merged in-place), got %d", len(deal.Threads))
+	}
+	if deal.Threads[0].LikeCount != 20 {
+		t.Errorf("Expected LikeCount=20, got %d", deal.Threads[0].LikeCount)
+	}
+	if deal.Threads[0].PostURL != "https://forums.redflagdeals.com/new-slug-2806520" {
+		t.Errorf("Expected URL to be updated to new slug, got %q", deal.Threads[0].PostURL)
+	}
+}
+
+func TestMergeThread_DifferentThreadIDs(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/deal-a-111111", LikeCount: 10},
+		},
+	}
+
+	// Different thread ID — should append
+	newThread := models.ThreadContext{
+		PostURL:   "https://forums.redflagdeals.com/deal-b-222222",
+		LikeCount: 5,
+	}
+
+	changed := p.mergeThread(deal, newThread)
+	if !changed {
+		t.Error("Expected mergeThread to report changed (new thread appended)")
+	}
+	if len(deal.Threads) != 2 {
+		t.Errorf("Expected 2 threads (different IDs), got %d", len(deal.Threads))
+	}
+}
+
+func TestDeduplicateThreadsByKey(t *testing.T) {
+	// Simulates the Firehouse Subs case: 3 threads, all same thread ID 2806520
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/firehouse-subs-firehouse-subs-hotsubs-5-off-no-minimum-purchase-2806520", LikeCount: 34, CommentCount: 13},
+			{PostURL: "https://forums.redflagdeals.com/firehouse-subs-hotsubs-5-off-no-minimum-purchase-2806520", LikeCount: 3, CommentCount: 0},
+			{PostURL: "https://forums.redflagdeals.com/firehouse-subs-hotsubs-5-off-no-minimum-2806520", LikeCount: 0, CommentCount: 0},
+		},
+	}
+
+	changed := deduplicateThreadsByKey(deal)
+	if !changed {
+		t.Error("Expected deduplicateThreadsByKey to report changed")
+	}
+	if len(deal.Threads) != 1 {
+		t.Errorf("Expected 1 thread after dedup, got %d", len(deal.Threads))
+	}
+	if deal.Threads[0].LikeCount != 34 {
+		t.Errorf("Expected highest LikeCount (34) to be kept, got %d", deal.Threads[0].LikeCount)
+	}
+}
+
+func TestDeduplicateThreadsByKey_MixedIDs(t *testing.T) {
+	// Simulates the Paramount+ case: 3 threads, but 2 unique IDs
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/amazon-prime-video-paramount-2806566", LikeCount: 3},
+			{PostURL: "https://forums.redflagdeals.com/amazon-prime-amazon-prime-video-paramount-2806566", LikeCount: 2},
+			{PostURL: "https://forums.redflagdeals.com/paramount-paramount-2806534", LikeCount: 0},
+		},
+	}
+
+	changed := deduplicateThreadsByKey(deal)
+	if !changed {
+		t.Error("Expected deduplicateThreadsByKey to report changed")
+	}
+	if len(deal.Threads) != 2 {
+		t.Errorf("Expected 2 threads after dedup (2 unique IDs), got %d", len(deal.Threads))
+	}
+	// The first entry (rfd:2806566) should keep the higher LikeCount
+	if deal.Threads[0].LikeCount != 3 {
+		t.Errorf("Expected LikeCount=3 for thread 2806566, got %d", deal.Threads[0].LikeCount)
+	}
+}
+
+func TestDeduplicateThreadsByKey_NoDuplicates(t *testing.T) {
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/deal-a-111111", LikeCount: 10},
+			{PostURL: "https://forums.redflagdeals.com/deal-b-222222", LikeCount: 5},
+		},
+	}
+
+	changed := deduplicateThreadsByKey(deal)
+	if changed {
+		t.Error("Expected no changes when threads have different IDs")
+	}
+	if len(deal.Threads) != 2 {
+		t.Errorf("Expected 2 threads unchanged, got %d", len(deal.Threads))
+	}
+}

@@ -7,12 +7,12 @@ import (
 )
 
 var (
-	amazonASINRegex = regexp.MustCompile(`(?:/dp/|/gp/product/)([\w0-9]+)|/[^/]+/dp/([\w0-9]+)`)
-	ebayItemRegex   = regexp.MustCompile(`\/itm\/(?:[^\/]+\/)?(\d{10,13})`)
-	ebayProductRegex= regexp.MustCompile(`\/p\/(\d+)`)
+	amazonASINRegex  = regexp.MustCompile(`(?:/dp/|/gp/product/)([\w0-9]+)|/[^/]+/dp/([\w0-9]+)`)
+	ebayItemRegex    = regexp.MustCompile(`\/itm\/(?:[^\/]+\/)?(\d{10,13})`)
+	ebayProductRegex = regexp.MustCompile(`\/p\/(\d+)`)
 )
 
-// CleanProductURL removes tracking parameters and normalizes URLs from 
+// CleanProductURL removes tracking parameters and normalizes URLs from
 // Amazon, BestBuy, and eBay based on predefined rules.
 func CleanProductURL(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)

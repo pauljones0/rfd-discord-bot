@@ -58,3 +58,6 @@ logs/
 
 #playwright
 .playwright-mcp
+
+# MCP server config
+.mcp.json

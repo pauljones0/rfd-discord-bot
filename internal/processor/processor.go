@@ -205,6 +205,19 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 			existing.PostURL != deal.PostURL ||
 			existing.Title != deal.Title
 
+		// Re-fetch details if engagement has grown significantly (for AI re-analysis)
+		if !needsDetails && existing.AIProcessed {
+			likes, comments, _ := deal.Stats()
+			existingLikes, existingComments, _ := existing.Stats()
+			if likes >= existingLikes+10 || comments >= existingComments+10 {
+				needsDetails = true
+				logger.Info("Re-fetching details for engagement-based re-analysis",
+					"title", deal.Title,
+					"likes", likes, "prev_likes", existingLikes,
+					"comments", comments, "prev_comments", existingComments)
+			}
+		}
+
 		if needsDetails {
 			dealsToDetail = append(dealsToDetail, deal)
 		} else {
@@ -242,6 +255,19 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 			if deal.Title != existing.Title || deal.PostURL != existing.PostURL {
 				shouldAnalyze = true
 				logger.Info("Re-analyzing deal due to content change", "title", deal.Title)
+			}
+		}
+
+		// Re-analyze if engagement has grown significantly since last analysis
+		if !shouldAnalyze && existing != nil && existing.AIProcessed {
+			likes, comments, _ := deal.Stats()
+			existingLikes, existingComments, _ := existing.Stats()
+			if likes >= existingLikes+10 || comments >= existingComments+10 {
+				shouldAnalyze = true
+				logger.Info("Re-analyzing deal due to engagement growth",
+					"title", deal.Title,
+					"likes", likes, "prev_likes", existingLikes,
+					"comments", comments, "prev_comments", existingComments)
 			}
 		}
 
@@ -343,8 +369,10 @@ func (p *DealProcessor) processNewDeal(ctx context.Context, dealToSave *models.D
 }
 
 func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *models.DealInfo, scrapedDuplicates []models.DealInfo, updatedDeals *[]models.DealInfo, subs []models.Subscription) error {
+	// Clean up any historical duplicate threads (same thread ID, different slugs)
+	changed := deduplicateThreadsByKey(existing)
+
 	// Merge all threads from the scraped group into existing
-	changed := false
 	for _, scraped := range scrapedDuplicates {
 		if p.mergeThread(existing, scraped.Threads[0]) {
 			changed = true
@@ -443,18 +471,20 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 }
 
 // mergeThread updates the stats for an existing thread or appends a new one.
-// Returns true if stats actually changed.
+// Returns true if anything actually changed (stats or URL).
 func (p *DealProcessor) mergeThread(deal *models.DealInfo, newThread models.ThreadContext) bool {
 	newKey := threadKey(newThread.PostURL)
 	for i := range deal.Threads {
 		if threadKey(deal.Threads[i].PostURL) == newKey {
 			changed := deal.Threads[i].LikeCount != newThread.LikeCount ||
 				deal.Threads[i].CommentCount != newThread.CommentCount ||
-				deal.Threads[i].ViewCount != newThread.ViewCount
+				deal.Threads[i].ViewCount != newThread.ViewCount ||
+				deal.Threads[i].PostURL != newThread.PostURL
 
 			deal.Threads[i].LikeCount = newThread.LikeCount
 			deal.Threads[i].CommentCount = newThread.CommentCount
 			deal.Threads[i].ViewCount = newThread.ViewCount
+			deal.Threads[i].PostURL = newThread.PostURL // keep latest URL slug
 			return changed
 		}
 	}
@@ -463,14 +493,72 @@ func (p *DealProcessor) mergeThread(deal *models.DealInfo, newThread models.Thre
 	return true
 }
 
-// threadKey normalizes a PostURL for deduplication by stripping trailing slashes
-// and fragments so that e.g. "/deal-123456/" and "/deal-123456/#p999" match.
+// deduplicateThreadsByKey collapses threads that share the same threadKey,
+// keeping the entry with the highest LikeCount. This cleans up historical data
+// where slug-variant duplicates were stored before threadKey used the thread ID.
+func deduplicateThreadsByKey(deal *models.DealInfo) bool {
+	seen := make(map[string]int) // key -> index in deduped slice
+	var deduped []models.ThreadContext
+	changed := false
+	for _, t := range deal.Threads {
+		key := threadKey(t.PostURL)
+		if idx, exists := seen[key]; exists {
+			changed = true
+			// Keep the one with higher likes
+			if t.LikeCount > deduped[idx].LikeCount {
+				deduped[idx] = t
+			}
+		} else {
+			seen[key] = len(deduped)
+			deduped = append(deduped, t)
+		}
+	}
+	if changed {
+		deal.Threads = deduped
+	}
+	return changed
+}
+
+// threadKey normalizes a PostURL for deduplication.
+// For RFD URLs it extracts the numeric thread ID (e.g. "rfd:2806520") so that
+// slug variations of the same thread (caused by title edits) collapse to one key.
+// Non-RFD URLs fall back to the full URL stripped of fragments and trailing slashes.
 func threadKey(rawURL string) string {
 	// Strip fragment
 	if idx := strings.Index(rawURL, "#"); idx != -1 {
 		rawURL = rawURL[:idx]
 	}
-	return strings.TrimRight(rawURL, "/")
+	rawURL = strings.TrimRight(rawURL, "/")
+
+	// For RFD URLs, extract the numeric thread ID as the canonical key.
+	// RFD thread URLs end with -{numeric_id}, e.g. /firehouse-subs-deal-2806520
+	if strings.Contains(rawURL, "redflagdeals.com/") {
+		lastSlash := strings.LastIndex(rawURL, "/")
+		if lastSlash >= 0 {
+			slug := rawURL[lastSlash+1:]
+			lastHyphen := strings.LastIndex(slug, "-")
+			if lastHyphen >= 0 && lastHyphen < len(slug)-1 {
+				candidate := slug[lastHyphen+1:]
+				if isAllDigits(candidate) {
+					return "rfd:" + candidate
+				}
+			}
+		}
+	}
+
+	return rawURL
+}
+
+func isAllDigits(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // sortThreads sorts a deal's threads array descending by LikeCount, then by CommentCount

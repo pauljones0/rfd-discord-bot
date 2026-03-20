@@ -142,6 +142,7 @@ func (c *Client) GetAllSubscriptions(ctx context.Context) ([]models.Subscription
 
 	return subs, nil
 }
+
 // GetSubscription retrieves a specific subscription by its guild and channel.
 func (c *Client) GetSubscription(ctx context.Context, guildID, channelID string) (*models.Subscription, error) {
 	if _, ok := ctx.Deadline(); !ok {

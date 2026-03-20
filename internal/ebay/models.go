@@ -46,16 +46,16 @@ type EbayPollState struct {
 
 // BrowseAPIItem represents a single item from the eBay Browse API response.
 type BrowseAPIItem struct {
-	ItemID       string `json:"itemId"`
-	Title        string `json:"title"`
-	Price        *Price `json:"price"`
-	ItemWebURL   string `json:"itemWebUrl"`
-	Image        *Image `json:"image"`
-	Seller       *SellerInfo `json:"seller"`
-	Condition    string `json:"condition"`
-	CategoryID   string `json:"categoryId"`
-	BuyingOptions []string `json:"buyingOptions"`
-	ItemCreationDate string `json:"itemCreationDate"` // ISO8601
+	ItemID           string      `json:"itemId"`
+	Title            string      `json:"title"`
+	Price            *Price      `json:"price"`
+	ItemWebURL       string      `json:"itemWebUrl"`
+	Image            *Image      `json:"image"`
+	Seller           *SellerInfo `json:"seller"`
+	Condition        string      `json:"condition"`
+	CategoryID       string      `json:"categoryId"`
+	BuyingOptions    []string    `json:"buyingOptions"`
+	ItemCreationDate string      `json:"itemCreationDate"` // ISO8601
 }
 
 // Price represents the eBay API price object.
@@ -71,8 +71,8 @@ type Image struct {
 
 // SellerInfo represents the eBay API seller info.
 type SellerInfo struct {
-	Username       string `json:"username"`
-	FeedbackScore  int    `json:"feedbackScore"`
+	Username           string `json:"username"`
+	FeedbackScore      int    `json:"feedbackScore"`
 	FeedbackPercentage string `json:"feedbackPercentage"`
 }
 

@@ -198,6 +198,11 @@ func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string
 	if deal.Savings != "" {
 		optionalFields += fmt.Sprintf("Savings: \"%s\"\n", deal.Savings)
 	}
+	if deal.Category != "" {
+		optionalFields += fmt.Sprintf("Category: \"%s\"\n", deal.Category)
+	}
+
+	likes, comments, views := deal.Stats()
 
 	prompt := fmt.Sprintf(`
 Analyze this deal:
@@ -208,6 +213,7 @@ RFD Summary: "%s"
 Deal Link: "%s"
 Price: "%s"
 %sRetailer: "%s"
+Community Engagement: %d upvotes, %d comments, %d views
 
 Task:
 1. Create a clean, concise title (5-15 words). Remove fluff ("Lava Hot", "Price Error"), store names if redundant, and focus on the product and price/discount.
@@ -215,6 +221,7 @@ Task:
    Signals of a Warm deal:
    - The price is a significant discount (e.g., 25%%+ off for standard items, or a clear "All-Time Low" (ATL) for high-demand tech).
    - User comments are strongly positive (e.g., "Incredible price", "Best deal I've seen in months", "Glad I waited for this").
+   - Community engagement is strong (high upvotes relative to views, many comments).
    - It's a highly desirable product with broad appeal.
    Standard sales, generic clearance items, and deals with lukewarm/indifferent comments should be False.
 3. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
@@ -222,11 +229,20 @@ Task:
 Respond with exactly this JSON format:
 {"clean_title": "your clean title here", "is_warm": true/false, "is_lava_hot": true/false}
 
-`, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, optionalFields, deal.Retailer)
+`, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, optionalFields, deal.Retailer, likes, comments, views)
 
-	slog.Debug("Starting AI deal analysis",
+	slog.Info("Starting AI deal analysis",
 		"deal_id", deal.FirestoreID,
 		"deal_title", deal.Title,
+		"has_description", deal.Description != "",
+		"has_comments", deal.Comments != "",
+		"has_summary", deal.Summary != "",
+		"price", deal.Price,
+		"retailer", deal.Retailer,
+		"category", deal.Category,
+		"likes", likes,
+		"comments", comments,
+		"views", views,
 		"model", activeModel,
 		"prompt", prompt,
 	)
@@ -311,7 +327,7 @@ Respond with exactly this JSON format:
 				hot = extracted.IsLavaHot
 				found = true
 
-				slog.Debug("AI raw response",
+				slog.Info("AI raw response",
 					"deal_id", deal.FirestoreID,
 					"raw_response", rawResponse,
 				)

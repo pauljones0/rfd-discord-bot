@@ -31,7 +31,7 @@ func TestCleanProductURL(t *testing.T) {
 			input:    "https://www.amazon.com/dp/B08P2H15Y?th=1&psc=1&ref_=nav_em",
 			expected: "https://www.amazon.com/dp/B08P2H15Y?psc=1&th=1", // keep th, psc
 		},
-		
+
 		// eBay Tests
 		{
 			name:     "eBay simple itm",

@@ -7,9 +7,9 @@ import (
 
 // browserProfile represents a realistic browser fingerprint for stealth scraping.
 type browserProfile struct {
-	UserAgent    string
-	SecChUa      string
-	SecChMobile  string
+	UserAgent     string
+	SecChUa       string
+	SecChMobile   string
 	SecChPlatform string
 }
 
