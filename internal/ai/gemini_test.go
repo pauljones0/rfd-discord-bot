@@ -26,12 +26,13 @@ func TestCheckDayRollover(t *testing.T) {
 	today := getPacificDate()
 
 	tests := []struct {
-		name           string
-		initialState   *models.GeminiQuotaStatus
-		storeError     error
-		fallbackModels []string
-		expectedModel  string
-		expectedDay    string
+		name              string
+		initialState      *models.GeminiQuotaStatus
+		storeError        error
+		fallbackModels    []string
+		expectedModel     string
+		expectedDay       string
+		expectedExhausted bool
 	}{
 		{
 			name:           "No existing state, initiates to cheapest",
@@ -78,6 +79,30 @@ func TestCheckDayRollover(t *testing.T) {
 			expectedModel:  "gemini-lite",
 			expectedDay:    today,
 		},
+		{
+			name: "Exhausted state from today is preserved",
+			initialState: &models.GeminiQuotaStatus{
+				CurrentDay:   today,
+				CurrentModel: "gemini-pro",
+				AllExhausted: true,
+			},
+			fallbackModels:    []string{"gemini-lite", "gemini-pro"},
+			expectedModel:     "gemini-pro",
+			expectedDay:       today,
+			expectedExhausted: true,
+		},
+		{
+			name: "Exhausted state from yesterday is reset on day rollover",
+			initialState: &models.GeminiQuotaStatus{
+				CurrentDay:   "2000-01-01",
+				CurrentModel: "gemini-pro",
+				AllExhausted: true,
+			},
+			fallbackModels:    []string{"gemini-lite", "gemini-pro"},
+			expectedModel:     "gemini-lite",
+			expectedDay:       today,
+			expectedExhausted: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -102,6 +127,9 @@ func TestCheckDayRollover(t *testing.T) {
 			}
 			if client.currentDay != tt.expectedDay {
 				t.Errorf("expected day %q, got %q", tt.expectedDay, client.currentDay)
+			}
+			if client.allExhausted != tt.expectedExhausted {
+				t.Errorf("expected allExhausted %v, got %v", tt.expectedExhausted, client.allExhausted)
 			}
 		})
 	}
@@ -151,6 +179,15 @@ func TestUpgradeModelTier(t *testing.T) {
 	}
 	if client.currentModel != "tier-3" { // remains on last attempted tier
 		t.Errorf("expected model tier-3, got %q", client.currentModel)
+	}
+	if !client.allExhausted {
+		t.Error("expected allExhausted to be true after exhausting all tiers")
+	}
+	if !store.quota.AllExhausted {
+		t.Error("expected AllExhausted to be persisted in store")
+	}
+	if !client.AllTiersExhausted() {
+		t.Error("expected AllTiersExhausted() to return true")
 	}
 }
 

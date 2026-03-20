@@ -24,6 +24,7 @@ type Client struct {
 	fallbackModels []string
 	currentModel   string
 	currentDay     string
+	allExhausted   bool
 }
 
 type AnalysisResult struct {
@@ -112,11 +113,13 @@ func (c *Client) checkDayRollover(ctx context.Context) string {
 	if quota.CurrentDay != today {
 		c.currentDay = today
 		c.currentModel = c.fallbackModels[0]
+		c.allExhausted = false
 		slog.Info("Day rolled over or restarted, resetting to lowest tier model", "model", c.currentModel)
 		c.updateFirestoreQuota(ctx)
 	} else {
 		c.currentDay = quota.CurrentDay
 		c.currentModel = quota.CurrentModel
+		c.allExhausted = quota.AllExhausted
 	}
 
 	// Validate the loaded model exists in the current fallback list.
@@ -147,6 +150,7 @@ func (c *Client) updateFirestoreQuota(ctx context.Context) {
 	err := c.store.UpdateGeminiQuotaStatus(ctx, models.GeminiQuotaStatus{
 		CurrentDay:   c.currentDay,
 		CurrentModel: c.currentModel,
+		AllExhausted: c.allExhausted,
 	})
 	if err != nil {
 		slog.Error("Failed to update gemini quota status in firestore", "error", err)
@@ -173,7 +177,19 @@ func (c *Client) upgradeModelTier(ctx context.Context) error {
 			break
 		}
 	}
+	c.allExhausted = true
+	c.updateFirestoreQuota(ctx)
+	slog.Warn("All Gemini model tiers exhausted for the day, skipping AI calls until tomorrow")
 	return fmt.Errorf("all model tiers exhausted for the day")
+}
+
+// AllTiersExhausted returns true if all Gemini model tiers have been exhausted for the current day.
+// Callers should check this before making AI calls to avoid wasting API quota and generating errors.
+func (c *Client) AllTiersExhausted() bool {
+	if c == nil {
+		return false
+	}
+	return c.allExhausted
 }
 
 func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error) {

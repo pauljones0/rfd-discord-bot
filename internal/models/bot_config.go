@@ -6,5 +6,6 @@ import "time"
 type GeminiQuotaStatus struct {
 	CurrentDay   string    `firestore:"currentDay"`   // YYYY-MM-DD in Pacific Time
 	CurrentModel string    `firestore:"currentModel"` // model ID like "gemini-2.5-flash"
+	AllExhausted bool      `firestore:"allExhausted"` // true when all model tiers are exhausted for the day
 	LastUpdated  time.Time `firestore:"lastUpdated"`
 }

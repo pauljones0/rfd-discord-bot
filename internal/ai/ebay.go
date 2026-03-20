@@ -27,6 +27,10 @@ func (c *Client) ScreenEbayBatch(ctx context.Context, items []ebay.BrowseAPIItem
 
 	activeModel := c.checkDayRollover(ctx)
 
+	if c.allExhausted {
+		return nil, fmt.Errorf("all model tiers exhausted for the day, skipping batch screening")
+	}
+
 	// Determine how many to select based on batch size
 	topN := len(items) * 30 / 100
 	if topN < 1 {
@@ -140,6 +144,10 @@ func (c *Client) VerifyEbayDeal(ctx context.Context, item ebay.BrowseAPIItem, sc
 	}
 
 	activeModel := c.checkDayRollover(ctx)
+
+	if c.allExhausted {
+		return nil, fmt.Errorf("all model tiers exhausted for the day, skipping deal verification")
+	}
 
 	price := "Unknown"
 	if item.Price != nil {
