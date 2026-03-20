@@ -27,6 +27,18 @@ const (
 	InteractionTypeMessageComponent   = 3
 )
 
+// Discord component type and style constants
+const (
+	ComponentTypeActionRow = 1
+	ComponentTypeButton    = 2
+
+	ButtonStylePrimary   = 1 // Blue
+	ButtonStyleSecondary = 2 // Grey
+	ButtonStyleDanger    = 4 // Red
+
+	MessageFlagEphemeral = 64
+)
+
 // Simplified interaction payloads
 type interactionRequest struct {
 	Type    int                `json:"type"`
@@ -295,20 +307,20 @@ func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest
 			Type: InteractionResponseTypeChannelMessageWithSource,
 			Data: &interactionResponseData{
 				Content: fmt.Sprintf("⚠️ <#%s> is already set up to receive **%s** deals. Do you want to overwrite it with **%s** deals?", channelID, existing.DealType, dealType),
-				Flags:   64,
+				Flags:   MessageFlagEphemeral,
 				Components: &[]discordComponent{
 					{
-						Type: 1, // Action Row
+						Type: ComponentTypeActionRow,
 						Components: []discordComponent{
 							{
-								Type:     2, // Button
-								Style:    1, // Primary (Blue)
+								Type:     ComponentTypeButton,
+								Style:    ButtonStylePrimary,
 								Label:    "Confirm Update",
 								CustomID: fmt.Sprintf("confirm_update::%s::%s::%s", channelID, dealType, channelName),
 							},
 							{
-								Type:     2, // Button
-								Style:    2, // Secondary (Grey)
+								Type:     ComponentTypeButton,
+								Style:    ButtonStyleSecondary,
 								Label:    "Cancel",
 								CustomID: "confirm_cancel",
 							},
@@ -365,47 +377,13 @@ func (h *Handler) handleRemoveCommand(w http.ResponseWriter, req interactionRequ
 		return
 	}
 
-	// Deduplicate subscriptions by channel ID
-	seenChannels := make(map[string]bool)
-	var uniqueSubs []models.Subscription
-	for _, sub := range subs {
-		if !seenChannels[sub.ChannelID] {
-			seenChannels[sub.ChannelID] = true
-			uniqueSubs = append(uniqueSubs, sub)
-		}
-	}
-
-	var components []discordComponent
-	for _, sub := range uniqueSubs {
-		// Create an ActionRow for each subscription
-		typeLabel := sub.DealType
-		if typeLabel == "" {
-			typeLabel = "all"
-		}
-
-		label := fmt.Sprintf("Delete Channel (%s)", typeLabel)
-		if sub.ChannelName != "" {
-			label = fmt.Sprintf("Delete %s from #%s", typeLabel, sub.ChannelName)
-		}
-
-		components = append(components, discordComponent{
-			Type: 1, // Action Row
-			Components: []discordComponent{
-				{
-					Type:     2, // Button
-					Style:    4, // Danger (Red)
-					Label:    label,
-					CustomID: fmt.Sprintf("remove_sub::%s::%s", sub.ChannelID, typeLabel),
-				},
-			},
-		})
-	}
+	components := buildRemoveButtons(subs)
 
 	res := interactionResponse{
 		Type: InteractionResponseTypeChannelMessageWithSource,
 		Data: &interactionResponseData{
 			Content:    "Here are the active deal channels for this server. Click the button below to remove them individually.",
-			Flags:      64,
+			Flags:      MessageFlagEphemeral,
 			Components: &components,
 		},
 	}
@@ -531,40 +509,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		return
 	}
 
-	// Deduplicate subscriptions by channel ID
-	seenChannels := make(map[string]bool)
-	var uniqueSubs []models.Subscription
-	for _, sub := range subs {
-		if !seenChannels[sub.ChannelID] {
-			seenChannels[sub.ChannelID] = true
-			uniqueSubs = append(uniqueSubs, sub)
-		}
-	}
-
-	var components []discordComponent
-	for _, sub := range uniqueSubs {
-		typeLabel := sub.DealType
-		if typeLabel == "" {
-			typeLabel = "all"
-		}
-
-		label := fmt.Sprintf("Delete Channel (%s)", typeLabel)
-		if sub.ChannelName != "" {
-			label = fmt.Sprintf("Delete %s from #%s", typeLabel, sub.ChannelName)
-		}
-
-		components = append(components, discordComponent{
-			Type: 1, // Action Row
-			Components: []discordComponent{
-				{
-					Type:     2, // Button
-					Style:    4, // Danger (Red)
-					Label:    label,
-					CustomID: fmt.Sprintf("remove_sub::%s::%s", sub.ChannelID, typeLabel),
-				},
-			},
-		})
-	}
+	components := buildRemoveButtons(subs)
 
 	res := interactionResponse{
 		Type: InteractionResponseTypeUpdateMessage,
@@ -577,12 +522,11 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 }
 
 func (h *Handler) respondPrivateMessage(w http.ResponseWriter, msg string) {
-	// Flags = 64 (Ephemeral - only the user sees it)
 	res := interactionResponse{
 		Type: InteractionResponseTypeChannelMessageWithSource,
 		Data: &interactionResponseData{
 			Content: msg,
-			Flags:   64,
+			Flags:   MessageFlagEphemeral,
 		},
 	}
 	json.NewEncoder(w).Encode(res)
@@ -590,4 +534,40 @@ func (h *Handler) respondPrivateMessage(w http.ResponseWriter, msg string) {
 
 func (h *Handler) respondError(w http.ResponseWriter, msg string) {
 	h.respondPrivateMessage(w, "❌ Error: "+msg)
+}
+
+// buildRemoveButtons deduplicates subscriptions by channel and returns
+// a slice of Discord action-row components with a danger button for each.
+func buildRemoveButtons(subs []models.Subscription) []discordComponent {
+	seenChannels := make(map[string]bool)
+	var components []discordComponent
+	for _, sub := range subs {
+		if seenChannels[sub.ChannelID] {
+			continue
+		}
+		seenChannels[sub.ChannelID] = true
+
+		typeLabel := sub.DealType
+		if typeLabel == "" {
+			typeLabel = "all"
+		}
+
+		label := fmt.Sprintf("Delete Channel (%s)", typeLabel)
+		if sub.ChannelName != "" {
+			label = fmt.Sprintf("Delete %s from #%s", typeLabel, sub.ChannelName)
+		}
+
+		components = append(components, discordComponent{
+			Type: ComponentTypeActionRow,
+			Components: []discordComponent{
+				{
+					Type:     ComponentTypeButton,
+					Style:    ButtonStyleDanger,
+					Label:    label,
+					CustomID: fmt.Sprintf("remove_sub::%s::%s", sub.ChannelID, typeLabel),
+				},
+			},
+		})
+	}
+	return components
 }
