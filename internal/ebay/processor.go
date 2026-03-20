@@ -216,6 +216,17 @@ func (p *Processor) analyzeNewItems(ctx context.Context, items []BrowseAPIItem, 
 			break
 		}
 
+		// Add inter-batch delay to reduce Gemini API rate limit pressure.
+		// Skip delay before the first batch.
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				logger.Warn("Context cancelled during inter-batch delay", "processed", i, "total", len(items))
+				return warmHotItems, totalTier1
+			case <-time.After(2 * time.Second):
+			}
+		}
+
 		end := i + ebayBatchSize
 		if end > len(items) {
 			end = len(items)

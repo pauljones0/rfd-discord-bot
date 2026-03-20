@@ -48,7 +48,11 @@ func main() {
 		slog.Error("Critical error initializing Firestore client", "error", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			slog.Error("Error closing Firestore client", "error", err)
+		}
+	}()
 
 	selectors, err := scraper.LoadConfig()
 	if err != nil {
