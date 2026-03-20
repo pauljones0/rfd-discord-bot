@@ -116,7 +116,25 @@ func (c *Client) checkDayRollover(ctx context.Context) string {
 		c.currentModel = quota.CurrentModel
 	}
 
+	// Validate the loaded model exists in the current fallback list.
+	// A stale Firestore record from a previous deployment may reference
+	// a model that no longer exists in the configured tiers.
+	if !c.isKnownModel(c.currentModel) {
+		slog.Warn("Loaded model not in fallback list, resetting to default", "stale_model", c.currentModel, "default", c.fallbackModels[0])
+		c.currentModel = c.fallbackModels[0]
+		c.updateFirestoreQuota(ctx)
+	}
+
 	return c.currentModel
+}
+
+func (c *Client) isKnownModel(model string) bool {
+	for _, m := range c.fallbackModels {
+		if m == model {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) updateFirestoreQuota(ctx context.Context) {
@@ -133,6 +151,14 @@ func (c *Client) updateFirestoreQuota(ctx context.Context) {
 }
 
 func (c *Client) upgradeModelTier(ctx context.Context) error {
+	// If current model isn't in the fallback list (stale state), reset to first tier
+	if !c.isKnownModel(c.currentModel) {
+		slog.Warn("Current model not in fallback list during upgrade, resetting", "stale_model", c.currentModel, "default", c.fallbackModels[0])
+		c.currentModel = c.fallbackModels[0]
+		c.updateFirestoreQuota(ctx)
+		return nil
+	}
+
 	for i, m := range c.fallbackModels {
 		if m == c.currentModel {
 			if i+1 < len(c.fallbackModels) {

@@ -68,6 +68,16 @@ func TestCheckDayRollover(t *testing.T) {
 			expectedModel:  "gemini-lite",
 			expectedDay:    today,
 		},
+		{
+			name: "Stale model not in fallback list resets to cheapest",
+			initialState: &models.GeminiQuotaStatus{
+				CurrentDay:   today,
+				CurrentModel: "gemini-3.1-flash-lite-preview",
+			},
+			fallbackModels: []string{"gemini-lite", "gemini-pro"},
+			expectedModel:  "gemini-lite",
+			expectedDay:    today,
+		},
 	}
 
 	for _, tt := range tests {
@@ -141,5 +151,31 @@ func TestUpgradeModelTier(t *testing.T) {
 	}
 	if client.currentModel != "tier-3" { // remains on last attempted tier
 		t.Errorf("expected model tier-3, got %q", client.currentModel)
+	}
+}
+
+func TestUpgradeModelTierStaleModel(t *testing.T) {
+	today := getPacificDate()
+	store := &mockQuotaStore{
+		quota: &models.GeminiQuotaStatus{
+			CurrentDay:   today,
+			CurrentModel: "old-removed-model",
+		},
+	}
+
+	client := &Client{
+		store:          store,
+		fallbackModels: []string{"tier-1", "tier-2", "tier-3"},
+		currentDay:     today,
+		currentModel:   "old-removed-model",
+	}
+
+	// Should reset to tier-1 instead of failing
+	err := client.upgradeModelTier(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.currentModel != "tier-1" {
+		t.Errorf("expected model tier-1, got %q", client.currentModel)
 	}
 }
