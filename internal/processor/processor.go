@@ -241,6 +241,11 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 // analyzeDeals runs AI analysis on deals that haven't been processed yet.
 func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, logger *slog.Logger) {
 	for i := range validDeals {
+		if ctx.Err() != nil {
+			logger.Warn("Context cancelled, stopping AI analysis", "remaining", len(validDeals)-i)
+			break
+		}
+
 		deal := &validDeals[i]
 		existing := existingDeals[deal.FirestoreID]
 		isNew := existing == nil
@@ -317,6 +322,11 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 	}
 
 	for firestoreID, dealsGroup := range groupedDeals {
+		if ctx.Err() != nil {
+			slog.Warn("Context cancelled, stopping notification processing")
+			break
+		}
+
 		// Use the first deal in the group as the base
 		baseDeal := &dealsGroup[0]
 		existing := existingDeals[firestoreID]
