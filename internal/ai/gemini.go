@@ -194,7 +194,12 @@ func (c *Client) AllTiersExhausted() bool {
 
 func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error) {
 	if c == nil || c.client == nil {
-		return "", false, false, nil // Graceful degradation
+		slog.Warn("AI client not initialized, skipping deal analysis")
+		return "", false, false, nil
+	}
+
+	if ctx.Err() != nil {
+		return "", false, false, ctx.Err()
 	}
 
 	startTime := time.Now()

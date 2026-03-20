@@ -18,7 +18,12 @@ import (
 // Returns the item IDs that passed screening along with their clean titles.
 func (c *Client) ScreenEbayBatch(ctx context.Context, items []ebay.BrowseAPIItem) ([]ebay.EbayBatchScreenResult, error) {
 	if c == nil || c.client == nil {
+		slog.Warn("AI client not initialized, skipping eBay batch screening")
 		return nil, nil
+	}
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	if len(items) == 0 {
@@ -140,7 +145,12 @@ Return a JSON array with ALL items, marking the top deals:
 // This is the second pass to confirm that a screened item is actually a good deal.
 func (c *Client) VerifyEbayDeal(ctx context.Context, item ebay.BrowseAPIItem, screenTitle string) (*ebay.EbayVerifyResult, error) {
 	if c == nil || c.client == nil {
+		slog.Warn("AI client not initialized, skipping eBay deal verification")
 		return nil, nil
+	}
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	activeModel := c.checkDayRollover(ctx)
