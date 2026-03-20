@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -221,29 +222,38 @@ func (p *Processor) analyzeNewItems(ctx context.Context, items []BrowseAPIItem, 
 		}
 		batch := items[i:end]
 
-		batchResults, t1Count := p.processBatch(ctx, batch, logger)
+		batchResults, t1Count, err := p.processBatch(ctx, batch, logger)
 		warmHotItems = append(warmHotItems, batchResults...)
 		totalTier1 += t1Count
+		if err != nil {
+			logger.Warn("Stopping batch analysis early, AI models exhausted", "processed", i+len(batch), "total", len(items))
+			break
+		}
 	}
 
 	return warmHotItems, totalTier1
 }
 
 // processBatch handles a single batch through both AI tiers.
-// Returns warm/hot items and the count of items that passed tier 1.
-func (p *Processor) processBatch(ctx context.Context, batch []BrowseAPIItem, logger *slog.Logger) ([]EbayItem, int) {
+// Returns warm/hot items, the count of items that passed tier 1, and any error.
+// A non-nil error signals the caller to stop processing further batches (e.g. all model tiers exhausted).
+func (p *Processor) processBatch(ctx context.Context, batch []BrowseAPIItem, logger *slog.Logger) ([]EbayItem, int, error) {
 	var results []EbayItem
 
 	if p.analyzer == nil {
 		logger.Warn("AI analyzer not available, skipping eBay batch analysis")
-		return results, 0
+		return results, 0, nil
 	}
 
 	// Tier 1: Batch screening
 	screenResults, err := p.analyzer.ScreenEbayBatch(ctx, batch)
 	if err != nil {
 		logger.Error("Tier-1 eBay batch screening failed", "batch_size", len(batch), "error", err)
-		return results, 0
+		// Signal caller to stop if all model tiers are exhausted — further batches will fail too.
+		if strings.Contains(err.Error(), "all model tiers exhausted") {
+			return results, 0, err
+		}
+		return results, 0, nil
 	}
 
 	screenMap := make(map[string]EbayBatchScreenResult)
@@ -316,7 +326,7 @@ func (p *Processor) processBatch(ctx context.Context, batch []BrowseAPIItem, log
 		)
 	}
 
-	return results, len(tier1Passed)
+	return results, len(tier1Passed), nil
 }
 
 // apiItemToEbayItem converts a Browse API item + verification result into an EbayItem for notification.
