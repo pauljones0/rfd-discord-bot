@@ -299,6 +299,9 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 
 // Ping checks connectivity to Firestore.
 func (c *Client) Ping(ctx context.Context) error {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
 	iter := c.client.Collections(ctx)
 	_, err := iter.Next()
 	if err != nil && err != iterator.Done {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -80,18 +81,18 @@ func (c *Client) Update(ctx context.Context, deal models.DealInfo) error {
 	}
 
 	payload := createDiscordPayload(deal)
-	var lastErr error
+	var errs []error
 
 	for channelID, messageID := range deal.DiscordMessageIDs {
 		patchURL := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages/%s", channelID, messageID)
 		_, err := c.doRequest(ctx, "PATCH", patchURL, payload)
 		if err != nil {
 			slog.Error("Failed to update deal", "channel", channelID, "message", messageID, "error", err)
-			lastErr = err
+			errs = append(errs, fmt.Errorf("channel %s: %w", channelID, err))
 		}
 	}
 
-	return lastErr
+	return errors.Join(errs...)
 }
 
 // Internal structures
