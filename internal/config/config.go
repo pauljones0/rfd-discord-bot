@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -21,6 +22,7 @@ type Config struct {
 	RFDBaseURL             string
 	GeminiAPIKey           string
 	GeminiLocation         string
+	GeminiLocations        []string
 	GeminiFallbackModels   []string
 
 	// Discord App Auth
@@ -88,6 +90,30 @@ func Load() (*Config, error) {
 		geminiLocation = "us-central1"
 	}
 
+	// GEMINI_LOCATIONS overrides GEMINI_LOCATION with a comma-separated list of regions
+	// for multi-region failover. If not set, defaults to a broad set of regions.
+	var geminiLocations []string
+	if v := os.Getenv("GEMINI_LOCATIONS"); v != "" {
+		for _, loc := range strings.Split(v, ",") {
+			loc = strings.TrimSpace(loc)
+			if loc != "" {
+				geminiLocations = append(geminiLocations, loc)
+			}
+		}
+	}
+	if len(geminiLocations) == 0 {
+		geminiLocations = []string{
+			geminiLocation,
+			"us-east4",
+			"us-west1",
+			"us-west4",
+			"europe-west1",
+			"europe-west4",
+			"asia-northeast1",
+			"asia-southeast1",
+		}
+	}
+
 	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
 
 	return &Config{
@@ -101,6 +127,7 @@ func Load() (*Config, error) {
 		RFDBaseURL:             "https://forums.redflagdeals.com",
 		GeminiAPIKey:           geminiAPIKey,
 		GeminiLocation:         geminiLocation,
+		GeminiLocations:        geminiLocations,
 		GeminiFallbackModels: []string{
 			"gemini-2.5-flash-lite",
 			"gemini-2.5-flash",

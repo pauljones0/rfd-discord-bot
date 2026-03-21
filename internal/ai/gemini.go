@@ -13,19 +13,33 @@ import (
 	"google.golang.org/genai"
 )
 
+const (
+	// exhaustionCooldown is how long to wait before retrying after all regions/tiers
+	// are exhausted. DSQ quotas can recover in minutes, so midnight is too aggressive.
+	exhaustionCooldown = 30 * time.Minute
+
+	// consecutive504sThreshold triggers a region switch when sustained 504s indicate
+	// regional backend congestion (the same root cause as DSQ-driven 429s).
+	consecutive504sThreshold = 5
+)
+
 type QuotaStore interface {
 	GetGeminiQuotaStatus(ctx context.Context) (*models.GeminiQuotaStatus, error)
 	UpdateGeminiQuotaStatus(ctx context.Context, quota models.GeminiQuotaStatus) error
 }
 
 type Client struct {
-	client          *genai.Client
+	clients         map[string]*genai.Client // region -> genai client (Vertex AI) or "" -> single client (Gemini API)
+	locations       []string                 // ordered region list for failover
+	currentLocation string                   // active region
 	store           QuotaStore
 	fallbackModels  []string
 	currentModel    string
 	currentDay      string
 	allExhausted    bool
+	exhaustedAt     time.Time
 	consecutive429s int
+	consecutive504s int
 }
 
 type AnalysisResult struct {
@@ -34,7 +48,7 @@ type AnalysisResult struct {
 	IsLavaHot  bool   `json:"is_lava_hot"`
 }
 
-func NewClient(ctx context.Context, projectID, location, apiKey string, fallbackModels []string, store QuotaStore) (*Client, error) {
+func NewClient(ctx context.Context, projectID string, locations []string, apiKey string, fallbackModels []string, store QuotaStore) (*Client, error) {
 	if apiKey == "" && projectID == "" {
 		return nil, nil // Return nil client if no credentials provided
 	}
@@ -43,37 +57,70 @@ func NewClient(ctx context.Context, projectID, location, apiKey string, fallback
 		return nil, fmt.Errorf("fallback models list is empty")
 	}
 
-	var cfg *genai.ClientConfig
+	clients := make(map[string]*genai.Client)
+
 	if apiKey != "" {
-		cfg = &genai.ClientConfig{
+		// Gemini API backend: single client, no region concept
+		cfg := &genai.ClientConfig{
 			APIKey:  apiKey,
 			Backend: genai.BackendGeminiAPI,
 		}
+		client, err := genai.NewClient(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create gemini client: %w", err)
+		}
+		clients[""] = client
+		locations = []string{""} // no region failover for API key mode
 		slog.Info("Using Gemini API backend (API key)")
 	} else {
-		cfg = &genai.ClientConfig{
-			Project:  projectID,
-			Location: location,
-			Backend:  genai.BackendVertexAI,
+		// Vertex AI backend: one client per region
+		if len(locations) == 0 {
+			return nil, fmt.Errorf("locations list is empty for Vertex AI backend")
 		}
-		slog.Info("Using Vertex AI backend", "project", projectID, "location", location)
-	}
-
-	client, err := genai.NewClient(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gemini client: %w", err)
+		for _, loc := range locations {
+			cfg := &genai.ClientConfig{
+				Project:  projectID,
+				Location: loc,
+				Backend:  genai.BackendVertexAI,
+			}
+			client, err := genai.NewClient(ctx, cfg)
+			if err != nil {
+				slog.Warn("Failed to create Vertex AI client for region, skipping", "location", loc, "error", err)
+				continue
+			}
+			clients[loc] = client
+		}
+		if len(clients) == 0 {
+			return nil, fmt.Errorf("failed to create any Vertex AI clients")
+		}
+		// Filter locations to only those with successful clients
+		var validLocations []string
+		for _, loc := range locations {
+			if _, ok := clients[loc]; ok {
+				validLocations = append(validLocations, loc)
+			}
+		}
+		locations = validLocations
+		slog.Info("Using Vertex AI backend", "project", projectID, "locations", locations)
 	}
 
 	c := &Client{
-		client:         client,
-		store:          store,
-		fallbackModels: fallbackModels,
+		clients:         clients,
+		locations:       locations,
+		currentLocation: locations[0],
+		store:           store,
+		fallbackModels:  fallbackModels,
 	}
 
 	// Load initial state
 	c.initQuotaState(ctx)
 
 	return c, nil
+}
+
+// activeClient returns the genai.Client for the current region.
+func (c *Client) activeClient() *genai.Client {
+	return c.clients[c.currentLocation]
 }
 
 func (c *Client) initQuotaState(ctx context.Context) {
@@ -104,6 +151,16 @@ func (c *Client) checkDayRollover(ctx context.Context) string {
 
 	today := getPacificDate()
 
+	// Check cooldown recovery: if exhausted but cooldown has elapsed, reset everything
+	if c.allExhausted && !c.exhaustedAt.IsZero() && time.Since(c.exhaustedAt) >= exhaustionCooldown {
+		slog.Info("Retrying after cooldown period",
+			"exhausted_at", c.exhaustedAt,
+			"cooldown", exhaustionCooldown,
+		)
+		c.resetToDefaults(ctx, today)
+		return c.currentModel
+	}
+
 	if c.currentDay == today && c.currentModel != "" {
 		return c.currentModel
 	}
@@ -113,26 +170,31 @@ func (c *Client) checkDayRollover(ctx context.Context) string {
 		slog.Warn("Failed to get Gemini quota status, using default model", "error", err)
 		c.currentModel = c.fallbackModels[0]
 		c.currentDay = today
+		c.currentLocation = c.locations[0]
 		return c.currentModel
 	}
 
 	if quota == nil {
-		c.currentModel = c.fallbackModels[0]
-		c.currentDay = today
-		c.updateFirestoreQuota(ctx)
+		c.resetToDefaults(ctx, today)
 		return c.currentModel
 	}
 
 	if quota.CurrentDay != today {
 		c.currentDay = today
 		c.currentModel = c.fallbackModels[0]
+		c.currentLocation = c.locations[0]
 		c.allExhausted = false
-		slog.Info("Day rolled over or restarted, resetting to lowest tier model", "model", c.currentModel)
+		c.exhaustedAt = time.Time{}
+		slog.Info("Day rolled over or restarted, resetting to lowest tier model", "model", c.currentModel, "location", c.currentLocation)
 		c.updateFirestoreQuota(ctx)
 	} else {
 		c.currentDay = quota.CurrentDay
 		c.currentModel = quota.CurrentModel
 		c.allExhausted = quota.AllExhausted
+		c.exhaustedAt = quota.ExhaustedAt
+		if quota.CurrentLocation != "" && c.isKnownLocation(quota.CurrentLocation) {
+			c.currentLocation = quota.CurrentLocation
+		}
 	}
 
 	// Validate the loaded model exists in the current fallback list.
@@ -147,9 +209,30 @@ func (c *Client) checkDayRollover(ctx context.Context) string {
 	return c.currentModel
 }
 
+// resetToDefaults resets the client to the first region, cheapest model, and clears exhaustion.
+func (c *Client) resetToDefaults(ctx context.Context, today string) {
+	c.currentModel = c.fallbackModels[0]
+	c.currentDay = today
+	c.currentLocation = c.locations[0]
+	c.allExhausted = false
+	c.exhaustedAt = time.Time{}
+	c.consecutive429s = 0
+	c.consecutive504s = 0
+	c.updateFirestoreQuota(ctx)
+}
+
 func (c *Client) isKnownModel(model string) bool {
 	for _, m := range c.fallbackModels {
 		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) isKnownLocation(location string) bool {
+	for _, loc := range c.locations {
+		if loc == location {
 			return true
 		}
 	}
@@ -161,13 +244,44 @@ func (c *Client) updateFirestoreQuota(ctx context.Context) {
 		return
 	}
 	err := c.store.UpdateGeminiQuotaStatus(ctx, models.GeminiQuotaStatus{
-		CurrentDay:   c.currentDay,
-		CurrentModel: c.currentModel,
-		AllExhausted: c.allExhausted,
+		CurrentDay:      c.currentDay,
+		CurrentModel:    c.currentModel,
+		AllExhausted:    c.allExhausted,
+		ExhaustedAt:     c.exhaustedAt,
+		CurrentLocation: c.currentLocation,
 	})
 	if err != nil {
 		slog.Error("Failed to update gemini quota status in firestore", "error", err)
 	}
+}
+
+// switchRegion cycles to the next region in the locations list.
+// Resets model tier to cheapest and clears consecutive error counters.
+// Returns false if no more regions are available.
+func (c *Client) switchRegion(ctx context.Context) bool {
+	if len(c.locations) <= 1 {
+		return false
+	}
+
+	for i, loc := range c.locations {
+		if loc == c.currentLocation {
+			if i+1 < len(c.locations) {
+				c.currentLocation = c.locations[i+1]
+				c.currentModel = c.fallbackModels[0]
+				c.consecutive429s = 0
+				c.consecutive504s = 0
+				slog.Info("Switching Vertex AI region",
+					"from", loc,
+					"to", c.currentLocation,
+					"model", c.currentModel,
+				)
+				c.updateFirestoreQuota(ctx)
+				return true
+			}
+			break
+		}
+	}
+	return false
 }
 
 func (c *Client) upgradeModelTier(ctx context.Context) error {
@@ -190,10 +304,24 @@ func (c *Client) upgradeModelTier(ctx context.Context) error {
 			break
 		}
 	}
+
+	// All model tiers exhausted for current region — try switching region
+	if c.switchRegion(ctx) {
+		slog.Info("All model tiers exhausted in region, switched to next region",
+			"new_location", c.currentLocation,
+			"new_model", c.currentModel,
+		)
+		return nil
+	}
+
+	// No more regions available
 	c.allExhausted = true
+	c.exhaustedAt = time.Now()
 	c.updateFirestoreQuota(ctx)
-	slog.Warn("All Gemini model tiers exhausted for the day, skipping AI calls until tomorrow")
-	return fmt.Errorf("all model tiers exhausted for the day")
+	slog.Warn("All Gemini model tiers and regions exhausted, will retry after cooldown",
+		"cooldown", exhaustionCooldown,
+	)
+	return fmt.Errorf("all model tiers exhausted across all regions")
 }
 
 // handleRateLimitError handles 429/RESOURCE_EXHAUSTED errors by retrying on the
@@ -206,6 +334,7 @@ func (c *Client) handleRateLimitError(ctx context.Context) (shouldRetry bool, er
 	if c.consecutive429s < 3 {
 		slog.Info("Rate limited, waiting before retry on same model",
 			"model", c.currentModel,
+			"location", c.currentLocation,
 			"consecutive_429s", c.consecutive429s,
 		)
 		select {
@@ -225,8 +354,80 @@ func (c *Client) handleRateLimitError(ctx context.Context) (shouldRetry bool, er
 	return true, nil
 }
 
-func (c *Client) resetConsecutive429s() {
+// handle504Error tracks sustained 504/deadline-exceeded errors and triggers
+// a region switch when they indicate regional backend congestion.
+// Returns true if a region switch occurred and the caller should retry.
+func (c *Client) handle504Error(ctx context.Context) bool {
+	c.consecutive504s++
+	if c.consecutive504s >= consecutive504sThreshold {
+		c.consecutive504s = 0
+		if c.switchRegion(ctx) {
+			slog.Info("Sustained 504 errors, switched region",
+				"new_location", c.currentLocation,
+				"new_model", c.currentModel,
+			)
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) resetConsecutiveErrors() {
 	c.consecutive429s = 0
+	c.consecutive504s = 0
+}
+
+// handleGenerationError classifies and handles errors from genai.GenerateContent calls.
+// It updates activeModel when tiers or regions change.
+// Returns the error for the retry framework (nil means success, retryable errors are returned as-is).
+func (c *Client) handleGenerationError(ctx context.Context, genErr error, activeModel *string, attempt int, logContext string) error {
+	errStr := genErr.Error()
+
+	// 429/quota/model-not-found errors
+	if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
+		strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
+		slog.Warn("AI model unavailable or quota exceeded",
+			"context", logContext,
+			"model", *activeModel,
+			"location", c.currentLocation,
+			"error", genErr,
+		)
+		shouldRetry, handleErr := c.handleRateLimitError(ctx)
+		if !shouldRetry {
+			return fmt.Errorf("all model tiers exhausted: %w", genErr)
+		}
+		if handleErr != nil {
+			return handleErr
+		}
+		*activeModel = c.currentModel
+		return genErr
+	}
+
+	// Transient network/service errors
+	if strings.Contains(errStr, "connection reset by peer") ||
+		strings.Contains(errStr, "INTERNAL") ||
+		strings.Contains(errStr, "Service Unavailable") ||
+		strings.Contains(errStr, "503") ||
+		strings.Contains(errStr, "504") ||
+		strings.Contains(errStr, "deadline exceeded") {
+		slog.Warn("Transient Gemini error, retrying",
+			"context", logContext,
+			"model", *activeModel,
+			"location", c.currentLocation,
+			"attempt", attempt,
+			"error", genErr,
+		)
+		// Track 504s for region failover
+		if strings.Contains(errStr, "504") || strings.Contains(errStr, "deadline exceeded") {
+			if c.handle504Error(ctx) {
+				*activeModel = c.currentModel
+			}
+		}
+		return genErr
+	}
+
+	// Permanent errors
+	return fmt.Errorf("permanent gemini error: %w", genErr)
 }
 
 // stripCodeBlock removes markdown code fences (```json ... ``` or ``` ... ```)
@@ -239,17 +440,24 @@ func stripCodeBlock(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// AllTiersExhausted returns true if all Gemini model tiers have been exhausted for the current day.
-// Callers should check this before making AI calls to avoid wasting API quota and generating errors.
+// AllTiersExhausted returns true if all Gemini model tiers have been exhausted.
+// Returns false if the cooldown period has elapsed (auto-recovery).
 func (c *Client) AllTiersExhausted() bool {
 	if c == nil {
 		return false
 	}
-	return c.allExhausted
+	if !c.allExhausted {
+		return false
+	}
+	// Check cooldown: if enough time has passed, allow retry
+	if !c.exhaustedAt.IsZero() && time.Since(c.exhaustedAt) >= exhaustionCooldown {
+		return false
+	}
+	return true
 }
 
 func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error) {
-	if c == nil || c.client == nil {
+	if c == nil || len(c.clients) == 0 {
 		slog.Warn("AI client not initialized, skipping deal analysis")
 		return "", false, false, nil
 	}
@@ -321,6 +529,7 @@ Respond with exactly this JSON format:
 		"comments", comments,
 		"views", views,
 		"model", activeModel,
+		"location", c.currentLocation,
 		"prompt", prompt,
 	)
 
@@ -335,40 +544,13 @@ Respond with exactly this JSON format:
 	err = util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		resp, err = c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
+		resp, err = c.activeClient().Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
 		if err == nil {
-			c.resetConsecutive429s()
+			c.resetConsecutiveErrors()
 			return nil
 		}
 
-		errStr := err.Error()
-		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
-			strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
-			slog.Warn("AI model unavailable or quota exceeded", "model", activeModel, "error", err)
-			shouldRetry, handleErr := c.handleRateLimitError(ctx)
-			if !shouldRetry {
-				return fmt.Errorf("gemini generation failed, all fallback quotas exhausted: %w", err)
-			}
-			if handleErr != nil {
-				return handleErr
-			}
-			activeModel = c.currentModel
-			return err
-		}
-
-		// Transient network/service errors -> Retry with backoff
-		if strings.Contains(errStr, "connection reset by peer") ||
-			strings.Contains(errStr, "INTERNAL") ||
-			strings.Contains(errStr, "Service Unavailable") ||
-			strings.Contains(errStr, "503") ||
-			strings.Contains(errStr, "504") ||
-			strings.Contains(errStr, "deadline exceeded") {
-			slog.Warn("Transient Gemini error, retrying", "model", activeModel, "attempt", attempt, "error", err)
-			return err
-		}
-
-		// Permanent errors
-		return fmt.Errorf("permanent gemini error: %w", err)
+		return c.handleGenerationError(ctx, err, &activeModel, attempt, "deal analysis")
 	})
 
 	if err != nil {
@@ -424,6 +606,7 @@ Respond with exactly this JSON format:
 		"is_warm", warm,
 		"is_lava_hot", hot,
 		"model", activeModel,
+		"location", c.currentLocation,
 		"duration_ms", duration.Milliseconds(),
 	)
 

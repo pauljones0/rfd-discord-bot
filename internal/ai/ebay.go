@@ -17,7 +17,7 @@ import (
 // It asks Gemini to select the top ~30% most deal-worthy items from a batch.
 // Returns the item IDs that passed screening along with their clean titles.
 func (c *Client) ScreenEbayBatch(ctx context.Context, items []ebay.BrowseAPIItem) ([]ebay.EbayBatchScreenResult, error) {
-	if c == nil || c.client == nil {
+	if c == nil || len(c.clients) == 0 {
 		slog.Warn("AI client not initialized, skipping eBay batch screening")
 		return nil, nil
 	}
@@ -32,7 +32,7 @@ func (c *Client) ScreenEbayBatch(ctx context.Context, items []ebay.BrowseAPIItem
 
 	activeModel := c.checkDayRollover(ctx)
 
-	if c.allExhausted {
+	if c.AllTiersExhausted() {
 		return nil, fmt.Errorf("all model tiers exhausted for the day, skipping batch screening")
 	}
 
@@ -84,32 +84,11 @@ Return a JSON array with ALL items, marking the top deals:
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		resp, genErr := c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
+		resp, genErr := c.activeClient().Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
 		if genErr != nil {
-			errStr := genErr.Error()
-			if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
-				strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
-				slog.Warn("AI model unavailable or quota exceeded during eBay batch screening", "model", activeModel, "error", genErr)
-				shouldRetry, handleErr := c.handleRateLimitError(ctx)
-				if !shouldRetry {
-					return fmt.Errorf("all model tiers exhausted during eBay batch screening: %w", genErr)
-				}
-				if handleErr != nil {
-					return handleErr
-				}
-				activeModel = c.currentModel
-				return genErr
-			}
-
-			if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "INTERNAL") ||
-				strings.Contains(errStr, "503") || strings.Contains(errStr, "504") || strings.Contains(errStr, "deadline exceeded") {
-				slog.Warn("Transient Gemini error during eBay batch screening", "model", activeModel, "attempt", attempt, "error", genErr)
-				return genErr
-			}
-
-			return fmt.Errorf("permanent gemini error during eBay batch screening: %w", genErr)
+			return c.handleGenerationError(ctx, genErr, &activeModel, attempt, "eBay batch screening")
 		}
-		c.resetConsecutive429s()
+		c.resetConsecutiveErrors()
 
 		parsed, parseErr := parseEbayBatchResponse(resp)
 		if parseErr != nil {
@@ -140,6 +119,7 @@ Return a JSON array with ALL items, marking the top deals:
 		"target_top", topN,
 		"actual_top", topCount,
 		"model", activeModel,
+		"location", c.currentLocation,
 	)
 
 	return results, nil
@@ -148,7 +128,7 @@ Return a JSON array with ALL items, marking the top deals:
 // VerifyEbayDeal performs tier-2 individual verification with Google Search grounding.
 // This is the second pass to confirm that a screened item is actually a good deal.
 func (c *Client) VerifyEbayDeal(ctx context.Context, item ebay.BrowseAPIItem, screenTitle string) (*ebay.EbayVerifyResult, error) {
-	if c == nil || c.client == nil {
+	if c == nil || len(c.clients) == 0 {
 		slog.Warn("AI client not initialized, skipping eBay deal verification")
 		return nil, nil
 	}
@@ -159,7 +139,7 @@ func (c *Client) VerifyEbayDeal(ctx context.Context, item ebay.BrowseAPIItem, sc
 
 	activeModel := c.checkDayRollover(ctx)
 
-	if c.allExhausted {
+	if c.AllTiersExhausted() {
 		return nil, fmt.Errorf("all model tiers exhausted for the day, skipping deal verification")
 	}
 
@@ -206,36 +186,11 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		resp, genErr := c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
+		resp, genErr := c.activeClient().Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
 		if genErr != nil {
-			errStr := genErr.Error()
-			if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
-				strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
-				slog.Warn("AI model unavailable or quota exceeded during eBay deal verification",
-					"model", activeModel,
-					"item", item.Title,
-					"error", genErr,
-				)
-				shouldRetry, handleErr := c.handleRateLimitError(ctx)
-				if !shouldRetry {
-					return fmt.Errorf("all model tiers exhausted during eBay deal verification: %w", genErr)
-				}
-				if handleErr != nil {
-					return handleErr
-				}
-				activeModel = c.currentModel
-				return genErr
-			}
-
-			if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "INTERNAL") ||
-				strings.Contains(errStr, "503") || strings.Contains(errStr, "504") || strings.Contains(errStr, "deadline exceeded") {
-				slog.Warn("Transient Gemini error during eBay deal verification", "model", activeModel, "attempt", attempt, "error", genErr)
-				return genErr
-			}
-
-			return fmt.Errorf("permanent gemini error during eBay deal verification: %w", genErr)
+			return c.handleGenerationError(ctx, genErr, &activeModel, attempt, "eBay deal verification")
 		}
-		c.resetConsecutive429s()
+		c.resetConsecutiveErrors()
 
 		parsed, parseErr := parseEbayVerifyResponse(resp)
 		if parseErr != nil {
@@ -264,6 +219,7 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 		"is_lava_hot", result.IsLavaHot,
 		"price", price,
 		"model", activeModel,
+		"location", c.currentLocation,
 	)
 
 	return result, nil

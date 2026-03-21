@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -85,6 +86,7 @@ func TestCheckDayRollover(t *testing.T) {
 				CurrentDay:   today,
 				CurrentModel: "gemini-pro",
 				AllExhausted: true,
+				ExhaustedAt:  time.Now(), // recently exhausted
 			},
 			fallbackModels:    []string{"gemini-lite", "gemini-pro"},
 			expectedModel:     "gemini-pro",
@@ -113,8 +115,10 @@ func TestCheckDayRollover(t *testing.T) {
 			}
 
 			client := &Client{
-				store:          store,
-				fallbackModels: tt.fallbackModels,
+				store:           store,
+				fallbackModels:  tt.fallbackModels,
+				locations:       []string{"us-central1"},
+				currentLocation: "us-central1",
 			}
 
 			// Simulated NewClient startup
@@ -145,10 +149,12 @@ func TestUpgradeModelTier(t *testing.T) {
 	}
 
 	client := &Client{
-		store:          store,
-		fallbackModels: []string{"tier-1", "tier-2", "tier-3"},
-		currentDay:     today,
-		currentModel:   "tier-1",
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2", "tier-3"},
+		locations:       []string{"us-central1"},
+		currentLocation: "us-central1",
+		currentDay:      today,
+		currentModel:    "tier-1",
 	}
 
 	// Upgrade 1
@@ -172,7 +178,7 @@ func TestUpgradeModelTier(t *testing.T) {
 		t.Errorf("expected model tier-3, got %q", client.currentModel)
 	}
 
-	// Upgrade 3 (Exhausted)
+	// Upgrade 3 — single region: should exhaust
 	err = client.upgradeModelTier(context.Background())
 	if err == nil {
 		t.Fatalf("expected error when exhausting all tiers, got nil")
@@ -191,6 +197,88 @@ func TestUpgradeModelTier(t *testing.T) {
 	}
 }
 
+func TestUpgradeModelTierWithRegionFailover(t *testing.T) {
+	today := getPacificDate()
+	store := &mockQuotaStore{
+		quota: &models.GeminiQuotaStatus{
+			CurrentDay:   today,
+			CurrentModel: "tier-1",
+		},
+	}
+
+	client := &Client{
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2"},
+		locations:       []string{"us-central1", "us-east4", "europe-west1"},
+		currentLocation: "us-central1",
+		currentDay:      today,
+		currentModel:    "tier-1",
+	}
+
+	// Exhaust tier-1 -> tier-2
+	err := client.upgradeModelTier(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.currentModel != "tier-2" {
+		t.Errorf("expected tier-2, got %q", client.currentModel)
+	}
+	if client.currentLocation != "us-central1" {
+		t.Errorf("expected us-central1, got %q", client.currentLocation)
+	}
+
+	// Exhaust tier-2 in us-central1 -> should switch to us-east4, reset to tier-1
+	err = client.upgradeModelTier(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.currentModel != "tier-1" {
+		t.Errorf("expected tier-1 after region switch, got %q", client.currentModel)
+	}
+	if client.currentLocation != "us-east4" {
+		t.Errorf("expected us-east4, got %q", client.currentLocation)
+	}
+
+	// Exhaust tier-1 -> tier-2 in us-east4
+	err = client.upgradeModelTier(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.currentModel != "tier-2" {
+		t.Errorf("expected tier-2, got %q", client.currentModel)
+	}
+
+	// Exhaust tier-2 in us-east4 -> should switch to europe-west1, reset to tier-1
+	err = client.upgradeModelTier(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.currentModel != "tier-1" {
+		t.Errorf("expected tier-1 after region switch, got %q", client.currentModel)
+	}
+	if client.currentLocation != "europe-west1" {
+		t.Errorf("expected europe-west1, got %q", client.currentLocation)
+	}
+
+	// Exhaust tier-1 -> tier-2 in europe-west1
+	err = client.upgradeModelTier(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Exhaust tier-2 in europe-west1 -> no more regions, should truly exhaust
+	err = client.upgradeModelTier(context.Background())
+	if err == nil {
+		t.Fatal("expected error when all regions exhausted")
+	}
+	if !client.allExhausted {
+		t.Error("expected allExhausted=true")
+	}
+	if client.exhaustedAt.IsZero() {
+		t.Error("expected exhaustedAt to be set")
+	}
+}
+
 func TestHandleRateLimitError(t *testing.T) {
 	today := getPacificDate()
 	store := &mockQuotaStore{
@@ -201,10 +289,12 @@ func TestHandleRateLimitError(t *testing.T) {
 	}
 
 	client := &Client{
-		store:          store,
-		fallbackModels: []string{"tier-1", "tier-2", "tier-3"},
-		currentDay:     today,
-		currentModel:   "tier-1",
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2", "tier-3"},
+		locations:       []string{"us-central1"},
+		currentLocation: "us-central1",
+		currentDay:      today,
+		currentModel:    "tier-1",
 	}
 
 	ctx := context.Background()
@@ -251,15 +341,20 @@ func TestHandleRateLimitErrorResetOnSuccess(t *testing.T) {
 	client := &Client{
 		store:           store,
 		fallbackModels:  []string{"tier-1", "tier-2"},
+		locations:       []string{"us-central1"},
+		currentLocation: "us-central1",
 		currentDay:      today,
 		currentModel:    "tier-1",
 		consecutive429s: 2, // about to escalate
 	}
 
 	// Simulate a successful call resetting the counter
-	client.resetConsecutive429s()
+	client.resetConsecutiveErrors()
 	if client.consecutive429s != 0 {
 		t.Errorf("expected consecutive429s reset to 0, got %d", client.consecutive429s)
+	}
+	if client.consecutive504s != 0 {
+		t.Errorf("expected consecutive504s reset to 0, got %d", client.consecutive504s)
 	}
 
 	// Now a 429 should be treated as first occurrence (retry same model)
@@ -282,10 +377,12 @@ func TestUpgradeModelTierStaleModel(t *testing.T) {
 	}
 
 	client := &Client{
-		store:          store,
-		fallbackModels: []string{"tier-1", "tier-2", "tier-3"},
-		currentDay:     today,
-		currentModel:   "old-removed-model",
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2", "tier-3"},
+		locations:       []string{"us-central1"},
+		currentLocation: "us-central1",
+		currentDay:      today,
+		currentModel:    "old-removed-model",
 	}
 
 	// Should reset to tier-1 instead of failing
@@ -295,5 +392,244 @@ func TestUpgradeModelTierStaleModel(t *testing.T) {
 	}
 	if client.currentModel != "tier-1" {
 		t.Errorf("expected model tier-1, got %q", client.currentModel)
+	}
+}
+
+func TestSwitchRegion(t *testing.T) {
+	today := getPacificDate()
+	store := &mockQuotaStore{}
+
+	client := &Client{
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2"},
+		locations:       []string{"us-central1", "us-east4", "europe-west1"},
+		currentLocation: "us-central1",
+		currentDay:      today,
+		currentModel:    "tier-2",
+		consecutive429s: 5,
+		consecutive504s: 3,
+	}
+
+	// Switch from us-central1 -> us-east4
+	switched := client.switchRegion(context.Background())
+	if !switched {
+		t.Fatal("expected switchRegion to return true")
+	}
+	if client.currentLocation != "us-east4" {
+		t.Errorf("expected us-east4, got %q", client.currentLocation)
+	}
+	if client.currentModel != "tier-1" {
+		t.Errorf("expected model reset to tier-1, got %q", client.currentModel)
+	}
+	if client.consecutive429s != 0 {
+		t.Errorf("expected consecutive429s reset to 0, got %d", client.consecutive429s)
+	}
+	if client.consecutive504s != 0 {
+		t.Errorf("expected consecutive504s reset to 0, got %d", client.consecutive504s)
+	}
+
+	// Switch from us-east4 -> europe-west1
+	switched = client.switchRegion(context.Background())
+	if !switched {
+		t.Fatal("expected switchRegion to return true")
+	}
+	if client.currentLocation != "europe-west1" {
+		t.Errorf("expected europe-west1, got %q", client.currentLocation)
+	}
+
+	// No more regions
+	switched = client.switchRegion(context.Background())
+	if switched {
+		t.Fatal("expected switchRegion to return false when no more regions")
+	}
+	if client.currentLocation != "europe-west1" {
+		t.Errorf("expected location unchanged at europe-west1, got %q", client.currentLocation)
+	}
+}
+
+func TestSwitchRegionSingleLocation(t *testing.T) {
+	client := &Client{
+		locations:       []string{"us-central1"},
+		currentLocation: "us-central1",
+		fallbackModels:  []string{"tier-1"},
+	}
+
+	switched := client.switchRegion(context.Background())
+	if switched {
+		t.Fatal("expected switchRegion to return false with single location")
+	}
+}
+
+func TestCooldownRecovery(t *testing.T) {
+	today := getPacificDate()
+	store := &mockQuotaStore{
+		quota: &models.GeminiQuotaStatus{
+			CurrentDay:   today,
+			CurrentModel: "tier-2",
+			AllExhausted: true,
+			ExhaustedAt:  time.Now().Add(-31 * time.Minute), // 31 min ago
+		},
+	}
+
+	client := &Client{
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2"},
+		locations:       []string{"us-central1", "us-east4"},
+		currentLocation: "us-east4",
+		currentDay:      today,
+		currentModel:    "tier-2",
+		allExhausted:    true,
+		exhaustedAt:     time.Now().Add(-31 * time.Minute),
+	}
+
+	// AllTiersExhausted should return false because cooldown elapsed
+	if client.AllTiersExhausted() {
+		t.Error("expected AllTiersExhausted()=false after cooldown")
+	}
+
+	// checkDayRollover should reset everything
+	model := client.checkDayRollover(context.Background())
+	if model != "tier-1" {
+		t.Errorf("expected model tier-1 after cooldown reset, got %q", model)
+	}
+	if client.currentLocation != "us-central1" {
+		t.Errorf("expected location reset to us-central1, got %q", client.currentLocation)
+	}
+	if client.allExhausted {
+		t.Error("expected allExhausted=false after cooldown reset")
+	}
+	if !client.exhaustedAt.IsZero() {
+		t.Error("expected exhaustedAt to be zero after cooldown reset")
+	}
+}
+
+func TestCooldownNotElapsed(t *testing.T) {
+	today := getPacificDate()
+
+	client := &Client{
+		store:           &mockQuotaStore{},
+		fallbackModels:  []string{"tier-1", "tier-2"},
+		locations:       []string{"us-central1"},
+		currentLocation: "us-central1",
+		currentDay:      today,
+		currentModel:    "tier-2",
+		allExhausted:    true,
+		exhaustedAt:     time.Now().Add(-5 * time.Minute), // only 5 min ago
+	}
+
+	// Should still be exhausted
+	if !client.AllTiersExhausted() {
+		t.Error("expected AllTiersExhausted()=true before cooldown elapses")
+	}
+}
+
+func TestHandle504Error(t *testing.T) {
+	store := &mockQuotaStore{}
+
+	client := &Client{
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2"},
+		locations:       []string{"us-central1", "us-east4"},
+		currentLocation: "us-central1",
+		currentModel:    "tier-1",
+		consecutive504s: 0,
+	}
+
+	ctx := context.Background()
+
+	// First 4 calls should not trigger region switch
+	for i := 0; i < 4; i++ {
+		switched := client.handle504Error(ctx)
+		if switched {
+			t.Fatalf("call %d: did not expect region switch yet", i+1)
+		}
+	}
+
+	// 5th call should trigger region switch
+	switched := client.handle504Error(ctx)
+	if !switched {
+		t.Fatal("expected region switch on 5th consecutive 504")
+	}
+	if client.currentLocation != "us-east4" {
+		t.Errorf("expected us-east4, got %q", client.currentLocation)
+	}
+	if client.currentModel != "tier-1" {
+		t.Errorf("expected model reset to tier-1, got %q", client.currentModel)
+	}
+	if client.consecutive504s != 0 {
+		t.Errorf("expected consecutive504s reset to 0, got %d", client.consecutive504s)
+	}
+}
+
+func TestHandle504ErrorNoMoreRegions(t *testing.T) {
+	client := &Client{
+		store:           &mockQuotaStore{},
+		fallbackModels:  []string{"tier-1"},
+		locations:       []string{"us-central1"},
+		currentLocation: "us-central1",
+		currentModel:    "tier-1",
+		consecutive504s: 4,
+	}
+
+	// Should not switch (only one region)
+	switched := client.handle504Error(context.Background())
+	if switched {
+		t.Fatal("expected no region switch with single location")
+	}
+	// Counter should still be reset
+	if client.consecutive504s != 0 {
+		t.Errorf("expected consecutive504s reset to 0, got %d", client.consecutive504s)
+	}
+}
+
+func TestLocationPersistence(t *testing.T) {
+	today := getPacificDate()
+	store := &mockQuotaStore{
+		quota: &models.GeminiQuotaStatus{
+			CurrentDay:      today,
+			CurrentModel:    "tier-2",
+			CurrentLocation: "us-east4",
+		},
+	}
+
+	client := &Client{
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2"},
+		locations:       []string{"us-central1", "us-east4", "europe-west1"},
+		currentLocation: "us-central1",
+	}
+
+	client.initQuotaState(context.Background())
+
+	if client.currentLocation != "us-east4" {
+		t.Errorf("expected location loaded from Firestore: us-east4, got %q", client.currentLocation)
+	}
+	if client.currentModel != "tier-2" {
+		t.Errorf("expected model loaded from Firestore: tier-2, got %q", client.currentModel)
+	}
+}
+
+func TestLocationPersistenceInvalidLocation(t *testing.T) {
+	today := getPacificDate()
+	store := &mockQuotaStore{
+		quota: &models.GeminiQuotaStatus{
+			CurrentDay:      today,
+			CurrentModel:    "tier-1",
+			CurrentLocation: "asia-south1", // not in our locations list
+		},
+	}
+
+	client := &Client{
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2"},
+		locations:       []string{"us-central1", "us-east4"},
+		currentLocation: "us-central1",
+	}
+
+	client.initQuotaState(context.Background())
+
+	// Should keep the default location since the stored one is invalid
+	if client.currentLocation != "us-central1" {
+		t.Errorf("expected default location us-central1 for invalid stored location, got %q", client.currentLocation)
 	}
 }
