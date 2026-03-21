@@ -256,12 +256,12 @@ func TestScrapeDealDetailPage_PrimaryLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	url, _, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
-	if url != "https://amazon.ca/dp/B001" {
-		t.Errorf("url = %q, want %q", url, "https://amazon.ca/dp/B001")
+	if detail.DealLink != "https://amazon.ca/dp/B001" {
+		t.Errorf("DealLink = %q, want %q", detail.DealLink, "https://amazon.ca/dp/B001")
 	}
 }
 
@@ -278,12 +278,12 @@ func TestScrapeDealDetailPage_FallbackLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	url, _, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
-	if url != "https://bestbuy.ca/product" {
-		t.Errorf("url = %q, want %q", url, "https://bestbuy.ca/product")
+	if detail.DealLink != "https://bestbuy.ca/product" {
+		t.Errorf("DealLink = %q, want %q", detail.DealLink, "https://bestbuy.ca/product")
 	}
 }
 
@@ -300,12 +300,12 @@ func TestScrapeDealDetailPage_NoLink(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	dealLink, _, _, _, _, _, _, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
-	if dealLink != "" {
-		t.Errorf("Expected empty deal link, got %q", dealLink)
+	if detail.DealLink != "" {
+		t.Errorf("Expected empty deal link, got %q", detail.DealLink)
 	}
 }
 
@@ -322,18 +322,18 @@ func TestScrapeDealDetailPage_PriceExtraction(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	_, _, _, _, price, originalPrice, savings, _, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
-	if price != "$79.99" {
-		t.Errorf("price = %q, want %q", price, "$79.99")
+	if detail.Price != "$79.99" {
+		t.Errorf("Price = %q, want %q", detail.Price, "$79.99")
 	}
-	if originalPrice != "$129.99" {
-		t.Errorf("originalPrice = %q, want %q", originalPrice, "$129.99")
+	if detail.OriginalPrice != "$129.99" {
+		t.Errorf("OriginalPrice = %q, want %q", detail.OriginalPrice, "$129.99")
 	}
-	if savings != "$50.00" {
-		t.Errorf("savings = %q, want %q", savings, "$50.00")
+	if detail.Savings != "$50.00" {
+		t.Errorf("Savings = %q, want %q", detail.Savings, "$50.00")
 	}
 }
 
@@ -355,24 +355,24 @@ func TestScrapeDealDetailPage_OriginalPriceAndSavings_Soundcore(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	dealLink, _, _, _, price, originalPrice, savings, retailer, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
-	if price != "$79.99" {
-		t.Errorf("price = %q, want %q", price, "$79.99")
+	if detail.Price != "$79.99" {
+		t.Errorf("Price = %q, want %q", detail.Price, "$79.99")
 	}
-	if originalPrice != "$129.99" {
-		t.Errorf("originalPrice = %q, want %q", originalPrice, "$129.99")
+	if detail.OriginalPrice != "$129.99" {
+		t.Errorf("OriginalPrice = %q, want %q", detail.OriginalPrice, "$129.99")
 	}
-	if savings != "Save 38%" {
-		t.Errorf("savings = %q, want %q", savings, "Save 38%")
+	if detail.Savings != "Save 38%" {
+		t.Errorf("Savings = %q, want %q", detail.Savings, "Save 38%")
 	}
-	if retailer != "Amazon.ca" {
-		t.Errorf("retailer = %q, want %q", retailer, "Amazon.ca")
+	if detail.Retailer != "Amazon.ca" {
+		t.Errorf("Retailer = %q, want %q", detail.Retailer, "Amazon.ca")
 	}
-	if !strings.Contains(dealLink, "amazon.ca") {
-		t.Errorf("dealLink = %q, want something containing amazon.ca", dealLink)
+	if !strings.Contains(detail.DealLink, "amazon.ca") {
+		t.Errorf("DealLink = %q, want something containing amazon.ca", detail.DealLink)
 	}
 }
 
@@ -392,15 +392,15 @@ func TestScrapeDealDetailPage_RetailerAndCategory(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	_, _, _, _, _, _, _, retailer, category, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
-	if retailer != "KLM" {
-		t.Errorf("retailer = %q, want %q", retailer, "KLM")
+	if detail.Retailer != "KLM" {
+		t.Errorf("Retailer = %q, want %q", detail.Retailer, "KLM")
 	}
-	if category != "Travel" {
-		t.Errorf("category = %q, want %q", category, "Travel")
+	if detail.Category != "Travel" {
+		t.Errorf("Category = %q, want %q", detail.Category, "Travel")
 	}
 }
 
@@ -442,16 +442,16 @@ func TestScrapeDealDetailPage_JSONLDFallback(t *testing.T) {
 	}
 	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
 
-	_, _, _, _, price, _, _, retailer, _, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
 	if err != nil {
 		t.Fatalf("scrapeDealDetailPage() error = %v", err)
 	}
 
-	if price != "$99.99" {
-		t.Errorf("price = %q, want %q", price, "$99.99")
+	if detail.Price != "$99.99" {
+		t.Errorf("Price = %q, want %q", detail.Price, "$99.99")
 	}
-	if retailer != "JSON-LD Store" {
-		t.Errorf("retailer = %q, want %q", retailer, "JSON-LD Store")
+	if detail.Retailer != "JSON-LD Store" {
+		t.Errorf("Retailer = %q, want %q", detail.Retailer, "JSON-LD Store")
 	}
 }
 

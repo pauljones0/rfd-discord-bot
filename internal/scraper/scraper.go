@@ -252,7 +252,7 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 		}
 
 		g.Go(func() error {
-			actualURL, description, comments, summary, price, originalPrice, savings, retailer, category, err := c.scrapeDealDetailPage(ctx, deal.PrimaryPostURL())
+			detail, err := c.scrapeDealDetailPage(ctx, deal.PrimaryPostURL())
 			if err != nil {
 				if strings.Contains(err.Error(), "status code 404") {
 					slog.Info("Failed to fetch detail page (404)", "url", deal.PrimaryPostURL())
@@ -262,18 +262,18 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 				return nil
 			}
 
-			deal.ActualDealURL = actualURL
-			deal.Description = description
-			deal.Comments = comments
-			deal.Summary = summary
-			deal.Price = price
-			deal.OriginalPrice = originalPrice
-			deal.Savings = savings
-			if retailer != "" {
-				deal.Retailer = retailer
+			deal.ActualDealURL = detail.DealLink
+			deal.Description = detail.Description
+			deal.Comments = detail.Comments
+			deal.Summary = detail.Summary
+			deal.Price = detail.Price
+			deal.OriginalPrice = detail.OriginalPrice
+			deal.Savings = detail.Savings
+			if detail.Retailer != "" {
+				deal.Retailer = detail.Retailer
 			}
-			if category != "" {
-				deal.Category = category
+			if detail.Category != "" {
+				deal.Category = detail.Category
 			}
 
 			if deal.ActualDealURL != "" {
@@ -296,10 +296,23 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 	}
 }
 
-func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (string, string, string, string, string, string, string, string, string, error) {
+// dealDetailResult holds the fields scraped from an RFD deal detail page.
+type dealDetailResult struct {
+	DealLink      string
+	Description   string
+	Comments      string
+	Summary       string
+	Price         string
+	OriginalPrice string
+	Savings       string
+	Retailer      string
+	Category      string
+}
+
+func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (dealDetailResult, error) {
 	doc, err := c.fetchHTMLContent(ctx, dealURL)
 	if err != nil {
-		return "", "", "", "", "", "", "", "", "", err
+		return dealDetailResult{}, err
 	}
 
 	// 1. Get Deal Link
@@ -431,7 +444,17 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (stri
 		})
 	}
 
-	return dealLink, description, commentsStr, summary, price, originalPrice, savings, retailer, category, nil
+	return dealDetailResult{
+		DealLink:      dealLink,
+		Description:   description,
+		Comments:      commentsStr,
+		Summary:       summary,
+		Price:         price,
+		OriginalPrice: originalPrice,
+		Savings:       savings,
+		Retailer:      retailer,
+		Category:      category,
+	}, nil
 }
 
 // cleanHTMLText allows stripping HTML tags from a string.
