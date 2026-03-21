@@ -231,8 +231,8 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 
 	deletedCount := 0
 	bulkWriter := c.client.BulkWriter(ctx)
-
 	defer func() {
+		bulkWriter.Flush()
 		bulkWriter.End()
 	}()
 
@@ -254,7 +254,6 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 	}
 
 	if deletedCount > 0 {
-		bulkWriter.Flush()
 		logger.Notice("TrimOldDeals: Flushed delete operations", "queued", deletedCount)
 	}
 
@@ -268,7 +267,6 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 	}
 
 	bw := c.client.BulkWriter(ctx)
-	defer bw.End()
 	col := c.client.Collection(firestoreCollection)
 
 	for _, d := range creates {
@@ -321,6 +319,7 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 	}
 
 	bw.Flush()
+	bw.End()
 	return nil
 }
 
