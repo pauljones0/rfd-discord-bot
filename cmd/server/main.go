@@ -164,7 +164,9 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		slog.Info("ProcessDealsHandler: dropped request due to concurrency limit")
 		w.WriteHeader(http.StatusTooManyRequests)
-		json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing deals"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing deals"}); err != nil {
+			slog.Error("Failed to encode response", "error", err)
+		}
 		return
 	}
 
@@ -195,7 +197,9 @@ func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 	if s.ebayProcessor == nil {
 		slog.Info("ProcessEbayHandler: eBay processor not configured, skipping")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "eBay features not configured"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "eBay features not configured"}); err != nil {
+			slog.Error("Failed to encode response", "error", err)
+		}
 		return
 	}
 
@@ -204,7 +208,9 @@ func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		slog.Info("ProcessEbayHandler: dropped request due to concurrency limit")
 		w.WriteHeader(http.StatusTooManyRequests)
-		json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing eBay deals"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing eBay deals"}); err != nil {
+			slog.Error("Failed to encode response", "error", err)
+		}
 		return
 	}
 
