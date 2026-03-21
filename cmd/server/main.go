@@ -164,7 +164,7 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		slog.Info("ProcessDealsHandler: dropped request due to concurrency limit")
 		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintln(w, `{"status":"busy", "details": "server is busy processing deals"}`)
+		json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing deals"})
 		return
 	}
 
@@ -195,7 +195,7 @@ func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 	if s.ebayProcessor == nil {
 		slog.Info("ProcessEbayHandler: eBay processor not configured, skipping")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `{"status":"skipped", "details": "eBay features not configured"}`)
+		json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "eBay features not configured"})
 		return
 	}
 
@@ -204,7 +204,7 @@ func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		slog.Info("ProcessEbayHandler: dropped request due to concurrency limit")
 		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintln(w, `{"status":"busy", "details": "server is busy processing eBay deals"}`)
+		json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing eBay deals"})
 		return
 	}
 

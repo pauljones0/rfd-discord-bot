@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -573,15 +574,12 @@ func isAllDigits(s string) bool {
 
 // sortThreads sorts a deal's threads array descending by LikeCount, then by CommentCount
 func (p *DealProcessor) sortThreads(deal *models.DealInfo) {
-	for i := 0; i < len(deal.Threads)-1; i++ {
-		for j := i + 1; j < len(deal.Threads); j++ {
-			ti := deal.Threads[i]
-			tj := deal.Threads[j]
-			if tj.LikeCount > ti.LikeCount || (tj.LikeCount == ti.LikeCount && tj.CommentCount > ti.CommentCount) {
-				deal.Threads[i], deal.Threads[j] = deal.Threads[j], deal.Threads[i]
-			}
+	sort.Slice(deal.Threads, func(i, j int) bool {
+		if deal.Threads[i].LikeCount != deal.Threads[j].LikeCount {
+			return deal.Threads[i].LikeCount > deal.Threads[j].LikeCount
 		}
-	}
+		return deal.Threads[i].CommentCount > deal.Threads[j].CommentCount
+	})
 }
 
 func (p *DealProcessor) isDealEligibleForSubscription(deal models.DealInfo, sub models.Subscription) bool {
