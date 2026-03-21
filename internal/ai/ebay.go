@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -291,15 +292,15 @@ func parseEbayBatchResponse(resp *genai.GenerateContentResponse) ([]ebay.EbayBat
 		return nil, fmt.Errorf("no response candidates from gemini")
 	}
 
+	// Try each text part individually — JSON may not be in the first one.
 	for _, part := range resp.Candidates[0].Content.Parts {
 		if part.Text != "" {
 			jsonStr := stripCodeBlock(part.Text)
 
 			var results []ebay.EbayBatchScreenResult
-			if err := json.Unmarshal([]byte(jsonStr), &results); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal batch results: %w (raw: %s)", err, jsonStr)
+			if err := json.Unmarshal([]byte(jsonStr), &results); err == nil {
+				return results, nil
 			}
-			return results, nil
 		}
 	}
 	return nil, fmt.Errorf("no text response from gemini for batch screening (finish_reason=%s, parts=%d)",
@@ -314,17 +315,37 @@ func parseEbayVerifyResponse(resp *genai.GenerateContentResponse) (*ebay.EbayVer
 		return nil, fmt.Errorf("no response candidates from gemini")
 	}
 
+	// Try each text part — with Google Search grounding, the JSON may not be
+	// in the first text part (some parts may contain grounded explanations).
+	var allText strings.Builder
 	for _, part := range resp.Candidates[0].Content.Parts {
 		if part.Text != "" {
 			jsonStr := stripCodeBlock(part.Text)
 
 			var result ebay.EbayVerifyResult
-			if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal verify result: %w (raw: %s)", err, jsonStr)
+			if err := json.Unmarshal([]byte(jsonStr), &result); err == nil {
+				return &result, nil
 			}
-			return &result, nil
+			allText.WriteString(part.Text)
+			allText.WriteString("\n")
 		}
 	}
+
+	// Fallback: try extracting JSON from the concatenated text of all parts.
+	if allText.Len() > 0 {
+		jsonStr := stripCodeBlock(allText.String())
+		var result ebay.EbayVerifyResult
+		if err := json.Unmarshal([]byte(jsonStr), &result); err == nil {
+			return &result, nil
+		}
+
+		// Last resort: try to parse structured text responses where Gemini
+		// returns the fields in prose instead of JSON.
+		if r, ok := parseVerifyFromText(allText.String()); ok {
+			return r, nil
+		}
+	}
+
 	return nil, fmt.Errorf("no text response from gemini for deal verification (finish_reason=%s, parts=%d)",
 		resp.Candidates[0].FinishReason, len(resp.Candidates[0].Content.Parts))
 }
@@ -354,4 +375,52 @@ func checkResponseBlocked(resp *genai.GenerateContentResponse) string {
 		}
 	}
 	return ""
+}
+
+// parseVerifyFromText attempts to extract verification fields from a
+// free-text Gemini response (e.g. markdown bullet points) when JSON
+// parsing fails. Returns nil, false if the text doesn't contain the
+// expected fields.
+func parseVerifyFromText(text string) (*ebay.EbayVerifyResult, bool) {
+	lower := strings.ToLower(text)
+
+	// Look for clean title in patterns like:
+	//   **Clean Title:** Some Product Name
+	//   Clean Title: Some Product Name
+	titleRe := regexp.MustCompile(`(?i)\*{0,2}clean[_ ]title\*{0,2}:\s*(.+)`)
+	titleMatch := titleRe.FindStringSubmatch(text)
+	if titleMatch == nil {
+		return nil, false
+	}
+	cleanTitle := strings.TrimSpace(titleMatch[1])
+	// Remove leading/trailing markdown bold markers
+	cleanTitle = strings.Trim(cleanTitle, "* ")
+	cleanTitle = strings.TrimSpace(cleanTitle)
+	if cleanTitle == "" {
+		return nil, false
+	}
+
+	// Parse is_warm — look for "Is Warm: True/False" or "is_warm": true/false
+	isWarm := strings.Contains(lower, "is warm:** true") ||
+		strings.Contains(lower, "is warm: true") ||
+		strings.Contains(lower, "is_warm: true") ||
+		strings.Contains(lower, `"is_warm": true`)
+
+	// Parse is_lava_hot
+	isLavaHot := strings.Contains(lower, "is lava hot:** true") ||
+		strings.Contains(lower, "is lava hot: true") ||
+		strings.Contains(lower, "is_lava_hot: true") ||
+		strings.Contains(lower, `"is_lava_hot": true`)
+
+	slog.Info("Parsed eBay verification from free-text response",
+		"clean_title", cleanTitle,
+		"is_warm", isWarm,
+		"is_lava_hot", isLavaHot,
+	)
+
+	return &ebay.EbayVerifyResult{
+		CleanTitle: cleanTitle,
+		IsWarm:     isWarm,
+		IsLavaHot:  isLavaHot,
+	}, true
 }

@@ -684,6 +684,78 @@ func TestStripCodeBlockWithTrailingText(t *testing.T) {
 	}
 }
 
+func TestParseVerifyFromText(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantOK    bool
+		wantTitle string
+		wantWarm  bool
+		wantHot   bool
+	}{
+		{
+			name: "markdown bullet points with warm=true",
+			input: `The North Face Women's Shelbe Raschel Hoodie
+
+The eBay listing is a decent deal.
+
+*   **Clean Title:** The North Face Women's Shelbe Raschel Hoodie
+*   **Is Warm:** True. The retail price is higher.
+*   **Is Lava Hot:** False. Not exceptional enough.`,
+			wantOK:    true,
+			wantTitle: "The North Face Women's Shelbe Raschel Hoodie",
+			wantWarm:  true,
+			wantHot:   false,
+		},
+		{
+			name: "markdown with lava hot true",
+			input: `*   **Clean Title:** Sony WH-1000XM5 Headphones
+*   **Is Warm:** True
+*   **Is Lava Hot:** True`,
+			wantOK:    true,
+			wantTitle: "Sony WH-1000XM5 Headphones",
+			wantWarm:  true,
+			wantHot:   true,
+		},
+		{
+			name: "plain text format",
+			input: `Clean Title: Budget Gaming Monitor 27"
+Is Warm: False
+Is Lava Hot: False`,
+			wantOK:    true,
+			wantTitle: `Budget Gaming Monitor 27"`,
+			wantWarm:  false,
+			wantHot:   false,
+		},
+		{
+			name:   "no clean title found",
+			input:  `This is just some random text without any structured data.`,
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := parseVerifyFromText(tt.input)
+			if ok != tt.wantOK {
+				t.Fatalf("parseVerifyFromText ok=%v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if result.CleanTitle != tt.wantTitle {
+				t.Errorf("CleanTitle = %q, want %q", result.CleanTitle, tt.wantTitle)
+			}
+			if result.IsWarm != tt.wantWarm {
+				t.Errorf("IsWarm = %v, want %v", result.IsWarm, tt.wantWarm)
+			}
+			if result.IsLavaHot != tt.wantHot {
+				t.Errorf("IsLavaHot = %v, want %v", result.IsLavaHot, tt.wantHot)
+			}
+		})
+	}
+}
+
 func TestLocationPersistenceInvalidLocation(t *testing.T) {
 	today := getPacificDate()
 	store := &mockQuotaStore{
