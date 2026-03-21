@@ -2,14 +2,29 @@ package util
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"time"
 )
 
+// permanentError wraps an error to signal that retrying will not help.
+type permanentError struct {
+	err error
+}
+
+func (e *permanentError) Error() string { return e.err.Error() }
+func (e *permanentError) Unwrap() error { return e.err }
+
+// PermanentError wraps an error to indicate that RetryWithBackoff should stop
+// immediately without further retries (e.g. safety blocks, auth failures).
+func PermanentError(err error) error {
+	return &permanentError{err: err}
+}
+
 // RetryWithBackoff calls fn up to maxRetries+1 times with exponential backoff
 // and jitter. fn receives the current attempt number (0-indexed). It should
-// return nil on success.
+// return nil on success. If fn returns a PermanentError, retries stop immediately.
 // If the context is cancelled, RetryWithBackoff returns the context error immediately.
 func RetryWithBackoff(ctx context.Context, maxRetries int, fn func(attempt int) error) error {
 	var lastErr error
@@ -17,6 +32,12 @@ func RetryWithBackoff(ctx context.Context, maxRetries int, fn func(attempt int) 
 		lastErr = fn(attempt)
 		if lastErr == nil {
 			return nil
+		}
+
+		// Permanent errors should not be retried
+		var perm *permanentError
+		if errors.As(lastErr, &perm) {
+			return perm.err
 		}
 
 		// Don't wait after the last attempt

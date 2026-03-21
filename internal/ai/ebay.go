@@ -92,6 +92,12 @@ Return a JSON array with ALL items, marking the top deals:
 
 		parsed, parseErr := parseEbayBatchResponse(resp)
 		if parseErr != nil {
+			// Safety/content blocks are deterministic — don't retry
+			if strings.Contains(parseErr.Error(), "gemini blocked") {
+				slog.Warn("Gemini blocked eBay batch screening",
+					"model", activeModel, "attempt", attempt, "error", parseErr)
+				return util.PermanentError(parseErr)
+			}
 			// Empty/missing response from Gemini is transient — retry
 			if strings.Contains(parseErr.Error(), "no text response") || strings.Contains(parseErr.Error(), "no response candidates") {
 				slog.Warn("Gemini returned empty response during eBay batch screening, retrying", "model", activeModel, "attempt", attempt, "error", parseErr)
@@ -194,6 +200,12 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 
 		parsed, parseErr := parseEbayVerifyResponse(resp)
 		if parseErr != nil {
+			// Safety/content blocks are deterministic — don't retry
+			if strings.Contains(parseErr.Error(), "gemini blocked") {
+				slog.Warn("Gemini blocked eBay deal verification",
+					"model", activeModel, "item", item.Title, "error", parseErr)
+				return util.PermanentError(parseErr)
+			}
 			// Empty/missing response from Gemini is transient — retry
 			if strings.Contains(parseErr.Error(), "no text response") || strings.Contains(parseErr.Error(), "no response candidates") {
 				slog.Warn("Gemini returned empty response during eBay deal verification, retrying",
@@ -226,6 +238,9 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 }
 
 func parseEbayBatchResponse(resp *genai.GenerateContentResponse) ([]ebay.EbayBatchScreenResult, error) {
+	if reason := checkResponseBlocked(resp); reason != "" {
+		return nil, fmt.Errorf("gemini blocked batch screening response: %s", reason)
+	}
 	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
 		return nil, fmt.Errorf("no response candidates from gemini")
 	}
@@ -245,6 +260,9 @@ func parseEbayBatchResponse(resp *genai.GenerateContentResponse) ([]ebay.EbayBat
 }
 
 func parseEbayVerifyResponse(resp *genai.GenerateContentResponse) (*ebay.EbayVerifyResult, error) {
+	if reason := checkResponseBlocked(resp); reason != "" {
+		return nil, fmt.Errorf("gemini blocked verification response: %s", reason)
+	}
 	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
 		return nil, fmt.Errorf("no response candidates from gemini")
 	}
@@ -261,4 +279,31 @@ func parseEbayVerifyResponse(resp *genai.GenerateContentResponse) (*ebay.EbayVer
 		}
 	}
 	return nil, fmt.Errorf("no text response from gemini for deal verification")
+}
+
+// checkResponseBlocked inspects a Gemini response for safety blocks or content filters.
+// Returns a human-readable reason if the response was blocked, or empty string if not blocked.
+func checkResponseBlocked(resp *genai.GenerateContentResponse) string {
+	if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" {
+		msg := string(resp.PromptFeedback.BlockReason)
+		if resp.PromptFeedback.BlockReasonMessage != "" {
+			msg += ": " + resp.PromptFeedback.BlockReasonMessage
+		}
+		return "prompt blocked — " + msg
+	}
+	if len(resp.Candidates) > 0 {
+		c := resp.Candidates[0]
+		switch c.FinishReason {
+		case genai.FinishReasonSafety, genai.FinishReasonBlocklist,
+			genai.FinishReasonProhibitedContent, genai.FinishReasonSPII:
+			reason := string(c.FinishReason)
+			for _, sr := range c.SafetyRatings {
+				if sr.Blocked {
+					reason += fmt.Sprintf(" [%s=%s]", sr.Category, sr.Probability)
+				}
+			}
+			return "finish_reason=" + reason
+		}
+	}
+	return ""
 }
