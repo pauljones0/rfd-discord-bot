@@ -131,10 +131,12 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	apiItems, err := p.client.SearchSellerListings(ctx, sellers, sinceTime)
 	if err != nil {
 		stats.exitReason = "api_fetch_error"
-		p.store.UpdateEbayPollState(ctx, EbayPollState{
+		if stateErr := p.store.UpdateEbayPollState(ctx, EbayPollState{
 			LastPollTime: time.Now(),
 			LastError:    err.Error(),
-		})
+		}); stateErr != nil {
+			logger.Warn("Failed to update eBay poll state", "error", stateErr)
+		}
 		return fmt.Errorf("failed to fetch eBay listings: %w", err)
 	}
 	stats.fetched = len(apiItems)
@@ -142,10 +144,12 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 
 	if len(apiItems) == 0 {
 		stats.exitReason = "no_new_items"
-		p.store.UpdateEbayPollState(ctx, EbayPollState{
+		if stateErr := p.store.UpdateEbayPollState(ctx, EbayPollState{
 			LastPollTime:  time.Now(),
 			LastPollItems: 0,
-		})
+		}); stateErr != nil {
+			logger.Warn("Failed to update eBay poll state", "error", stateErr)
+		}
 		return nil
 	}
 
@@ -156,10 +160,12 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 
 	if len(warmHotItems) == 0 {
 		stats.exitReason = "no_warm_hot"
-		p.store.UpdateEbayPollState(ctx, EbayPollState{
+		if stateErr := p.store.UpdateEbayPollState(ctx, EbayPollState{
 			LastPollTime:  time.Now(),
 			LastPollItems: len(apiItems),
-		})
+		}); stateErr != nil {
+			logger.Warn("Failed to update eBay poll state", "error", stateErr)
+		}
 		return nil
 	}
 
@@ -195,10 +201,12 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	}
 
 	// 7. Update poll state
-	p.store.UpdateEbayPollState(ctx, EbayPollState{
+	if stateErr := p.store.UpdateEbayPollState(ctx, EbayPollState{
 		LastPollTime:  time.Now(),
 		LastPollItems: len(apiItems),
-	})
+	}); stateErr != nil {
+		logger.Warn("Failed to update eBay poll state", "error", stateErr)
+	}
 
 	stats.exitReason = "success"
 	return nil

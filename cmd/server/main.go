@@ -112,7 +112,7 @@ func main() {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `{"status":"ok", "firestore": "connected"}`)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "firestore": "connected"})
 	})
 
 	httpServer := &http.Server{
