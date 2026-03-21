@@ -146,9 +146,15 @@ func buildDealUpdates(deal models.DealInfo) []firestore.Update {
 		{Path: "isWarm", Value: deal.IsWarm},
 		{Path: "isLavaHot", Value: deal.IsLavaHot},
 		{Path: "hasBeenWarm", Value: deal.HasBeenWarm},
+		{Path: "hasBeenHot", Value: deal.HasBeenHot},
 		{Path: "aiProcessed", Value: deal.AIProcessed},
 		{Path: "threads", Value: deal.Threads},
 		{Path: "searchTokens", Value: deal.SearchTokens},
+		{Path: "category", Value: deal.Category},
+		{Path: "retailer", Value: deal.Retailer},
+		{Path: "price", Value: deal.Price},
+		{Path: "originalPrice", Value: deal.OriginalPrice},
+		{Path: "savings", Value: deal.Savings},
 	}
 
 	// Handle optional fields that should be deleted if empty to save space
