@@ -256,7 +256,8 @@ func parseEbayBatchResponse(resp *genai.GenerateContentResponse) ([]ebay.EbayBat
 			return results, nil
 		}
 	}
-	return nil, fmt.Errorf("no text response from gemini for batch screening")
+	return nil, fmt.Errorf("no text response from gemini for batch screening (finish_reason=%s, parts=%d)",
+		resp.Candidates[0].FinishReason, len(resp.Candidates[0].Content.Parts))
 }
 
 func parseEbayVerifyResponse(resp *genai.GenerateContentResponse) (*ebay.EbayVerifyResult, error) {
@@ -278,7 +279,8 @@ func parseEbayVerifyResponse(resp *genai.GenerateContentResponse) (*ebay.EbayVer
 			return &result, nil
 		}
 	}
-	return nil, fmt.Errorf("no text response from gemini for deal verification")
+	return nil, fmt.Errorf("no text response from gemini for deal verification (finish_reason=%s, parts=%d)",
+		resp.Candidates[0].FinishReason, len(resp.Candidates[0].Content.Parts))
 }
 
 // checkResponseBlocked inspects a Gemini response for safety blocks or content filters.

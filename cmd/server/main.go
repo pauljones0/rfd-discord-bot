@@ -107,12 +107,16 @@ func main() {
 		if err := srv.store.Ping(r.Context()); err != nil {
 			slog.Error("Health check failed", "error", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{"status": "error", "details": err.Error()})
+			if encErr := json.NewEncoder(w).Encode(map[string]string{"status": "error", "details": err.Error()}); encErr != nil {
+				slog.Error("Failed to encode health response", "error", encErr)
+			}
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "firestore": "connected"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok", "firestore": "connected"}); err != nil {
+			slog.Error("Failed to encode health response", "error", err)
+		}
 	})
 
 	httpServer := &http.Server{

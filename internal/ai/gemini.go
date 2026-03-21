@@ -594,7 +594,8 @@ Respond with exactly this JSON format:
 	}
 
 	if !found {
-		return "", false, false, fmt.Errorf("no valid function call or text response from gemini")
+		return "", false, false, fmt.Errorf("no valid function call or text response from gemini (finish_reason=%s, parts=%d)",
+			candidate.FinishReason, len(candidate.Content.Parts))
 	}
 
 	duration := time.Since(startTime)
