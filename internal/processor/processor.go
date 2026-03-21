@@ -63,7 +63,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	defer p.mu.Unlock()
 
 	runID := time.Now().Format("20060102-150405")
-	logger := slog.With("runID", runID)
+	logger := slog.With("processor", "rfd", "runID", runID)
 
 	// Fetch Recent Deals for deduplication
 	recentDeals, err := p.store.GetRecentDeals(ctx, 48*time.Hour)

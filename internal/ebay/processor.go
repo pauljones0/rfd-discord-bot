@@ -70,7 +70,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 
 	start := time.Now()
 	runID := start.Format("20060102-150405")
-	logger := slog.With("runID", runID, "source", "ebay")
+	logger := slog.With("processor", "ebay", "runID", runID)
 
 	// Pipeline stats for end-of-run summary
 	var stats struct {
