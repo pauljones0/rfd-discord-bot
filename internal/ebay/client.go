@@ -135,7 +135,11 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller,
 	var allItems []BrowseAPIItem
 	for i, seller := range sellers {
 		if i > 0 {
-			time.Sleep(1 * time.Second) // Avoid eBay rate limiting between sellers
+			select {
+			case <-ctx.Done():
+				return allItems, ctx.Err()
+			case <-time.After(1 * time.Second):
+			}
 		}
 		items, err := c.fetchSellerListings(ctx, seller, sinceTime)
 		if err != nil {
