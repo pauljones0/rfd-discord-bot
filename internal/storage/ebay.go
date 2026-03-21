@@ -22,11 +22,8 @@ const (
 
 // GetActiveEbaySellers returns all active sellers from Firestore.
 func (c *Client) GetActiveEbaySellers(ctx context.Context) ([]ebay.EbaySeller, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	iter := c.client.Collection(ebaySellersCollection).
 		Where("isActive", "==", true).
@@ -56,11 +53,8 @@ func (c *Client) GetActiveEbaySellers(ctx context.Context) ([]ebay.EbaySeller, e
 // SeedEbaySellers populates the ebay_sellers collection if it's empty.
 // Returns true if seeding was performed.
 func (c *Client) SeedEbaySellers(ctx context.Context) (bool, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	// Check if collection has any documents
 	iter := c.client.Collection(ebaySellersCollection).Limit(1).Documents(ctx)
@@ -102,11 +96,8 @@ func (c *Client) SeedEbaySellers(ctx context.Context) (bool, error) {
 
 // GetEbayPollState retrieves the eBay polling state from bot_config.
 func (c *Client) GetEbayPollState(ctx context.Context) (*ebay.EbayPollState, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	doc, err := c.client.Collection("bot_config").Doc("ebay_poll_state").Get(ctx)
 	if err != nil {
@@ -125,11 +116,8 @@ func (c *Client) GetEbayPollState(ctx context.Context) (*ebay.EbayPollState, err
 
 // UpdateEbayPollState updates the eBay polling state in bot_config.
 func (c *Client) UpdateEbayPollState(ctx context.Context, state ebay.EbayPollState) error {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	state.LastUpdated = time.Now()
 	_, err := c.client.Collection("bot_config").Doc("ebay_poll_state").Set(ctx, state)

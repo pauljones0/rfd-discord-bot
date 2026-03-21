@@ -14,11 +14,8 @@ const subscriptionsCollection = "subscriptions"
 
 // SaveSubscription saves a new guild/channel subscription to Firestore.
 func (c *Client) SaveSubscription(ctx context.Context, sub models.Subscription) error {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	docID := fmt.Sprintf("%s_%s", sub.GuildID, sub.ChannelID)
 	docRef := c.client.Collection(subscriptionsCollection).Doc(docID)
@@ -32,11 +29,8 @@ func (c *Client) SaveSubscription(ctx context.Context, sub models.Subscription) 
 
 // RemoveSubscription removes a specific channel's subscription from Firestore.
 func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID string) error {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	iter := c.client.Collection(subscriptionsCollection).
 		Where("guildID", "==", guildID).
@@ -83,11 +77,8 @@ func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID stri
 
 // GetSubscriptionsByGuild retrieves all active subscriptions for a specific guild.
 func (c *Client) GetSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	var subs []models.Subscription
 	iter := c.client.Collection(subscriptionsCollection).Where("guildID", "==", guildID).Documents(ctx)
@@ -114,11 +105,8 @@ func (c *Client) GetSubscriptionsByGuild(ctx context.Context, guildID string) ([
 
 // GetAllSubscriptions retrieves all registered active subscriptions.
 func (c *Client) GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	var subs []models.Subscription
 	iter := c.client.Collection(subscriptionsCollection).Documents(ctx)
@@ -145,11 +133,8 @@ func (c *Client) GetAllSubscriptions(ctx context.Context) ([]models.Subscription
 
 // GetSubscription retrieves a specific subscription by its guild and channel.
 func (c *Client) GetSubscription(ctx context.Context, guildID, channelID string) (*models.Subscription, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	docID := fmt.Sprintf("%s_%s", guildID, channelID)
 	doc, err := c.client.Collection(subscriptionsCollection).Doc(docID).Get(ctx)

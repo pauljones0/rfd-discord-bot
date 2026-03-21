@@ -26,13 +26,18 @@ type Client struct {
 	client *firestore.Client
 }
 
-func New(ctx context.Context, projectID string) (*Client, error) {
-	// Initialize client with a timeout if not present
+// ensureDeadline returns a context with a deadline if one isn't already set.
+// The caller must defer the returned cancel function.
+func ensureDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
+		return context.WithTimeout(ctx, timeout)
 	}
+	return ctx, func() {}
+}
+
+func New(ctx context.Context, projectID string) (*Client, error) {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	client, err := firestore.NewClient(ctx, projectID)
 	if err != nil {
@@ -47,11 +52,8 @@ func (c *Client) Close() error {
 
 // GetDealByID retrieves a deal by its Firestore Document ID.
 func (c *Client) GetDealByID(ctx context.Context, id string) (*models.DealInfo, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	docRef := c.client.Collection(firestoreCollection).Doc(id)
 	doc, err := docRef.Get(ctx)
@@ -77,11 +79,8 @@ func (c *Client) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*m
 		return make(map[string]*models.DealInfo), nil
 	}
 
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	refs := make([]*firestore.DocumentRef, len(ids))
 	for i, id := range ids {
@@ -112,11 +111,8 @@ func (c *Client) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*m
 
 // TryCreateDeal attempts to create a new deal. Returns error if it already exists.
 func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	collectionRef := c.client.Collection(firestoreCollection)
 	docRef := collectionRef.Doc(deal.FirestoreID)
@@ -183,11 +179,8 @@ func buildDealUpdates(deal models.DealInfo) []firestore.Update {
 
 // UpdateDeal updates a specific deal using specific fields to avoid race conditions.
 func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	collectionRef := c.client.Collection(firestoreCollection)
 	docRef := collectionRef.Doc(deal.FirestoreID)
@@ -198,11 +191,8 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 
 // TrimOldDeals deletes the oldest deals (by PublishedTimestamp) from the "deals" collection
 func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 2*time.Minute) // Longer timeout for cleanup
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, 2*time.Minute) // Longer timeout for cleanup
+	defer cancel()
 
 	slog.Debug("TrimOldDeals: Entered function", "maxDeals", maxDeals)
 	collectionRef := c.client.Collection(firestoreCollection)
@@ -319,11 +309,8 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // GetRecentDeals fetches deals published within the given duration ago from now.
 func (c *Client) GetRecentDeals(ctx context.Context, d time.Duration) ([]models.DealInfo, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	since := time.Now().Add(-d)
 	iter := c.client.Collection(firestoreCollection).
@@ -354,11 +341,8 @@ func (c *Client) GetRecentDeals(ctx context.Context, d time.Duration) ([]models.
 
 // GetGeminiQuotaStatus retrieves the Gemini fallback state.
 func (c *Client) GetGeminiQuotaStatus(ctx context.Context) (*models.GeminiQuotaStatus, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	doc, err := c.client.Collection("bot_config").Doc("gemini_quota").Get(ctx)
 	if err != nil {
@@ -378,11 +362,8 @@ func (c *Client) GetGeminiQuotaStatus(ctx context.Context) (*models.GeminiQuotaS
 
 // UpdateGeminiQuotaStatus updates the Gemini fallback state.
 func (c *Client) UpdateGeminiQuotaStatus(ctx context.Context, quota models.GeminiQuotaStatus) error {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
 
 	quota.LastUpdated = time.Now()
 	_, err := c.client.Collection("bot_config").Doc("gemini_quota").Set(ctx, quota)
