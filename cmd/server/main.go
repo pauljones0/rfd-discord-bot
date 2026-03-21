@@ -65,7 +65,7 @@ func main() {
 	v := validator.New()
 
 	// Initialize AI client (uses Vertex AI with Application Default Credentials)
-	aiClient, err := ai.NewClient(ctx, cfg.ProjectID, cfg.GeminiLocation, cfg.GeminiFallbackModels, store)
+	aiClient, err := ai.NewClient(ctx, cfg.ProjectID, cfg.GeminiLocation, cfg.GeminiAPIKey, cfg.GeminiFallbackModels, store)
 	if err != nil {
 		slog.Warn("Failed to initialize Gemini client (AI features disabled)", "error", err)
 	}

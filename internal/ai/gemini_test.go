@@ -191,6 +191,87 @@ func TestUpgradeModelTier(t *testing.T) {
 	}
 }
 
+func TestHandleRateLimitError(t *testing.T) {
+	today := getPacificDate()
+	store := &mockQuotaStore{
+		quota: &models.GeminiQuotaStatus{
+			CurrentDay:   today,
+			CurrentModel: "tier-1",
+		},
+	}
+
+	client := &Client{
+		store:          store,
+		fallbackModels: []string{"tier-1", "tier-2", "tier-3"},
+		currentDay:     today,
+		currentModel:   "tier-1",
+	}
+
+	ctx := context.Background()
+
+	// First two calls should retry same model (transient rate limit)
+	for i := 0; i < 2; i++ {
+		shouldRetry, err := client.handleRateLimitError(ctx)
+		if !shouldRetry {
+			t.Fatalf("call %d: expected shouldRetry=true", i+1)
+		}
+		if err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i+1, err)
+		}
+		if client.currentModel != "tier-1" {
+			t.Errorf("call %d: expected model tier-1, got %q", i+1, client.currentModel)
+		}
+	}
+
+	// Third call should escalate tier
+	shouldRetry, err := client.handleRateLimitError(ctx)
+	if !shouldRetry {
+		t.Fatal("call 3: expected shouldRetry=true after tier upgrade")
+	}
+	if err != nil {
+		t.Fatalf("call 3: unexpected error: %v", err)
+	}
+	if client.currentModel != "tier-2" {
+		t.Errorf("call 3: expected model tier-2, got %q", client.currentModel)
+	}
+	if client.consecutive429s != 0 {
+		t.Errorf("expected consecutive429s reset to 0, got %d", client.consecutive429s)
+	}
+}
+
+func TestHandleRateLimitErrorResetOnSuccess(t *testing.T) {
+	today := getPacificDate()
+	store := &mockQuotaStore{
+		quota: &models.GeminiQuotaStatus{
+			CurrentDay:   today,
+			CurrentModel: "tier-1",
+		},
+	}
+
+	client := &Client{
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2"},
+		currentDay:      today,
+		currentModel:    "tier-1",
+		consecutive429s: 2, // about to escalate
+	}
+
+	// Simulate a successful call resetting the counter
+	client.resetConsecutive429s()
+	if client.consecutive429s != 0 {
+		t.Errorf("expected consecutive429s reset to 0, got %d", client.consecutive429s)
+	}
+
+	// Now a 429 should be treated as first occurrence (retry same model)
+	shouldRetry, err := client.handleRateLimitError(context.Background())
+	if !shouldRetry || err != nil {
+		t.Fatalf("expected shouldRetry=true with no error, got retry=%v err=%v", shouldRetry, err)
+	}
+	if client.currentModel != "tier-1" {
+		t.Errorf("expected model tier-1, got %q", client.currentModel)
+	}
+}
+
 func TestUpgradeModelTierStaleModel(t *testing.T) {
 	today := getPacificDate()
 	store := &mockQuotaStore{

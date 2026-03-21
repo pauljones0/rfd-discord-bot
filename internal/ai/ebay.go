@@ -90,9 +90,12 @@ Return a JSON array with ALL items, marking the top deals:
 			if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
 				strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
 				slog.Warn("AI model unavailable or quota exceeded during eBay batch screening", "model", activeModel, "error", genErr)
-				upgradeErr := c.upgradeModelTier(ctx)
-				if upgradeErr != nil {
+				shouldRetry, handleErr := c.handleRateLimitError(ctx)
+				if !shouldRetry {
 					return fmt.Errorf("all model tiers exhausted during eBay batch screening: %w", genErr)
+				}
+				if handleErr != nil {
+					return handleErr
 				}
 				activeModel = c.currentModel
 				return genErr
@@ -106,6 +109,7 @@ Return a JSON array with ALL items, marking the top deals:
 
 			return fmt.Errorf("permanent gemini error during eBay batch screening: %w", genErr)
 		}
+		c.resetConsecutive429s()
 
 		parsed, parseErr := parseEbayBatchResponse(resp)
 		if parseErr != nil {
@@ -212,9 +216,12 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 					"item", item.Title,
 					"error", genErr,
 				)
-				upgradeErr := c.upgradeModelTier(ctx)
-				if upgradeErr != nil {
+				shouldRetry, handleErr := c.handleRateLimitError(ctx)
+				if !shouldRetry {
 					return fmt.Errorf("all model tiers exhausted during eBay deal verification: %w", genErr)
+				}
+				if handleErr != nil {
+					return handleErr
 				}
 				activeModel = c.currentModel
 				return genErr
@@ -228,6 +235,7 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 
 			return fmt.Errorf("permanent gemini error during eBay deal verification: %w", genErr)
 		}
+		c.resetConsecutive429s()
 
 		parsed, parseErr := parseEbayVerifyResponse(resp)
 		if parseErr != nil {

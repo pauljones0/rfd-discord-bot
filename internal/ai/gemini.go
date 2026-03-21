@@ -19,12 +19,13 @@ type QuotaStore interface {
 }
 
 type Client struct {
-	client         *genai.Client
-	store          QuotaStore
-	fallbackModels []string
-	currentModel   string
-	currentDay     string
-	allExhausted   bool
+	client          *genai.Client
+	store           QuotaStore
+	fallbackModels  []string
+	currentModel    string
+	currentDay      string
+	allExhausted    bool
+	consecutive429s int
 }
 
 type AnalysisResult struct {
@@ -33,20 +34,32 @@ type AnalysisResult struct {
 	IsLavaHot  bool   `json:"is_lava_hot"`
 }
 
-func NewClient(ctx context.Context, projectID, location string, fallbackModels []string, store QuotaStore) (*Client, error) {
-	if projectID == "" {
-		return nil, nil // Return nil client if no project provided
+func NewClient(ctx context.Context, projectID, location, apiKey string, fallbackModels []string, store QuotaStore) (*Client, error) {
+	if apiKey == "" && projectID == "" {
+		return nil, nil // Return nil client if no credentials provided
 	}
 
 	if len(fallbackModels) == 0 {
 		return nil, fmt.Errorf("fallback models list is empty")
 	}
 
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		Project:  projectID,
-		Location: location,
-		Backend:  genai.BackendVertexAI,
-	})
+	var cfg *genai.ClientConfig
+	if apiKey != "" {
+		cfg = &genai.ClientConfig{
+			APIKey:  apiKey,
+			Backend: genai.BackendGeminiAPI,
+		}
+		slog.Info("Using Gemini API backend (API key)")
+	} else {
+		cfg = &genai.ClientConfig{
+			Project:  projectID,
+			Location: location,
+			Backend:  genai.BackendVertexAI,
+		}
+		slog.Info("Using Vertex AI backend", "project", projectID, "location", location)
+	}
+
+	client, err := genai.NewClient(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gemini client: %w", err)
 	}
@@ -183,6 +196,39 @@ func (c *Client) upgradeModelTier(ctx context.Context) error {
 	return fmt.Errorf("all model tiers exhausted for the day")
 }
 
+// handleRateLimitError handles 429/RESOURCE_EXHAUSTED errors by retrying on the
+// same model for transient per-minute rate limits, only escalating the tier after
+// multiple consecutive failures suggesting genuine daily quota exhaustion.
+// Returns true if the caller should retry the request.
+func (c *Client) handleRateLimitError(ctx context.Context) (shouldRetry bool, err error) {
+	c.consecutive429s++
+
+	if c.consecutive429s < 3 {
+		slog.Info("Rate limited, waiting before retry on same model",
+			"model", c.currentModel,
+			"consecutive_429s", c.consecutive429s,
+		)
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+		return true, nil
+	}
+
+	// 3+ consecutive 429s — treat as genuine quota exhaustion, escalate tier
+	c.consecutive429s = 0
+	upgradeErr := c.upgradeModelTier(ctx)
+	if upgradeErr != nil {
+		return false, upgradeErr
+	}
+	return true, nil
+}
+
+func (c *Client) resetConsecutive429s() {
+	c.consecutive429s = 0
+}
+
 // AllTiersExhausted returns true if all Gemini model tiers have been exhausted for the current day.
 // Callers should check this before making AI calls to avoid wasting API quota and generating errors.
 func (c *Client) AllTiersExhausted() bool {
@@ -281,20 +327,23 @@ Respond with exactly this JSON format:
 		defer cancel()
 		resp, err = c.client.Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
 		if err == nil {
+			c.resetConsecutive429s()
 			return nil
 		}
 
 		errStr := err.Error()
-		// Quota / Rate limit errors -> Upgrade tier and retry immediately (the loop in AnalyzeDeal handles the logic)
 		if strings.Contains(errStr, "429") || strings.Contains(errStr, "quota") || strings.Contains(errStr, "RESOURCE_EXHAUSTED") ||
 			strings.Contains(errStr, "404") || strings.Contains(errStr, "NOT_FOUND") {
-			slog.Warn("AI model unavailable or quota exceeded, upgrading tier", "model", activeModel, "error", err)
-			upgradeErr := c.upgradeModelTier(ctx)
-			if upgradeErr != nil {
+			slog.Warn("AI model unavailable or quota exceeded", "model", activeModel, "error", err)
+			shouldRetry, handleErr := c.handleRateLimitError(ctx)
+			if !shouldRetry {
 				return fmt.Errorf("gemini generation failed, all fallback quotas exhausted: %w", err)
 			}
-			activeModel = c.currentModel // Update activeModel for the next attempt within RetryWithBackoff
-			return err                   // Return original error to trigger retry
+			if handleErr != nil {
+				return handleErr
+			}
+			activeModel = c.currentModel
+			return err
 		}
 
 		// Transient network/service errors -> Retry with backoff
