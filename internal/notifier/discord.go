@@ -206,7 +206,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		timestampStr = deal.PublishedTimestamp.Format(time.RFC3339)
 	}
 
-	emailEmbed := discordEmbed{
+	embed := discordEmbed{
 		Title:       title,
 		URL:         titleURL,
 		Description: descriptionBuilder.String(),
@@ -218,7 +218,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		},
 	}
 
-	return emailEmbed
+	return embed
 }
 
 // doRequest handles the shared retry/rate-limit/backoff loop for Discord API calls.
