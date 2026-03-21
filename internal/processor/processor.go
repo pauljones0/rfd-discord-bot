@@ -352,7 +352,9 @@ func (p *DealProcessor) processNewDeal(ctx context.Context, dealToSave *models.D
 
 	// Merge any scraped duplicates' threads into this new deal
 	for i := 1; i < len(scrapedDuplicates); i++ {
-		p.mergeThread(dealToSave, scrapedDuplicates[i].Threads[0])
+		if len(scrapedDuplicates[i].Threads) > 0 {
+			p.mergeThread(dealToSave, scrapedDuplicates[i].Threads[0])
+		}
 	}
 	p.sortThreads(dealToSave)
 
@@ -385,8 +387,10 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 
 	// Merge all threads from the scraped group into existing
 	for _, scraped := range scrapedDuplicates {
-		if p.mergeThread(existing, scraped.Threads[0]) {
-			changed = true
+		if len(scraped.Threads) > 0 {
+			if p.mergeThread(existing, scraped.Threads[0]) {
+				changed = true
+			}
 		}
 	}
 
