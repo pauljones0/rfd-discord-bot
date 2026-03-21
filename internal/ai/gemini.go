@@ -229,6 +229,16 @@ func (c *Client) resetConsecutive429s() {
 	c.consecutive429s = 0
 }
 
+// stripCodeBlock removes markdown code fences (```json ... ``` or ``` ... ```)
+// that LLMs sometimes wrap around JSON responses.
+func stripCodeBlock(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	return strings.TrimSpace(s)
+}
+
 // AllTiersExhausted returns true if all Gemini model tiers have been exhausted for the current day.
 // Callers should check this before making AI calls to avoid wasting API quota and generating errors.
 func (c *Client) AllTiersExhausted() bool {
@@ -383,12 +393,7 @@ Respond with exactly this JSON format:
 	for _, part := range candidate.Content.Parts {
 		if part.Text != "" {
 			rawResponse := part.Text
-			jsonStr := strings.TrimSpace(rawResponse)
-			// Sometimes the model might still wrap in markdown code blocks despite application/json
-			jsonStr = strings.TrimPrefix(jsonStr, "```json")
-			jsonStr = strings.TrimPrefix(jsonStr, "```")
-			jsonStr = strings.TrimSuffix(jsonStr, "```")
-			jsonStr = strings.TrimSpace(jsonStr)
+			jsonStr := stripCodeBlock(rawResponse)
 
 			var extracted AnalysisResult
 			if err := json.Unmarshal([]byte(jsonStr), &extracted); err == nil {

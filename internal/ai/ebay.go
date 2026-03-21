@@ -276,11 +276,7 @@ func parseEbayBatchResponse(resp *genai.GenerateContentResponse) ([]ebay.EbayBat
 
 	for _, part := range resp.Candidates[0].Content.Parts {
 		if part.Text != "" {
-			jsonStr := strings.TrimSpace(part.Text)
-			jsonStr = strings.TrimPrefix(jsonStr, "```json")
-			jsonStr = strings.TrimPrefix(jsonStr, "```")
-			jsonStr = strings.TrimSuffix(jsonStr, "```")
-			jsonStr = strings.TrimSpace(jsonStr)
+			jsonStr := stripCodeBlock(part.Text)
 
 			var results []ebay.EbayBatchScreenResult
 			if err := json.Unmarshal([]byte(jsonStr), &results); err != nil {
@@ -299,11 +295,7 @@ func parseEbayVerifyResponse(resp *genai.GenerateContentResponse) (*ebay.EbayVer
 
 	for _, part := range resp.Candidates[0].Content.Parts {
 		if part.Text != "" {
-			jsonStr := strings.TrimSpace(part.Text)
-			jsonStr = strings.TrimPrefix(jsonStr, "```json")
-			jsonStr = strings.TrimPrefix(jsonStr, "```")
-			jsonStr = strings.TrimSuffix(jsonStr, "```")
-			jsonStr = strings.TrimSpace(jsonStr)
+			jsonStr := stripCodeBlock(part.Text)
 
 			var result ebay.EbayVerifyResult
 			if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
