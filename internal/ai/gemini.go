@@ -431,13 +431,64 @@ func (c *Client) handleGenerationError(ctx context.Context, genErr error, active
 }
 
 // stripCodeBlock removes markdown code fences (```json ... ``` or ``` ... ```)
-// that LLMs sometimes wrap around JSON responses.
+// that LLMs sometimes wrap around JSON responses, and trims any trailing text
+// after the JSON object/array that Gemini occasionally appends.
 func stripCodeBlock(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "```json")
 	s = strings.TrimPrefix(s, "```")
 	s = strings.TrimSuffix(s, "```")
-	return strings.TrimSpace(s)
+	s = strings.TrimSpace(s)
+	s = extractJSONValue(s)
+	return s
+}
+
+// extractJSONValue finds the outermost JSON object or array in s by tracking
+// brace/bracket depth, returning only that portion. If no valid boundary is
+// found the original string is returned unchanged so callers still get a
+// parse error with the full raw text.
+func extractJSONValue(s string) string {
+	start := strings.IndexAny(s, "{[")
+	if start == -1 {
+		return s
+	}
+	open := rune(s[start])
+	var close rune
+	if open == '{' {
+		close = '}'
+	} else {
+		close = ']'
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for i, ch := range s[start:] {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if ch == open {
+			depth++
+		} else if ch == close {
+			depth--
+			if depth == 0 {
+				return s[start : start+i+1]
+			}
+		}
+	}
+	return s
 }
 
 // AllTiersExhausted returns true if all Gemini model tiers have been exhausted.
