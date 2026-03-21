@@ -86,22 +86,22 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	// 3. Deduplicate
 	validDeals := p.deduplicateDeals(ctx, scrapedDeals, existingDeals, recentDeals, logger)
 
-	// 3. Fetch Details for New/Changed Deals
+	// 4. Fetch Details for New/Changed Deals
 	p.enrichDealsWithDetails(ctx, validDeals, existingDeals, logger)
 
-	// 3a. AI Analysis for New Deals
+	// 5. AI Analysis for New Deals
 	p.analyzeDeals(ctx, validDeals, existingDeals, logger)
 
-	// 4. Fetch Subscriptions
+	// 6. Fetch Subscriptions
 	subs, err := p.store.GetAllSubscriptions(ctx)
 	if err != nil {
 		logger.Error("Failed to get subscriptions, skipping notifications", "error", err)
 	}
 
-	// 5. Notify Discord and Prepare Updates
+	// 7. Notify Discord and Prepare Updates
 	newDeals, updatedDeals, errorMessages := p.processNotificationsAndPrepareUpdates(ctx, validDeals, existingDeals, subs)
 
-	// 6. Batch Save
+	// 8. Batch Save
 	// Optimization: Clear large text fields for AI processed deals to save storage
 	// This prevents "leaky bucket" storage growth as requested
 	for i := range newDeals {

@@ -145,10 +145,7 @@ func calculateSimilarity(tokensA, tokensB []string) float64 {
 	// Calculate Jaccard-like similarity or simple intersection over min length
 	// We use intersection over min length because one deal might have extra fluff tokens
 	// "Freedom 40 250gb" vs "Freedom 40 250gb roam beyond bonus"
-	minLen := len(tokensA)
-	if len(tokensB) < len(tokensA) {
-		minLen = len(tokensB)
-	}
+	minLen := min(len(tokensA), len(tokensB))
 
 	if minLen == 0 {
 		return 0.0
