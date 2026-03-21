@@ -14,6 +14,9 @@ import (
 	"google.golang.org/genai"
 )
 
+// cleanTitleRe matches patterns like "**Clean Title:** ..." or "Clean Title: ..."
+var cleanTitleRe = regexp.MustCompile(`(?i)\*{0,2}clean[_ ]title\*{0,2}:\s*(.+)`)
+
 // ScreenEbayBatch performs tier-1 batch screening of eBay items.
 // It asks Gemini to select the top ~30% most deal-worthy items from a batch.
 // Returns the item IDs that passed screening along with their clean titles.
@@ -387,8 +390,7 @@ func parseVerifyFromText(text string) (*ebay.EbayVerifyResult, bool) {
 	// Look for clean title in patterns like:
 	//   **Clean Title:** Some Product Name
 	//   Clean Title: Some Product Name
-	titleRe := regexp.MustCompile(`(?i)\*{0,2}clean[_ ]title\*{0,2}:\s*(.+)`)
-	titleMatch := titleRe.FindStringSubmatch(text)
+	titleMatch := cleanTitleRe.FindStringSubmatch(text)
 	if titleMatch == nil {
 		return nil, false
 	}

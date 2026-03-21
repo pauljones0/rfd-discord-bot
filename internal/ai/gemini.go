@@ -593,10 +593,11 @@ Respond with exactly this JSON format:
 		ResponseMIMEType: "application/json",
 	}
 
-	var resp *genai.GenerateContentResponse
-	var err error
+	var cleanTitle string
+	var hot bool
+	var warm bool
 
-	err = util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		// Snapshot the active client and model under the lock.
 		c.mu.Lock()
 		client := c.activeClient()
@@ -605,70 +606,75 @@ Respond with exactly this JSON format:
 
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		resp, err = client.Models.GenerateContent(callCtx, model, genai.Text(prompt), config)
-		if err == nil {
+		resp, genErr := client.Models.GenerateContent(callCtx, model, genai.Text(prompt), config)
+		if genErr != nil {
 			c.mu.Lock()
-			c.resetConsecutiveErrors()
+			retErr, backoff := c.handleGenerationError(ctx, genErr, &activeModel, attempt, "deal analysis")
 			c.mu.Unlock()
-			return nil
+			if backoff > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
+			return retErr
+		}
+		c.mu.Lock()
+		c.resetConsecutiveErrors()
+		c.mu.Unlock()
+
+		// Parse the response inside the retry loop so malformed responses
+		// (e.g. Gemini returning prose instead of JSON) are retried.
+		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
+			slog.Warn("Gemini returned empty response during deal analysis, retrying",
+				"model", activeModel, "deal_id", deal.FirestoreID, "attempt", attempt)
+			return fmt.Errorf("no response content from gemini for deal analysis")
 		}
 
-		c.mu.Lock()
-		genErr, backoff := c.handleGenerationError(ctx, err, &activeModel, attempt, "deal analysis")
-		c.mu.Unlock()
-		if backoff > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
+		candidate := resp.Candidates[0]
+		// With ResponseMIMEType: "application/json", the model outputs a JSON string in the text part.
+		for _, part := range candidate.Content.Parts {
+			if part.Text != "" {
+				rawResponse := part.Text
+				jsonStr := stripCodeBlock(rawResponse)
+
+				var extracted AnalysisResult
+				if err := json.Unmarshal([]byte(jsonStr), &extracted); err == nil {
+					cleanTitle = extracted.CleanTitle
+					warm = extracted.IsWarm
+					hot = extracted.IsLavaHot
+
+					slog.Info("AI raw response",
+						"deal_id", deal.FirestoreID,
+						"raw_response", rawResponse,
+					)
+					return nil
+				}
 			}
 		}
-		return genErr
+
+		// Collect raw text for the warning log
+		var rawParts strings.Builder
+		for _, part := range candidate.Content.Parts {
+			if part.Text != "" {
+				rawParts.WriteString(part.Text)
+			}
+		}
+		raw := rawParts.String()
+		if len(raw) > 500 {
+			raw = raw[:500]
+		}
+		slog.Warn("Gemini returned unparseable response during deal analysis, retrying",
+			"model", activeModel, "deal_id", deal.FirestoreID, "attempt", attempt,
+			"finish_reason", candidate.FinishReason, "parts", len(candidate.Content.Parts),
+			"raw_truncated", raw)
+		return fmt.Errorf("no valid JSON response from gemini (finish_reason=%s, parts=%d)",
+			candidate.FinishReason, len(candidate.Content.Parts))
 	})
 
 	if err != nil {
 		return "", false, false, err
-	}
-
-	if len(resp.Candidates) == 0 {
-		return "", false, false, fmt.Errorf("no response candidates from gemini")
-	}
-
-	candidate := resp.Candidates[0]
-	if candidate.Content == nil || len(candidate.Content.Parts) == 0 {
-		return "", false, false, fmt.Errorf("no response content from gemini")
-	}
-
-	var result string
-	var hot bool
-	var warm bool
-	var found bool
-
-	// With ResponseMIMEType: "application/json", the model outputs a JSON string in the text part.
-	for _, part := range candidate.Content.Parts {
-		if part.Text != "" {
-			rawResponse := part.Text
-			jsonStr := stripCodeBlock(rawResponse)
-
-			var extracted AnalysisResult
-			if err := json.Unmarshal([]byte(jsonStr), &extracted); err == nil {
-				result = extracted.CleanTitle
-				warm = extracted.IsWarm
-				hot = extracted.IsLavaHot
-				found = true
-
-				slog.Info("AI raw response",
-					"deal_id", deal.FirestoreID,
-					"raw_response", rawResponse,
-				)
-				break
-			}
-		}
-	}
-
-	if !found {
-		return "", false, false, fmt.Errorf("no valid function call or text response from gemini (finish_reason=%s, parts=%d)",
-			candidate.FinishReason, len(candidate.Content.Parts))
 	}
 
 	duration := time.Since(startTime)
@@ -679,7 +685,7 @@ Respond with exactly this JSON format:
 	slog.Info("AI deal analysis complete",
 		"deal_id", deal.FirestoreID,
 		"original_title", deal.Title,
-		"clean_title", result,
+		"clean_title", cleanTitle,
 		"is_warm", warm,
 		"is_lava_hot", hot,
 		"model", activeModel,
@@ -687,5 +693,5 @@ Respond with exactly this JSON format:
 		"duration_ms", duration.Milliseconds(),
 	)
 
-	return result, warm, hot, nil
+	return cleanTitle, warm, hot, nil
 }
