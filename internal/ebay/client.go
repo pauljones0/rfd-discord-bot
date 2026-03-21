@@ -178,6 +178,13 @@ func (c *Client) fetchSellerListings(ctx context.Context, seller EbaySeller, sin
 	return allItems, nil
 }
 
+// setBrowseHeaders sets the standard headers for eBay Browse API requests.
+func setBrowseHeaders(req *http.Request, token, marketplace string) {
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-EBAY-C-MARKETPLACE-ID", marketplace)
+	req.Header.Set("Content-Type", "application/json")
+}
+
 // fetchSellerPage fetches one page of BIN listings for a single seller from the Browse API.
 func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string, offset int, sinceTime time.Time) ([]BrowseAPIItem, bool, error) {
 	token, err := c.getToken(ctx)
@@ -206,9 +213,7 @@ func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string
 		return nil, false, fmt.Errorf("failed to create search request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-EBAY-C-MARKETPLACE-ID", marketplace)
-	req.Header.Set("Content-Type", "application/json")
+	setBrowseHeaders(req, token, marketplace)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -235,9 +240,7 @@ func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to create retry request: %w", err)
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-EBAY-C-MARKETPLACE-ID", marketplace)
-		req.Header.Set("Content-Type", "application/json")
+		setBrowseHeaders(req, token, marketplace)
 
 		resp, err = c.httpClient.Do(req)
 		if err != nil {
@@ -278,9 +281,7 @@ func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to get token for 429 retry: %w", err)
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-EBAY-C-MARKETPLACE-ID", marketplace)
-		req.Header.Set("Content-Type", "application/json")
+		setBrowseHeaders(req, token, marketplace)
 
 		resp, err = c.httpClient.Do(req)
 		if err != nil {

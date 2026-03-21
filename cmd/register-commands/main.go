@@ -125,7 +125,10 @@ func main() {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("Failed to read response body: %v", err)
+	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		fmt.Println("Successfully registered command.")
