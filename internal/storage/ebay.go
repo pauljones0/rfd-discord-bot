@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -79,15 +80,20 @@ func (c *Client) SeedEbaySellers(ctx context.Context) (bool, error) {
 	defaults := ebay.DefaultSellers()
 
 	bw := c.client.BulkWriter(ctx)
+	var errs []error
 	for _, seller := range defaults {
 		doc := c.client.Collection(ebaySellersCollection).Doc(seller.Username)
 		if _, err := bw.Create(doc, seller); err != nil {
 			slog.Error("Failed to queue ebay seller seed", "username", seller.Username, "error", err)
+			errs = append(errs, fmt.Errorf("seed %s: %w", seller.Username, err))
 		}
 	}
 	bw.Flush()
 	bw.End()
 
+	if err := errors.Join(errs...); err != nil {
+		return true, fmt.Errorf("seeding partially failed: %w", err)
+	}
 	slog.Info("Seeded ebay_sellers collection", "count", len(defaults))
 	return true, nil
 }

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -250,6 +251,7 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 		bulkWriter.End()
 	}()
 
+	var errs []error
 	for {
 		doc, err := iter.Next()
 		if err == iterator.Done {
@@ -259,9 +261,9 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 			return fmt.Errorf("failed to iterate deals for trimming: %w", err)
 		}
 
-		_, delErr := bulkWriter.Delete(doc.Ref)
-		if delErr != nil {
+		if _, delErr := bulkWriter.Delete(doc.Ref); delErr != nil {
 			slog.Error("TrimOldDeals: Error queueing delete", "id", doc.Ref.ID, "error", delErr)
+			errs = append(errs, fmt.Errorf("delete %s: %w", doc.Ref.ID, delErr))
 			continue
 		}
 		deletedCount++
@@ -271,7 +273,7 @@ func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
 		logger.Notice("TrimOldDeals: Flushed delete operations", "queued", deletedCount)
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // BatchWrite executes multiple creates and updates in a single bulk operation.
@@ -283,24 +285,26 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 	bw := c.client.BulkWriter(ctx)
 	col := c.client.Collection(firestoreCollection)
 
+	var errs []error
 	for _, d := range creates {
 		doc := col.Doc(d.FirestoreID)
 		if _, err := bw.Create(doc, d); err != nil {
 			slog.Error("BatchWrite: Failed to queue create", "id", d.FirestoreID, "error", err)
+			errs = append(errs, fmt.Errorf("create %s: %w", d.FirestoreID, err))
 		}
 	}
 
 	for _, d := range updates {
 		doc := col.Doc(d.FirestoreID)
-		_, err := bw.Update(doc, buildDealUpdates(d))
-		if err != nil {
+		if _, err := bw.Update(doc, buildDealUpdates(d)); err != nil {
 			slog.Error("BatchWrite: Failed to queue update", "id", d.FirestoreID, "error", err)
+			errs = append(errs, fmt.Errorf("update %s: %w", d.FirestoreID, err))
 		}
 	}
 
 	bw.Flush()
 	bw.End()
-	return nil
+	return errors.Join(errs...)
 }
 
 // Ping checks connectivity to Firestore.
