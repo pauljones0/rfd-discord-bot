@@ -30,9 +30,12 @@ func (c *Client) ScreenEbayBatch(ctx context.Context, items []ebay.BrowseAPIItem
 		return nil, nil
 	}
 
+	c.mu.Lock()
 	activeModel := c.checkDayRollover(ctx)
+	exhausted := c.allExhausted && (c.exhaustedAt.IsZero() || time.Since(c.exhaustedAt) < exhaustionCooldown)
+	c.mu.Unlock()
 
-	if c.AllTiersExhausted() {
+	if exhausted {
 		return nil, fmt.Errorf("all model tiers exhausted for the day, skipping batch screening")
 	}
 
@@ -82,13 +85,30 @@ Return a JSON array with ALL items, marking the top deals:
 	var results []ebay.EbayBatchScreenResult
 
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+		c.mu.Lock()
+		client := c.activeClient()
+		model := activeModel
+		c.mu.Unlock()
+
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		resp, genErr := c.activeClient().Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
+		resp, genErr := client.Models.GenerateContent(callCtx, model, genai.Text(prompt), config)
 		if genErr != nil {
-			return c.handleGenerationError(ctx, genErr, &activeModel, attempt, "eBay batch screening")
+			c.mu.Lock()
+			retErr, backoff := c.handleGenerationError(ctx, genErr, &activeModel, attempt, "eBay batch screening")
+			c.mu.Unlock()
+			if backoff > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
+			return retErr
 		}
+		c.mu.Lock()
 		c.resetConsecutiveErrors()
+		c.mu.Unlock()
 
 		parsed, parseErr := parseEbayBatchResponse(resp)
 		if parseErr != nil {
@@ -120,12 +140,15 @@ Return a JSON array with ALL items, marking the top deals:
 		}
 	}
 
+	c.mu.Lock()
+	loc := c.currentLocation
+	c.mu.Unlock()
 	slog.Info("eBay batch screening complete",
 		"batch_size", len(items),
 		"target_top", topN,
 		"actual_top", topCount,
 		"model", activeModel,
-		"location", c.currentLocation,
+		"location", loc,
 	)
 
 	return results, nil
@@ -143,9 +166,12 @@ func (c *Client) VerifyEbayDeal(ctx context.Context, item ebay.BrowseAPIItem, sc
 		return nil, ctx.Err()
 	}
 
+	c.mu.Lock()
 	activeModel := c.checkDayRollover(ctx)
+	exhausted := c.allExhausted && (c.exhaustedAt.IsZero() || time.Since(c.exhaustedAt) < exhaustionCooldown)
+	c.mu.Unlock()
 
-	if c.AllTiersExhausted() {
+	if exhausted {
 		return nil, fmt.Errorf("all model tiers exhausted for the day, skipping deal verification")
 	}
 
@@ -190,13 +216,30 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 	var result *ebay.EbayVerifyResult
 
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+		c.mu.Lock()
+		client := c.activeClient()
+		model := activeModel
+		c.mu.Unlock()
+
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		resp, genErr := c.activeClient().Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
+		resp, genErr := client.Models.GenerateContent(callCtx, model, genai.Text(prompt), config)
 		if genErr != nil {
-			return c.handleGenerationError(ctx, genErr, &activeModel, attempt, "eBay deal verification")
+			c.mu.Lock()
+			retErr, backoff := c.handleGenerationError(ctx, genErr, &activeModel, attempt, "eBay deal verification")
+			c.mu.Unlock()
+			if backoff > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
+			return retErr
 		}
+		c.mu.Lock()
 		c.resetConsecutiveErrors()
+		c.mu.Unlock()
 
 		parsed, parseErr := parseEbayVerifyResponse(resp)
 		if parseErr != nil {
@@ -223,6 +266,9 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 	}
 
 	itemID := ebay.ExtractItemID(item.ItemID)
+	c.mu.Lock()
+	loc := c.currentLocation
+	c.mu.Unlock()
 	slog.Info("eBay deal verification complete",
 		"item_id", itemID,
 		"item_title", item.Title,
@@ -231,7 +277,7 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 		"is_lava_hot", result.IsLavaHot,
 		"price", price,
 		"model", activeModel,
-		"location", c.currentLocation,
+		"location", loc,
 	)
 
 	return result, nil

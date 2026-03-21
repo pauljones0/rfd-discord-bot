@@ -301,12 +301,15 @@ func TestHandleRateLimitError(t *testing.T) {
 
 	// First two calls should retry same model (transient rate limit)
 	for i := 0; i < 2; i++ {
-		shouldRetry, err := client.handleRateLimitError(ctx)
+		shouldRetry, backoff, err := client.handleRateLimitError(ctx)
 		if !shouldRetry {
 			t.Fatalf("call %d: expected shouldRetry=true", i+1)
 		}
 		if err != nil {
 			t.Fatalf("call %d: unexpected error: %v", i+1, err)
+		}
+		if backoff == 0 {
+			t.Fatalf("call %d: expected non-zero backoff for transient rate limit", i+1)
 		}
 		if client.currentModel != "tier-1" {
 			t.Errorf("call %d: expected model tier-1, got %q", i+1, client.currentModel)
@@ -314,7 +317,7 @@ func TestHandleRateLimitError(t *testing.T) {
 	}
 
 	// Third call should escalate tier
-	shouldRetry, err := client.handleRateLimitError(ctx)
+	shouldRetry, _, err := client.handleRateLimitError(ctx)
 	if !shouldRetry {
 		t.Fatal("call 3: expected shouldRetry=true after tier upgrade")
 	}
@@ -358,7 +361,7 @@ func TestHandleRateLimitErrorResetOnSuccess(t *testing.T) {
 	}
 
 	// Now a 429 should be treated as first occurrence (retry same model)
-	shouldRetry, err := client.handleRateLimitError(context.Background())
+	shouldRetry, _, err := client.handleRateLimitError(context.Background())
 	if !shouldRetry || err != nil {
 		t.Fatalf("expected shouldRetry=true with no error, got retry=%v err=%v", shouldRetry, err)
 	}

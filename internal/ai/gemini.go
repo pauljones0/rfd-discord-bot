@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -29,9 +30,10 @@ type QuotaStore interface {
 }
 
 type Client struct {
-	clients         map[string]*genai.Client // region -> genai client (Vertex AI) or "" -> single client (Gemini API)
-	locations       []string                 // ordered region list for failover
-	currentLocation string                   // active region
+	mu              sync.Mutex               // protects mutable state below
+	clients         map[string]*genai.Client  // region -> genai client (Vertex AI) or "" -> single client (Gemini API)
+	locations       []string                  // ordered region list for failover
+	currentLocation string                    // active region
 	store           QuotaStore
 	fallbackModels  []string
 	currentModel    string
@@ -327,8 +329,9 @@ func (c *Client) upgradeModelTier(ctx context.Context) error {
 // handleRateLimitError handles 429/RESOURCE_EXHAUSTED errors by retrying on the
 // same model for transient per-minute rate limits, only escalating the tier after
 // multiple consecutive failures suggesting genuine daily quota exhaustion.
-// Returns true if the caller should retry the request.
-func (c *Client) handleRateLimitError(ctx context.Context) (shouldRetry bool, err error) {
+// Returns (shouldRetry, backoff duration to sleep before retrying, error).
+// Caller must hold c.mu. The returned backoff should be waited on AFTER releasing the lock.
+func (c *Client) handleRateLimitError(ctx context.Context) (shouldRetry bool, backoff time.Duration, err error) {
 	c.consecutive429s++
 
 	if c.consecutive429s < 3 {
@@ -337,21 +340,16 @@ func (c *Client) handleRateLimitError(ctx context.Context) (shouldRetry bool, er
 			"location", c.currentLocation,
 			"consecutive_429s", c.consecutive429s,
 		)
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
-		return true, nil
+		return true, 5 * time.Second, nil
 	}
 
 	// 3+ consecutive 429s — treat as genuine quota exhaustion, escalate tier
 	c.consecutive429s = 0
 	upgradeErr := c.upgradeModelTier(ctx)
 	if upgradeErr != nil {
-		return false, upgradeErr
+		return false, 0, upgradeErr
 	}
-	return true, nil
+	return true, 0, nil
 }
 
 // handle504Error tracks sustained 504/deadline-exceeded errors and triggers
@@ -379,8 +377,9 @@ func (c *Client) resetConsecutiveErrors() {
 
 // handleGenerationError classifies and handles errors from genai.GenerateContent calls.
 // It updates activeModel when tiers or regions change.
-// Returns the error for the retry framework (nil means success, retryable errors are returned as-is).
-func (c *Client) handleGenerationError(ctx context.Context, genErr error, activeModel *string, attempt int, logContext string) error {
+// Caller must hold c.mu. Returns (error, backoff). If backoff > 0, caller should sleep
+// that duration AFTER releasing the lock before retrying.
+func (c *Client) handleGenerationError(ctx context.Context, genErr error, activeModel *string, attempt int, logContext string) (error, time.Duration) {
 	errStr := genErr.Error()
 
 	// 429/quota/model-not-found errors
@@ -392,15 +391,15 @@ func (c *Client) handleGenerationError(ctx context.Context, genErr error, active
 			"location", c.currentLocation,
 			"error", genErr,
 		)
-		shouldRetry, handleErr := c.handleRateLimitError(ctx)
+		shouldRetry, backoff, handleErr := c.handleRateLimitError(ctx)
 		if !shouldRetry {
-			return fmt.Errorf("all model tiers exhausted: %w", genErr)
+			return fmt.Errorf("all model tiers exhausted: %w", genErr), 0
 		}
 		if handleErr != nil {
-			return handleErr
+			return handleErr, 0
 		}
 		*activeModel = c.currentModel
-		return genErr
+		return genErr, backoff
 	}
 
 	// Transient network/service errors
@@ -423,11 +422,11 @@ func (c *Client) handleGenerationError(ctx context.Context, genErr error, active
 				*activeModel = c.currentModel
 			}
 		}
-		return genErr
+		return genErr, 0
 	}
 
 	// Permanent errors
-	return fmt.Errorf("permanent gemini error: %w", genErr)
+	return fmt.Errorf("permanent gemini error: %w", genErr), 0
 }
 
 // stripCodeBlock removes markdown code fences (```json ... ``` or ``` ... ```)
@@ -497,6 +496,8 @@ func (c *Client) AllTiersExhausted() bool {
 	if c == nil {
 		return false
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if !c.allExhausted {
 		return false
 	}
@@ -519,8 +520,11 @@ func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string
 
 	startTime := time.Now()
 
-	// Always ensure we are using the correct model for the current day
+	// Always ensure we are using the correct model for the current day.
+	// Lock protects mutable quota/model state; released before the API call.
+	c.mu.Lock()
 	activeModel := c.checkDayRollover(ctx)
+	c.mu.Unlock()
 
 	link := deal.ActualDealURL
 	if link == "" {
@@ -593,15 +597,33 @@ Respond with exactly this JSON format:
 	var err error
 
 	err = util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+		// Snapshot the active client and model under the lock.
+		c.mu.Lock()
+		client := c.activeClient()
+		model := activeModel
+		c.mu.Unlock()
+
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		resp, err = c.activeClient().Models.GenerateContent(callCtx, activeModel, genai.Text(prompt), config)
+		resp, err = client.Models.GenerateContent(callCtx, model, genai.Text(prompt), config)
 		if err == nil {
+			c.mu.Lock()
 			c.resetConsecutiveErrors()
+			c.mu.Unlock()
 			return nil
 		}
 
-		return c.handleGenerationError(ctx, err, &activeModel, attempt, "deal analysis")
+		c.mu.Lock()
+		genErr, backoff := c.handleGenerationError(ctx, err, &activeModel, attempt, "deal analysis")
+		c.mu.Unlock()
+		if backoff > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		return genErr
 	})
 
 	if err != nil {
@@ -651,6 +673,9 @@ Respond with exactly this JSON format:
 
 	duration := time.Since(startTime)
 
+	c.mu.Lock()
+	loc := c.currentLocation
+	c.mu.Unlock()
 	slog.Info("AI deal analysis complete",
 		"deal_id", deal.FirestoreID,
 		"original_title", deal.Title,
@@ -658,7 +683,7 @@ Respond with exactly this JSON format:
 		"is_warm", warm,
 		"is_lava_hot", hot,
 		"model", activeModel,
-		"location", c.currentLocation,
+		"location", loc,
 		"duration_ms", duration.Milliseconds(),
 	)
 
