@@ -130,17 +130,9 @@ func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error 
 	return nil
 }
 
-// UpdateDeal updates a specific deal using specific fields to avoid race conditions.
-func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
-		defer cancel()
-	}
-
-	collectionRef := c.client.Collection(firestoreCollection)
-	docRef := collectionRef.Doc(deal.FirestoreID)
-
+// buildDealUpdates constructs the Firestore update fields for a deal.
+// This is shared between UpdateDeal and BatchWrite to keep field lists in sync.
+func buildDealUpdates(deal models.DealInfo) []firestore.Update {
 	updates := []firestore.Update{
 		{Path: "title", Value: deal.Title},
 		{Path: "threadImageURL", Value: deal.ThreadImageURL},
@@ -151,7 +143,9 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 		{Path: "discordLastUpdatedTime", Value: deal.DiscordLastUpdatedTime},
 		{Path: "publishedTimestamp", Value: deal.PublishedTimestamp},
 		{Path: "cleanTitle", Value: deal.CleanTitle},
+		{Path: "isWarm", Value: deal.IsWarm},
 		{Path: "isLavaHot", Value: deal.IsLavaHot},
+		{Path: "hasBeenWarm", Value: deal.HasBeenWarm},
 		{Path: "aiProcessed", Value: deal.AIProcessed},
 		{Path: "threads", Value: deal.Threads},
 		{Path: "searchTokens", Value: deal.SearchTokens},
@@ -177,7 +171,21 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 		updates = append(updates, firestore.Update{Path: "summary", Value: deal.Summary})
 	}
 
-	_, err := docRef.Update(ctx, updates)
+	return updates
+}
+
+// UpdateDeal updates a specific deal using specific fields to avoid race conditions.
+func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+
+	collectionRef := c.client.Collection(firestoreCollection)
+	docRef := collectionRef.Doc(deal.FirestoreID)
+
+	_, err := docRef.Update(ctx, buildDealUpdates(deal))
 	return err
 }
 
@@ -278,41 +286,7 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 
 	for _, d := range updates {
 		doc := col.Doc(d.FirestoreID)
-		updates := []firestore.Update{
-			{Path: "title", Value: d.Title},
-			{Path: "threadImageURL", Value: d.ThreadImageURL},
-			{Path: "actualDealURL", Value: d.ActualDealURL},
-			{Path: "lastUpdated", Value: d.LastUpdated},
-			{Path: "discordMessageID", Value: d.DiscordMessageID},
-			{Path: "discordMessageIDs", Value: d.DiscordMessageIDs},
-			{Path: "discordLastUpdatedTime", Value: d.DiscordLastUpdatedTime},
-			{Path: "publishedTimestamp", Value: d.PublishedTimestamp},
-			{Path: "cleanTitle", Value: d.CleanTitle},
-			{Path: "isLavaHot", Value: d.IsLavaHot},
-			{Path: "aiProcessed", Value: d.AIProcessed},
-			{Path: "threads", Value: d.Threads},
-			{Path: "searchTokens", Value: d.SearchTokens},
-		}
-
-		if d.Description == "" {
-			updates = append(updates, firestore.Update{Path: "description", Value: firestore.Delete})
-		} else {
-			updates = append(updates, firestore.Update{Path: "description", Value: d.Description})
-		}
-
-		if d.Comments == "" {
-			updates = append(updates, firestore.Update{Path: "comments", Value: firestore.Delete})
-		} else {
-			updates = append(updates, firestore.Update{Path: "comments", Value: d.Comments})
-		}
-
-		if d.Summary == "" {
-			updates = append(updates, firestore.Update{Path: "summary", Value: firestore.Delete})
-		} else {
-			updates = append(updates, firestore.Update{Path: "summary", Value: d.Summary})
-		}
-
-		_, err := bw.Update(doc, updates)
+		_, err := bw.Update(doc, buildDealUpdates(d))
 		if err != nil {
 			slog.Error("BatchWrite: Failed to queue update", "id", d.FirestoreID, "error", err)
 		}
