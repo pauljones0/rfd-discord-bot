@@ -115,7 +115,6 @@ func DefaultSellers() []EbaySeller {
 		{username: "helloworld2003"},
 		{username: "uventure"},
 		{username: "shanikuma6"},
-		{username: "calgarycomputerwholesale"},
 		{username: "originallaptoppartsandelectronics"},
 		{username: "neweggcanada"},
 		{username: "surplusbydesign"},
@@ -123,7 +122,10 @@ func DefaultSellers() []EbaySeller {
 		{username: "fsanchez89"},
 		{username: "qnrvr17"},
 		{username: "buythatapple"},
-		{username: "vipoutlet"}, // US seller that ships to CA; works on EBAY_CA
+		{username: "vipoutlet"},              // US seller that ships to CA; works on EBAY_CA
+		{username: "grview"},                 // Discount Computers and Electronics
+		{username: "outlut"},                 // Outlut Computers & Electronics Inc.
+		{username: "montrealcomputers"},      // Montreal Computers CANADA
 
 		// US sellers (ebay.com)
 		{username: "acer", marketplace: "EBAY_US"},

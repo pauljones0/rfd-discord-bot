@@ -38,7 +38,10 @@
       "mcp__gcp-firestore__update_document",
       "mcp__mcp-registry__search_mcp_registry",
       "Bash(gh api:*)",
-      "Bash(xargs -I {} curl -sL -o \"/c/Users/bethe/Downloads/Screenshot 2026-03-16 121941.png\" \"{}\")"
+      "Bash(xargs -I {} curl -sL -o \"/c/Users/bethe/Downloads/Screenshot 2026-03-16 121941.png\" \"{}\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File scripts/sync_secrets.ps1)",
+      "Bash(powershell -ExecutionPolicy Bypass -File scripts/sync_secrets.ps1)",
+      "Bash(where.exe claude:*)"
     ]
   }
 }
