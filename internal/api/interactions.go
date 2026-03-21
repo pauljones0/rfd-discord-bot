@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
@@ -28,10 +29,12 @@ const (
 	InteractionResponseTypePong                     = 1
 	InteractionResponseTypeChannelMessageWithSource = 4
 	InteractionResponseTypeUpdateMessage            = 7
+	InteractionResponseTypeAutocompleteResult       = 8
 
 	InteractionTypePing               = 1
 	InteractionTypeApplicationCommand = 2
 	InteractionTypeMessageComponent   = 3
+	InteractionTypeAutocomplete       = 4
 )
 
 // Discord component type and style constants
@@ -75,6 +78,7 @@ type interactionOption struct {
 	Type    int                 `json:"type"`
 	Value   interface{}         `json:"value,omitempty"`
 	Options []interactionOption `json:"options,omitempty"` // for subcommands
+	Focused bool                `json:"focused,omitempty"` // for autocomplete
 }
 
 type interactionMember struct {
@@ -110,12 +114,30 @@ type discordMessage struct {
 	Content   string `json:"content"`
 }
 
+// Autocomplete response types
+type autocompleteResponse struct {
+	Type int                      `json:"type"`
+	Data autocompleteResponseData `json:"data"`
+}
+
+type autocompleteResponseData struct {
+	Choices []autocompleteChoice `json:"choices"`
+}
+
+type autocompleteChoice struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
 // Store abstracts the database operations needed by the API.
 type Store interface {
 	SaveSubscription(ctx context.Context, sub models.Subscription) error
 	RemoveSubscription(ctx context.Context, guildID, channelID string) error
 	GetSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
 	GetSubscription(ctx context.Context, guildID, channelID string) (*models.Subscription, error)
+	SaveFacebookSubscription(ctx context.Context, sub models.Subscription) error
+	RemoveFacebookSubscription(ctx context.Context, guildID, channelID, city string) error
+	GetFacebookSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
 }
 
 // Handler holds the dependencies for the interaction endpoint.
@@ -209,6 +231,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Autocomplete
+	if req.Type == InteractionTypeAutocomplete {
+		h.handleAutocomplete(w, req)
+		return
+	}
+
 	http.Error(w, "Unknown interaction type", http.StatusBadRequest)
 }
 
@@ -228,33 +256,499 @@ func (h *Handler) handleCommand(w http.ResponseWriter, req interactionRequest) {
 		return
 	}
 
-	if req.Data.Name == "rfd-bot-setup" {
-		if req.GuildID == "" {
-			h.respondPrivateMessage(w, "This command can only be used in a server.")
-			return
-		}
+	// Route both legacy /rfd-bot-setup and new /deals commands
+	switch req.Data.Name {
+	case "rfd-bot-setup":
+		h.handleLegacyCommand(w, req)
+	case "deals":
+		h.handleDealsCommand(w, req)
+	default:
+		h.respondError(w, "Unknown command.")
+	}
+}
 
-		// Look for the subcommand
-		var subCommandName string
-		var subCommandOptions []interactionOption
-		if len(req.Data.Options) > 0 {
-			subCommandName = req.Data.Options[0].Name
-			subCommandOptions = req.Data.Options[0].Options
-		}
-
-		if subCommandName == "set" {
-			h.handleSetCommand(w, req, subCommandOptions)
-		} else if subCommandName == "remove" {
-			h.handleRemoveCommand(w, req)
-		} else {
-			h.respondPrivateMessage(w, "Unknown subcommand. Usage: /rfd-bot-setup set <channel> OR /rfd-bot-setup remove")
-		}
+// handleLegacyCommand handles the old /rfd-bot-setup command for backward compatibility.
+func (h *Handler) handleLegacyCommand(w http.ResponseWriter, req interactionRequest) {
+	if req.GuildID == "" {
+		h.respondPrivateMessage(w, "This command can only be used in a server.")
 		return
 	}
 
-	h.respondError(w, "Unknown command.")
+	// Look for the subcommand
+	var subCommandName string
+	var subCommandOptions []interactionOption
+	if len(req.Data.Options) > 0 {
+		subCommandName = req.Data.Options[0].Name
+		subCommandOptions = req.Data.Options[0].Options
+	}
+
+	if subCommandName == "set" {
+		h.handleSetCommand(w, req, subCommandOptions)
+	} else if subCommandName == "remove" {
+		h.handleRemoveCommand(w, req)
+	} else {
+		h.respondPrivateMessage(w, "Unknown subcommand. Usage: /rfd-bot-setup set <channel> OR /rfd-bot-setup remove")
+	}
 }
 
+// handleDealsCommand routes /deals subcommands to appropriate handlers.
+func (h *Handler) handleDealsCommand(w http.ResponseWriter, req interactionRequest) {
+	if req.GuildID == "" {
+		h.respondPrivateMessage(w, "This command can only be used in a server.")
+		return
+	}
+
+	if len(req.Data.Options) == 0 {
+		h.respondPrivateMessage(w, "Please specify a subcommand.")
+		return
+	}
+
+	subCommand := req.Data.Options[0]
+	switch subCommand.Name {
+	case "setup-rfd":
+		h.handleSetupRFD(w, req, subCommand.Options)
+	case "setup-ebay":
+		h.handleSetupEbay(w, req, subCommand.Options)
+	case "setup-facebook":
+		h.handleSetupFacebook(w, req, subCommand.Options)
+	case "remove":
+		h.handleDealsRemove(w, req, subCommand.Options)
+	case "list":
+		h.handleDealsList(w, req)
+	default:
+		h.respondPrivateMessage(w, "Unknown subcommand.")
+	}
+}
+
+// handleSetupRFD handles /deals setup-rfd channel:<#channel> filter:<type>
+func (h *Handler) handleSetupRFD(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
+	var channelID, channelName, filter string
+	for _, opt := range options {
+		switch opt.Name {
+		case "channel":
+			if val, ok := opt.Value.(string); ok {
+				channelID = val
+				if req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
+					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
+						channelName = ch.Name
+					}
+				}
+			}
+		case "filter":
+			if val, ok := opt.Value.(string); ok {
+				filter = val
+			}
+		}
+	}
+
+	if channelID == "" || filter == "" {
+		h.respondPrivateMessage(w, "Please select a channel and filter type.")
+		return
+	}
+
+	validFilters := map[string]bool{
+		"rfd_all": true, "rfd_tech": true,
+		"rfd_warm_hot": true, "rfd_warm_hot_tech": true,
+		"rfd_hot": true, "rfd_hot_tech": true,
+	}
+	if !validFilters[filter] {
+		h.respondPrivateMessage(w, "Invalid RFD filter type.")
+		return
+	}
+
+	h.saveRFDEbaySubscription(w, req, channelID, channelName, filter, "rfd")
+}
+
+// handleSetupEbay handles /deals setup-ebay channel:<#channel> filter:<type>
+func (h *Handler) handleSetupEbay(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
+	var channelID, channelName, filter string
+	for _, opt := range options {
+		switch opt.Name {
+		case "channel":
+			if val, ok := opt.Value.(string); ok {
+				channelID = val
+				if req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
+					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
+						channelName = ch.Name
+					}
+				}
+			}
+		case "filter":
+			if val, ok := opt.Value.(string); ok {
+				filter = val
+			}
+		}
+	}
+
+	if channelID == "" || filter == "" {
+		h.respondPrivateMessage(w, "Please select a channel and filter type.")
+		return
+	}
+
+	validFilters := map[string]bool{
+		"ebay_warm_hot": true, "ebay_hot": true,
+	}
+	if !validFilters[filter] {
+		h.respondPrivateMessage(w, "Invalid eBay filter type.")
+		return
+	}
+
+	h.saveRFDEbaySubscription(w, req, channelID, channelName, filter, "ebay")
+}
+
+// saveRFDEbaySubscription saves an RFD or eBay subscription (shared logic).
+func (h *Handler) saveRFDEbaySubscription(w http.ResponseWriter, req interactionRequest, channelID, channelName, dealType, subscriptionType string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Check if a subscription already exists for this channel
+	existing, err := h.store.GetSubscription(ctx, req.GuildID, channelID)
+	if err != nil {
+		slog.Error("Failed to check for existing subscription", "guild", req.GuildID, "channel", channelID, "error", err)
+	}
+
+	if existing != nil && existing.DealType != dealType {
+		res := interactionResponse{
+			Type: InteractionResponseTypeChannelMessageWithSource,
+			Data: &interactionResponseData{
+				Content: fmt.Sprintf("⚠️ <#%s> is already set up to receive **%s** deals. Do you want to overwrite it with **%s** deals?", channelID, existing.DealType, dealType),
+				Flags:   MessageFlagEphemeral,
+				Components: &[]discordComponent{
+					{
+						Type: ComponentTypeActionRow,
+						Components: []discordComponent{
+							{
+								Type:     ComponentTypeButton,
+								Style:    ButtonStylePrimary,
+								Label:    "Confirm Update",
+								CustomID: fmt.Sprintf("confirm_update::%s::%s::%s", channelID, dealType, channelName),
+							},
+							{
+								Type:     ComponentTypeButton,
+								Style:    ButtonStyleSecondary,
+								Label:    "Cancel",
+								CustomID: "confirm_cancel",
+							},
+						},
+					},
+				},
+			},
+		}
+		writeJSON(w, res)
+		return
+	}
+
+	username := "Unknown"
+	if req.Member != nil {
+		username = req.Member.User.Username
+	}
+
+	sub := models.Subscription{
+		GuildID:          req.GuildID,
+		ChannelID:        channelID,
+		ChannelName:      channelName,
+		DealType:         dealType,
+		AddedBy:          username,
+		AddedAt:          time.Now(),
+		SubscriptionType: subscriptionType,
+	}
+
+	if err := h.store.SaveSubscription(ctx, sub); err != nil {
+		slog.Error("Failed to save subscription", "guild", req.GuildID, "error", err)
+		h.respondPrivateMessage(w, "Failed to save subscription due to an internal error.")
+		return
+	}
+
+	label := strings.ToUpper(subscriptionType)
+	h.respondPrivateMessage(w, fmt.Sprintf("✅ %s deal notifications have been set up in <#%s> with filter **%s**!", label, channelID, dealType))
+}
+
+// handleSetupFacebook handles /deals setup-facebook channel:<#channel> city:<city> [radius:<km>] [brands:<brands>]
+func (h *Handler) handleSetupFacebook(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
+	var channelID, channelName, city, brands string
+	radiusKm := 500
+
+	for _, opt := range options {
+		switch opt.Name {
+		case "channel":
+			if val, ok := opt.Value.(string); ok {
+				channelID = val
+				if req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
+					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
+						channelName = ch.Name
+					}
+				}
+			}
+		case "city":
+			if val, ok := opt.Value.(string); ok {
+				city = val
+			}
+		case "radius":
+			// JSON numbers come as float64
+			if val, ok := opt.Value.(float64); ok {
+				radiusKm = int(val)
+			}
+		case "brands":
+			if val, ok := opt.Value.(string); ok {
+				brands = val
+			}
+		}
+	}
+
+	if channelID == "" || city == "" {
+		h.respondPrivateMessage(w, "Please select a channel and city.")
+		return
+	}
+
+	// Validate that the city exists in our list
+	if _, ok := facebook.CityLocationIDs[city]; !ok {
+		h.respondPrivateMessage(w, fmt.Sprintf("Unknown city **%s**. Please use the autocomplete suggestions.", city))
+		return
+	}
+
+	if radiusKm <= 0 {
+		radiusKm = 500
+	}
+
+	var filterBrands []string
+	if brands != "" {
+		for _, b := range strings.Split(brands, ",") {
+			b = strings.TrimSpace(b)
+			if b != "" {
+				filterBrands = append(filterBrands, strings.ToLower(b))
+			}
+		}
+	}
+
+	username := "Unknown"
+	if req.Member != nil {
+		username = req.Member.User.Username
+	}
+
+	sub := models.Subscription{
+		GuildID:          req.GuildID,
+		ChannelID:        channelID,
+		ChannelName:      channelName,
+		DealType:         "facebook_vehicles",
+		AddedBy:          username,
+		AddedAt:          time.Now(),
+		SubscriptionType: "facebook",
+		City:             city,
+		RadiusKm:         radiusKm,
+		FilterBrands:     filterBrands,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := h.store.SaveFacebookSubscription(ctx, sub); err != nil {
+		slog.Error("Failed to save Facebook subscription", "guild", req.GuildID, "city", city, "error", err)
+		h.respondPrivateMessage(w, "Failed to save subscription due to an internal error.")
+		return
+	}
+
+	msg := fmt.Sprintf("✅ Facebook Marketplace car deals for **%s** (radius: %d km) will be posted in <#%s>!", city, radiusKm, channelID)
+	if len(filterBrands) > 0 {
+		msg += fmt.Sprintf("\nBrand filter: %s", strings.Join(filterBrands, ", "))
+	}
+	h.respondPrivateMessage(w, msg)
+}
+
+// handleDealsRemove handles /deals remove type:<rfd|ebay|facebook>
+func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
+	var removeType string
+	for _, opt := range options {
+		if opt.Name == "type" {
+			if val, ok := opt.Value.(string); ok {
+				removeType = val
+			}
+		}
+	}
+
+	if removeType == "" {
+		h.respondPrivateMessage(w, "Please specify the subscription type to remove.")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	switch removeType {
+	case "rfd", "ebay":
+		// Get all subscriptions and filter by type
+		subs, err := h.store.GetSubscriptionsByGuild(ctx, req.GuildID)
+		if err != nil {
+			slog.Error("Failed to get subscriptions", "guild", req.GuildID, "error", err)
+			h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
+			return
+		}
+
+		var matching []models.Subscription
+		for _, sub := range subs {
+			if removeType == "rfd" && sub.IsRFD() {
+				matching = append(matching, sub)
+			} else if removeType == "ebay" && sub.IsEbay() {
+				matching = append(matching, sub)
+			}
+		}
+
+		if len(matching) == 0 {
+			h.respondPrivateMessage(w, fmt.Sprintf("No active **%s** subscriptions found for this server.", strings.ToUpper(removeType)))
+			return
+		}
+
+		components := buildRemoveButtons(matching)
+		res := interactionResponse{
+			Type: InteractionResponseTypeChannelMessageWithSource,
+			Data: &interactionResponseData{
+				Content:    fmt.Sprintf("Here are the active **%s** subscriptions. Click to remove:", strings.ToUpper(removeType)),
+				Flags:      MessageFlagEphemeral,
+				Components: &components,
+			},
+		}
+		writeJSON(w, res)
+
+	case "facebook":
+		fbSubs, err := h.store.GetFacebookSubscriptionsByGuild(ctx, req.GuildID)
+		if err != nil {
+			slog.Error("Failed to get Facebook subscriptions", "guild", req.GuildID, "error", err)
+			h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
+			return
+		}
+
+		if len(fbSubs) == 0 {
+			h.respondPrivateMessage(w, "No active **Facebook** subscriptions found for this server.")
+			return
+		}
+
+		components := buildFacebookRemoveButtons(fbSubs)
+		res := interactionResponse{
+			Type: InteractionResponseTypeChannelMessageWithSource,
+			Data: &interactionResponseData{
+				Content:    "Here are the active **Facebook** subscriptions. Click to remove:",
+				Flags:      MessageFlagEphemeral,
+				Components: &components,
+			},
+		}
+		writeJSON(w, res)
+
+	default:
+		h.respondPrivateMessage(w, "Invalid subscription type. Choose rfd, ebay, or facebook.")
+	}
+}
+
+// handleDealsList handles /deals list
+func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	subs, err := h.store.GetSubscriptionsByGuild(ctx, req.GuildID)
+	if err != nil {
+		slog.Error("Failed to get subscriptions", "guild", req.GuildID, "error", err)
+		h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
+		return
+	}
+
+	fbSubs, err := h.store.GetFacebookSubscriptionsByGuild(ctx, req.GuildID)
+	if err != nil {
+		slog.Error("Failed to get Facebook subscriptions", "guild", req.GuildID, "error", err)
+		// Non-fatal, continue with what we have
+	}
+
+	if len(subs) == 0 && len(fbSubs) == 0 {
+		h.respondPrivateMessage(w, "No active deal subscriptions for this server.")
+		return
+	}
+
+	var msg strings.Builder
+	msg.WriteString("📋 **Active Deal Subscriptions**\n\n")
+
+	// Group RFD/eBay subs
+	var rfdSubs, ebaySubs []models.Subscription
+	for _, sub := range subs {
+		if sub.IsEbay() {
+			ebaySubs = append(ebaySubs, sub)
+		} else if sub.IsRFD() {
+			rfdSubs = append(rfdSubs, sub)
+		}
+	}
+
+	if len(rfdSubs) > 0 {
+		msg.WriteString("**RFD:**\n")
+		for _, sub := range rfdSubs {
+			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, sub.DealType))
+		}
+		msg.WriteString("\n")
+	}
+
+	if len(ebaySubs) > 0 {
+		msg.WriteString("**eBay:**\n")
+		for _, sub := range ebaySubs {
+			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, sub.DealType))
+		}
+		msg.WriteString("\n")
+	}
+
+	if len(fbSubs) > 0 {
+		msg.WriteString("**Facebook Marketplace:**\n")
+		for _, sub := range fbSubs {
+			brandInfo := ""
+			if len(sub.FilterBrands) > 0 {
+				brandInfo = fmt.Sprintf(" | brands: %s", strings.Join(sub.FilterBrands, ", "))
+			}
+			msg.WriteString(fmt.Sprintf("  • <#%s> — %s (radius: %d km%s)\n", sub.ChannelID, sub.City, sub.RadiusKm, brandInfo))
+		}
+	}
+
+	h.respondPrivateMessage(w, msg.String())
+}
+
+// handleAutocomplete handles Discord autocomplete interactions (type 4).
+func (h *Handler) handleAutocomplete(w http.ResponseWriter, req interactionRequest) {
+	if req.Data == nil || len(req.Data.Options) == 0 {
+		writeJSON(w, autocompleteResponse{
+			Type: InteractionResponseTypeAutocompleteResult,
+			Data: autocompleteResponseData{Choices: []autocompleteChoice{}},
+		})
+		return
+	}
+
+	// Find the focused option within the subcommand
+	subCommand := req.Data.Options[0]
+	if subCommand.Name == "setup-facebook" {
+		var query string
+		for _, opt := range subCommand.Options {
+			if opt.Name == "city" && opt.Focused {
+				if val, ok := opt.Value.(string); ok {
+					query = val
+				}
+			}
+		}
+
+		cities := facebook.FilterCities(query)
+		var choices []autocompleteChoice
+		for _, city := range cities {
+			choices = append(choices, autocompleteChoice{Name: city, Value: city})
+			if len(choices) >= 25 { // Discord max autocomplete choices
+				break
+			}
+		}
+
+		writeJSON(w, autocompleteResponse{
+			Type: InteractionResponseTypeAutocompleteResult,
+			Data: autocompleteResponseData{Choices: choices},
+		})
+		return
+	}
+
+	// Fallback: empty choices
+	writeJSON(w, autocompleteResponse{
+		Type: InteractionResponseTypeAutocompleteResult,
+		Data: autocompleteResponseData{Choices: []autocompleteChoice{}},
+	})
+}
+
+// handleSetCommand handles the legacy /rfd-bot-setup set subcommand.
 func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
 	var channelID string
 	var channelName string
@@ -419,6 +913,35 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		if len(parts) > 1 {
 			dealType = parts[1]
 		}
+	} else if strings.HasPrefix(req.Data.CustomID, "remove_fb::") {
+		// Facebook subscription removal: remove_fb::{channelID}::{city}
+		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_fb::")
+		parts := strings.SplitN(trimmed, "::", 2)
+		if len(parts) < 2 {
+			h.respondError(w, "Invalid Facebook removal data.")
+			return
+		}
+		fbChannelID := parts[0]
+		fbCity := parts[1]
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if err := h.store.RemoveFacebookSubscription(ctx, req.GuildID, fbChannelID, fbCity); err != nil {
+			slog.Error("Failed to remove Facebook subscription", "guild", req.GuildID, "channel", fbChannelID, "city", fbCity, "error", err)
+			h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
+			return
+		}
+
+		res := interactionResponse{
+			Type: InteractionResponseTypeUpdateMessage,
+			Data: &interactionResponseData{
+				Content:    fmt.Sprintf("🗑️ Facebook Marketplace subscription for **%s** has been removed from <#%s>.", fbCity, fbChannelID),
+				Components: &[]discordComponent{},
+			},
+		}
+		writeJSON(w, res)
+		return
 	} else if strings.HasPrefix(req.Data.CustomID, "confirm_update::") {
 		trimmed := strings.TrimPrefix(req.Data.CustomID, "confirm_update::")
 		parts := strings.SplitN(trimmed, "::", 3)
@@ -572,6 +1095,30 @@ func buildRemoveButtons(subs []models.Subscription) []discordComponent {
 					Style:    ButtonStyleDanger,
 					Label:    label,
 					CustomID: fmt.Sprintf("remove_sub::%s::%s", sub.ChannelID, typeLabel),
+				},
+			},
+		})
+	}
+	return components
+}
+
+// buildFacebookRemoveButtons creates remove buttons for Facebook subscriptions.
+func buildFacebookRemoveButtons(subs []models.Subscription) []discordComponent {
+	var components []discordComponent
+	for _, sub := range subs {
+		label := fmt.Sprintf("Remove %s from #%s", sub.City, sub.ChannelName)
+		if sub.ChannelName == "" {
+			label = fmt.Sprintf("Remove %s", sub.City)
+		}
+
+		components = append(components, discordComponent{
+			Type: ComponentTypeActionRow,
+			Components: []discordComponent{
+				{
+					Type:     ComponentTypeButton,
+					Style:    ButtonStyleDanger,
+					Label:    label,
+					CustomID: fmt.Sprintf("remove_fb::%s::%s", sub.ChannelID, sub.City),
 				},
 			},
 		})

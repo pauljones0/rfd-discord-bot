@@ -16,6 +16,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/api"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
+	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
 	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
@@ -25,12 +26,14 @@ import (
 )
 
 type Server struct {
-	processor     processor.Processor
-	ebayProcessor *ebay.Processor
-	store         processor.DealStore
-	wg            sync.WaitGroup
-	sem           chan struct{} // Semaphore to limit concurrent RFD processing requests
-	ebaySem       chan struct{} // Semaphore to limit concurrent eBay processing requests
+	processor         processor.Processor
+	ebayProcessor     *ebay.Processor
+	facebookProcessor *facebook.Processor
+	store             processor.DealStore
+	wg                sync.WaitGroup
+	sem               chan struct{} // Semaphore to limit concurrent RFD processing requests
+	ebaySem           chan struct{} // Semaphore to limit concurrent eBay processing requests
+	facebookSem       chan struct{} // Semaphore to limit concurrent Facebook processing requests
 }
 
 func main() {
@@ -82,12 +85,23 @@ func main() {
 		slog.Info("eBay features disabled (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set)")
 	}
 
+	// Initialize Facebook processor (requires proxy for scraping)
+	var fbProc *facebook.Processor
+	if cfg.ProxyURL != "" && aiClient != nil {
+		fbProc = facebook.NewProcessor(store, n, aiClient, cfg.ProxyURL)
+		slog.Info("Facebook Marketplace deal processor initialized")
+	} else {
+		slog.Info("Facebook Marketplace features disabled (PROXY_URL not set or AI client unavailable)")
+	}
+
 	srv := &Server{
-		processor:     p,
-		ebayProcessor: ebayProc,
-		store:         store,
-		sem:           make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
-		ebaySem:       make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
+		processor:         p,
+		ebayProcessor:     ebayProc,
+		facebookProcessor: fbProc,
+		store:             store,
+		sem:               make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
+		ebaySem:           make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
+		facebookSem:       make(chan struct{}, 1), // Allow 1 concurrent Facebook processing attempt
 	}
 
 	apiHandler, err := api.NewHandler(cfg, store)
@@ -100,6 +114,7 @@ func main() {
 	mux.HandleFunc("/", srv.ProcessDealsHandler)
 	mux.HandleFunc("/process-deals", srv.ProcessDealsHandler)
 	mux.HandleFunc("/process-ebay", srv.ProcessEbayHandler)
+	mux.HandleFunc("/process-facebook", srv.ProcessFacebookHandler)
 	mux.Handle("/discord/interactions", apiHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -233,6 +248,48 @@ func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusAccepted)
 	fmt.Fprintln(w, "eBay deal processing started.")
+}
+
+func (s *Server) ProcessFacebookHandler(w http.ResponseWriter, r *http.Request) {
+	if s.facebookProcessor == nil {
+		slog.Info("ProcessFacebookHandler: Facebook processor not configured, skipping")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "Facebook features not configured"}); err != nil {
+			slog.Error("Failed to encode response", "error", err)
+		}
+		return
+	}
+
+	select {
+	case s.facebookSem <- struct{}{}:
+	default:
+		slog.Info("ProcessFacebookHandler: dropped request due to concurrency limit")
+		w.WriteHeader(http.StatusTooManyRequests)
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing Facebook deals"}); err != nil {
+			slog.Error("Failed to encode response", "error", err)
+		}
+		return
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() { <-s.facebookSem }()
+
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Panic in ProcessFacebookDeals", "panic", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cancel()
+		if err := s.facebookProcessor.ProcessFacebookDeals(ctx); err != nil {
+			slog.Error("Error processing Facebook deals", "error", err)
+		}
+	}()
+
+	w.WriteHeader(http.StatusAccepted)
+	fmt.Fprintln(w, "Facebook deal processing started.")
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

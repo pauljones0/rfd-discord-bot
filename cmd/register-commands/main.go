@@ -21,91 +21,136 @@ func main() {
 		log.Fatalf("DISCORD_APP_ID and DISCORD_BOT_TOKEN must be set")
 	}
 
-	fmt.Println("Registering /rfd-bot-setup global command...")
+	fmt.Println("Registering /deals global command...")
 
 	url := fmt.Sprintf("https://discord.com/api/v10/applications/%s/commands", cfg.DiscordAppID)
 
 	// Command definition
 	// Restrict to admins: Manage Server permission is 0x20
-	payload := map[string]interface{}{
-		"name":                       "rfd-bot-setup",
-		"description":                "Configure the RFD & eBay deal bot for this server.",
-		"default_member_permissions": "32", // 0x20 Manage Server
-		"options": []map[string]interface{}{
-			{
-				"name":        "set",
-				"description": "Set the channel for the bot to publish deals to.",
-				"type":        1, // SUB_COMMAND
-				"options": []map[string]interface{}{
-					{
-						"name":          "channel",
-						"description":   "The channel to publish deals to.",
-						"type":          7,           // CHANNEL
-						"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
-						"required":      true,
-					},
-					{
-						"name":        "type",
-						"description": "The type of deals to publish to this channel.",
-						"type":        3, // STRING
-						"required":    true,
-						"choices": []map[string]interface{}{
-							// RFD-specific
-							{
-								"name":  "RFD: All deals",
-								"value": "rfd_all",
-							},
-							{
-								"name":  "RFD: Tech only",
-								"value": "rfd_tech",
-							},
-							{
-								"name":  "RFD: Warm + Hot (all categories)",
-								"value": "rfd_warm_hot",
-							},
-							{
-								"name":  "RFD: Warm + Hot (tech only)",
-								"value": "rfd_warm_hot_tech",
-							},
-							{
-								"name":  "RFD: Hot only (all categories)",
-								"value": "rfd_hot",
-							},
-							{
-								"name":  "RFD: Hot only (tech only)",
-								"value": "rfd_hot_tech",
-							},
-							// eBay-specific
-							{
-								"name":  "eBay: Warm + Hot deals",
-								"value": "ebay_warm_hot",
-							},
-							{
-								"name":  "eBay: Hot deals only",
-								"value": "ebay_hot",
-							},
-							// Cross-source
-							{
-								"name":  "All Sources: Warm + Hot",
-								"value": "warm_hot_all",
-							},
-							{
-								"name":  "All Sources: Hot only",
-								"value": "hot_all",
+	payload := []map[string]interface{}{
+		{
+			"name":                       "deals",
+			"description":                "Manage deal notifications for this server.",
+			"default_member_permissions": "32", // 0x20 Manage Server
+			"options": []map[string]interface{}{
+				// setup-rfd subcommand
+				{
+					"name":        "setup-rfd",
+					"description": "Subscribe this channel to RFD deal notifications.",
+					"type":        1, // SUB_COMMAND
+					"options": []map[string]interface{}{
+						{
+							"name":          "channel",
+							"description":   "The channel to publish deals to.",
+							"type":          7,           // CHANNEL
+							"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
+							"required":      true,
+						},
+						{
+							"name":        "filter",
+							"description": "The type of RFD deals to publish.",
+							"type":        3, // STRING
+							"required":    true,
+							"choices": []map[string]interface{}{
+								{"name": "All deals", "value": "rfd_all"},
+								{"name": "Tech only", "value": "rfd_tech"},
+								{"name": "Warm + Hot (all)", "value": "rfd_warm_hot"},
+								{"name": "Warm + Hot (tech)", "value": "rfd_warm_hot_tech"},
+								{"name": "Hot only (all)", "value": "rfd_hot"},
+								{"name": "Hot only (tech)", "value": "rfd_hot_tech"},
 							},
 						},
 					},
 				},
-			},
-			{
-				"name":        "remove",
-				"description": "Remove the bot subscription from this server.",
-				"type":        1, // SUB_COMMAND
+				// setup-ebay subcommand
+				{
+					"name":        "setup-ebay",
+					"description": "Subscribe this channel to eBay deal notifications.",
+					"type":        1, // SUB_COMMAND
+					"options": []map[string]interface{}{
+						{
+							"name":          "channel",
+							"description":   "The channel to publish deals to.",
+							"type":          7,           // CHANNEL
+							"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
+							"required":      true,
+						},
+						{
+							"name":        "filter",
+							"description": "The type of eBay deals to publish.",
+							"type":        3, // STRING
+							"required":    true,
+							"choices": []map[string]interface{}{
+								{"name": "Warm + Hot deals", "value": "ebay_warm_hot"},
+								{"name": "Hot deals only", "value": "ebay_hot"},
+							},
+						},
+					},
+				},
+				// setup-facebook subcommand
+				{
+					"name":        "setup-facebook",
+					"description": "Subscribe this channel to Facebook Marketplace car deal notifications.",
+					"type":        1, // SUB_COMMAND
+					"options": []map[string]interface{}{
+						{
+							"name":          "channel",
+							"description":   "The channel to publish deals to.",
+							"type":          7,           // CHANNEL
+							"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
+							"required":      true,
+						},
+						{
+							"name":         "city",
+							"description":  "The Canadian city to search (e.g. Toronto, Vancouver).",
+							"type":         3, // STRING
+							"required":     true,
+							"autocomplete": true,
+						},
+						{
+							"name":        "radius",
+							"description": "Search radius in km (default: 500).",
+							"type":        4, // INTEGER
+							"required":    false,
+						},
+						{
+							"name":        "brands",
+							"description": "Comma-separated brand filter (e.g. honda,toyota).",
+							"type":        3, // STRING
+							"required":    false,
+						},
+					},
+				},
+				// remove subcommand
+				{
+					"name":        "remove",
+					"description": "Remove a deal subscription from this server.",
+					"type":        1, // SUB_COMMAND
+					"options": []map[string]interface{}{
+						{
+							"name":        "type",
+							"description": "The subscription type to remove.",
+							"type":        3, // STRING
+							"required":    true,
+							"choices": []map[string]interface{}{
+								{"name": "RFD", "value": "rfd"},
+								{"name": "eBay", "value": "ebay"},
+								{"name": "Facebook", "value": "facebook"},
+							},
+						},
+					},
+				},
+				// list subcommand
+				{
+					"name":        "list",
+					"description": "Show all active deal subscriptions for this server.",
+					"type":        1, // SUB_COMMAND
+				},
 			},
 		},
 	}
 
-	payloadBytes, err := json.Marshal([]interface{}{payload})
+	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		log.Fatalf("Failed to marshal payload: %v", err)
 	}

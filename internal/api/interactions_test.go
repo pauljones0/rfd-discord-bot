@@ -12,9 +12,10 @@ import (
 
 // mockStore implements the Store interface for testing
 type mockStore struct {
-	subscriptions []models.Subscription
-	err           error
-	removeErr     error
+	subscriptions         []models.Subscription
+	facebookSubscriptions []models.Subscription
+	err                   error
+	removeErr             error
 }
 
 func (m *mockStore) SaveSubscription(ctx context.Context, sub models.Subscription) error {
@@ -64,6 +65,42 @@ func (m *mockStore) GetSubscription(ctx context.Context, guildID, channelID stri
 		}
 	}
 	return nil, nil
+}
+
+func (m *mockStore) SaveFacebookSubscription(ctx context.Context, sub models.Subscription) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.facebookSubscriptions = append(m.facebookSubscriptions, sub)
+	return nil
+}
+
+func (m *mockStore) RemoveFacebookSubscription(ctx context.Context, guildID, channelID, city string) error {
+	if m.removeErr != nil {
+		return m.removeErr
+	}
+	var remaining []models.Subscription
+	for _, sub := range m.facebookSubscriptions {
+		if sub.GuildID == guildID && sub.ChannelID == channelID && sub.City == city {
+			continue
+		}
+		remaining = append(remaining, sub)
+	}
+	m.facebookSubscriptions = remaining
+	return nil
+}
+
+func (m *mockStore) GetFacebookSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	var match []models.Subscription
+	for _, sub := range m.facebookSubscriptions {
+		if sub.GuildID == guildID {
+			match = append(match, sub)
+		}
+	}
+	return match, nil
 }
 
 func TestHandleRemoveCommand(t *testing.T) {

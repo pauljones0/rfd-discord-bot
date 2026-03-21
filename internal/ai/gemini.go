@@ -490,6 +490,71 @@ func extractJSONValue(s string) string {
 	return s
 }
 
+// GenerateContentRaw sends a prompt to the active Gemini model and returns the
+// raw text response. An optional config can specify tools (e.g. Google Search
+// Grounding) or response format constraints. This method is used by the Facebook
+// processor for ad normalization and deal analysis.
+func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *genai.GenerateContentConfig) (string, error) {
+	if c == nil || len(c.clients) == 0 {
+		return "", fmt.Errorf("AI client not initialized")
+	}
+
+	c.mu.Lock()
+	activeModel := c.checkDayRollover(ctx)
+	c.mu.Unlock()
+
+	var result string
+
+	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+		c.mu.Lock()
+		client := c.activeClient()
+		model := activeModel
+		c.mu.Unlock()
+
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		resp, genErr := client.Models.GenerateContent(callCtx, model, genai.Text(prompt), config)
+		if genErr != nil {
+			c.mu.Lock()
+			retErr, backoff := c.handleGenerationError(ctx, genErr, &activeModel, attempt, "generate_content_raw")
+			c.mu.Unlock()
+			if backoff > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
+			return retErr
+		}
+
+		c.mu.Lock()
+		c.resetConsecutiveErrors()
+		c.mu.Unlock()
+
+		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
+			return fmt.Errorf("no response content from gemini")
+		}
+
+		var textParts strings.Builder
+		for _, part := range resp.Candidates[0].Content.Parts {
+			if part.Text != "" {
+				textParts.WriteString(part.Text)
+			}
+		}
+
+		result = textParts.String()
+		if result == "" {
+			return fmt.Errorf("gemini returned empty text response")
+		}
+
+		return nil
+	})
+
+	return result, err
+}
+
 // AllTiersExhausted returns true if all Gemini model tiers have been exhausted.
 // Returns false if the cooldown period has elapsed (auto-recovery).
 func (c *Client) AllTiersExhausted() bool {

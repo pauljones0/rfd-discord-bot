@@ -29,6 +29,7 @@ jobs:
       EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
       EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      PROXY_URL: ${{ secrets.PROXY_URL }}
 
     steps:
       - name: Checkout
@@ -45,6 +46,7 @@ jobs:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.REGION }}
           source: ./
+          flags: '--memory=2Gi --cpu=2 --no-cpu-throttling --max-instances=3'
           env_vars: |
             GOOGLE_CLOUD_PROJECT=${{ env.GOOGLE_CLOUD_PROJECT_ID }}
             DISCORD_APP_ID=${{ env.DISCORD_APP_ID }}
@@ -53,3 +55,4 @@ jobs:
             EBAY_CLIENT_ID=${{ env.EBAY_CLIENT_ID }}
             EBAY_CLIENT_SECRET=${{ env.EBAY_CLIENT_SECRET }}
             GEMINI_API_KEY=${{ env.GEMINI_API_KEY }}
+            PROXY_URL=${{ env.PROXY_URL }}

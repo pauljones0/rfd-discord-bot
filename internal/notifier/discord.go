@@ -325,6 +325,67 @@ func (c *Client) IsHot(deal models.DealInfo) bool {
 	return deal.IsLavaHot
 }
 
+// --- Facebook Deal Notifications ---
+
+// SendFacebookDeal sends a Facebook car deal notification to all subscribed channels.
+func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary string, askingPrice, carfaxValue float64, subs []models.Subscription) error {
+	if c.botToken == "" {
+		return nil
+	}
+
+	embed := formatFacebookEmbed(title, url, summary, askingPrice, carfaxValue)
+	payload := discordWebhookPayload{
+		Content: "",
+		Embeds:  []discordEmbed{embed},
+	}
+
+	for i, sub := range subs {
+		if i > 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+		urlStr := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", sub.ChannelID)
+		_, err := c.doRequest(ctx, "POST", urlStr, payload)
+		if err != nil {
+			slog.Error("Failed to send Facebook deal to channel", "channel", sub.ChannelID, "title", title, "error", err)
+		} else {
+			slog.Info("Facebook deal sent", "processor", "facebook", "channel", sub.ChannelID, "title", title)
+		}
+	}
+
+	return nil
+}
+
+func formatFacebookEmbed(title, url, summary string, askingPrice, carfaxValue float64) discordEmbed {
+	var descBuilder strings.Builder
+	descBuilder.WriteString(summary)
+
+	var fields []discordEmbedField
+	fields = append(fields, discordEmbedField{
+		Name:   "Asking Price",
+		Value:  fmt.Sprintf("$%.0f", askingPrice),
+		Inline: true,
+	})
+
+	if carfaxValue > 0 {
+		fields = append(fields, discordEmbedField{
+			Name:   "Carfax Value",
+			Value:  fmt.Sprintf("$%.0f", carfaxValue),
+			Inline: true,
+		})
+	}
+
+	return discordEmbed{
+		Title:       title,
+		URL:         url,
+		Description: descBuilder.String(),
+		Color:       51283, // 0x00C853 (green)
+		Fields:      fields,
+		Footer: discordEmbedFooter{
+			Text: "FB Marketplace Car Deal",
+		},
+	}
+}
+
 // --- eBay Deal Notifications ---
 
 // SendEbayDeal sends a new eBay deal notification to all subscribed channels.
