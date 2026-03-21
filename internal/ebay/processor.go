@@ -259,11 +259,12 @@ func (p *Processor) processBatch(ctx context.Context, batch []BrowseAPIItem, log
 	// Tier 1: Batch screening
 	screenResults, err := p.analyzer.ScreenEbayBatch(ctx, batch)
 	if err != nil {
-		logger.Error("Tier-1 eBay batch screening failed", "batch_size", len(batch), "error", err)
-		// Signal caller to stop if all model tiers are exhausted — further batches will fail too.
+		// Known exhaustion state — log at Warn to reduce noise since this is expected until cooldown/reset.
 		if strings.Contains(err.Error(), "all model tiers exhausted") {
+			logger.Warn("Tier-1 eBay batch screening skipped, AI quota exhausted", "batch_size", len(batch))
 			return results, 0, err
 		}
+		logger.Error("Tier-1 eBay batch screening failed", "batch_size", len(batch), "error", err)
 		return results, 0, nil
 	}
 
