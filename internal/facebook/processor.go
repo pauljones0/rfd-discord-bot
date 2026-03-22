@@ -156,7 +156,11 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 	// Scrape marketplace
 	ads, err := ScrapeMarketplace(ctx, slog.Default(), pm, cfg)
 	if err != nil {
-		slog.Error("Failed to scrape marketplace", "processor", "facebook", "city", group.city, "error", err)
+		if isTransientError(err) {
+			slog.Warn("Failed to scrape marketplace (transient)", "processor", "facebook", "city", group.city, "error", err)
+		} else {
+			slog.Error("Failed to scrape marketplace", "processor", "facebook", "city", group.city, "error", err)
+		}
 		return
 	}
 
@@ -309,6 +313,33 @@ func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, 
 	} else {
 		slog.Info("DEAL POSTED", "processor", "facebook", "title", analysis.Title, "subscribers", len(matchingSubs))
 	}
+}
+
+// isTransientError returns true for network/proxy errors that are temporary and
+// expected to self-resolve, so they can be logged at WARN instead of ERROR.
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	transientPatterns := []string{
+		"NS_ERROR_PROXY_CONNECTION_REFUSED",
+		"NS_ERROR_NET_RESET",
+		"NS_ERROR_CONNECTION_REFUSED",
+		"connection refused",
+		"connection reset",
+		"i/o timeout",
+		"deadline exceeded",
+		"net::ERR_PROXY",
+		"net::ERR_TIMED_OUT",
+		"net::ERR_CONNECTION",
+	}
+	for _, p := range transientPatterns {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func randomDelay(min, max time.Duration) {
