@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 	"google.golang.org/genai"
 )
 
@@ -33,6 +34,13 @@ func discountLabel(pct float64) string {
 		return "below Carfax"
 	}
 	return "above Carfax"
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
 }
 
 // sanitizeJSONEscapes fixes invalid escape sequences in JSON strings that Gemini
@@ -154,19 +162,30 @@ For unknown information, ALWAYS choose the cheapest possible variant from that y
 The vehicle_type field is critical: motorcycles, boats, ATVs, and trailers are NOT cars.
 `, adTitle, adDescription)
 
-	rawText, err := client.GenerateContentRaw(ctx, prompt, nil)
+	var data models.CarData
+
+	err := util.RetryWithBackoff(ctx, 2, func(attempt int) error {
+		rawText, apiErr := client.GenerateContentRaw(ctx, prompt, nil)
+		if apiErr != nil {
+			return util.PermanentError(apiErr)
+		}
+
+		if rawText == "" {
+			return fmt.Errorf("gemini returned no text content for ad: %s", adTitle)
+		}
+
+		jsonStr := sanitizeJSONEscapes(extractJSON(rawText))
+		if parseErr := json.Unmarshal([]byte(jsonStr), &data); parseErr != nil {
+			slog.Warn("Gemini returned unparseable JSON for ad normalization, retrying",
+				"processor", "facebook", "title", adTitle, "attempt", attempt,
+				"error", parseErr, "raw_truncated", truncate(jsonStr, 300))
+			return fmt.Errorf("failed to parse gemini json: %w", parseErr)
+		}
+
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if rawText == "" {
-		return nil, fmt.Errorf("gemini returned no text content for ad: %s", adTitle)
-	}
-
-	jsonStr := sanitizeJSONEscapes(extractJSON(rawText))
-	var data models.CarData
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-		return nil, fmt.Errorf("failed to parse gemini json: %v content: %s", err, jsonStr)
 	}
 
 	return &data, nil
@@ -305,19 +324,30 @@ Respond with exactly this JSON:
 		},
 	}
 
-	rawText, err := client.GenerateContentRaw(ctx, prompt, config)
+	var analysis models.FacebookDealAnalysis
+
+	err := util.RetryWithBackoff(ctx, 2, func(attempt int) error {
+		rawText, apiErr := client.GenerateContentRaw(ctx, prompt, config)
+		if apiErr != nil {
+			return util.PermanentError(apiErr)
+		}
+
+		if rawText == "" {
+			return fmt.Errorf("gemini returned no text content for deal analysis")
+		}
+
+		jsonStr := sanitizeJSONEscapes(extractJSON(rawText))
+		if parseErr := json.Unmarshal([]byte(jsonStr), &analysis); parseErr != nil {
+			slog.Warn("Gemini returned unparseable JSON for FOMO analysis, retrying",
+				"processor", "facebook", "title", fmt.Sprintf("%d %s %s", car.Year, car.Make, car.Model),
+				"attempt", attempt, "error", parseErr, "raw_truncated", truncate(jsonStr, 300))
+			return fmt.Errorf("failed to parse gemini analysis json: %w", parseErr)
+		}
+
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	if rawText == "" {
-		return nil, fmt.Errorf("gemini returned no text content for deal analysis")
-	}
-
-	jsonStr := sanitizeJSONEscapes(extractJSON(rawText))
-	var analysis models.FacebookDealAnalysis
-	if err := json.Unmarshal([]byte(jsonStr), &analysis); err != nil {
-		return nil, fmt.Errorf("failed to parse gemini analysis json: %v content: %s", err, jsonStr)
 	}
 
 	// Post-parse validation: catch contradictions between the summary text and
