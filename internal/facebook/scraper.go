@@ -333,6 +333,7 @@ func processRawAd(adMap map[string]interface{}, cfg *FacebookScrapeConfig) (*mod
 	cleanURL := fmt.Sprintf("https://www.facebook.com/marketplace/item/%s/", id)
 
 	return &models.ScrapedAd{
+		ListingID: id,
 		Title:     strings.TrimSpace(title),
 		Price:     price,
 		URL:       cleanURL,

@@ -28,11 +28,20 @@ func sanitizeFacebookDocID(s string) string {
 }
 
 // SaveFacebookAd saves or updates a Facebook ad record, returning true if it's a new record.
+// Uses the Facebook listing ID as the primary dedup key when available, falling back
+// to model-price-year composite key for backwards compatibility.
 func (c *Client) SaveFacebookAd(ctx context.Context, ad *models.FacebookAdRecord) (bool, error) {
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
-	docID := fmt.Sprintf("%s-%s-%d", sanitizeFacebookDocID(ad.Model), sanitizeFacebookDocID(ad.Price), ad.Year)
+	// Prefer the Facebook listing ID (stable across scrapes) over a composite key
+	// derived from Gemini normalization (which can vary between runs).
+	var docID string
+	if ad.ID != "" {
+		docID = fmt.Sprintf("fb-%s", ad.ID)
+	} else {
+		docID = fmt.Sprintf("%s-%s-%d", sanitizeFacebookDocID(ad.Model), sanitizeFacebookDocID(ad.Price), ad.Year)
+	}
 	docRef := c.client.Collection(facebookAdsCollection).Doc(docID)
 
 	_, err := docRef.Get(ctx)

@@ -251,8 +251,9 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			continue
 		}
 
-		// Save to Firestore (deduplication)
+		// Save to Firestore (deduplication by Facebook listing ID)
 		adRecord := &models.FacebookAdRecord{
+			ID:           ad.ListingID,
 			Title:        ad.Title,
 			Price:        fmt.Sprintf("%.0f", ad.Price),
 			URL:          ad.URL,

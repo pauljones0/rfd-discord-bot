@@ -264,9 +264,14 @@ is_warm — must meet ALL:
   - OR: any tier where minor-issue discount creates net saving > $2,000 after repair
   - Tier 1 cars ARE eligible above 200k km if the platform commonly reaches 400k+ (Corolla, Civic, Camry, CR-V, RAV4, etc.)
   - Tier 3 vehicles must have a large discount because parts/labor eat the savings
+  - If asking price is AT or ABOVE market value (discount ≤ 0%%), is_warm MUST be false
 is_lava_hot — exceptional only:
   - Net discount ≥ 30%% (Tier 1), ≥ 35%% (Tier 2), problem-free
   - Tier 3 vehicles are never lava hot
+
+CRITICAL: The is_warm and is_lava_hot booleans MUST be consistent with your summary.
+If your summary says "not a warm deal", "not a good deal", "above market value", or "no discount", then is_warm MUST be false.
+Never set is_warm: true if the asking price is at or above market value.
 
 STEP 6 — Title: 5-12 words. Year make model trim - XXk km.
 
@@ -277,9 +282,11 @@ STEP 7 — Summary (2 sentences max, mathematical):
 - Clean deal example: "Market ~18k, asking 12k (33%% below). Clean, Tier 1 reliability."
 
 STEP 8 — Known Issues: widely-documented failure patterns for this year/make/model where repair > $1,000.
-- Format: "Component: failure risk LOWER-UPPERk km ($X-Yk)"
+- Use this exact format with REAL numbers: "Component: failure risk 150-200k km ($2,500-$4,000)"
+- Example: "Transmission: failure risk 120-180k km ($3,000-$5,000); Head Gasket: failure risk 100-150k km ($2,000-$3,500)"
+- Do NOT use placeholder text like "LOWER-UPPER" or "$X-Y" — always fill in actual mileage and cost ranges.
 - Skip if vehicle's %d km is 20%%+ past the upper failure range — it survived.
-- Max 2, most expensive first. Return "" if none.
+- Max 2, most expensive first. Return "" if none known.
 
 Respond with exactly this JSON:
 {"is_warm": true/false, "is_lava_hot": true/false, "title": "string", "summary": "string", "known_issues": "string"}
@@ -311,6 +318,43 @@ Respond with exactly this JSON:
 	var analysis models.FacebookDealAnalysis
 	if err := json.Unmarshal([]byte(jsonStr), &analysis); err != nil {
 		return nil, fmt.Errorf("failed to parse gemini analysis json: %v content: %s", err, jsonStr)
+	}
+
+	// Post-parse validation: catch contradictions between the summary text and
+	// the is_warm boolean. Gemini sometimes sets is_warm: true while writing
+	// "not a warm deal" or "above market value" in the summary.
+	if analysis.IsWarm || analysis.IsLavaHot {
+		lower := strings.ToLower(analysis.Summary)
+		contradictions := []string{
+			"not a warm deal", "not a good deal", "not a great deal",
+			"not warm", "above market value", "above market",
+			"no discount", "negative discount", "overpriced",
+		}
+		for _, phrase := range contradictions {
+			if strings.Contains(lower, phrase) {
+				slog.Warn("Gemini warm/summary contradiction detected, overriding to not warm",
+					"processor", "facebook",
+					"title", analysis.Title,
+					"summary_snippet", phrase,
+					"original_is_warm", analysis.IsWarm,
+					"original_is_lava_hot", analysis.IsLavaHot,
+				)
+				analysis.IsWarm = false
+				analysis.IsLavaHot = false
+				break
+			}
+		}
+	}
+
+	// Sanitize known_issues: strip placeholder format values that Gemini
+	// sometimes copies verbatim from the prompt template.
+	if strings.Contains(analysis.KnownIssues, "LOWER-UPPERk") || strings.Contains(analysis.KnownIssues, "$X-Yk") {
+		slog.Warn("Gemini returned placeholder known_issues, clearing",
+			"processor", "facebook",
+			"title", analysis.Title,
+			"raw_known_issues", analysis.KnownIssues,
+		)
+		analysis.KnownIssues = ""
 	}
 
 	return &analysis, nil

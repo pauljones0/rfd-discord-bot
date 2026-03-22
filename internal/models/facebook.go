@@ -41,6 +41,7 @@ type FacebookDealAnalysis struct {
 
 // ScrapedAd holds the data extracted from a single Facebook Marketplace listing.
 type ScrapedAd struct {
+	ListingID   string // Facebook listing ID extracted from the URL
 	Title       string
 	Price       float64
 	URL         string
