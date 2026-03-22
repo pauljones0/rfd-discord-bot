@@ -713,7 +713,7 @@ Respond with exactly this JSON format:
 		"views", views,
 		"model", activeModel,
 		"location", c.currentLocation,
-		"prompt", prompt,
+		"prompt_len", len(prompt),
 	)
 
 	config := &genai.GenerateContentConfig{
