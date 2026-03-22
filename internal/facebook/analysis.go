@@ -87,6 +87,10 @@ func extractJSON(raw string) string {
 		if loc := bareKVRe.FindStringIndex(raw); loc != nil {
 			inner := strings.TrimSpace(raw[loc[0]:])
 			inner = strings.TrimRight(inner, " \t\n,")
+			// If Gemini included a closing } without an opening {, just prepend {
+			if strings.HasSuffix(inner, "}") {
+				return "{" + inner
+			}
 			return "{" + inner + "}"
 		}
 		return raw

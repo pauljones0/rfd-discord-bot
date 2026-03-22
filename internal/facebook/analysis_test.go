@@ -96,6 +96,16 @@ func TestExtractJSON(t *testing.T) {
 			input: `"is_warm": false, "title": "Test",`,
 			want:  `{"is_warm": false, "title": "Test"}`,
 		},
+		{
+			name:  "bare key-value pairs with closing brace but no opening brace",
+			input: `"is_warm": false, "title": "Test"}`,
+			want:  `{"is_warm": false, "title": "Test"}`,
+		},
+		{
+			name:  "preamble then bare key-value pairs with closing brace",
+			input: "Some analysis text\n\"is_warm\": false, \"title\": \"2012 BMW X1\"}",
+			want:  `{"is_warm": false, "title": "2012 BMW X1"}`,
+		},
 	}
 
 	for _, tt := range tests {
