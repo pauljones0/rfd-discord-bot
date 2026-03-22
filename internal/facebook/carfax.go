@@ -3,9 +3,11 @@ package facebook
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/playwright-community/playwright-go"
 )
@@ -149,6 +151,21 @@ func NewCarfaxClient(pm *BrowserManager) *CarfaxClient {
 // If pickTrim is non-nil, it reads the available trim options from Carfax after
 // filling Year/Make/Model and lets the caller choose from the real options.
 func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim, engine, transmission, drivetrain, bodyStyle, postalCode string, odometer int, pickTrim TrimPicker) (float64, error) {
+	start := time.Now()
+	slog.Info("Carfax valuation starting",
+		"processor", "facebook",
+		"year", year,
+		"make", make,
+		"model", model,
+		"trim", trim,
+		"engine", engine,
+		"transmission", transmission,
+		"drivetrain", drivetrain,
+		"body_style", bodyStyle,
+		"odometer", odometer,
+		"postal", postalCode,
+	)
+
 	bCtx, err := c.pm.NewContext("")
 	if err != nil {
 		return 0, fmt.Errorf("failed to create playwright context: %w", err)
@@ -211,6 +228,12 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 		trimOpts, _ := c.readOptions(page, "Trim")
 		if len(trimOpts) > 0 {
 			selectedTrim = pickTrim(ctx, year, make, model, trimOpts)
+			slog.Info("Carfax trim selection",
+				"processor", "facebook",
+				"gemini_trim", trim,
+				"selected_trim", selectedTrim,
+				"available_trims", trimOpts,
+			)
 		}
 	}
 
@@ -257,10 +280,34 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 
 	valStr, ok := valInterface.(string)
 	if !ok || valStr == "" {
+		slog.Warn("Carfax valuation failed: no value on results page",
+			"processor", "facebook",
+			"year", year, "make", make, "model", model,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 		return 0, fmt.Errorf("could not find value range on results page")
 	}
 
-	return parseValueRange(valStr)
+	value, err := parseValueRange(valStr)
+	if err != nil {
+		slog.Warn("Carfax valuation failed: could not parse value",
+			"processor", "facebook",
+			"year", year, "make", make, "model", model,
+			"raw_value", valStr,
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+		return 0, err
+	}
+
+	slog.Info("Carfax valuation succeeded",
+		"processor", "facebook",
+		"year", year, "make", make, "model", model, "trim", selectedTrim,
+		"value", value,
+		"raw_value", valStr,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return value, nil
 }
 
 // readOptions reads the available options from a Carfax dropdown by label.
@@ -285,9 +332,11 @@ func (c *CarfaxClient) readOptions(page playwright.Page, label string) ([]string
 func (c *CarfaxClient) selectFuzzy(page playwright.Page, label, targetText string) error {
 	result, err := page.Evaluate(jsSelectFuzzy, []interface{}{label, targetText})
 	if err != nil {
+		slog.Warn("Carfax selectFuzzy JS error", "processor", "facebook", "label", label, "target", targetText, "error", err)
 		return fmt.Errorf("failed to evaluate JS for %s: %w", label, err)
 	}
 	if result != nil {
+		slog.Warn("Carfax selectFuzzy failed", "processor", "facebook", "label", label, "target", targetText, "result", result)
 		return fmt.Errorf("%v", result)
 	}
 	return nil
