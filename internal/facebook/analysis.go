@@ -179,18 +179,22 @@ Asking Price: $%.0f
 Description: %s
 
 Task:
-1. Create a clean, concise title (5-15 words). Focus on year, make, model, trim, and mileage. Example: "2019 Honda Civic LX - 80k km".
-2. Determine if this is a "warm" deal (is_warm). A warm deal is a high-quality find that should appeal to a value-conscious car buyer, not just a standard marketplace listing. Be selective.
-   Signals of a Warm deal:
-   - The asking price is a significant discount (e.g., 20%%+ below the typical Canadian private-sale market value for this year/make/model/mileage). Use Google Search to verify the market price.
-   - If Carfax value is available and > $0, the asking price should be meaningfully below it.
-   - The vehicle is desirable with broad appeal (reliable brands, popular models, reasonable mileage).
-   - The condition, mileage, and specs justify the price being a genuine deal.
-   Standard marketplace pricing, overpriced listings, extremely high-mileage vehicles, niche vehicles, and salvage/rebuilt titles should be False.
-3. Determine if this is "Lava Hot" (is_lava_hot). Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular good deals should be False.
+1. Create a clean title (5-12 words). Year, make, model, trim, mileage only. Example: "2019 Honda Civic LX - 80k km".
+2. Determine if this is a "warm" deal (is_warm). Be STRICT — most listings are NOT warm. All of these must be true:
+   - Asking price is 25%%+ below typical Canadian private-sale market value (use Google Search to verify). If Carfax value is available, asking price must be 20%%+ below it.
+   - The vehicle has broad appeal: mainstream reliable brand (Toyota, Honda, Mazda, Hyundai, Kia, Ford, etc.), popular segment, under 200k km.
+   - No red flags: no salvage/rebuilt title, no major mechanical issues described, no flood/accident damage.
+   - Factor in likely repair costs: if the listing mentions mechanical issues, estimate repair cost and subtract from the value gap. A "$5k below market" deal that needs a $4k transmission is NOT warm.
+   FALSE for: standard marketplace pricing, overpriced listings, 200k+ km, niche/luxury vehicles with expensive parts, anything with described mechanical problems that erode the discount.
+3. Determine if this is "Lava Hot" (is_lava_hot). Reserve for exceptional deals only: 40%%+ below market on a desirable, problem-free vehicle. Most warm deals are NOT lava hot.
+4. Write a concise summary (2 sentences max). Be mathematical:
+   - State the market value you found and the %% discount.
+   - If there are condition concerns, estimate repair cost and the net discount after repairs.
+   - Example: "Market value ~$18k. Asking $12k (33%% below) with no reported issues."
+   - Example: "Market ~$15k, asking $10k (33%% below), but needs brakes + tires (~$1.5k). Net discount ~23%%."
 
 Respond with exactly this JSON format:
-{"fomo": true/false, "is_warm": true/false, "is_lava_hot": true/false, "title": "your clean title here", "summary": "2-3 sentences comparing asking price to market value with key specs"}
+{"fomo": true/false, "is_warm": true/false, "is_lava_hot": true/false, "title": "your clean title here", "summary": "your concise mathematical summary"}
 `, car.Year, car.Make, car.Model, car.Trim,
 		car.Engine, car.Transmission, car.Drivetrain, car.BodyStyle,
 		car.Odometer, car.Condition,

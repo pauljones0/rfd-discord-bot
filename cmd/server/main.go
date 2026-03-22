@@ -277,9 +277,11 @@ func (s *Server) ProcessFacebookHandler(w http.ResponseWriter, r *http.Request) 
 	select {
 	case s.facebookSem <- struct{}{}:
 	default:
-		slog.Info("ProcessFacebookHandler: dropped request due to concurrency limit")
+		slog.Warn("ProcessFacebookHandler: previous run still active, skipping",
+			"processor", "facebook",
+		)
 		w.WriteHeader(http.StatusTooManyRequests)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing Facebook deals"}); err != nil {
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
 			slog.Error("Failed to encode response", "error", err)
 		}
 		return

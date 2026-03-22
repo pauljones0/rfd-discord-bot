@@ -30,7 +30,7 @@ go run cmd/register-commands/main.go  # Register Discord slash commands
 
 ## Deployment
 - Push to `main` → GitHub Actions deploys to Cloud Run (`us-central1`)
-- Cloud Scheduler triggers `/process-deals` (every minute), `/process-ebay` (every 15 min), `/process-facebook` (every 2 min)
+- Cloud Scheduler triggers `/process-deals` (every minute), `/process-ebay` (every 15 min), `/process-facebook` (every 5 min)
 - Secrets managed via GitHub Secrets, synced with `scripts/sync-secrets.ps1`
 
 ## Environment Variables

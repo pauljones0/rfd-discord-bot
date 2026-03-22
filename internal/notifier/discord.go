@@ -373,17 +373,25 @@ func formatFacebookEmbed(title, url, summary string, askingPrice, carfaxValue fl
 
 	var fields []discordEmbedField
 	fields = append(fields, discordEmbedField{
-		Name:   "Asking Price",
-		Value:  fmt.Sprintf("$%.0f", askingPrice),
+		Name:   "Asking",
+		Value:  fmt.Sprintf("$%s", formatPrice(askingPrice)),
 		Inline: true,
 	})
 
 	if carfaxValue > 0 {
 		fields = append(fields, discordEmbedField{
-			Name:   "Carfax Value",
-			Value:  fmt.Sprintf("$%.0f", carfaxValue),
+			Name:   "Carfax",
+			Value:  fmt.Sprintf("$%s", formatPrice(carfaxValue)),
 			Inline: true,
 		})
+		discount := (1 - askingPrice/carfaxValue) * 100
+		if discount > 0 {
+			fields = append(fields, discordEmbedField{
+				Name:   "Discount",
+				Value:  fmt.Sprintf("%.0f%% below", discount),
+				Inline: true,
+			})
+		}
 	}
 
 	return discordEmbed{
@@ -396,6 +404,22 @@ func formatFacebookEmbed(title, url, summary string, askingPrice, carfaxValue fl
 			Text: "FB Marketplace Car Deal",
 		},
 	}
+}
+
+// formatPrice formats a float as a comma-separated price string (e.g. "12,500").
+func formatPrice(v float64) string {
+	s := fmt.Sprintf("%.0f", v)
+	if len(s) <= 3 {
+		return s
+	}
+	var result []byte
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result = append(result, ',')
+		}
+		result = append(result, byte(c))
+	}
+	return string(result)
 }
 
 // --- eBay Deal Notifications ---
