@@ -46,7 +46,7 @@ const (
 			}
 		}
 		if (!selectEl) return [];
-		let retries = 10;
+		let retries = 20;
 		while ((selectEl.disabled || selectEl.options.length <= 1) && retries > 0) {
 			await new Promise(r => setTimeout(r, 500));
 			retries--;
@@ -100,7 +100,7 @@ const (
 
 		if (!selectEl) return "Select element not found for " + label;
 
-		let retries = 10;
+		let retries = 20;
 		while ((selectEl.disabled || selectEl.options.length <= 1) && retries > 0) {
 			await new Promise(r => setTimeout(r, 500));
 			retries--;
@@ -120,8 +120,19 @@ const (
 				}
 			}
 			if (bestIdx === -1) {
+				const lowerTarget = targetText.toLowerCase();
 				for(let i=1; i<opts.length; i++) {
-					if (opts[i].text.toLowerCase().includes(targetText.toLowerCase())) {
+					const optText = opts[i].text.toLowerCase();
+					if (optText.includes(lowerTarget) || lowerTarget.includes(optText)) {
+						bestIdx = i; break;
+					}
+				}
+			}
+			if (bestIdx === -1) {
+				const cleanTarget2 = targetText.toLowerCase().replace(/[^a-z0-9]/g, '');
+				for(let i=1; i<opts.length; i++) {
+					const cleanOpt = opts[i].text.toLowerCase().replace(/[^a-z0-9]/g, '');
+					if (cleanOpt.includes(cleanTarget2) || cleanTarget2.includes(cleanOpt)) {
 						bestIdx = i; break;
 					}
 				}
