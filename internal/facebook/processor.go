@@ -19,6 +19,8 @@ type Store interface {
 	SaveFacebookAd(ctx context.Context, ad *models.FacebookAdRecord) (bool, error)
 	PruneFacebookAds(ctx context.Context, maxAgeMonths int, maxRecords int) error
 	SavePriceHistory(ctx context.Context, model string, value float64) error
+	IsProxyBlocked(ctx context.Context, ip string) (bool, error)
+	BlockProxyIP(ctx context.Context, ip, city string) error
 }
 
 // Notifier defines the Discord notification operations.
@@ -154,7 +156,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 	}
 
 	// Scrape marketplace
-	ads, err := ScrapeMarketplace(ctx, slog.Default(), pm, cfg)
+	ads, err := ScrapeMarketplace(ctx, slog.Default(), pm, cfg, p.store)
 	if err != nil {
 		if isTransientError(err) {
 			slog.Warn("Failed to scrape marketplace (transient)", "processor", "facebook", "city", group.city, "error", err)

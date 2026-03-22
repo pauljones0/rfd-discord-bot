@@ -6,10 +6,22 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/playwright-community/playwright-go"
 )
+
+// ProxyBlocklist allows checking and adding blocked proxy IPs.
+// Implementations persist blocked IPs so they are never reused.
+type ProxyBlocklist interface {
+	IsProxyBlocked(ctx context.Context, ip string) (bool, error)
+	BlockProxyIP(ctx context.Context, ip, city string) error
+}
+
+// maxProxyRetries is the number of times to retry with a fresh proxy IP
+// when the current IP is blocked or gets soft-blocked.
+const maxProxyRetries = 5
 
 const (
 	// jsExtractListingDetail dismisses the login modal, clicks "See more" if present,
@@ -153,7 +165,10 @@ func ScrapeListingDetail(ctx context.Context, logger *slog.Logger, page playwrig
 
 // ScrapeMarketplace navigates to Facebook Marketplace for the given config
 // and extracts ad data using JavaScript evaluation on the rendered page.
-func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserManager, cfg *FacebookScrapeConfig) ([]models.ScrapedAd, error) {
+// If blocklist is non-nil and a proxy is configured, it detects the proxy IP
+// before navigating to Facebook, skips known-blocked IPs, and records newly
+// blocked IPs on soft-block detection.
+func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserManager, cfg *FacebookScrapeConfig, blocklist ProxyBlocklist) ([]models.ScrapedAd, error) {
 	if cfg.City == "" {
 		return nil, fmt.Errorf("scrape config has no city configured")
 	}
@@ -167,33 +182,95 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 		radiusKm = 500
 	}
 
-	bCtx, err := pm.NewContext(cfg.City)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create playwright context: %w", err)
-	}
-	defer bCtx.Close()
-
-	page, err := bCtx.NewPage()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create playwright page: %w", err)
-	}
-
-	var allAds []models.ScrapedAd
-	seenIDs := make(map[string]bool)
-
 	targetURL, err := BuildMarketplaceURL(cfg.City, category, radiusKm)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build URL for %q: %w", cfg.City, err)
 	}
 
-	logger.Info("Navigating to marketplace", "city", cfg.City, "url", targetURL)
+	hasProxy := pm.proxyURL != ""
+	retries := 1
+	if hasProxy && blocklist != nil {
+		retries = maxProxyRetries
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < retries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attempt > 0 {
+			// Brief pause before retrying with a new proxy IP
+			time.Sleep(time.Duration(500+attempt*500) * time.Millisecond)
+		}
+
+		ads, proxyIP, err := scrapeMarketplaceOnce(ctx, logger, pm, cfg, targetURL, blocklist)
+		if err == nil {
+			return ads, nil
+		}
+
+		lastErr = err
+
+		// If this was a soft block, record the IP and retry
+		if strings.Contains(err.Error(), "soft block detected") && hasProxy && blocklist != nil {
+			if proxyIP != "" {
+				if blockErr := blocklist.BlockProxyIP(ctx, proxyIP, cfg.City); blockErr != nil {
+					logger.Warn("Failed to save blocked proxy IP", "processor", "facebook", "ip", proxyIP, "error", blockErr)
+				} else {
+					logger.Info("Blocked proxy IP recorded", "processor", "facebook", "ip", proxyIP, "city", cfg.City, "attempt", attempt+1)
+				}
+			}
+			logger.Info("Soft block detected, rotating proxy", "processor", "facebook", "city", cfg.City, "attempt", attempt+1, "max_retries", retries)
+			continue
+		}
+
+		// Non-soft-block errors are not retryable here
+		return nil, err
+	}
+
+	return nil, lastErr
+}
+
+// scrapeMarketplaceOnce performs a single scrape attempt. It creates a new
+// browser context (with a fresh proxy session), optionally checks the proxy IP
+// against the blocklist, navigates to Facebook, and extracts ads.
+// Returns the scraped ads, the detected proxy IP (empty if unavailable), and any error.
+func scrapeMarketplaceOnce(ctx context.Context, logger *slog.Logger, pm *BrowserManager, cfg *FacebookScrapeConfig, targetURL string, blocklist ProxyBlocklist) ([]models.ScrapedAd, string, error) {
+	bCtx, err := pm.NewContext(cfg.City)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create playwright context: %w", err)
+	}
+	defer bCtx.Close()
+
+	page, err := bCtx.NewPage()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create playwright page: %w", err)
+	}
+
+	// Detect proxy IP before navigating to Facebook
+	proxyIP := detectProxyIP(page, logger)
+
+	// Pre-check: skip this IP if it's already in the blocklist
+	if proxyIP != "" && blocklist != nil {
+		blocked, err := blocklist.IsProxyBlocked(ctx, proxyIP)
+		if err != nil {
+			logger.Warn("Failed to check proxy blocklist", "processor", "facebook", "ip", proxyIP, "error", err)
+		} else if blocked {
+			logger.Info("Proxy IP is blocked, skipping", "processor", "facebook", "ip", proxyIP, "city", cfg.City)
+			return nil, proxyIP, fmt.Errorf("soft block detected for %s: proxy IP %s is in blocklist", cfg.City, proxyIP)
+		}
+	}
+
+	var allAds []models.ScrapedAd
+	seenIDs := make(map[string]bool)
+
+	logger.Info("Navigating to marketplace", "city", cfg.City, "url", targetURL, "proxy_ip", proxyIP)
 
 	_, err = page.Goto(targetURL, playwright.PageGotoOptions{
 		Timeout:   playwright.Float(30000),
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to navigate for %s: %w", cfg.City, err)
+		return nil, proxyIP, fmt.Errorf("failed to navigate for %s: %w", cfg.City, err)
 	}
 
 	adLinksLoc := page.Locator("a[href^='/marketplace/item/']")
@@ -204,10 +281,10 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 	if err != nil {
 		currentURL := page.URL()
 		if strings.Contains(currentURL, "login") || strings.Contains(currentURL, "checkpoint") {
-			return nil, fmt.Errorf("soft block detected for %s: redirected to %s", cfg.City, currentURL)
+			return nil, proxyIP, fmt.Errorf("soft block detected for %s: redirected to %s", cfg.City, currentURL)
 		}
 		logger.Warn("Timeout waiting for ads", "city", cfg.City, "url", currentURL)
-		return allAds, nil
+		return allAds, proxyIP, nil
 	}
 
 	// Dismiss overlays — try multiple selectors for robustness
@@ -218,12 +295,12 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 
 	result, err := page.Evaluate(jsScrapeMarketplace)
 	if err != nil {
-		return nil, fmt.Errorf("failed to evaluate JS on marketplace page: %w", err)
+		return nil, proxyIP, fmt.Errorf("failed to evaluate JS on marketplace page: %w", err)
 	}
 
 	rawAds, ok := result.([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("unexpected return type from JS evaluation")
+		return nil, proxyIP, fmt.Errorf("unexpected return type from JS evaluation")
 	}
 
 	for _, item := range rawAds {
@@ -242,7 +319,47 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 
 	logger.Info("Extracted ads", "count", len(allAds), "city", cfg.City)
 
-	return allAds, nil
+	return allAds, proxyIP, nil
+}
+
+// detectProxyIP navigates to a lightweight IP-check service to discover the
+// proxy's external IP address. Returns empty string on any failure.
+func detectProxyIP(page playwright.Page, logger *slog.Logger) string {
+	resp, err := page.Goto("https://api.ipify.org", playwright.PageGotoOptions{
+		Timeout:   playwright.Float(10000),
+		WaitUntil: playwright.WaitUntilStateLoad,
+	})
+	if err != nil {
+		logger.Debug("Failed to detect proxy IP", "processor", "facebook", "error", err)
+		return ""
+	}
+	body, err := resp.Body()
+	if err != nil {
+		return ""
+	}
+	ip := strings.TrimSpace(string(body))
+	if ip == "" || len(ip) > 45 { // max IPv6 length
+		return ""
+	}
+	return ip
+}
+
+// CheckProxyIP detects the current proxy IP and checks it against the blocklist.
+// Returns the IP and true if blocked. Used by the scraper to pre-check IPs.
+func CheckProxyIP(ctx context.Context, page playwright.Page, logger *slog.Logger, blocklist ProxyBlocklist) (string, bool) {
+	ip := detectProxyIP(page, logger)
+	if ip == "" || blocklist == nil {
+		return ip, false
+	}
+	blocked, err := blocklist.IsProxyBlocked(ctx, ip)
+	if err != nil {
+		logger.Warn("Failed to check proxy blocklist", "processor", "facebook", "ip", ip, "error", err)
+		return ip, false
+	}
+	if blocked {
+		logger.Info("Proxy IP is blocked, will rotate", "processor", "facebook", "ip", ip)
+	}
+	return ip, blocked
 }
 
 // dismissOverlays attempts to close common Facebook popups, modals, and cookie
