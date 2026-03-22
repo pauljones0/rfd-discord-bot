@@ -86,13 +86,13 @@ func main() {
 		slog.Info("eBay features disabled (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set)")
 	}
 
-	// Initialize Facebook processor (requires proxy for scraping)
+	// Initialize Facebook processor (requires AI client for analysis)
 	var fbProc *facebook.Processor
-	if cfg.ProxyURL != "" && aiClient != nil {
-		fbProc = facebook.NewProcessor(store, n, aiClient, cfg.ProxyURL)
+	if aiClient != nil {
+		fbProc = facebook.NewProcessor(store, n, aiClient)
 		slog.Info("Facebook Marketplace deal processor initialized")
 	} else {
-		slog.Info("Facebook Marketplace features disabled (PROXY_URL not set or AI client unavailable)")
+		slog.Info("Facebook Marketplace features disabled (AI client unavailable)")
 	}
 
 	srv := &Server{

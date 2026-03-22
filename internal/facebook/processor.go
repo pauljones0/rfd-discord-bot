@@ -31,16 +31,14 @@ type Processor struct {
 	store    Store
 	notifier Notifier
 	ai       AIClient
-	proxyURL string
 }
 
 // NewProcessor creates a new Facebook deal processor.
-func NewProcessor(store Store, notifier Notifier, ai AIClient, proxyURL string) *Processor {
+func NewProcessor(store Store, notifier Notifier, ai AIClient) *Processor {
 	return &Processor{
 		store:    store,
 		notifier: notifier,
 		ai:       ai,
-		proxyURL: proxyURL,
 	}
 }
 
@@ -56,11 +54,6 @@ type cityGroup struct {
 
 // ProcessFacebookDeals is the main entry point for Facebook deal processing.
 func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
-	if p.proxyURL == "" {
-		slog.Info("Facebook processor: proxy not configured, skipping", "processor", "facebook")
-		return nil
-	}
-
 	slog.Info("Starting Facebook deal processing", "processor", "facebook")
 
 	tracker := metrics.NewTracker("facebook")
@@ -78,7 +71,7 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 	}
 
 	// Initialize Playwright
-	pm, err := NewBrowserManager(slog.Default(), p.proxyURL)
+	pm, err := NewBrowserManager(slog.Default())
 	if err != nil {
 		return fmt.Errorf("failed to init playwright: %w", err)
 	}
@@ -177,7 +170,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 	slog.Info("Processing ads", "processor", "facebook", "city", group.city, "count", len(ads))
 
 	// Create a reusable page for listing details
-	detailCtx, detailErr := pm.NewContext(group.city)
+	detailCtx, detailErr := pm.NewContext()
 	if detailErr != nil {
 		slog.Warn("Failed to create detail browser context", "processor", "facebook", "error", detailErr)
 	}

@@ -29,7 +29,6 @@ jobs:
       EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
       EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      PROXY_URL: ${{ secrets.PROXY_URL }}
 
     steps:
       - name: Checkout
@@ -55,4 +54,3 @@ jobs:
             EBAY_CLIENT_ID=${{ env.EBAY_CLIENT_ID }}
             EBAY_CLIENT_SECRET=${{ env.EBAY_CLIENT_SECRET }}
             GEMINI_API_KEY=${{ env.GEMINI_API_KEY }}
-            PROXY_URL=${{ env.PROXY_URL }}

@@ -3,11 +3,6 @@ package facebook
 import (
 	"fmt"
 	"strings"
-	"unicode"
-
-	"golang.org/x/text/runes"
-	"golang.org/x/text/transform"
-	"golang.org/x/text/unicode/norm"
 )
 
 // CityLocationIDs maps Canadian city names to their exact Facebook Marketplace Location IDs.
@@ -116,48 +111,6 @@ var CityPostalCodes = map[string]string{
 	"Whistler":            "V8E0A1",
 	"Windsor":             "N9A1A1",
 	"Winnipeg":            "R3C0A1",
-}
-
-// proxyFallbacks maps cities that don't exist in ProxyScrape to their nearest
-// available city suffix. Only cities that need a DIFFERENT suffix than what
-// deriveCitySuffix would produce are listed here.
-var proxyFallbacks = map[string]string{
-	"Richmond":            "vancouver",    // adjacent to Vancouver
-	"Whistler":            "vancouver",    // closest major city
-	"Banff":               "calgary",      // ~130km west of Calgary
-	"Jasper":              "edmonton",     // ~360km west of Edmonton
-	"Lake Louise":         "calgary",      // ~180km west of Calgary
-	"Niagara-On-The-Lake": "niagarafalls", // 20km from Niagara Falls
-	"Gatineau":            "hull",         // Hull is a district within Gatineau
-	"Laval":               "montreal",     // directly borders Montreal
-}
-
-// ProxySuffixForCity returns the ProxyScrape city suffix for geo-targeting.
-// It first checks the fallback map for cities not available in ProxyScrape,
-// then derives the suffix automatically (lowercase, strip non-alpha, strip accents).
-// Returns the suffix and whether a fallback was used.
-func ProxySuffixForCity(city string) (suffix string, isFallback bool) {
-	if fb, ok := proxyFallbacks[city]; ok {
-		return fb, true
-	}
-	return deriveCitySuffix(city), false
-}
-
-// deriveCitySuffix converts a city name to its ProxyScrape suffix by lowercasing,
-// stripping accents (NFD decomposition), and removing all non-letter characters.
-// e.g. "Trois-Rivières" → "troisrivieres", "St. John's" → "stjohns"
-func deriveCitySuffix(city string) string {
-	// NFD decompose to split accented characters (è → e + combining accent)
-	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
-	stripped, _, _ := transform.String(t, city)
-
-	var b strings.Builder
-	for _, r := range strings.ToLower(stripped) {
-		if r >= 'a' && r <= 'z' {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 // PostalCodeForCity returns the central postal code for a city.

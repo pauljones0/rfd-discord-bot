@@ -9,7 +9,7 @@ Go 1.26 Cloud Run service that scrapes deal sources (RedFlagDeals, eBay, Faceboo
 - **Processors**: Each deal source has its own package under `internal/`
   - `internal/processor/` — RFD deal scraping and processing
   - `internal/ebay/` — eBay deal processing via Browse API
-  - `internal/facebook/` — Facebook Marketplace car deal scraping via Playwright (uses ProxyScrape residential proxy)
+  - `internal/facebook/` — Facebook Marketplace car deal scraping via Playwright with request interception
 - **Shared packages**: `ai/`, `api/`, `config/`, `logger/`, `models/`, `notifier/`, `storage/`, `util/`, `validator/`
 - **Separation of concerns**: Processor packages (processor, ebay, facebook) must NEVER import each other. They only import shared packages.
 
@@ -35,11 +35,10 @@ go run cmd/register-commands/main.go  # Register Discord slash commands
 
 ## Environment Variables
 Required: `GOOGLE_CLOUD_PROJECT`, `DISCORD_APP_ID`, `DISCORD_BOT_TOKEN`, `DISCORD_PUBLIC_KEY`, `GEMINI_API_KEY`
-Optional: `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`, `PROXY_URL` (for Facebook scraping)
+Optional: `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`
 
 ## Important Notes
-- Facebook scraping requires Playwright + Firefox + residential proxy (ProxyScrape)
+- Facebook scraping uses Playwright + Firefox with request interception (blocks images, videos, fonts, CSS, ad-tracking)
+- Facebook/Carfax scraping runs without a proxy — may get rate-limited or blocked
 - eBay features gracefully disable if credentials missing
-- Facebook features gracefully disable if proxy not configured
 - AI client is shared across all processors — do NOT create separate Gemini clients
-- Proxy credentials must NEVER appear in logs (use `maskProxyURL()`)

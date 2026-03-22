@@ -33,9 +33,6 @@ type Config struct {
 	// eBay API (optional — eBay features disabled if not set)
 	EbayClientID     string
 	EbayClientSecret string
-
-	// Facebook Marketplace proxy (optional — Facebook features disabled if not set)
-	ProxyURL string
 }
 
 func Load() (*Config, error) {
@@ -119,18 +116,6 @@ func Load() (*Config, error) {
 
 	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
 
-	// Build proxy URL from PROXY_URL or individual PROXY_* components
-	proxyURL := os.Getenv("PROXY_URL")
-	if proxyURL == "" {
-		proxyHost := os.Getenv("PROXY_HOST")
-		proxyPort := os.Getenv("PROXY_PORT")
-		proxyUser := os.Getenv("PROXY_USER")
-		proxyPass := os.Getenv("PROXY_PASS")
-		if proxyHost != "" && proxyPort != "" && proxyUser != "" && proxyPass != "" {
-			proxyURL = fmt.Sprintf("http://%s:%s@%s:%s", proxyUser, proxyPass, proxyHost, proxyPort)
-		}
-	}
-
 	return &Config{
 		ProjectID:              projectID,
 		Port:                   port,
@@ -153,6 +138,5 @@ func Load() (*Config, error) {
 		DiscordBotToken:  discordBotToken,
 		EbayClientID:     os.Getenv("EBAY_CLIENT_ID"),
 		EbayClientSecret: os.Getenv("EBAY_CLIENT_SECRET"),
-		ProxyURL:         proxyURL,
 	}, nil
 }

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
-	"net/url"
 	"strings"
 
 	"github.com/playwright-community/playwright-go"
@@ -107,21 +106,38 @@ const jsStealthOverrides = `() => {
 	}
 }`
 
+// blockedExtensions lists resource file extensions to block for bandwidth savings.
+// Only raw HTML and JavaScript are allowed through — everything else is noise.
+var blockedExtensions = []string{
+	".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".bmp", ".tiff",
+	".mp4", ".webm", ".mp3", ".ogg", ".avi", ".mov", ".flv",
+	".woff", ".woff2", ".ttf", ".eot", ".otf",
+	".css",
+}
+
+// blockedDomains lists ad/tracking domains whose requests are aborted outright.
+var blockedDomains = []string{
+	"doubleclick.net",
+	"google-analytics.com",
+	"googletagmanager.com",
+	"googlesyndication.com",
+	"googleadservices.com",
+	"facebook.com/tr",
+	"connect.facebook.net/en_US/fbevents",
+	"ads.linkedin.com",
+	"analytics.tiktok.com",
+}
+
 // BrowserManager wraps a Playwright browser instance with stealth configuration.
 type BrowserManager struct {
-	pw       *playwright.Playwright
-	browser  playwright.Browser
-	logger   *slog.Logger
-	proxyURL string
+	pw      *playwright.Playwright
+	browser playwright.Browser
+	logger  *slog.Logger
 }
 
 // NewBrowserManager creates a new stealth-configured Playwright browser manager.
-func NewBrowserManager(logger *slog.Logger, proxyURL string) (*BrowserManager, error) {
-	if proxyURL != "" {
-		logger.Info("Initializing Playwright with proxy support", "proxy", MaskProxyURL(proxyURL))
-	} else {
-		logger.Info("Initializing Playwright...")
-	}
+func NewBrowserManager(logger *slog.Logger) (*BrowserManager, error) {
+	logger.Info("Initializing Playwright (no proxy)")
 
 	err := playwright.Install()
 	if err != nil {
@@ -144,29 +160,26 @@ func NewBrowserManager(logger *slog.Logger, proxyURL string) (*BrowserManager, e
 			"dom.webdriver.enabled":  false,
 			"useAutomationExtension": false,
 
-			// Disable WebRTC to prevent IP leaking through the proxy
-			"media.peerconnection.enabled":       false,
-			"media.navigator.enabled":            false,
+			// Disable WebRTC to prevent IP leaking
+			"media.peerconnection.enabled":                  false,
+			"media.navigator.enabled":                       false,
 			"media.peerconnection.ice.default_address_only": true,
 
 			// Language/locale — Canadian English
-			"intl.accept_languages":  "en-CA,en-US;q=0.9,en;q=0.8",
+			"intl.accept_languages":    "en-CA,en-US;q=0.9,en;q=0.8",
 			"general.useragent.locale": "en-CA",
 
 			// Disable telemetry and beacon (reduces noise, looks more like a privacy-aware user)
-			"toolkit.telemetry.enabled":       false,
-			"beacon.enabled":                  false,
-			"dom.battery.enabled":             false,
-			"dom.gamepad.enabled":             false,
+			"toolkit.telemetry.enabled": false,
+			"beacon.enabled":            false,
+			"dom.battery.enabled":       false,
+			"dom.gamepad.enabled":       false,
 
 			// Canvas/WebGL fingerprinting mitigation
-			// Instead of disabling WebGL entirely (which is detectable), allow it but
-			// add noise. Firefox's resistFingerprinting does this BUT also sets a very
-			// distinctive profile. We do targeted mitigations instead.
-			"webgl.disabled":                         false,
-			"webgl.enable-debug-renderer-info":       false, // Hides GPU model string
-			"privacy.resistFingerprinting":           false, // OFF — too detectable on its own
-			"privacy.trackingprotection.enabled":     false, // Don't block FB tracking scripts (they check)
+			"webgl.disabled":                    false,
+			"webgl.enable-debug-renderer-info":  false, // Hides GPU model string
+			"privacy.resistFingerprinting":      false, // OFF — too detectable on its own
+			"privacy.trackingprotection.enabled": false, // Don't block FB tracking scripts (they check)
 
 			// Font fingerprinting — limit to system fonts so enumeration returns less data
 			"browser.display.use_document_fonts": 1,
@@ -184,18 +197,18 @@ func NewBrowserManager(logger *slog.Logger, proxyURL string) (*BrowserManager, e
 	}
 
 	return &BrowserManager{
-		pw:       pw,
-		browser:  browser,
-		logger:   logger,
-		proxyURL: proxyURL,
+		pw:      pw,
+		browser: browser,
+		logger:  logger,
 	}, nil
 }
 
 // NewContext creates a new browser context with a randomized but internally consistent
 // fingerprint — the UA, viewport, device pixel ratio, locale, and timezone all match
 // what a real Canadian user on that OS would produce.
-// The city parameter enables per-city proxy geo-targeting via ProxyScrape suffixes.
-func (m *BrowserManager) NewContext(city string) (playwright.BrowserContext, error) {
+// Request interception is set up to block images, videos, fonts, CSS, and ad-tracking
+// domains for bandwidth savings.
+func (m *BrowserManager) NewContext() (playwright.BrowserContext, error) {
 	profile := profiles[rand.Intn(len(profiles))]
 
 	// Pick a viewport that matches the OS
@@ -211,11 +224,11 @@ func (m *BrowserManager) NewContext(city string) (playwright.BrowserContext, err
 	tz := timezones[rand.Intn(len(timezones))]
 
 	opts := playwright.BrowserNewContextOptions{
-		Viewport:         &vp,
-		UserAgent:        playwright.String(profile.userAgent),
+		Viewport:          &vp,
+		UserAgent:         playwright.String(profile.userAgent),
 		DeviceScaleFactor: playwright.Float(profile.deviceRatio),
-		Locale:           playwright.String("en-CA"),
-		TimezoneId:       playwright.String(tz),
+		Locale:            playwright.String("en-CA"),
+		TimezoneId:        playwright.String(tz),
 		// Screen size should be >= viewport — set it to a common monitor size
 		Screen: &playwright.Size{Width: vp.Width, Height: vp.Height + 120}, // +120 for taskbar/dock
 		// Color scheme — most users are on light mode
@@ -225,15 +238,6 @@ func (m *BrowserManager) NewContext(city string) (playwright.BrowserContext, err
 	// Randomly pick light or dark mode (70/30 split matching real usage)
 	if rand.Float64() < 0.7 {
 		opts.ColorScheme = playwright.ColorSchemeLight
-	}
-
-	if m.proxyURL != "" {
-		proxyServer, username, password := m.buildCityProxy(city)
-		opts.Proxy = &playwright.Proxy{
-			Server:   proxyServer,
-			Username: playwright.String(username),
-			Password: playwright.String(password),
-		}
 	}
 
 	ctx, err := m.browser.NewContext(opts)
@@ -247,65 +251,47 @@ func (m *BrowserManager) NewContext(city string) (playwright.BrowserContext, err
 		m.logger.Warn("Failed to inject stealth script", "error", err)
 	}
 
+	// Block images, videos, fonts, CSS, and ad-tracking to save bandwidth
+	if err := setupRequestInterception(ctx); err != nil {
+		m.logger.Warn("Failed to set up request interception", "error", err)
+	}
+
 	return ctx, nil
 }
 
-// buildCityProxy parses the proxy URL and returns server, username, and password
-// with per-city geo-targeting and sticky session suffixes appended to the username.
-func (m *BrowserManager) buildCityProxy(city string) (server, username, password string) {
-	parsed, err := url.Parse(m.proxyURL)
-	if err != nil || parsed.User == nil {
-		// Can't parse — return the raw URL as server with no separate auth
-		return m.proxyURL, "", ""
-	}
+// setupRequestInterception installs a route handler that aborts requests for
+// heavy resource types (images, video, fonts, CSS) and known ad/tracking domains.
+// Only HTML and JavaScript pass through — everything the scraper actually needs.
+func setupRequestInterception(ctx playwright.BrowserContext) error {
+	return ctx.Route("**/*", func(route playwright.Route) {
+		req := route.Request()
+		rawURL := req.URL()
+		lowerURL := strings.ToLower(rawURL)
 
-	username = parsed.User.Username()
-	password, _ = parsed.User.Password()
-	server = fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
-
-	// Strip any existing -city-*, -session-*, -lifetime-* suffixes from the username
-	for _, prefix := range []string{"-city-", "-session-", "-lifetime-"} {
-		if idx := strings.Index(username, prefix); idx != -1 {
-			username = username[:idx]
+		// Strip query string for extension matching
+		urlPath := lowerURL
+		if qIdx := strings.Index(urlPath, "?"); qIdx != -1 {
+			urlPath = urlPath[:qIdx]
 		}
-	}
 
-	// Add city geo-targeting
-	if city != "" {
-		suffix, isFallback := ProxySuffixForCity(city)
-		if suffix != "" {
-			username += "-city-" + suffix
-			if isFallback {
-				m.logger.Info("Using proxy fallback city", "requested_city", city, "proxy_city", suffix)
+		// Block by file extension
+		for _, ext := range blockedExtensions {
+			if strings.HasSuffix(urlPath, ext) {
+				_ = route.Abort()
+				return
 			}
 		}
-	}
 
-	// Add sticky session with 10-minute lifetime
-	username += "-session-" + randomSessionID() + "-lifetime-10"
-
-	return server, username, password
-}
-
-// randomSessionID generates a random alphanumeric session ID for sticky proxy sessions.
-func randomSessionID() string {
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, 10)
-	for i := range b {
-		b[i] = chars[rand.Intn(len(chars))]
-	}
-	return string(b)
-}
-
-// MaskProxyURL redacts credentials from a proxy URL for safe logging.
-func MaskProxyURL(raw string) string {
-	if idx := strings.Index(raw, "://"); idx != -1 {
-		afterScheme := raw[idx+3:]
-		if atIdx := strings.LastIndex(afterScheme, "@"); atIdx != -1 {
-			return raw[:idx+3] + "***:***@" + afterScheme[atIdx+1:]
+		// Block by ad/tracking domain
+		for _, domain := range blockedDomains {
+			if strings.Contains(lowerURL, domain) {
+				_ = route.Abort()
+				return
+			}
 		}
-	}
-	return raw
+
+		_ = route.Continue()
+	})
 }
 
 // Close shuts down the browser and Playwright runtime.
