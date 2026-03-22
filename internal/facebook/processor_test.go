@@ -31,6 +31,38 @@ func TestIsTooVague(t *testing.T) {
 	}
 }
 
+func TestIsLikelyNonCar(t *testing.T) {
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		// Should match — non-car keywords
+		{"2023 Harley-Davidson Nightster", true},
+		{"2020 Peterbilt 389", true},
+		{"1984 Kawasaki KZ", true},
+		{"2017 Can-Am Outlander 1000", true},
+		{"2010 Gulf Streamlite", true},
+		{"2026 Prime Time Manufacturing Avenger", true},
+		{"2019 Jayco Jay Flight", true},
+		{"Coachmen Catalina 2021", true},
+		{"Forest River Rockwood", true},
+		{"2018 Keystone Cougar", true},
+		{"Polaris RZR 1000", true},
+		// Should NOT match — real cars
+		{"2019 Honda Civic", false},
+		{"2022 Toyota Camry", false},
+		{"2020 Ford F-150", false},
+		{"2015 BMW X5", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			if got := isLikelyNonCar(tt.title); got != tt.want {
+				t.Errorf("isLikelyNonCar(%q) = %v, want %v", tt.title, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHasDigit(t *testing.T) {
 	tests := []struct {
 		input string

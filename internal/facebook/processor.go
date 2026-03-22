@@ -390,6 +390,10 @@ var nonCarKeywords = []string{
 	"kawasaki", "harley", "ducati", "yamaha", "polaris",
 	"can-am", "canam", "arctic cat",
 	"peterbilt", "freightliner", "kenworth", "western star",
+	// RV / camper manufacturers — none of these make consumer cars.
+	"gulf stream", "gulfstream", "jayco", "coachmen", "forest river",
+	"keystone", "newmar", "tiffin", "prime time", "heartland rv",
+	"crossroads", "dutchmen", "palomino", "starcraft rv", "sunseeker",
 }
 
 // isLikelyNonCar returns true if the ad title contains a keyword strongly
