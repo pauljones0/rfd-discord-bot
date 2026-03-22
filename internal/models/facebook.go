@@ -32,7 +32,6 @@ func (c *CarData) IsCarfaxEligible() bool {
 
 // FacebookDealAnalysis holds the result of Gemini's deal analysis for Facebook car deals.
 type FacebookDealAnalysis struct {
-	IsDeal      bool   `json:"fomo"`
 	IsWarm      bool   `json:"is_warm"`
 	IsLavaHot   bool   `json:"is_lava_hot"`
 	Title       string `json:"title"`

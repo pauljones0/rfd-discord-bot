@@ -305,7 +305,6 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		slog.Info("Facebook FOMO analysis result",
 			"processor", "facebook",
 			"title", ad.Title,
-			"fomo", analysis.IsDeal,
 			"is_warm", analysis.IsWarm,
 			"is_lava_hot", analysis.IsLavaHot,
 			"ai_title", analysis.Title,
