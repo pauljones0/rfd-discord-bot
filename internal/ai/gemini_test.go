@@ -756,6 +756,37 @@ Is Lava Hot: False`,
 	}
 }
 
+func TestHandleGenerationErrorUnsupportedFeature(t *testing.T) {
+	store := &mockQuotaStore{}
+	client := &Client{
+		store:           store,
+		fallbackModels:  []string{"tier-1", "tier-2", "tier-3"},
+		locations:       []string{"us-central1"},
+		currentLocation: "us-central1",
+		currentModel:    "tier-1",
+		currentDay:      getPacificDate(),
+	}
+
+	// Simulate "google_search_retrieval is not supported" 400 error
+	activeModel := "tier-1"
+	genErr := fmt.Errorf("Error 400, Message: google_search_retrieval is not supported for model tier-1")
+
+	client.mu.Lock()
+	retErr, _ := client.handleGenerationError(context.Background(), genErr, &activeModel, 0, "test")
+	client.mu.Unlock()
+
+	// Should NOT be a permanent error — should trigger model failover
+	if retErr == nil {
+		t.Fatal("expected non-nil error")
+	}
+	if activeModel == "tier-1" {
+		t.Errorf("expected model to be upgraded from tier-1, but got %q", activeModel)
+	}
+	if activeModel != "tier-2" {
+		t.Errorf("expected model to be upgraded to tier-2, got %q", activeModel)
+	}
+}
+
 func TestLocationPersistenceInvalidLocation(t *testing.T) {
 	today := getPacificDate()
 	store := &mockQuotaStore{

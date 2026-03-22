@@ -425,6 +425,28 @@ func (c *Client) handleGenerationError(ctx context.Context, genErr error, active
 		return genErr, 0
 	}
 
+	// Unsupported tool/feature errors (e.g. google_search_retrieval not supported
+	// on the current model tier). Upgrade immediately — retrying the same model
+	// won't help since it's a capability gap, not a transient issue.
+	if strings.Contains(errStr, "400") && (strings.Contains(errStr, "is not supported") || strings.Contains(errStr, "not available")) {
+		slog.Warn("AI model does not support requested feature, upgrading tier",
+			"context", logContext,
+			"model", *activeModel,
+			"location", c.currentLocation,
+			"error", genErr,
+		)
+		if err := c.upgradeModelTier(ctx); err != nil {
+			// All tiers exhausted in this region, try switching region
+			if c.switchRegion(ctx) {
+				*activeModel = c.currentModel
+				return genErr, 0
+			}
+			return fmt.Errorf("feature unsupported on all model tiers: %w", genErr), 0
+		}
+		*activeModel = c.currentModel
+		return genErr, 0
+	}
+
 	// Permanent errors
 	return fmt.Errorf("permanent gemini error: %w", genErr), 0
 }
