@@ -46,8 +46,8 @@ const (
 			}
 		}
 		if (!selectEl) return [];
-		let retries = 5;
-		while (selectEl.disabled && retries > 0) {
+		let retries = 10;
+		while ((selectEl.disabled || selectEl.options.length <= 1) && retries > 0) {
 			await new Promise(r => setTimeout(r, 500));
 			retries--;
 		}
@@ -100,8 +100,8 @@ const (
 
 		if (!selectEl) return "Select element not found for " + label;
 
-		let retries = 5;
-		while (selectEl.disabled && retries > 0) {
+		let retries = 10;
+		while ((selectEl.disabled || selectEl.options.length <= 1) && retries > 0) {
 			await new Promise(r => setTimeout(r, 500));
 			retries--;
 		}
