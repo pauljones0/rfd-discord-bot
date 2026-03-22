@@ -367,6 +367,7 @@ func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, 
 var nonCarKeywords = []string{
 	"motorcycle", "motorbike", "dirt bike", "dirtbike", "sport bike",
 	"boat", "pontoon", "kayak", "canoe", "jet ski", "jetski", "seadoo", "sea-doo", "outboard",
+	"inflatable", "sailboat",
 	"atv", "quad", "side by side", "side-by-side", "utv",
 	"snowmobile", "skidoo", "ski-doo", "sled",
 	"trailer", "camper", "motorhome", "motor home", "travel trailer", "fifth wheel", "5th wheel",
@@ -376,6 +377,10 @@ var nonCarKeywords = []string{
 	"golf cart", "go kart", "go-kart", "gokart",
 	"lawnmower", "lawn mower", "snowblower", "snow blower",
 	"generator", "parts only", "parting out",
+	// Brands that never manufacture consumer cars — safe to pre-filter.
+	"kawasaki", "harley", "ducati", "yamaha", "polaris",
+	"can-am", "canam", "arctic cat",
+	"peterbilt", "freightliner", "kenworth", "western star",
 }
 
 // isLikelyNonCar returns true if the ad title contains a keyword strongly
