@@ -222,6 +222,15 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			continue
 		}
 
+		// Pre-filter: skip ads that are too vague for Gemini to extract
+		// meaningful vehicle data from. A single-word title with no year
+		// digits and no description (e.g. "Bravo") will always make Gemini
+		// return prose instead of JSON, wasting a call.
+		if isTooVague(ad.Title, ad.Description, ad.Mileage) {
+			slog.Debug("Skipping vague listing (insufficient info)", "processor", "facebook", "title", ad.Title)
+			continue
+		}
+
 		// Gemini Normalization
 		randomDelay(100*time.Millisecond, 300*time.Millisecond)
 		extraContext := ""
@@ -396,6 +405,33 @@ func isLikelyNonCar(title string) bool {
 		}
 	}
 	return false
+}
+
+// hasDigit reports whether s contains at least one ASCII digit.
+func hasDigit(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// isTooVague returns true for ads that lack enough information for Gemini to
+// extract structured vehicle data. Specifically: a single-word title with no
+// year digits and no supplementary description/mileage. These always cause
+// Gemini to return explanatory prose instead of JSON.
+func isTooVague(title, description, mileage string) bool {
+	title = strings.TrimSpace(title)
+	words := strings.Fields(title)
+	if len(words) >= 2 {
+		return false // multi-word titles have enough context
+	}
+	if hasDigit(title) {
+		return false // has a year or number — worth trying
+	}
+	// Single word, no digits: only skip if there's no description or mileage
+	return strings.TrimSpace(description) == "" && strings.TrimSpace(mileage) == ""
 }
 
 func isTransientError(err error) bool {
