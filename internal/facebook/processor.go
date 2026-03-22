@@ -211,6 +211,17 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			}
 		}
 
+		// Pre-filter: cheap keyword check on the ad title to skip obvious non-car
+		// listings (boats, ATVs, trailers, motorcycles, etc.) BEFORE calling Gemini.
+		// Without this, every ad—including "$500 lawn mower"—would burn a NormalizeAd
+		// Gemini call just to learn it's not a car. The post-normalization
+		// IsCarfaxEligible() check below is the authoritative filter; this is purely
+		// a cost optimisation that catches the easy cases early.
+		if isLikelyNonCar(ad.Title) {
+			slog.Debug("Skipping likely non-car listing (keyword match)", "processor", "facebook", "title", ad.Title)
+			continue
+		}
+
 		// Gemini Normalization
 		randomDelay(100*time.Millisecond, 300*time.Millisecond)
 		extraContext := ""
@@ -350,6 +361,41 @@ func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, 
 
 // isTransientError returns true for network/proxy errors that are temporary and
 // expected to self-resolve, so they can be logged at WARN instead of ERROR.
+// nonCarKeywords are title substrings that strongly indicate a listing is not a
+// car, truck, SUV, or van. Matched case-insensitively against the ad title as a
+// cheap pre-filter BEFORE the Gemini NormalizeAd call, so we don't spend an AI
+// call on something that is obviously not a car. This list doesn't need to be
+// exhaustive—anything it misses will still be caught by the authoritative
+// IsCarfaxEligible() check after normalization. Keep entries lowercase.
+var nonCarKeywords = []string{
+	"motorcycle", "motorbike", "dirt bike", "dirtbike", "sport bike",
+	"boat", "pontoon", "kayak", "canoe", "jet ski", "jetski", "seadoo", "sea-doo", "outboard",
+	"atv", "quad", "side by side", "side-by-side", "utv",
+	"snowmobile", "skidoo", "ski-doo", "sled",
+	"trailer", "camper", "motorhome", "motor home", "travel trailer", "fifth wheel", "5th wheel",
+	"rv ", "r.v.", "winnebago", "toy hauler",
+	"scooter", "moped", "vespa",
+	"tractor", "excavator", "skid steer", "forklift", "loader", "backhoe",
+	"golf cart", "go kart", "go-kart", "gokart",
+	"lawnmower", "lawn mower", "snowblower", "snow blower",
+	"generator", "parts only", "parting out",
+}
+
+// isLikelyNonCar returns true if the ad title contains a keyword strongly
+// associated with non-car vehicles. This is a best-effort optimisation—false
+// negatives are fine (the post-normalization IsCarfaxEligible check is the
+// real gate), but false positives would hide real car deals, so only include
+// keywords that are unambiguous.
+func isLikelyNonCar(title string) bool {
+	lower := strings.ToLower(title)
+	for _, kw := range nonCarKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 func isTransientError(err error) bool {
 	if err == nil {
 		return false
