@@ -160,7 +160,7 @@ Return a JSON object with these fields:
 
 	config := &genai.GenerateContentConfig{
 		Tools: []*genai.Tool{
-			{GoogleSearchRetrieval: &genai.GoogleSearchRetrieval{}},
+			{GoogleSearch: &genai.GoogleSearch{}},
 		},
 	}
 
