@@ -186,21 +186,32 @@ Task:
    - No red flags: no salvage/rebuilt title, no major mechanical issues described, no flood/accident damage.
    - Factor in likely repair costs: if the listing mentions mechanical issues, estimate repair cost and subtract from the value gap. A "$5k below market" deal that needs a $4k transmission is NOT warm.
    FALSE for: standard marketplace pricing, overpriced listings, 200k+ km, niche/luxury vehicles with expensive parts, anything with described mechanical problems that erode the discount.
-3. Determine if this is "Lava Hot" (is_lava_hot). Reserve for exceptional deals only: 40%%+ below market on a desirable, problem-free vehicle. Most warm deals are NOT lava hot.
+3. Determine if this is "Lava Hot" (is_lava_hot). Reserve for exceptional deals only: 35%%+ below market on a desirable, problem-free vehicle. Most warm deals are NOT lava hot.
 4. Write a concise summary (2 sentences max). Be mathematical:
    - State the market value you found and the %% discount.
    - If there are condition concerns, estimate repair cost and the net discount after repairs.
-   - Example: "Market value ~$18k. Asking $12k (33%% below) with no reported issues."
-   - Example: "Market ~$15k, asking $10k (33%% below), but needs brakes + tires (~$1.5k). Net discount ~23%%."
+   - Example: "Market ~18k. Asking 12k (33%% below), no reported issues."
+   - Example: "Market ~15k, asking 10k (33%% below), but needs brakes + tires (~1.5k). Net discount ~23%%."
+5. Identify known mechanical failure risks (known_issues) for this year/make/model that the buyer should consider.
+   Rules:
+   - Only include widely-documented failure patterns where typical repair cost exceeds $1000 CAD.
+   - Each issue MUST state: the component, the km range where failure typically occurs, and the repair cost range.
+   - Do NOT flag issues where the vehicle's current odometer (%d km) is more than 20%% past the upper end of the typical failure range — it likely already survived.
+   - Max 2 issues, most expensive first. Return "" if no major known issues exist.
+   - Do NOT include: recall numbers, normal wear items, or vague complaints.
+   - Format: "Component: failure risk LOWER-UPPERk km ($X-Yk)"
+   - Example: "Theta II engine: failure risk 120-180k km ($4-8k). CVT: premature wear >150k km ($4-6k)"
+   - Example: ""
 
 Respond with exactly this JSON format:
-{"fomo": true/false, "is_warm": true/false, "is_lava_hot": true/false, "title": "your clean title here", "summary": "your concise mathematical summary"}
+{"fomo": true/false, "is_warm": true/false, "is_lava_hot": true/false, "title": "your clean title here", "summary": "concise mathematical summary", "known_issues": "component risks or empty string"}
 `, car.Year, car.Make, car.Model, car.Trim,
 		car.Engine, car.Transmission, car.Drivetrain, car.BodyStyle,
 		car.Odometer, car.Condition,
 		askingPrice,
 		carfaxContext,
-		car.Description)
+		car.Description,
+		car.Odometer)
 
 	config := &genai.GenerateContentConfig{
 		Tools: []*genai.Tool{

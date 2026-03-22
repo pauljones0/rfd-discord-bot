@@ -23,7 +23,7 @@ type Store interface {
 
 // Notifier defines the Discord notification operations.
 type Notifier interface {
-	SendFacebookDeal(ctx context.Context, title, url, summary string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool, subs []models.Subscription) error
+	SendFacebookDeal(ctx context.Context, title, url, summary, knownIssues string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool, subs []models.Subscription) error
 }
 
 // Processor handles Facebook Marketplace deal scraping and analysis.
@@ -349,7 +349,7 @@ func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, 
 		return
 	}
 
-	if err := p.notifier.SendFacebookDeal(ctx, analysis.Title, ad.URL, analysis.Summary, ad.Price, carfaxValue, analysis.IsWarm, analysis.IsLavaHot, matchingSubs); err != nil {
+	if err := p.notifier.SendFacebookDeal(ctx, analysis.Title, ad.URL, analysis.Summary, analysis.KnownIssues, ad.Price, carfaxValue, analysis.IsWarm, analysis.IsLavaHot, matchingSubs); err != nil {
 		slog.Error("Failed to send facebook deal", "processor", "facebook", "title", analysis.Title, "error", err)
 	} else {
 		tracker.TrackDiscordMessage()

@@ -32,11 +32,12 @@ func (c *CarData) IsCarfaxEligible() bool {
 
 // FacebookDealAnalysis holds the result of Gemini's deal analysis for Facebook car deals.
 type FacebookDealAnalysis struct {
-	IsDeal    bool   `json:"fomo"`
-	IsWarm    bool   `json:"is_warm"`
-	IsLavaHot bool   `json:"is_lava_hot"`
-	Title     string `json:"title"`
-	Summary   string `json:"summary"`
+	IsDeal      bool   `json:"fomo"`
+	IsWarm      bool   `json:"is_warm"`
+	IsLavaHot   bool   `json:"is_lava_hot"`
+	Title       string `json:"title"`
+	Summary     string `json:"summary"`
+	KnownIssues string `json:"known_issues"`
 }
 
 // ScrapedAd holds the data extracted from a single Facebook Marketplace listing.

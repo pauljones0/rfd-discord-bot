@@ -331,12 +331,12 @@ func (c *Client) IsHot(deal models.DealInfo) bool {
 // --- Facebook Deal Notifications ---
 
 // SendFacebookDeal sends a Facebook car deal notification to all subscribed channels.
-func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool, subs []models.Subscription) error {
+func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary, knownIssues string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool, subs []models.Subscription) error {
 	if c.botToken == "" {
 		return nil
 	}
 
-	embed := formatFacebookEmbed(title, url, summary, askingPrice, carfaxValue, isWarm, isLavaHot)
+	embed := formatFacebookEmbed(title, url, summary, knownIssues, askingPrice, carfaxValue, isWarm, isLavaHot)
 	payload := discordWebhookPayload{
 		Content: "",
 		Embeds:  []discordEmbed{embed},
@@ -358,46 +358,38 @@ func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary strin
 	return nil
 }
 
-func formatFacebookEmbed(title, url, summary string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool) discordEmbed {
-	var descBuilder strings.Builder
-	descBuilder.WriteString(summary)
-
+func formatFacebookEmbed(title, url, summary, knownIssues string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool) discordEmbed {
 	if isLavaHot {
 		title += " 🔥"
 	}
 
-	embedColor := colorWarmDeal // baseline: all posted Facebook deals are at least warm
+	embedColor := colorWarmDeal
 	if isLavaHot {
 		embedColor = colorHotDeal
 	}
 
 	var fields []discordEmbedField
-	fields = append(fields, discordEmbedField{
-		Name:   "Asking",
-		Value:  fmt.Sprintf("$%s", formatPrice(askingPrice)),
-		Inline: true,
-	})
 
+	// Dense single-line pricing: "12.5k / 18k Carfax / 31% off"
 	if carfaxValue > 0 {
-		fields = append(fields, discordEmbedField{
-			Name:   "Carfax",
-			Value:  fmt.Sprintf("$%s", formatPrice(carfaxValue)),
-			Inline: true,
-		})
 		discount := (1 - askingPrice/carfaxValue) * 100
+		priceVal := fmt.Sprintf("%s / %s Carfax", formatPriceShort(askingPrice), formatPriceShort(carfaxValue))
 		if discount > 0 {
-			fields = append(fields, discordEmbedField{
-				Name:   "Discount",
-				Value:  fmt.Sprintf("%.0f%% below", discount),
-				Inline: true,
-			})
+			priceVal += fmt.Sprintf(" / %.0f%% off", discount)
 		}
+		fields = append(fields, discordEmbedField{Name: "Price", Value: priceVal})
+	} else {
+		fields = append(fields, discordEmbedField{Name: "Price", Value: formatPriceShort(askingPrice)})
+	}
+
+	if knownIssues != "" {
+		fields = append(fields, discordEmbedField{Name: "⚠️ Watch Out", Value: knownIssues})
 	}
 
 	return discordEmbed{
 		Title:       title,
 		URL:         url,
-		Description: descBuilder.String(),
+		Description: summary,
 		Color:       embedColor,
 		Fields:      fields,
 		Footer: discordEmbedFooter{
@@ -406,20 +398,16 @@ func formatFacebookEmbed(title, url, summary string, askingPrice, carfaxValue fl
 	}
 }
 
-// formatPrice formats a float as a comma-separated price string (e.g. "12,500").
-func formatPrice(v float64) string {
-	s := fmt.Sprintf("%.0f", v)
-	if len(s) <= 3 {
-		return s
+// formatPriceShort formats a price as compact shorthand (e.g. 12500 → "12.5k").
+func formatPriceShort(v float64) string {
+	if v < 1000 {
+		return fmt.Sprintf("$%.0f", v)
 	}
-	var result []byte
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			result = append(result, ',')
-		}
-		result = append(result, byte(c))
+	k := v / 1000
+	if k == float64(int(k)) {
+		return fmt.Sprintf("%.0fk", k)
 	}
-	return string(result)
+	return fmt.Sprintf("%.1fk", k)
 }
 
 // --- eBay Deal Notifications ---
