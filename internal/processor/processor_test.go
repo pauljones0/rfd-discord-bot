@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/metrics"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/validator"
 )
@@ -561,7 +562,7 @@ func TestScrapeAndValidate_SubFunction(t *testing.T) {
 	}
 	p := newTestProcessor(store, notif, scraper)
 
-	validDeals, err := p.scrapeAndValidate(context.Background(), slog.Default())
+	validDeals, err := p.scrapeAndValidate(context.Background(), slog.Default(), metrics.NewTracker("rfd"))
 	if err != nil {
 		t.Fatalf("scrapeAndValidate failed: %v", err)
 	}

@@ -29,6 +29,7 @@ type Server struct {
 	processor         processor.Processor
 	ebayProcessor     *ebay.Processor
 	facebookProcessor *facebook.Processor
+	aiClient          *ai.Client
 	store             processor.DealStore
 	wg                sync.WaitGroup
 	sem               chan struct{} // Semaphore to limit concurrent RFD processing requests
@@ -98,6 +99,7 @@ func main() {
 		processor:         p,
 		ebayProcessor:     ebayProc,
 		facebookProcessor: fbProc,
+		aiClient:          aiClient,
 		store:             store,
 		sem:               make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
 		ebaySem:           make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
@@ -198,6 +200,9 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		slog.Info("Starting RFD deal processing", "processor", "rfd")
+		if s.aiClient != nil {
+			s.aiClient.LogCurrentState()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 		start := time.Now()
@@ -243,6 +248,9 @@ func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		slog.Info("Starting eBay deal processing", "processor", "ebay")
+		if s.aiClient != nil {
+			s.aiClient.LogCurrentState()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 		start := time.Now()
@@ -288,6 +296,9 @@ func (s *Server) ProcessFacebookHandler(w http.ResponseWriter, r *http.Request) 
 			}
 		}()
 		slog.Info("Starting Facebook deal processing", "processor", "facebook")
+		if s.aiClient != nil {
+			s.aiClient.LogCurrentState()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 		defer cancel()
 		start := time.Now()

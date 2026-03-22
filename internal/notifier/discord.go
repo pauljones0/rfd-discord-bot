@@ -224,6 +224,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 // doRequest handles the shared retry/rate-limit/backoff loop for Discord API calls.
 // It returns the response body on success.
 func (c *Client) doRequest(ctx context.Context, method, targetURL string, payload discordWebhookPayload) ([]byte, error) {
+	start := time.Now()
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -262,6 +263,7 @@ func (c *Client) doRequest(ctx context.Context, method, targetURL string, payloa
 		}
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			slog.Debug("Discord API call succeeded", "method", method, "status", resp.StatusCode, "duration_ms", time.Since(start).Milliseconds())
 			return bodyBytes, nil
 		}
 
@@ -280,6 +282,7 @@ func (c *Client) doRequest(ctx context.Context, method, targetURL string, payloa
 		return nil, lastErr
 	}
 
+	slog.Warn("Discord API call failed after retries", "method", method, "retries", maxRetries, "duration_ms", time.Since(start).Milliseconds())
 	return nil, fmt.Errorf("discord %s failed after %d retries: %w", method, maxRetries, lastErr)
 }
 

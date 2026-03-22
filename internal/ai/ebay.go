@@ -87,6 +87,7 @@ Return a JSON array with ALL items, marking the top deals:
 	}
 
 	var results []ebay.EbayBatchScreenResult
+	start := time.Now()
 
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		c.mu.Lock()
@@ -112,7 +113,10 @@ Return a JSON array with ALL items, marking the top deals:
 		}
 		c.mu.Lock()
 		c.resetConsecutiveErrors()
+		loc := c.currentLocation
 		c.mu.Unlock()
+
+		logTokenUsage(resp, "ebay_batch_screening", model, loc)
 
 		parsed, parseErr := parseEbayBatchResponse(resp)
 		if parseErr != nil {
@@ -153,6 +157,7 @@ Return a JSON array with ALL items, marking the top deals:
 		"actual_top", topCount,
 		"model", activeModel,
 		"location", loc,
+		"duration_ms", time.Since(start).Milliseconds(),
 	)
 
 	return results, nil
@@ -218,6 +223,7 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 	}
 
 	var result *ebay.EbayVerifyResult
+	start := time.Now()
 
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		c.mu.Lock()
@@ -243,7 +249,10 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 		}
 		c.mu.Lock()
 		c.resetConsecutiveErrors()
+		loc := c.currentLocation
 		c.mu.Unlock()
+
+		logTokenUsage(resp, "ebay_deal_verification", model, loc)
 
 		parsed, parseErr := parseEbayVerifyResponse(resp)
 		if parseErr != nil {
@@ -282,6 +291,7 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 		"price", price,
 		"model", activeModel,
 		"location", loc,
+		"duration_ms", time.Since(start).Milliseconds(),
 	)
 
 	return result, nil

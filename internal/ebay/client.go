@@ -187,6 +187,7 @@ func setBrowseHeaders(req *http.Request, token, marketplace string) {
 
 // fetchSellerPage fetches one page of BIN listings for a single seller from the Browse API.
 func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string, offset int, sinceTime time.Time) ([]BrowseAPIItem, bool, error) {
+	start := time.Now()
 	token, err := c.getToken(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to get eBay token: %w", err)
@@ -311,10 +312,12 @@ func (c *Client) fetchSellerPage(ctx context.Context, seller, marketplace string
 	}
 
 	slog.Info("eBay Browse API page fetched",
+		"processor", "ebay",
 		"seller", seller,
 		"items_returned", len(searchResp.ItemSummaries),
 		"total", searchResp.Total,
 		"offset", offset,
+		"duration_ms", time.Since(start).Milliseconds(),
 	)
 
 	hasMore := searchResp.Next != ""

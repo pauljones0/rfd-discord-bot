@@ -490,6 +490,22 @@ func extractJSONValue(s string) string {
 	return s
 }
 
+// logTokenUsage logs token counts from a Gemini response if available.
+func logTokenUsage(resp *genai.GenerateContentResponse, context, model, location string) {
+	if resp == nil || resp.UsageMetadata == nil {
+		return
+	}
+	um := resp.UsageMetadata
+	slog.Info("gemini_token_usage",
+		"context", context,
+		"model", model,
+		"location", location,
+		"prompt_tokens", um.PromptTokenCount,
+		"output_tokens", um.CandidatesTokenCount,
+		"total_tokens", um.TotalTokenCount,
+	)
+}
+
 // GenerateContentRaw sends a prompt to the active Gemini model and returns the
 // raw text response. An optional config can specify tools (e.g. Google Search
 // Grounding) or response format constraints. This method is used by the Facebook
@@ -499,6 +515,7 @@ func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *
 		return "", fmt.Errorf("AI client not initialized")
 	}
 
+	start := time.Now()
 	c.mu.Lock()
 	activeModel := c.checkDayRollover(ctx)
 	c.mu.Unlock()
@@ -531,7 +548,10 @@ func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *
 
 		c.mu.Lock()
 		c.resetConsecutiveErrors()
+		loc := c.currentLocation
 		c.mu.Unlock()
+
+		logTokenUsage(resp, "generate_content_raw", model, loc)
 
 		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
 			return fmt.Errorf("no response content from gemini")
@@ -552,7 +572,28 @@ func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *
 		return nil
 	})
 
+	if err == nil {
+		slog.Debug("GenerateContentRaw completed", "model", activeModel, "duration_ms", time.Since(start).Milliseconds())
+	}
+
 	return result, err
+}
+
+// LogCurrentState emits an INFO log with the current model, region, and exhaustion state.
+// Useful at the start of each processor run for visibility.
+func (c *Client) LogCurrentState() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	slog.Info("gemini_state",
+		"model", c.currentModel,
+		"location", c.currentLocation,
+		"all_exhausted", c.allExhausted,
+		"locations", c.locations,
+		"fallback_models", c.fallbackModels,
+	)
 }
 
 // AllTiersExhausted returns true if all Gemini model tiers have been exhausted.
@@ -687,7 +728,10 @@ Respond with exactly this JSON format:
 		}
 		c.mu.Lock()
 		c.resetConsecutiveErrors()
+		loc := c.currentLocation
 		c.mu.Unlock()
+
+		logTokenUsage(resp, "deal_analysis", model, loc)
 
 		// Parse the response inside the retry loop so malformed responses
 		// (e.g. Gemini returning prose instead of JSON) are retried.

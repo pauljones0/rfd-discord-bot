@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/metrics"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/playwright-community/playwright-go"
 )
@@ -62,6 +63,9 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 
 	slog.Info("Starting Facebook deal processing", "processor", "facebook")
 
+	tracker := metrics.NewTracker("facebook")
+	defer tracker.LogSummary()
+
 	// Load subscriptions
 	subs, err := p.store.GetFacebookSubscriptions(ctx)
 	if err != nil {
@@ -93,7 +97,7 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 		if i > 0 {
 			randomDelay(3*time.Second, 6*time.Second)
 		}
-		p.processCity(ctx, group, carfaxClient, pm)
+		p.processCity(ctx, group, carfaxClient, pm, tracker)
 	}
 
 	// Prune old ads
@@ -144,7 +148,7 @@ func groupByCity(subs []models.Subscription) []cityGroup {
 	return groups
 }
 
-func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClient *CarfaxClient, pm *BrowserManager) {
+func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClient *CarfaxClient, pm *BrowserManager, tracker *metrics.Tracker) {
 	slog.Info("Processing city", "processor", "facebook", "city", group.city, "subscribers", len(group.subs))
 
 	cfg := &FacebookScrapeConfig{
@@ -169,6 +173,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		return
 	}
 
+	tracker.TrackAdsScraped(len(ads))
 	slog.Info("Processing ads", "processor", "facebook", "city", group.city, "count", len(ads))
 
 	// Create a reusable page for listing details
@@ -220,10 +225,12 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		}
 
 		carData, err := NormalizeAd(ctx, p.ai, ad.Title, extraContext)
+		tracker.TrackGeminiCall("", "", 0, 0) // track call count; tokens logged separately
 		if err != nil {
 			slog.Error("Failed to normalize ad", "processor", "facebook", "title", ad.Title, "error", err)
 			continue
 		}
+		tracker.TrackAdProcessed()
 
 		// Save to Firestore (deduplication)
 		adRecord := &models.FacebookAdRecord{
@@ -260,9 +267,11 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			carfaxValue, err = carfaxClient.GetValue(ctx, carData.Year, carData.Make, carData.Model, carData.Trim, carData.Engine, carData.Transmission, carData.Drivetrain, carData.BodyStyle, group.postal, carData.Odometer, trimPicker)
 			if err != nil {
 				carfaxFailures++
+				tracker.TrackCarfaxValuation(false)
 				slog.Warn("Carfax valuation failed", "processor", "facebook", "title", ad.Title, "error", err, "consecutive_failures", carfaxFailures)
 			} else {
 				carfaxFailures = 0
+				tracker.TrackCarfaxValuation(true)
 				if saveErr := p.store.SavePriceHistory(ctx, carData.Model, carfaxValue); saveErr != nil {
 					slog.Warn("Failed to save price history", "processor", "facebook", "model", carData.Model, "error", saveErr)
 				}
@@ -271,6 +280,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 
 		// Gemini FOMO Analysis
 		randomDelay(100*time.Millisecond, 300*time.Millisecond)
+		tracker.TrackGeminiCall("", "", 0, 0) // track call count; tokens logged separately
 		analysis, err := AnalyzeDeal(ctx, p.ai, carData, carfaxValue, ad.Price)
 		if err != nil {
 			slog.Error("FOMO analysis failed", "processor", "facebook", "title", ad.Title, "error", err)
@@ -279,12 +289,13 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 
 		// Fan out deal to subscribers
 		if analysis.IsDeal {
-			p.fanOutDeal(ctx, group.subs, ad, analysis, carfaxValue)
+			tracker.TrackDealFound()
+			p.fanOutDeal(ctx, group.subs, ad, analysis, carfaxValue, tracker)
 		}
 	}
 }
 
-func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, ad models.ScrapedAd, analysis *models.FacebookDealAnalysis, carfaxValue float64) {
+func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, ad models.ScrapedAd, analysis *models.FacebookDealAnalysis, carfaxValue float64, tracker *metrics.Tracker) {
 	// Filter subs by brand and send
 	var matchingSubs []models.Subscription
 	for _, sub := range subs {
@@ -311,6 +322,7 @@ func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, 
 	if err := p.notifier.SendFacebookDeal(ctx, analysis.Title, ad.URL, analysis.Summary, ad.Price, carfaxValue, matchingSubs); err != nil {
 		slog.Error("Failed to send facebook deal", "processor", "facebook", "title", analysis.Title, "error", err)
 	} else {
+		tracker.TrackDiscordMessage()
 		slog.Info("DEAL POSTED", "processor", "facebook", "title", analysis.Title, "subscribers", len(matchingSubs))
 	}
 }

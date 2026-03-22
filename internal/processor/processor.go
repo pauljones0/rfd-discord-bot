@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/metrics"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
@@ -65,6 +66,9 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	runID := time.Now().Format("20060102-150405")
 	logger := slog.With("processor", "rfd", "runID", runID)
 
+	tracker := metrics.NewTracker("rfd")
+	defer tracker.LogSummary()
+
 	// Fetch Recent Deals for deduplication
 	recentDeals, err := p.store.GetRecentDeals(ctx, 48*time.Hour)
 	if err != nil {
@@ -72,7 +76,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	}
 
 	// 1. Scrape and Validate
-	scrapedDeals, err := p.scrapeAndValidate(ctx, logger)
+	scrapedDeals, err := p.scrapeAndValidate(ctx, logger, tracker)
 	if err != nil {
 		return err
 	}
@@ -90,7 +94,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	p.enrichDealsWithDetails(ctx, validDeals, existingDeals, logger)
 
 	// 5. AI Analysis for New Deals
-	p.analyzeDeals(ctx, validDeals, existingDeals, logger)
+	p.analyzeDeals(ctx, validDeals, existingDeals, logger, tracker)
 
 	// 6. Fetch Subscriptions
 	subs, err := p.store.GetAllSubscriptions(ctx)
@@ -99,7 +103,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	}
 
 	// 7. Notify Discord and Prepare Updates
-	newDeals, updatedDeals, errorMessages := p.processNotificationsAndPrepareUpdates(ctx, validDeals, existingDeals, subs)
+	newDeals, updatedDeals, errorMessages := p.processNotificationsAndPrepareUpdates(ctx, validDeals, existingDeals, subs, tracker)
 
 	// 8. Batch Save
 	// Optimization: Clear large text fields for AI processed deals to save storage
@@ -140,11 +144,12 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 }
 
 // scrapeAndValidate scrapes the deal list and performs initial validation and ID assignment.
-func (p *DealProcessor) scrapeAndValidate(ctx context.Context, logger *slog.Logger) ([]models.DealInfo, error) {
+func (p *DealProcessor) scrapeAndValidate(ctx context.Context, logger *slog.Logger, tracker *metrics.Tracker) ([]models.DealInfo, error) {
 	scrapedDeals, err := p.scraper.ScrapeDealList(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scrape hot deals list: %w", err)
 	}
+	tracker.TrackAdsScraped(len(scrapedDeals))
 	logger.Info("Successfully scraped deal list", "count", len(scrapedDeals))
 
 	var validDeals []models.DealInfo
@@ -240,7 +245,7 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 }
 
 // analyzeDeals runs AI analysis on deals that haven't been processed yet.
-func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, logger *slog.Logger) {
+func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, logger *slog.Logger, tracker *metrics.Tracker) {
 	for i := range validDeals {
 		if ctx.Err() != nil {
 			logger.Warn("Context cancelled, stopping AI analysis", "remaining", len(validDeals)-i)
@@ -288,6 +293,7 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 			// Call AI
 			// Note: This is done sequentially here. For high volume, we might want concurrency,
 			// but for a few deals every 10 mins, sequential is fine and safer for rate limits.
+			tracker.TrackGeminiCall("", "", 0, 0) // track call count; tokens logged in ai package
 			cleanedTitle, isWarm, isHot, err := p.aiClient.AnalyzeDeal(ctx, deal)
 
 			if err != nil {
@@ -298,6 +304,7 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 				deal.IsWarm = isWarm
 				deal.IsLavaHot = isHot
 				deal.AIProcessed = true
+				tracker.TrackAdProcessed()
 			}
 		} else if existing != nil {
 			// Carry over existing AI data
@@ -310,7 +317,7 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 }
 
 // processNotificationsAndPrepareUpdates sends/updates Discord notifications and prepares lists for DB persistence.
-func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, subs []models.Subscription) ([]models.DealInfo, []models.DealInfo, []string) {
+func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, subs []models.Subscription, tracker *metrics.Tracker) ([]models.DealInfo, []models.DealInfo, []string) {
 	var newDeals []models.DealInfo
 	var updatedDeals []models.DealInfo
 	var errorMessages []string
@@ -333,7 +340,7 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 		existing := existingDeals[firestoreID]
 
 		if existing == nil {
-			if err := p.processNewDeal(ctx, baseDeal, dealsGroup, &newDeals, subs); err != nil {
+			if err := p.processNewDeal(ctx, baseDeal, dealsGroup, &newDeals, subs, tracker); err != nil {
 				slog.Error("Failed to process new deal", "processor", "rfd", "title", baseDeal.Title, "error", err)
 				errorMessages = append(errorMessages, fmt.Sprintf("new deal error %s: %v", baseDeal.Title, err))
 			}
@@ -347,7 +354,7 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 	return newDeals, updatedDeals, errorMessages
 }
 
-func (p *DealProcessor) processNewDeal(ctx context.Context, dealToSave *models.DealInfo, scrapedDuplicates []models.DealInfo, newDeals *[]models.DealInfo, subs []models.Subscription) error {
+func (p *DealProcessor) processNewDeal(ctx context.Context, dealToSave *models.DealInfo, scrapedDuplicates []models.DealInfo, newDeals *[]models.DealInfo, subs []models.Subscription, tracker *metrics.Tracker) error {
 	dealToSave.LastUpdated = time.Now()
 
 	// Merge any scraped duplicates' threads into this new deal
@@ -377,6 +384,8 @@ func (p *DealProcessor) processNewDeal(ctx context.Context, dealToSave *models.D
 	}
 	dealToSave.DiscordMessageIDs = msgIDs
 	dealToSave.DiscordLastUpdatedTime = time.Now()
+	tracker.TrackDiscordMessage()
+	tracker.TrackDealFound()
 	*newDeals = append(*newDeals, *dealToSave)
 	return nil
 }
