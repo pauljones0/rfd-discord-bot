@@ -35,6 +35,38 @@ func discountLabel(pct float64) string {
 	return "above Carfax"
 }
 
+// sanitizeJSONEscapes fixes invalid escape sequences in JSON strings that Gemini
+// sometimes produces (e.g. \$ instead of $). It replaces \X with X when X is not
+// a valid JSON escape character (one of: " \ / b f n r t u).
+func sanitizeJSONEscapes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '"' && (i == 0 || s[i-1] != '\\') {
+			inString = !inString
+			b.WriteByte(ch)
+			continue
+		}
+		if inString && ch == '\\' && i+1 < len(s) {
+			next := s[i+1]
+			switch next {
+			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
+				// Valid JSON escape: write both characters and skip next
+				b.WriteByte(ch)
+				b.WriteByte(next)
+				i++
+			default:
+				// Invalid escape like \$: drop the backslash, keep the char
+			}
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
+}
+
 // extractJSON finds and returns the first JSON object from a string that may
 // contain markdown fences, preamble text, or trailing content.
 func extractJSON(raw string) string {
@@ -117,7 +149,7 @@ The vehicle_type field is critical: motorcycles, boats, ATVs, and trailers are N
 		return nil, fmt.Errorf("gemini returned no text content for ad: %s", adTitle)
 	}
 
-	jsonStr := extractJSON(rawText)
+	jsonStr := sanitizeJSONEscapes(extractJSON(rawText))
 	var data models.CarData
 	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 		return nil, fmt.Errorf("failed to parse gemini json: %v content: %s", err, jsonStr)
@@ -261,7 +293,7 @@ Respond with exactly this JSON:
 		return nil, fmt.Errorf("gemini returned no text content for deal analysis")
 	}
 
-	jsonStr := extractJSON(rawText)
+	jsonStr := sanitizeJSONEscapes(extractJSON(rawText))
 	var analysis models.FacebookDealAnalysis
 	if err := json.Unmarshal([]byte(jsonStr), &analysis); err != nil {
 		return nil, fmt.Errorf("failed to parse gemini analysis json: %v content: %s", err, jsonStr)
