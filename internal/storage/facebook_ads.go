@@ -75,7 +75,7 @@ func (c *Client) PruneFacebookAds(ctx context.Context, maxAgeMonths int, maxReco
 			return err
 		}
 		if _, err := doc.Ref.Delete(ctx); err != nil {
-			slog.Warn("Failed to delete old facebook ad", "id", doc.Ref.ID, "error", err)
+			slog.Warn("Failed to delete old facebook ad", "processor", "facebook", "id", doc.Ref.ID, "error", err)
 		}
 	}
 
@@ -105,7 +105,7 @@ func (c *Client) PruneFacebookAds(ctx context.Context, maxAgeMonths int, maxReco
 				return fmt.Errorf("failed to iterate excess facebook records: %v", err)
 			}
 			if _, err := doc.Ref.Delete(ctx); err != nil {
-				slog.Warn("Failed to delete excess facebook record", "id", doc.Ref.ID, "error", err)
+				slog.Warn("Failed to delete excess facebook record", "processor", "facebook", "id", doc.Ref.ID, "error", err)
 			}
 		}
 	}

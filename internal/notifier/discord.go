@@ -59,13 +59,13 @@ func (c *Client) Send(ctx context.Context, deal models.DealInfo, subs []models.S
 		urlStr := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", sub.ChannelID)
 		body, err := c.doRequest(ctx, "POST", urlStr, payload)
 		if err != nil {
-			slog.Error("Failed to send deal to channel", "channel", sub.ChannelID, "error", err)
+			slog.Error("Failed to send deal to channel", "processor", "rfd", "channel", sub.ChannelID, "error", err)
 			continue
 		}
 
 		var msgResponse discordMessageResponse
 		if err := json.Unmarshal(body, &msgResponse); err != nil {
-			slog.Error("Failed to parse discord message response", "error", err)
+			slog.Error("Failed to parse discord message response", "processor", "rfd", "channel", sub.ChannelID, "error", err)
 			continue
 		}
 		results[sub.ChannelID] = msgResponse.ID
@@ -87,7 +87,7 @@ func (c *Client) Update(ctx context.Context, deal models.DealInfo) error {
 		patchURL := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages/%s", channelID, messageID)
 		_, err := c.doRequest(ctx, "PATCH", patchURL, payload)
 		if err != nil {
-			slog.Error("Failed to update deal", "channel", channelID, "message", messageID, "error", err)
+			slog.Error("Failed to update deal", "processor", "rfd", "channel", channelID, "message", messageID, "error", err)
 			errs = append(errs, fmt.Errorf("channel %s: %w", channelID, err))
 		}
 	}
@@ -346,7 +346,7 @@ func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary strin
 		urlStr := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", sub.ChannelID)
 		_, err := c.doRequest(ctx, "POST", urlStr, payload)
 		if err != nil {
-			slog.Error("Failed to send Facebook deal to channel", "channel", sub.ChannelID, "title", title, "error", err)
+			slog.Error("Failed to send Facebook deal to channel", "processor", "facebook", "channel", sub.ChannelID, "title", title, "error", err)
 		} else {
 			slog.Info("Facebook deal sent", "processor", "facebook", "channel", sub.ChannelID, "title", title)
 		}
@@ -402,13 +402,13 @@ func (c *Client) SendEbayDeal(ctx context.Context, item ebay.EbayItem, subs []mo
 		urlStr := fmt.Sprintf("https://discord.com/api/v10/channels/%s/messages", sub.ChannelID)
 		body, err := c.doRequest(ctx, "POST", urlStr, payload)
 		if err != nil {
-			slog.Error("Failed to send eBay deal to channel", "channel", sub.ChannelID, "item", item.Title, "error", err)
+			slog.Error("Failed to send eBay deal to channel", "processor", "ebay", "channel", sub.ChannelID, "item", item.Title, "error", err)
 			continue
 		}
 
 		var msgResponse discordMessageResponse
 		if err := json.Unmarshal(body, &msgResponse); err != nil {
-			slog.Error("Failed to parse discord message response for eBay deal", "error", err)
+			slog.Error("Failed to parse discord message response for eBay deal", "processor", "ebay", "channel", sub.ChannelID, "error", err)
 			continue
 		}
 		results[sub.ChannelID] = msgResponse.ID

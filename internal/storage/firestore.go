@@ -99,7 +99,7 @@ func (c *Client) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*m
 		}
 		var deal models.DealInfo
 		if err := doc.DataTo(&deal); err != nil {
-			slog.Warn("Failed to unmarshal deal in batch read", "id", doc.Ref.ID, "error", err)
+			slog.Warn("Failed to unmarshal deal in batch read", "component", "storage", "id", doc.Ref.ID, "error", err)
 			continue
 		}
 		deal.FirestoreID = doc.Ref.ID

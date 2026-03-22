@@ -194,14 +194,17 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("Panic in ProcessDeals", "panic", r)
+				slog.Error("Panic in ProcessDeals", "processor", "rfd", "panic", r)
 			}
 		}()
+		slog.Info("Starting RFD deal processing", "processor", "rfd")
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
+		start := time.Now()
 		if err := s.processor.ProcessDeals(ctx); err != nil {
-			slog.Error("Error processing deals", "error", err)
+			slog.Error("Error processing deals", "processor", "rfd", "error", err)
 		}
+		slog.Info("RFD deal processing finished", "processor", "rfd", "duration", time.Since(start))
 	}()
 
 	w.WriteHeader(http.StatusAccepted)
@@ -236,14 +239,17 @@ func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("Panic in ProcessEbayDeals", "panic", r)
+				slog.Error("Panic in ProcessEbayDeals", "processor", "ebay", "panic", r)
 			}
 		}()
+		slog.Info("Starting eBay deal processing", "processor", "ebay")
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
+		start := time.Now()
 		if err := s.ebayProcessor.ProcessEbayDeals(ctx); err != nil {
-			slog.Error("Error processing eBay deals", "error", err)
+			slog.Error("Error processing eBay deals", "processor", "ebay", "error", err)
 		}
+		slog.Info("eBay deal processing finished", "processor", "ebay", "duration", time.Since(start))
 	}()
 
 	w.WriteHeader(http.StatusAccepted)
@@ -278,14 +284,17 @@ func (s *Server) ProcessFacebookHandler(w http.ResponseWriter, r *http.Request) 
 
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("Panic in ProcessFacebookDeals", "panic", r)
+				slog.Error("Panic in ProcessFacebookDeals", "processor", "facebook", "panic", r)
 			}
 		}()
+		slog.Info("Starting Facebook deal processing", "processor", "facebook")
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 		defer cancel()
+		start := time.Now()
 		if err := s.facebookProcessor.ProcessFacebookDeals(ctx); err != nil {
-			slog.Error("Error processing Facebook deals", "error", err)
+			slog.Error("Error processing Facebook deals", "processor", "facebook", "error", err)
 		}
+		slog.Info("Facebook deal processing finished", "processor", "facebook", "duration", time.Since(start))
 	}()
 
 	w.WriteHeader(http.StatusAccepted)

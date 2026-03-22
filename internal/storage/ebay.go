@@ -42,7 +42,7 @@ func (c *Client) GetActiveEbaySellers(ctx context.Context) ([]ebay.EbaySeller, e
 
 		var seller ebay.EbaySeller
 		if err := doc.DataTo(&seller); err != nil {
-			slog.Warn("Failed to unmarshal ebay seller", "id", doc.Ref.ID, "error", err)
+			slog.Warn("Failed to unmarshal ebay seller", "processor", "ebay", "id", doc.Ref.ID, "error", err)
 			continue
 		}
 		sellers = append(sellers, seller)
@@ -78,7 +78,7 @@ func (c *Client) SeedEbaySellers(ctx context.Context) (bool, error) {
 	for _, seller := range defaults {
 		doc := c.client.Collection(ebaySellersCollection).Doc(seller.Username)
 		if _, err := bw.Create(doc, seller); err != nil {
-			slog.Error("Failed to queue ebay seller seed", "username", seller.Username, "error", err)
+			slog.Error("Failed to queue ebay seller seed", "processor", "ebay", "username", seller.Username, "error", err)
 			errs = append(errs, fmt.Errorf("seed %s: %w", seller.Username, err))
 		}
 	}

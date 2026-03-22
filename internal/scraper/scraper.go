@@ -172,6 +172,8 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 			normalized, err := util.NormalizeURL(postURL, c.config.AllowedDomains)
 			if err == nil {
 				postURL = normalized
+			} else {
+				slog.Warn("Failed to normalize URL, using raw URL", "processor", "rfd", "url", postURL, "error", err)
 			}
 		}
 		deal.PostURL = postURL
