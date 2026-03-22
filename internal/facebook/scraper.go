@@ -120,6 +120,9 @@ func ScrapeListingDetail(ctx context.Context, logger *slog.Logger, page playwrig
 		State:   playwright.WaitForSelectorStateVisible,
 	})
 
+	// Simulate human interaction before extracting data
+	SimulateHumanBehavior(page)
+
 	result, err := page.Evaluate(jsExtractListingDetail)
 	if err != nil {
 		return "", fmt.Errorf("failed to extract listing detail: %w", err)
@@ -207,12 +210,11 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 		return allAds, nil
 	}
 
-	closeBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Close"})
-	if count, _ := closeBtn.Count(); count > 0 {
-		_ = closeBtn.First().Click(playwright.LocatorClickOptions{
-			Timeout: playwright.Float(2000),
-		})
-	}
+	// Dismiss overlays — try multiple selectors for robustness
+	dismissOverlays(page)
+
+	// Simulate human interaction before extracting data
+	SimulateHumanBehavior(page)
 
 	result, err := page.Evaluate(jsScrapeMarketplace)
 	if err != nil {
@@ -241,6 +243,46 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 	logger.Info("Extracted ads", "count", len(allAds), "city", cfg.City)
 
 	return allAds, nil
+}
+
+// dismissOverlays attempts to close common Facebook popups, modals, and cookie
+// banners using multiple strategies. This is more robust than a single "Close"
+// button check — Facebook uses several different overlay patterns.
+func dismissOverlays(page playwright.Page) {
+	// Strategy 1: role="button" with "Close" text (most common)
+	closeBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Close"})
+	if count, _ := closeBtn.Count(); count > 0 {
+		_ = closeBtn.First().Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(2000),
+		})
+	}
+
+	// Strategy 2: aria-label="Close" (Facebook uses this on some overlays)
+	ariaClose := page.Locator("[aria-label='Close']")
+	if count, _ := ariaClose.Count(); count > 0 {
+		_ = ariaClose.First().Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(1000),
+		})
+	}
+
+	// Strategy 3: Remove login/signup dialogs via JS (they block interaction)
+	_, _ = page.Evaluate(`() => {
+		document.querySelectorAll('[role="dialog"]').forEach(d => {
+			const text = d.innerText || '';
+			if (text.includes('Log in') || text.includes('Sign up') ||
+				text.includes('See more on Facebook') || text.includes('Create new account')) {
+				d.remove();
+			}
+		});
+	}`)
+
+	// Strategy 4: Dismiss cookie consent banner if present
+	cookieBtn := page.Locator("[data-cookiebanner] button, [data-testid='cookie-policy-manage-dialog-accept-button']")
+	if count, _ := cookieBtn.Count(); count > 0 {
+		_ = cookieBtn.First().Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(1000),
+		})
+	}
 }
 
 func processRawAd(adMap map[string]interface{}, cfg *FacebookScrapeConfig) (*models.ScrapedAd, string, bool) {

@@ -104,6 +104,81 @@ const jsStealthOverrides = `() => {
 	if (!window.chrome) {
 		window.chrome = { runtime: {} };
 	}
+
+	// --- Additional stealth patches from playwright-stealth ---
+
+	// WebGL vendor/renderer spoofing — headless browsers expose "Google Inc." / "ANGLE"
+	// which is a dead giveaway. Override to return realistic GPU strings.
+	const getParameter = WebGLRenderingContext.prototype.getParameter;
+	WebGLRenderingContext.prototype.getParameter = function(param) {
+		// UNMASKED_VENDOR_WEBGL = 0x9245, UNMASKED_RENDERER_WEBGL = 0x9246
+		if (param === 0x9245) return 'Intel Inc.';
+		if (param === 0x9246) return 'Intel Iris OpenGL Engine';
+		return getParameter.call(this, param);
+	};
+	if (typeof WebGL2RenderingContext !== 'undefined') {
+		const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+		WebGL2RenderingContext.prototype.getParameter = function(param) {
+			if (param === 0x9245) return 'Intel Inc.';
+			if (param === 0x9246) return 'Intel Iris OpenGL Engine';
+			return getParameter2.call(this, param);
+		};
+	}
+
+	// Permissions API override — automated browsers return different results for
+	// navigator.permissions.query({name: 'notifications'}) which fingerprinters check.
+	if (navigator.permissions) {
+		const origQuery = navigator.permissions.query.bind(navigator.permissions);
+		navigator.permissions.query = function(params) {
+			if (params.name === 'notifications') {
+				return Promise.resolve({ state: Notification.permission });
+			}
+			return origQuery(params);
+		};
+	}
+
+	// Media codecs spoofing — headless can report different codec support.
+	// Ensure common codecs report as supported (matches real Firefox behavior).
+	if (typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported) {
+		const origIsTypeSupported = MediaSource.isTypeSupported.bind(MediaSource);
+		MediaSource.isTypeSupported = function(type) {
+			// Common codecs that real browsers support
+			if (type.includes('avc1') || type.includes('mp4a') || type.includes('vp9') || type.includes('opus')) {
+				return true;
+			}
+			return origIsTypeSupported(type);
+		};
+	}
+
+	// chrome.csi and chrome.loadTimes stubs — some fingerprinters specifically
+	// check for the presence of these Chrome-specific timing APIs.
+	if (window.chrome) {
+		window.chrome.csi = function() {
+			return {
+				startE: Date.now(),
+				onloadT: Date.now(),
+				pageT: Math.random() * 1000 + 100,
+				tran: 15
+			};
+		};
+		window.chrome.loadTimes = function() {
+			return {
+				requestTime: Date.now() / 1000,
+				startLoadTime: Date.now() / 1000,
+				commitLoadTime: Date.now() / 1000 + 0.1,
+				finishDocumentLoadTime: Date.now() / 1000 + 0.3,
+				finishLoadTime: Date.now() / 1000 + 0.5,
+				firstPaintTime: Date.now() / 1000 + 0.15,
+				firstPaintAfterLoadTime: 0,
+				navigationType: 'Other',
+				wasFetchedViaSpdy: false,
+				wasNpnNegotiated: true,
+				npnNegotiatedProtocol: 'h2',
+				wasAlternateProtocolAvailable: false,
+				connectionInfo: 'h2'
+			};
+		};
+	}
 }`
 
 // blockedExtensions lists resource file extensions to block for bandwidth savings.
@@ -292,6 +367,33 @@ func setupRequestInterception(ctx playwright.BrowserContext) error {
 
 		_ = route.Continue()
 	})
+}
+
+// SimulateHumanBehavior performs random mouse movements and a scroll on the page
+// to mimic human interaction patterns. Anti-bot systems like Facebook's track
+// whether a session has any mouse/scroll events — a session with zero interaction
+// before JS extraction is a strong signal of automation.
+func SimulateHumanBehavior(page playwright.Page) {
+	vp := page.ViewportSize()
+	if vp == nil {
+		return
+	}
+
+	// 2-4 random mouse movements across the page
+	moves := 2 + rand.Intn(3)
+	for i := 0; i < moves; i++ {
+		x := float64(100 + rand.Intn(vp.Width-200))
+		y := float64(100 + rand.Intn(vp.Height-200))
+		_ = page.Mouse().Move(x, y, playwright.MouseMoveOptions{
+			Steps: playwright.Int(5 + rand.Intn(10)),
+		})
+	}
+
+	// Scroll down a bit (100-400px) then back up slightly, like a human scanning
+	scrollDown := 100 + rand.Intn(300)
+	_ = page.Mouse().Wheel(0, float64(scrollDown))
+	scrollUp := 30 + rand.Intn(70)
+	_ = page.Mouse().Wheel(0, float64(-scrollUp))
 }
 
 // Close shuts down the browser and Playwright runtime.
