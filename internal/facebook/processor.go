@@ -273,9 +273,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 
 		// Carfax Valuation
 		var carfaxValue float64
-		if !carData.IsCarfaxEligible() {
-			slog.Info("Skipping carfax for non-car vehicle", "processor", "facebook", "title", ad.Title, "type", carData.VehicleType)
-		} else if carfaxFailures >= carfaxCircuitBreakerThreshold {
+		if carfaxFailures >= carfaxCircuitBreakerThreshold {
 			slog.Warn("Carfax circuit breaker open", "processor", "facebook", "title", ad.Title, "consecutive_failures", carfaxFailures)
 		} else {
 			trimPicker := TrimPicker(func(ctx context.Context, year int, make, model string, options []string) string {
