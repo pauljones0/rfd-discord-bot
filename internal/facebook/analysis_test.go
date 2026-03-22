@@ -38,6 +38,11 @@ func TestSanitizeJSONEscapes(t *testing.T) {
 			input: `{"key": "val"}`,
 			want:  `{"key": "val"}`,
 		},
+		{
+			name:  "escaped backslash before quote",
+			input: `{"path": "C:\\", "next": "ok"}`,
+			want:  `{"path": "C:\\", "next": "ok"}`,
+		},
 	}
 
 	for _, tt := range tests {

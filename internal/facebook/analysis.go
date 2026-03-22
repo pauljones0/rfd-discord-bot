@@ -44,11 +44,8 @@ func sanitizeJSONEscapes(s string) string {
 	inString := false
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
-		if ch == '"' && (i == 0 || s[i-1] != '\\') {
-			inString = !inString
-			b.WriteByte(ch)
-			continue
-		}
+		// Handle escape sequences inside strings first, so that \\
+		// is consumed as a pair and the following " toggles inString correctly.
 		if inString && ch == '\\' && i+1 < len(s) {
 			next := s[i+1]
 			switch next {
@@ -61,6 +58,9 @@ func sanitizeJSONEscapes(s string) string {
 				// Invalid escape like \$: drop the backslash, keep the char
 			}
 			continue
+		}
+		if ch == '"' {
+			inString = !inString
 		}
 		b.WriteByte(ch)
 	}
