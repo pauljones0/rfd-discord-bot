@@ -23,7 +23,7 @@ type Store interface {
 
 // Notifier defines the Discord notification operations.
 type Notifier interface {
-	SendFacebookDeal(ctx context.Context, title, url, summary string, askingPrice, carfaxValue float64, subs []models.Subscription) error
+	SendFacebookDeal(ctx context.Context, title, url, summary string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool, subs []models.Subscription) error
 }
 
 // Processor handles Facebook Marketplace deal scraping and analysis.
@@ -232,6 +232,12 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		}
 		tracker.TrackAdProcessed()
 
+		// Skip non-car vehicle types (motorcycles, boats, ATVs, trailers, etc.)
+		if !carData.IsCarfaxEligible() {
+			slog.Info("Skipping non-car vehicle", "processor", "facebook", "title", ad.Title, "type", carData.VehicleType)
+			continue
+		}
+
 		// Save to Firestore (deduplication)
 		adRecord := &models.FacebookAdRecord{
 			Title:        ad.Title,
@@ -287,8 +293,23 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			continue
 		}
 
-		// Fan out deal to subscribers
-		if analysis.IsDeal {
+		slog.Info("Facebook FOMO analysis result",
+			"processor", "facebook",
+			"title", ad.Title,
+			"fomo", analysis.IsDeal,
+			"is_warm", analysis.IsWarm,
+			"is_lava_hot", analysis.IsLavaHot,
+			"ai_title", analysis.Title,
+			"asking_price", ad.Price,
+			"carfax_value", carfaxValue,
+			"year", carData.Year,
+			"make", carData.Make,
+			"model", carData.Model,
+			"odometer", carData.Odometer,
+		)
+
+		// Fan out deal to subscribers — only warm or lava-hot deals get posted
+		if analysis.IsWarm || analysis.IsLavaHot {
 			tracker.TrackDealFound()
 			p.fanOutDeal(ctx, group.subs, ad, analysis, carfaxValue, tracker)
 		}
@@ -319,7 +340,7 @@ func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, 
 		return
 	}
 
-	if err := p.notifier.SendFacebookDeal(ctx, analysis.Title, ad.URL, analysis.Summary, ad.Price, carfaxValue, matchingSubs); err != nil {
+	if err := p.notifier.SendFacebookDeal(ctx, analysis.Title, ad.URL, analysis.Summary, ad.Price, carfaxValue, analysis.IsWarm, analysis.IsLavaHot, matchingSubs); err != nil {
 		slog.Error("Failed to send facebook deal", "processor", "facebook", "title", analysis.Title, "error", err)
 	} else {
 		tracker.TrackDiscordMessage()

@@ -331,12 +331,12 @@ func (c *Client) IsHot(deal models.DealInfo) bool {
 // --- Facebook Deal Notifications ---
 
 // SendFacebookDeal sends a Facebook car deal notification to all subscribed channels.
-func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary string, askingPrice, carfaxValue float64, subs []models.Subscription) error {
+func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool, subs []models.Subscription) error {
 	if c.botToken == "" {
 		return nil
 	}
 
-	embed := formatFacebookEmbed(title, url, summary, askingPrice, carfaxValue)
+	embed := formatFacebookEmbed(title, url, summary, askingPrice, carfaxValue, isWarm, isLavaHot)
 	payload := discordWebhookPayload{
 		Content: "",
 		Embeds:  []discordEmbed{embed},
@@ -358,9 +358,18 @@ func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary strin
 	return nil
 }
 
-func formatFacebookEmbed(title, url, summary string, askingPrice, carfaxValue float64) discordEmbed {
+func formatFacebookEmbed(title, url, summary string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool) discordEmbed {
 	var descBuilder strings.Builder
 	descBuilder.WriteString(summary)
+
+	if isLavaHot {
+		title += " 🔥"
+	}
+
+	embedColor := colorWarmDeal // baseline: all posted Facebook deals are at least warm
+	if isLavaHot {
+		embedColor = colorHotDeal
+	}
 
 	var fields []discordEmbedField
 	fields = append(fields, discordEmbedField{
@@ -381,7 +390,7 @@ func formatFacebookEmbed(title, url, summary string, askingPrice, carfaxValue fl
 		Title:       title,
 		URL:         url,
 		Description: descBuilder.String(),
-		Color:       51283, // 0x00C853 (green)
+		Color:       embedColor,
 		Fields:      fields,
 		Footer: discordEmbedFooter{
 			Text: "FB Marketplace Car Deal",
