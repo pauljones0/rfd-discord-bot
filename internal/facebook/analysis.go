@@ -169,7 +169,7 @@ func AnalyzeDeal(ctx context.Context, client AIClient, car *models.CarData, carf
 		carfaxContext = "Carfax valuation unavailable — you MUST use Google Search to find the typical market price."
 	}
 
-	prompt := fmt.Sprintf(`Analyze this Facebook Marketplace vehicle listing.
+	prompt := fmt.Sprintf(`Analyze this Facebook Marketplace vehicle listing:
 
 Vehicle: %d %s %s %s
 Engine: %s | Transmission: %s | Drivetrain: %s | Body: %s
@@ -179,21 +179,18 @@ Asking Price: $%.0f
 Description: %s
 
 Task:
-Using Google Search grounding, research the current Canadian private-sale market price for this exact vehicle (year, make, model, similar mileage).
+1. Create a clean, concise title (5-15 words). Focus on year, make, model, trim, and mileage. Example: "2019 Honda Civic LX - 80k km".
+2. Determine if this is a "warm" deal (is_warm). A warm deal is a high-quality find that should appeal to a value-conscious car buyer, not just a standard marketplace listing. Be selective.
+   Signals of a Warm deal:
+   - The asking price is a significant discount (e.g., 20%%+ below the typical Canadian private-sale market value for this year/make/model/mileage). Use Google Search to verify the market price.
+   - If Carfax value is available and > $0, the asking price should be meaningfully below it.
+   - The vehicle is desirable with broad appeal (reliable brands, popular models, reasonable mileage).
+   - The condition, mileage, and specs justify the price being a genuine deal.
+   Standard marketplace pricing, overpriced listings, extremely high-mileage vehicles, niche vehicles, and salvage/rebuilt titles should be False.
+3. Determine if this is "Lava Hot" (is_lava_hot). Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular good deals should be False.
 
-1. Create a clean title (5-15 words, e.g. "2019 Honda Civic LX - 80k km").
-2. Determine if this is "warm" (is_warm). A warm deal means:
-   - The asking price is at least 20%% below typical private-sale market value for this year/make/model/mileage
-   - The vehicle is desirable with broad appeal (not niche, not salvage, not extremely high mileage)
-   - If Carfax value is available and > 0, the asking price must be meaningfully below it
-   - Standard marketplace pricing is NOT warm. Be selective — most listings are NOT deals.
-3. Determine if this is "Lava Hot" (is_lava_hot). Be extremely strict:
-   - The asking price is at least 35%% below market value
-   - You would genuinely lose sleep over missing this deal
-   - Almost nothing should be lava hot
-
-Return JSON:
-{"fomo": true/false, "is_warm": true/false, "is_lava_hot": true/false, "title": "...", "summary": "2-3 sentences comparing asking price to market value with key specs"}
+Respond with exactly this JSON format:
+{"fomo": true/false, "is_warm": true/false, "is_lava_hot": true/false, "title": "your clean title here", "summary": "2-3 sentences comparing asking price to market value with key specs"}
 `, car.Year, car.Make, car.Model, car.Trim,
 		car.Engine, car.Transmission, car.Drivetrain, car.BodyStyle,
 		car.Odometer, car.Condition,
