@@ -172,7 +172,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 	slog.Info("Processing ads", "processor", "facebook", "city", group.city, "count", len(ads))
 
 	// Create a reusable page for listing details
-	detailCtx, detailErr := pm.NewContext()
+	detailCtx, detailErr := pm.NewContext(group.city)
 	if detailErr != nil {
 		slog.Warn("Failed to create detail browser context", "processor", "facebook", "error", detailErr)
 	}

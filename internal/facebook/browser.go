@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/url"
 	"strings"
 
 	"github.com/playwright-community/playwright-go"
@@ -193,7 +194,8 @@ func NewBrowserManager(logger *slog.Logger, proxyURL string) (*BrowserManager, e
 // NewContext creates a new browser context with a randomized but internally consistent
 // fingerprint — the UA, viewport, device pixel ratio, locale, and timezone all match
 // what a real Canadian user on that OS would produce.
-func (m *BrowserManager) NewContext() (playwright.BrowserContext, error) {
+// The city parameter enables per-city proxy geo-targeting via ProxyScrape suffixes.
+func (m *BrowserManager) NewContext(city string) (playwright.BrowserContext, error) {
 	profile := profiles[rand.Intn(len(profiles))]
 
 	// Pick a viewport that matches the OS
@@ -226,8 +228,11 @@ func (m *BrowserManager) NewContext() (playwright.BrowserContext, error) {
 	}
 
 	if m.proxyURL != "" {
+		proxyServer, username, password := m.buildCityProxy(city)
 		opts.Proxy = &playwright.Proxy{
-			Server: m.proxyURL,
+			Server:   proxyServer,
+			Username: playwright.String(username),
+			Password: playwright.String(password),
 		}
 	}
 
@@ -243,6 +248,53 @@ func (m *BrowserManager) NewContext() (playwright.BrowserContext, error) {
 	}
 
 	return ctx, nil
+}
+
+// buildCityProxy parses the proxy URL and returns server, username, and password
+// with per-city geo-targeting and sticky session suffixes appended to the username.
+func (m *BrowserManager) buildCityProxy(city string) (server, username, password string) {
+	parsed, err := url.Parse(m.proxyURL)
+	if err != nil || parsed.User == nil {
+		// Can't parse — return the raw URL as server with no separate auth
+		return m.proxyURL, "", ""
+	}
+
+	username = parsed.User.Username()
+	password, _ = parsed.User.Password()
+	server = fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
+
+	// Strip any existing -city-*, -session-*, -lifetime-* suffixes from the username
+	for _, prefix := range []string{"-city-", "-session-", "-lifetime-"} {
+		if idx := strings.Index(username, prefix); idx != -1 {
+			username = username[:idx]
+		}
+	}
+
+	// Add city geo-targeting
+	if city != "" {
+		suffix, isFallback := ProxySuffixForCity(city)
+		if suffix != "" {
+			username += "-city-" + suffix
+			if isFallback {
+				m.logger.Info("Using proxy fallback city", "requested_city", city, "proxy_city", suffix)
+			}
+		}
+	}
+
+	// Add sticky session with 10-minute lifetime
+	username += "-session-" + randomSessionID() + "-lifetime-10"
+
+	return server, username, password
+}
+
+// randomSessionID generates a random alphanumeric session ID for sticky proxy sessions.
+func randomSessionID() string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 10)
+	for i := range b {
+		b[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(b)
 }
 
 // MaskProxyURL redacts credentials from a proxy URL for safe logging.

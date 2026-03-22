@@ -164,7 +164,7 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 		radiusKm = 500
 	}
 
-	bCtx, err := pm.NewContext()
+	bCtx, err := pm.NewContext(cfg.City)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create playwright context: %w", err)
 	}

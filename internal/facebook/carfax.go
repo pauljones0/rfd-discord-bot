@@ -149,7 +149,7 @@ func NewCarfaxClient(pm *BrowserManager) *CarfaxClient {
 // If pickTrim is non-nil, it reads the available trim options from Carfax after
 // filling Year/Make/Model and lets the caller choose from the real options.
 func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim, engine, transmission, drivetrain, bodyStyle, postalCode string, odometer int, pickTrim TrimPicker) (float64, error) {
-	bCtx, err := c.pm.NewContext()
+	bCtx, err := c.pm.NewContext("")
 	if err != nil {
 		return 0, fmt.Errorf("failed to create playwright context: %w", err)
 	}
