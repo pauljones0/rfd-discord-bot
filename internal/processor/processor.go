@@ -57,7 +57,7 @@ func generateDealID(published time.Time) string {
 func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	// Prevent overlapping processing runs
 	if !p.mu.TryLock() {
-		slog.Info("ProcessDeals: already in progress, skipping")
+		slog.Info("ProcessDeals: already in progress, skipping", "processor", "rfd")
 		return nil
 	}
 	defer p.mu.Unlock()
@@ -153,7 +153,7 @@ func (p *DealProcessor) scrapeAndValidate(ctx context.Context, logger *slog.Logg
 
 		// Validate using the validator
 		if err := p.validator.ValidateStruct(deal); err != nil {
-			slog.Error("Validation failed for deal", "title", deal.Title, "error", err)
+			logger.Error("Validation failed for deal", "title", deal.Title, "error", err)
 			continue
 		}
 
@@ -324,7 +324,7 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 
 	for firestoreID, dealsGroup := range groupedDeals {
 		if ctx.Err() != nil {
-			slog.Warn("Context cancelled, stopping notification processing")
+			slog.Warn("Context cancelled, stopping notification processing", "processor", "rfd")
 			break
 		}
 
@@ -334,12 +334,12 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 
 		if existing == nil {
 			if err := p.processNewDeal(ctx, baseDeal, dealsGroup, &newDeals, subs); err != nil {
-				slog.Error("Failed to process new deal", "title", baseDeal.Title, "error", err)
+				slog.Error("Failed to process new deal", "processor", "rfd", "title", baseDeal.Title, "error", err)
 				errorMessages = append(errorMessages, fmt.Sprintf("new deal error %s: %v", baseDeal.Title, err))
 			}
 		} else {
 			if err := p.processExistingDeal(ctx, existing, dealsGroup, &updatedDeals, subs); err != nil {
-				slog.Error("Failed to process existing deal", "title", baseDeal.Title, "error", err)
+				slog.Error("Failed to process existing deal", "processor", "rfd", "title", baseDeal.Title, "error", err)
 				errorMessages = append(errorMessages, fmt.Sprintf("existing deal error %s: %v", baseDeal.Title, err))
 			}
 		}
@@ -458,7 +458,7 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 				}
 				existing.DiscordLastUpdatedTime = time.Now()
 			} else {
-				slog.Warn("Failed to send missing discord notifications", "id", existing.FirestoreID, "error", err)
+				slog.Warn("Failed to send missing discord notifications", "processor", "rfd", "id", existing.FirestoreID, "error", err)
 			}
 		}
 	}
@@ -470,7 +470,7 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		if err := p.notifier.Update(ctx, *existing); err == nil {
 			existing.DiscordLastUpdatedTime = time.Now()
 		} else {
-			slog.Warn("Failed to update discord notifications", "id", existing.FirestoreID, "error", err)
+			slog.Warn("Failed to update discord notifications", "processor", "rfd", "id", existing.FirestoreID, "error", err)
 		}
 	}
 

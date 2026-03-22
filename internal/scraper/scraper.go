@@ -48,14 +48,14 @@ func (c *Client) ScrapeDealList(ctx context.Context) ([]models.DealInfo, error) 
 		targetURL = c.baseURL + "/hot-deals"
 	}
 
-	slog.Info("Scraping RFD Hot Deals list...", "url", targetURL)
+	slog.Info("Scraping RFD Hot Deals list...", "processor", "rfd", "url", targetURL)
 
 	var scrapedDeals []models.DealInfo
 	start := time.Now()
 
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		if attempt > 0 {
-			slog.Warn("Scraping list attempt failed, retrying", "attempt", attempt)
+			slog.Warn("Scraping list attempt failed, retrying", "processor", "rfd", "attempt", attempt)
 		}
 		var scrapeErr error
 		scrapedDeals, scrapeErr = c.attemptScrapeList(ctx, targetURL)
@@ -101,7 +101,7 @@ func (c *Client) resolveLink(s *goquery.Selection, selector string) (href, text 
 }
 
 func (c *Client) attemptScrapeList(ctx context.Context, targetURL string) ([]models.DealInfo, error) {
-	slog.Info("Scraping hot deals page", "url", targetURL)
+	slog.Info("Scraping hot deals page", "processor", "rfd", "url", targetURL)
 	doc, err := c.fetchHTMLContent(ctx, targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch or parse hot deals page %s: %w", targetURL, err)
@@ -236,7 +236,7 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 	deal.Threads = []models.ThreadContext{thread}
 
 	if len(parseErrors) > 0 {
-		slog.Warn("Parsing issues for deal", "title", deal.Title, "url", deal.PrimaryPostURL(), "errors", strings.Join(parseErrors, "; "))
+		slog.Warn("Parsing issues for deal", "processor", "rfd", "title", deal.Title, "url", deal.PrimaryPostURL(), "errors", strings.Join(parseErrors, "; "))
 	}
 	return deal
 }
@@ -255,9 +255,9 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 			detail, err := c.scrapeDealDetailPage(ctx, deal.PrimaryPostURL())
 			if err != nil {
 				if strings.Contains(err.Error(), "status code 404") {
-					slog.Info("Failed to fetch detail page (404)", "url", deal.PrimaryPostURL())
+					slog.Info("Failed to fetch detail page (404)", "processor", "rfd", "url", deal.PrimaryPostURL())
 				} else {
-					slog.Warn("Failed to fetch detail page", "url", deal.PrimaryPostURL(), "error", err)
+					slog.Warn("Failed to fetch detail page", "processor", "rfd", "url", deal.PrimaryPostURL(), "error", err)
 				}
 				return nil
 			}
@@ -277,22 +277,22 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 			}
 
 			if deal.ActualDealURL != "" {
-				slog.Debug("Original Product URL", "url", deal.ActualDealURL)
+				slog.Debug("Original Product URL", "processor", "rfd", "url", deal.ActualDealURL)
 				deal.ActualDealURL = util.CleanProductURL(deal.ActualDealURL)
-				slog.Debug("Cleaned Product URL", "url", deal.ActualDealURL)
+				slog.Debug("Cleaned Product URL", "processor", "rfd", "url", deal.ActualDealURL)
 				cleanedURL, changed := util.CleanReferralLink(deal.ActualDealURL, c.config.AmazonAffiliateTag, c.config.BestBuyAffiliatePrefix)
 				if changed {
 					deal.ActualDealURL = cleanedURL
 				}
 			} else {
-				slog.Info("No external deal link found", "postURL", deal.PrimaryPostURL())
+				slog.Info("No external deal link found", "processor", "rfd", "postURL", deal.PrimaryPostURL())
 			}
 			return nil
 		})
 	}
 
 	if err := g.Wait(); err != nil {
-		slog.Error("FetchDealDetails: errgroup error", "error", err)
+		slog.Error("FetchDealDetails: errgroup error", "processor", "rfd", "error", err)
 	}
 }
 

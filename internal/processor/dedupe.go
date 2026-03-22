@@ -154,15 +154,6 @@ func calculateSimilarity(tokensA, tokensB []string) float64 {
 	return float64(matchCount) / float64(minLen)
 }
 
-func contains(slice []string, val string) bool {
-	for _, item := range slice {
-		if item == val {
-			return true
-		}
-	}
-	return false
-}
-
 // deduplicateDeals merges valid scraped deals with existing recent deals or other scraped deals.
 func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, recentDeals []models.DealInfo, logger *slog.Logger) []models.DealInfo {
 	var dedupedScraped []models.DealInfo

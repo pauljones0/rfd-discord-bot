@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -43,7 +44,7 @@ func TestGenerateSearchTokens(t *testing.T) {
 	expectedImportant := []string{"250gb", "5g", "40", "digital", "plans", "plansku", "freedom", "50gb"}
 
 	for _, req := range expectedImportant {
-		if !contains(tokens, req) {
+		if !slices.Contains(tokens, req) {
 			t.Errorf("Expected token %q to be in search tokens: %v", req, tokens)
 		}
 	}
@@ -51,7 +52,7 @@ func TestGenerateSearchTokens(t *testing.T) {
 	// Ensure common words are filtered out (including newly-expanded stopwords)
 	notExpected := []string{"w", "and", "mo", "the", "with", "discount"}
 	for _, ne := range notExpected {
-		if contains(tokens, ne) {
+		if slices.Contains(tokens, ne) {
 			t.Errorf("Did not expect token %q to be in search tokens: %v", ne, tokens)
 		}
 	}
@@ -201,7 +202,7 @@ func TestGenerateSearchTokens_NoDuplicates(t *testing.T) {
 	}
 
 	// "best" should be filtered as a stopword
-	if contains(tokens, "best") {
+	if slices.Contains(tokens, "best") {
 		t.Errorf("Expected 'best' to be filtered as a stopword, got %v", tokens)
 	}
 }
@@ -217,13 +218,13 @@ func TestGenerateSearchTokens_URLDomainNoise(t *testing.T) {
 	// "www", "ca", "ref", "cm" should be stripped as URL/TLD noise
 	noiseTokens := []string{"www", "com", "ca", "html", "htm"}
 	for _, noise := range noiseTokens {
-		if contains(tokens, noise) {
+		if slices.Contains(tokens, noise) {
 			t.Errorf("URL noise token %q should be filtered, got tokens: %v", noise, tokens)
 		}
 	}
 
 	// "amazon" should be KEPT (it's a valuable retailer discriminator)
-	if !contains(tokens, "amazon") {
+	if !slices.Contains(tokens, "amazon") {
 		t.Errorf("Expected retailer name 'amazon' to be kept, got tokens: %v", tokens)
 	}
 }
