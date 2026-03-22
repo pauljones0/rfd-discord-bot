@@ -78,12 +78,14 @@ func sanitizeJSONEscapes(s string) string {
 // bareKVRe matches a JSON key-value pair start like `"key":`.
 var bareKVRe = regexp.MustCompile(`"[^"]+"\s*:`)
 
+// fenceRe matches markdown code fences (with optional json language tag).
+var fenceRe = regexp.MustCompile("(?s)```(?:json)?\\s*\n?(.*?)\\s*```")
+
 // extractJSON finds and returns the first JSON object from a string that may
 // contain markdown fences, preamble text, or trailing content.
 func extractJSON(raw string) string {
 	raw = strings.TrimSpace(raw)
 
-	fenceRe := regexp.MustCompile("(?s)```(?:json)?\\s*\n?(.*?)\\s*```")
 	if m := fenceRe.FindStringSubmatch(raw); len(m) > 1 {
 		raw = strings.TrimSpace(m[1])
 	}
@@ -160,6 +162,7 @@ Extract the following information in JSON format:
 }
 For unknown information, ALWAYS choose the cheapest possible variant from that year.
 The vehicle_type field is critical: motorcycles, boats, ATVs, and trailers are NOT cars.
+Respond with ONLY the JSON object. No explanation, no commentary, no markdown fences.
 `, adTitle, adDescription)
 
 	var data models.CarData
