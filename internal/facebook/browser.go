@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/url"
 	"strings"
 
 	"github.com/playwright-community/playwright-go"
@@ -205,14 +206,20 @@ var blockedDomains = []string{
 
 // BrowserManager wraps a Playwright browser instance with stealth configuration.
 type BrowserManager struct {
-	pw      *playwright.Playwright
-	browser playwright.Browser
-	logger  *slog.Logger
+	pw       *playwright.Playwright
+	browser  playwright.Browser
+	logger   *slog.Logger
+	proxyURL string // base proxy URL (e.g. http://user:pass@host:port), empty = direct
 }
 
 // NewBrowserManager creates a new stealth-configured Playwright browser manager.
-func NewBrowserManager(logger *slog.Logger) (*BrowserManager, error) {
-	logger.Info("Initializing Playwright (no proxy)")
+// If proxyURL is non-empty, all browser contexts will route traffic through it.
+func NewBrowserManager(logger *slog.Logger, proxyURL string) (*BrowserManager, error) {
+	if proxyURL != "" {
+		logger.Info("Initializing Playwright with proxy", "proxy", MaskProxyURL(proxyURL))
+	} else {
+		logger.Info("Initializing Playwright (no proxy)")
+	}
 
 	err := playwright.Install()
 	if err != nil {
@@ -272,18 +279,21 @@ func NewBrowserManager(logger *slog.Logger) (*BrowserManager, error) {
 	}
 
 	return &BrowserManager{
-		pw:      pw,
-		browser: browser,
-		logger:  logger,
+		pw:       pw,
+		browser:  browser,
+		logger:   logger,
+		proxyURL: proxyURL,
 	}, nil
 }
 
 // NewContext creates a new browser context with a randomized but internally consistent
 // fingerprint — the UA, viewport, device pixel ratio, locale, and timezone all match
 // what a real Canadian user on that OS would produce.
+// If a proxy is configured, the context routes traffic through an Evomi residential
+// proxy targeted at the given city (country always CA).
 // Request interception is set up to block images, videos, fonts, CSS, and ad-tracking
 // domains for bandwidth savings.
-func (m *BrowserManager) NewContext() (playwright.BrowserContext, error) {
+func (m *BrowserManager) NewContext(city string) (playwright.BrowserContext, error) {
 	profile := profiles[rand.Intn(len(profiles))]
 
 	// Pick a viewport that matches the OS
@@ -313,6 +323,17 @@ func (m *BrowserManager) NewContext() (playwright.BrowserContext, error) {
 	// Randomly pick light or dark mode (70/30 split matching real usage)
 	if rand.Float64() < 0.7 {
 		opts.ColorScheme = playwright.ColorSchemeLight
+	}
+
+	// Configure proxy if available
+	if m.proxyURL != "" {
+		proxySettings, err := buildProxySettings(m.proxyURL, city)
+		if err != nil {
+			m.logger.Warn("Failed to build proxy settings, falling back to direct", "error", err)
+		} else {
+			opts.Proxy = proxySettings
+			m.logger.Info("Context using proxy", "city", city, "proxy_city", EvomiCityForCity(city))
+		}
 	}
 
 	ctx, err := m.browser.NewContext(opts)
@@ -394,6 +415,53 @@ func SimulateHumanBehavior(page playwright.Page) {
 	_ = page.Mouse().Wheel(0, float64(scrollDown))
 	scrollUp := 30 + rand.Intn(70)
 	_ = page.Mouse().Wheel(0, float64(-scrollUp))
+}
+
+// buildProxySettings parses the base proxy URL and appends Evomi targeting
+// parameters (country, city, session, lifetime) to the password.
+func buildProxySettings(baseURL, city string) (*playwright.Proxy, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL: %w", err)
+	}
+
+	password, _ := parsed.User.Password()
+	username := parsed.User.Username()
+
+	// Append Evomi targeting parameters to the password
+	password += "_country-CA"
+	if evomiCity := EvomiCityForCity(city); evomiCity != "" {
+		password += "_city-" + evomiCity
+	}
+	password += "_session-" + randomSessionID() + "_lifetime-10"
+
+	server := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
+
+	return &playwright.Proxy{
+		Server:   server,
+		Username: playwright.String(username),
+		Password: playwright.String(password),
+	}, nil
+}
+
+// randomSessionID generates a random 8-character alphanumeric session ID
+// for Evomi sticky sessions.
+func randomSessionID() string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 8)
+	for i := range b {
+		b[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(b)
+}
+
+// MaskProxyURL redacts credentials from a proxy URL for safe logging.
+func MaskProxyURL(proxyURL string) string {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return "<invalid-url>"
+	}
+	return fmt.Sprintf("%s://%s:***@%s", parsed.Scheme, parsed.User.Username(), parsed.Host)
 }
 
 // Close shuts down the browser and Playwright runtime.

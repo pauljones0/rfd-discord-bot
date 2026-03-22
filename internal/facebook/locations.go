@@ -118,6 +118,41 @@ func PostalCodeForCity(city string) string {
 	return CityPostalCodes[city]
 }
 
+// evomiCityFallbacks maps cities NOT available in Evomi to the nearest available
+// city. Cities that ARE in Evomi don't need an entry — they're derived automatically
+// via lowercase + spaces-to-dots.
+var evomiCityFallbacks = map[string]string{
+	"Banff":               "calgary",
+	"Burlington":          "hamilton",
+	"Halifax":             "dartmouth",
+	"Jasper":              "edmonton",
+	"Kingston":            "brockville",
+	"Lake Louise":         "calgary",
+	"London":              "woodstock",
+	"Niagara Falls":       "welland",
+	"Niagara-On-The-Lake": "thorold",
+	"Quebec":              "charlesbourg",
+	"Richmond":            "vancouver",
+	"Saint John":          "fredericton",
+	"St. Catharines":      "grimsby",
+	"St. John's":          "paradise",
+	"Trois-Rivières":      "shawinigan",
+	"Victoria":            "sidney",
+	"Whistler":            "squamish",
+}
+
+// EvomiCityForCity returns the Evomi city targeting string for a given city name.
+// Returns empty string if city is empty (proxy will use country-level targeting only).
+func EvomiCityForCity(city string) string {
+	if city == "" {
+		return ""
+	}
+	if fallback, ok := evomiCityFallbacks[city]; ok {
+		return fallback
+	}
+	return strings.ToLower(strings.ReplaceAll(city, " ", "."))
+}
+
 // CategorySlugs maps frontend category names to Facebook URL suffixes.
 var CategorySlugs = map[string]string{
 	"Vehicles": "vehicles",

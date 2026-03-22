@@ -89,8 +89,12 @@ func main() {
 	// Initialize Facebook processor (requires AI client for analysis)
 	var fbProc *facebook.Processor
 	if aiClient != nil {
-		fbProc = facebook.NewProcessor(store, n, aiClient)
-		slog.Info("Facebook Marketplace deal processor initialized")
+		fbProc = facebook.NewProcessor(store, n, aiClient, cfg.ProxyURL)
+		if cfg.ProxyURL != "" {
+			slog.Info("Facebook Marketplace deal processor initialized with proxy")
+		} else {
+			slog.Info("Facebook Marketplace deal processor initialized (no proxy)")
+		}
 	} else {
 		slog.Info("Facebook Marketplace features disabled (AI client unavailable)")
 	}

@@ -33,6 +33,9 @@ type Config struct {
 	// eBay API (optional — eBay features disabled if not set)
 	EbayClientID     string
 	EbayClientSecret string
+
+	// Proxy (optional — Facebook/Carfax scraping runs without proxy if not set)
+	ProxyURL string
 }
 
 func Load() (*Config, error) {
@@ -138,5 +141,6 @@ func Load() (*Config, error) {
 		DiscordBotToken:  discordBotToken,
 		EbayClientID:     os.Getenv("EBAY_CLIENT_ID"),
 		EbayClientSecret: os.Getenv("EBAY_CLIENT_SECRET"),
+		ProxyURL:         os.Getenv("PROXY_URL"),
 	}, nil
 }
