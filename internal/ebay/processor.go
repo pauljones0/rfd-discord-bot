@@ -58,12 +58,12 @@ func NewProcessor(store EbayStore, client *Client, analyzer EbayAnalyzer, notifi
 // ProcessEbayDeals runs the full eBay deal processing pipeline.
 func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	if p.client == nil {
-		slog.Info("eBay client not configured, skipping eBay processing")
+		slog.Info("eBay client not configured, skipping eBay processing", "processor", "ebay")
 		return nil
 	}
 
 	if !p.mu.TryLock() {
-		slog.Info("ProcessEbayDeals: already in progress, skipping")
+		slog.Info("ProcessEbayDeals: already in progress, skipping", "processor", "ebay")
 		return nil
 	}
 	defer p.mu.Unlock()

@@ -123,14 +123,14 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 		}
 	}
 	if len(newDeals) > 0 || len(updatedDeals) > 0 {
-		// 11. Consolidated batch write
+		// 8a. Consolidated batch write
 		if err := p.store.BatchWrite(ctx, newDeals, updatedDeals); err != nil {
 			return fmt.Errorf("batch write failed: %w", err)
 		}
 		logger.Info("Batch write completed", "created", len(newDeals), "updated", len(updatedDeals))
 	}
 
-	// 6. Cleanup Old Deals
+	// 9. Cleanup Old Deals
 	if len(newDeals) > 0 {
 		if err := p.store.TrimOldDeals(ctx, p.config.MaxStoredDeals); err != nil {
 			logger.Warn("Failed to trim old deals", "error", err)
