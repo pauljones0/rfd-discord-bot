@@ -448,6 +448,7 @@ func isTransientError(err error) bool {
 		"net::ERR_PROXY",
 		"net::ERR_TIMED_OUT",
 		"net::ERR_CONNECTION",
+		"soft block detected",
 	}
 	for _, p := range transientPatterns {
 		if strings.Contains(msg, p) {
