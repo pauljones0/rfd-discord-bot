@@ -167,8 +167,12 @@ Respond with ONLY the JSON object. No explanation, no commentary, no markdown fe
 
 	var data models.CarData
 
+	config := &genai.GenerateContentConfig{
+		ResponseMIMEType: "application/json",
+	}
+
 	err := util.RetryWithBackoff(ctx, 2, func(attempt int) error {
-		rawText, apiErr := client.GenerateContentRaw(ctx, prompt, nil)
+		rawText, apiErr := client.GenerateContentRaw(ctx, prompt, config)
 		if apiErr != nil {
 			return util.PermanentError(apiErr)
 		}
