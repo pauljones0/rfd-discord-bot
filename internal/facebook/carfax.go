@@ -196,16 +196,42 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 		WaitUntil: playwright.WaitUntilStateLoad,
 	})
 	if err != nil {
+		slog.Warn("Carfax navigation failed",
+			"processor", "facebook", "error", err,
+			"year", year, "make", make, "model", model)
 		return 0, fmt.Errorf("failed to navigate to carfax value page: %w", err)
 	}
 
+	// Check for redirect (Cloudflare challenge, login wall, etc.)
+	currentURL := page.URL()
+	if !strings.Contains(currentURL, "carfax.ca") {
+		slog.Warn("Carfax page redirected away",
+			"processor", "facebook",
+			"expected_host", "carfax.ca",
+			"actual_url", currentURL,
+			"year", year, "make", make, "model", model)
+		return 0, fmt.Errorf("carfax page redirected to: %s", currentURL)
+	}
+
+	// Dismiss cookie consent / overlay banners that may block interaction
+	c.dismissCarfaxOverlays(page)
+
 	if err := c.selectFuzzy(page, "Year", fmt.Sprintf("%d", year)); err != nil {
+		slog.Warn("Carfax Year dropdown failed",
+			"processor", "facebook", "error", err,
+			"year", year, "make", make, "model", model,
+			"page_url", page.URL())
 		return 0, fmt.Errorf("failed to select year: %w", err)
 	}
 	if err := c.selectFuzzy(page, "Make", make); err != nil {
+		// Log diagnostic info to help debug cascade failures
+		c.logDropdownDiagnostics(page, year, make)
 		return 0, fmt.Errorf("failed to select make: %w", err)
 	}
 	if err := c.selectFuzzy(page, "Model", model); err != nil {
+		slog.Warn("Carfax Model dropdown failed",
+			"processor", "facebook", "error", err,
+			"year", year, "make", make, "model", model)
 		return 0, fmt.Errorf("failed to select model: %w", err)
 	}
 
@@ -231,6 +257,10 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 		Timeout: playwright.Float(15000),
 	})
 	if err != nil {
+		slog.Warn("Carfax step 2 (trim page) timeout",
+			"processor", "facebook", "error", err,
+			"year", year, "make", make, "model", model,
+			"page_url", page.URL())
 		return 0, fmt.Errorf("timeout waiting for step 2: %w", err)
 	}
 
@@ -344,12 +374,19 @@ func (c *CarfaxClient) readOptions(page playwright.Page, label string) ([]string
 func (c *CarfaxClient) selectFuzzy(page playwright.Page, label, targetText string) error {
 	result, err := page.Evaluate(jsSelectFuzzy, []interface{}{label, targetText})
 	if err != nil {
-		slog.Warn("Carfax selectFuzzy JS error", "processor", "facebook", "label", label, "target", targetText, "error", err)
+		slog.Warn("Carfax selectFuzzy JS error",
+			"processor", "facebook",
+			"label", label, "target", targetText,
+			"error", err, "page_url", page.URL())
 		return fmt.Errorf("failed to evaluate JS for %s: %w", label, err)
 	}
 	if result != nil {
-		slog.Warn("Carfax selectFuzzy failed", "processor", "facebook", "label", label, "target", targetText, "result", result)
-		return fmt.Errorf("%v", result)
+		resultStr := fmt.Sprintf("%v", result)
+		slog.Warn("Carfax selectFuzzy failed",
+			"processor", "facebook",
+			"label", label, "target", targetText,
+			"result", resultStr)
+		return fmt.Errorf("%s for %s", resultStr, label)
 	}
 	return nil
 }
@@ -398,4 +435,71 @@ func parseValueRange(valStr string) (float64, error) {
 	}
 
 	return 0, fmt.Errorf("no numeric value found in: %s", valStr)
+}
+
+// dismissCarfaxOverlays attempts to close cookie consent banners and other
+// overlays on the Carfax page that may prevent dropdown interaction.
+func (c *CarfaxClient) dismissCarfaxOverlays(page playwright.Page) {
+	// Common cookie consent selectors used by OneTrust, CookieBot, and generic banners
+	selectors := []string{
+		"#onetrust-accept-btn-handler",
+		"button[id*='cookie-accept']",
+		"button[class*='cookie-accept']",
+		"button[data-testid='cookie-accept']",
+		"[aria-label='Accept cookies']",
+		"[aria-label='Accept all cookies']",
+		".cookie-banner button:first-of-type",
+	}
+	for _, sel := range selectors {
+		btn := page.Locator(sel)
+		if count, _ := btn.Count(); count > 0 {
+			if err := btn.First().Click(playwright.LocatorClickOptions{Timeout: playwright.Float(2000)}); err == nil {
+				slog.Info("Dismissed Carfax overlay", "processor", "facebook", "selector", sel)
+				time.Sleep(500 * time.Millisecond)
+				return
+			}
+		}
+	}
+}
+
+// logDropdownDiagnostics logs information about the page state when a dropdown
+// cascade fails, helping identify whether the issue is blocking, page changes,
+// or timing.
+func (c *CarfaxClient) logDropdownDiagnostics(page playwright.Page, year int, targetMake string) {
+	// Check what the Year dropdown currently shows
+	yearInfo, _ := page.Evaluate(`() => {
+		const sel = document.querySelector('select[aria-label="Year"]');
+		if (!sel) return {found: false};
+		return {
+			found: true,
+			disabled: sel.disabled,
+			selectedIndex: sel.selectedIndex,
+			selectedText: sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : "",
+			optionCount: sel.options.length,
+		};
+	}`)
+
+	// Check Make dropdown state
+	makeInfo, _ := page.Evaluate(`() => {
+		const sel = document.querySelector('select[aria-label="Make"]');
+		if (!sel) return {found: false};
+		return {
+			found: true,
+			disabled: sel.disabled,
+			optionCount: sel.options.length,
+		};
+	}`)
+
+	// Check page title for Cloudflare/CAPTCHA indicators
+	title, _ := page.Title()
+
+	slog.Warn("Carfax dropdown cascade diagnostic",
+		"processor", "facebook",
+		"page_url", page.URL(),
+		"page_title", title,
+		"target_year", year,
+		"target_make", targetMake,
+		"year_dropdown", yearInfo,
+		"make_dropdown", makeInfo,
+	)
 }
