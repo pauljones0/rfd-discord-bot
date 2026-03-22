@@ -67,6 +67,9 @@ func sanitizeJSONEscapes(s string) string {
 	return b.String()
 }
 
+// bareKVRe matches a JSON key-value pair start like `"key":`.
+var bareKVRe = regexp.MustCompile(`"[^"]+"\s*:`)
+
 // extractJSON finds and returns the first JSON object from a string that may
 // contain markdown fences, preamble text, or trailing content.
 func extractJSON(raw string) string {
@@ -79,6 +82,13 @@ func extractJSON(raw string) string {
 
 	start := strings.Index(raw, "{")
 	if start == -1 {
+		// No opening brace: Gemini sometimes returns bare key-value pairs
+		// without outer {}. Detect "key": patterns and wrap them.
+		if loc := bareKVRe.FindStringIndex(raw); loc != nil {
+			inner := strings.TrimSpace(raw[loc[0]:])
+			inner = strings.TrimRight(inner, " \t\n,")
+			return "{" + inner + "}"
+		}
 		return raw
 	}
 

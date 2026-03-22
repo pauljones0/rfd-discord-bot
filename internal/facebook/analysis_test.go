@@ -76,6 +76,21 @@ func TestExtractJSON(t *testing.T) {
 			input: `{"a": {"b": 1}}`,
 			want:  `{"a": {"b": 1}}`,
 		},
+		{
+			name:  "bare key-value pairs without braces",
+			input: `"is_warm": false, "is_lava_hot": false, "title": "Test"`,
+			want:  `{"is_warm": false, "is_lava_hot": false, "title": "Test"}`,
+		},
+		{
+			name:  "preamble text then bare key-value pairs",
+			input: "Some title text\n\"is_warm\": false, \"title\": \"Test\"",
+			want:  `{"is_warm": false, "title": "Test"}`,
+		},
+		{
+			name:  "bare key-value pairs with trailing comma",
+			input: `"is_warm": false, "title": "Test",`,
+			want:  `{"is_warm": false, "title": "Test"}`,
+		},
 	}
 
 	for _, tt := range tests {
