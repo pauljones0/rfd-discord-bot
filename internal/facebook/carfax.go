@@ -145,6 +145,7 @@ const (
 
 		if (bestIdx !== -1) {
 			selectEl.selectedIndex = bestIdx;
+			selectEl.dispatchEvent(new Event('input', { bubbles: true }));
 			selectEl.dispatchEvent(new Event('change', { bubbles: true }));
 			return null;
 		}
@@ -192,7 +193,7 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 	page.SetDefaultTimeout(30000)
 
 	_, err = page.Goto("https://www.carfax.ca/whats-my-car-worth/car-value", playwright.PageGotoOptions{
-		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+		WaitUntil: playwright.WaitUntilStateLoad,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to navigate to carfax value page: %w", err)
