@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"net/url"
 	"strings"
-	"sync"
 
 	"github.com/playwright-community/playwright-go"
 )
@@ -211,13 +210,6 @@ type BrowserManager struct {
 	browser  playwright.Browser
 	logger   *slog.Logger
 	proxyURL string // base proxy URL (e.g. http://user:pass@host:port), empty = direct
-
-	// Chromium is lazy-initialized on first call to NewChromiumContext.
-	// Used for sites like Carfax where headless Firefox doesn't properly
-	// handle select dropdown cascades (Year→Make→Model never fires).
-	chromium     playwright.Browser
-	chromiumOnce sync.Once
-	chromiumErr  error
 }
 
 // NewBrowserManager creates a new stealth-configured Playwright browser manager.
@@ -472,47 +464,12 @@ func MaskProxyURL(proxyURL string) string {
 	return fmt.Sprintf("%s://%s:***@%s", parsed.Scheme, parsed.User.Username(), parsed.Host)
 }
 
-// NewChromiumContext creates a plain Chromium browser context without stealth
-// patches, request interception, or proxy. Used for sites like Carfax where
-// headless Firefox doesn't handle select dropdown cascades properly.
-func (m *BrowserManager) NewChromiumContext() (playwright.BrowserContext, error) {
-	m.chromiumOnce.Do(func() {
-		m.logger.Info("Launching headless Chromium for non-stealth tasks")
-		m.chromium, m.chromiumErr = m.pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-			Headless: playwright.Bool(true),
-			Args: []string{
-				"--no-sandbox",
-				"--disable-dev-shm-usage",
-			},
-		})
-	})
-	if m.chromiumErr != nil {
-		return nil, fmt.Errorf("could not launch chromium: %w", m.chromiumErr)
-	}
-
-	ctx, err := m.chromium.NewContext(playwright.BrowserNewContextOptions{
-		Locale:     playwright.String("en-CA"),
-		TimezoneId: playwright.String("America/Toronto"),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("could not create chromium context: %w", err)
-	}
-	return ctx, nil
-}
-
 // Close shuts down the browser and Playwright runtime.
 func (m *BrowserManager) Close() error {
 	m.logger.Info("Shutting down Playwright...")
 	var err error
-	if m.chromium != nil {
-		if chromErr := m.chromium.Close(); chromErr != nil {
-			err = chromErr
-		}
-	}
 	if m.browser != nil {
-		if ffErr := m.browser.Close(); ffErr != nil {
-			err = ffErr
-		}
+		err = m.browser.Close()
 	}
 	if m.pw != nil {
 		if stopErr := m.pw.Stop(); stopErr != nil {

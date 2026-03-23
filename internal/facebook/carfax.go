@@ -72,6 +72,57 @@ const (
 		return match ? match[0] : null;
 	}`
 
+	// jsPopulateDropdown fetches options from the Carfax API using reCAPTCHA and
+	// populates a dropdown that failed to cascade. This bypasses the page's own
+	// cascade handler which may fail in headless browsers due to reCAPTCHA scoring.
+	jsPopulateDropdown = `async ([property, params]) => {
+		const form = document.getElementById('carfax-vin-decode-form');
+		if (!form) return {error: 'form not found'};
+		const baseURL = form.getAttribute('data-resource') + '.year-make-model.json';
+
+		// Build query string from params
+		const qs = Object.entries(params).map(([k,v]) => k + '=' + encodeURIComponent(v)).join('&');
+		const url = baseURL + '?property=' + encodeURIComponent(property) + '&' + qs;
+
+		// Get reCAPTCHA token
+		let token = '';
+		const siteKey = document.querySelector('script[src*="recaptcha/api.js"]')?.src?.match(/render=([^&]+)/)?.[1];
+		if (siteKey && window.grecaptcha) {
+			try { token = await grecaptcha.execute(siteKey, {action: 'submit'}); } catch(e) {}
+		}
+
+		const headers = {};
+		if (token) headers['x-recaptcha-token'] = token;
+
+		try {
+			const resp = await fetch(url, {method: 'GET', headers});
+			if (!resp.ok) return {error: 'API returned ' + resp.status};
+			const json = await resp.json();
+			if (!json.data || !json.data.length) return {error: 'no data returned'};
+
+			// Find the target select element
+			const selectors = ['select[aria-label="' + property + '"]', 'select#' + property + 's', 'select#' + property];
+			let sel = null;
+			for (const s of selectors) { sel = document.querySelector(s); if (sel) break; }
+			if (!sel) return {error: 'select element not found for ' + property};
+
+			// Clear existing options (keep placeholder)
+			while (sel.options.length > 1) sel.remove(1);
+
+			// Add fetched options
+			for (const item of json.data) {
+				const name = typeof item === 'string' ? item : (item.name || item.value || String(item));
+				const opt = new Option(name, name);
+				sel.add(opt);
+			}
+
+			sel.disabled = false;
+			return {populated: sel.options.length - 1};
+		} catch(e) {
+			return {error: e.message};
+		}
+	}`
+
 	// jsFindBestOption locates the best matching option in a dropdown by label
 	// using fuzzy matching, marks the element for Playwright selection, and returns
 	// the option value. Unlike jsSelectFuzzy, it does NOT select the option itself —
@@ -181,9 +232,9 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 		"postal", postalCode,
 	)
 
-	bCtx, err := c.pm.NewChromiumContext()
+	bCtx, err := c.pm.NewContext("")
 	if err != nil {
-		return 0, fmt.Errorf("failed to create chromium context for carfax: %w", err)
+		return 0, fmt.Errorf("failed to create playwright context: %w", err)
 	}
 	defer bCtx.Close()
 
@@ -227,15 +278,32 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 		return 0, fmt.Errorf("failed to select year: %w", err)
 	}
 	if err := c.selectFuzzy(page, "Make", make); err != nil {
-		// Log diagnostic info to help debug cascade failures
-		c.logDropdownDiagnostics(page, year, make)
-		return 0, fmt.Errorf("failed to select make: %w", err)
+		// Cascade likely failed because reCAPTCHA blocked the API call in headless.
+		// Fallback: populate the Make dropdown via direct API call with reCAPTCHA token.
+		slog.Info("Carfax Make cascade failed, trying direct API fallback",
+			"processor", "facebook", "error", err, "year", year, "make", make)
+		if populateErr := c.populateDropdownViaAPI(page, "Make", map[string]string{"year": fmt.Sprintf("%d", year)}); populateErr != nil {
+			c.logDropdownDiagnostics(page, year, make)
+			return 0, fmt.Errorf("failed to select make (cascade and API fallback both failed): %w", err)
+		}
+		if err := c.selectFuzzy(page, "Make", make); err != nil {
+			c.logDropdownDiagnostics(page, year, make)
+			return 0, fmt.Errorf("failed to select make after API fallback: %w", err)
+		}
 	}
 	if err := c.selectFuzzy(page, "Model", model); err != nil {
-		slog.Warn("Carfax Model dropdown failed",
-			"processor", "facebook", "error", err,
-			"year", year, "make", make, "model", model)
-		return 0, fmt.Errorf("failed to select model: %w", err)
+		// Same reCAPTCHA fallback for Model
+		slog.Info("Carfax Model cascade failed, trying direct API fallback",
+			"processor", "facebook", "error", err, "year", year, "make", make, "model", model)
+		if populateErr := c.populateDropdownViaAPI(page, "Model", map[string]string{"year": fmt.Sprintf("%d", year), "make": make}); populateErr != nil {
+			return 0, fmt.Errorf("failed to select model (cascade and API fallback both failed): %w", err)
+		}
+		if err := c.selectFuzzy(page, "Model", model); err != nil {
+			slog.Warn("Carfax Model dropdown failed",
+				"processor", "facebook", "error", err,
+				"year", year, "make", make, "model", model)
+			return 0, fmt.Errorf("failed to select model after API fallback: %w", err)
+		}
 	}
 
 	cleanPostal := strings.ReplaceAll(strings.TrimSpace(postalCode), " ", "")
@@ -420,41 +488,17 @@ func (c *CarfaxClient) selectFuzzy(page playwright.Page, label, targetText strin
 		return fmt.Errorf("failed to select option for %s: %w", label, err)
 	}
 
-	// Trigger React state update for dropdown cascades (Year→Make→Model).
-	// Playwright's SelectOption fires native browser events, but React's
-	// internal _valueTracker has already recorded the new value, so React
-	// suppresses the "duplicate" change. Resetting the tracker forces React
-	// to see it as a genuine change. As a second fallback, invoke the
-	// onChange handler directly via the React fiber tree.
+	// Re-dispatch change event with native setter to ensure the page's event
+	// handlers (which use event delegation on a parent container) see the change.
+	// Playwright's SelectOption should fire events, but in headless Chromium the
+	// cascade handler sometimes doesn't trigger without this extra dispatch.
 	page.Evaluate(`([label, val]) => {
 		const sel = document.querySelector('[data-carfax-select="' + label + '"]');
 		if (!sel) return;
-
-		// 1. Reset React's value tracker so it detects the change
-		const tracker = sel._valueTracker;
-		if (tracker) tracker.setValue('');
-
-		// 2. Set value via native setter (bypasses React's override)
 		const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
 		if (nativeSetter) nativeSetter.call(sel, val);
-
-		// 3. Dispatch events for React's event delegation
 		sel.dispatchEvent(new Event('input', { bubbles: true }));
 		sel.dispatchEvent(new Event('change', { bubbles: true }));
-
-		// 4. Fallback: directly invoke React's onChange via the fiber tree
-		const fiberKey = Object.keys(sel).find(k =>
-			k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
-		if (fiberKey) {
-			let fiber = sel[fiberKey];
-			for (let i = 0; i < 20 && fiber; i++, fiber = fiber.return) {
-				const props = fiber.memoizedProps || fiber.pendingProps;
-				if (props && typeof props.onChange === 'function') {
-					props.onChange({ target: sel, currentTarget: sel });
-					break;
-				}
-			}
-		}
 	}`, []interface{}{label, value})
 
 	// Clean up the temporary attribute
@@ -507,6 +551,34 @@ func parseValueRange(valStr string) (float64, error) {
 	}
 
 	return 0, fmt.Errorf("no numeric value found in: %s", valStr)
+}
+
+// populateDropdownViaAPI fetches dropdown options directly from the Carfax API
+// using reCAPTCHA and populates the select element. This is a fallback for when
+// the page's built-in cascade handler fails (typically due to reCAPTCHA blocking
+// the API call in headless browsers).
+func (c *CarfaxClient) populateDropdownViaAPI(page playwright.Page, property string, params map[string]string) error {
+	result, err := page.Evaluate(jsPopulateDropdown, []interface{}{property, params})
+	if err != nil {
+		return fmt.Errorf("JS error populating %s: %w", property, err)
+	}
+
+	resultMap, ok := result.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("unexpected result type populating %s", property)
+	}
+
+	if errMsg, hasErr := resultMap["error"]; hasErr {
+		return fmt.Errorf("API populate %s: %v", property, errMsg)
+	}
+
+	count, _ := resultMap["populated"].(float64)
+	slog.Info("Carfax API fallback populated dropdown",
+		"processor", "facebook",
+		"property", property,
+		"options_count", int(count),
+	)
+	return nil
 }
 
 // dismissCarfaxOverlays attempts to close cookie consent banners and other
