@@ -19,12 +19,6 @@ type Tracker struct {
 	geminiModel        string
 	geminiRegion       string
 
-	// eBay metrics
-	ebayAPICalls atomic.Int64
-
-	// Proxy metrics (Facebook)
-	proxyBytesTransferred atomic.Int64
-
 	// Carfax metrics
 	carfaxValuations atomic.Int64
 	carfaxFailures   atomic.Int64
@@ -52,16 +46,6 @@ func (t *Tracker) TrackGeminiCall(model, region string, inputTokens, outputToken
 	t.geminiModel = model
 	t.geminiRegion = region
 	t.mu.Unlock()
-}
-
-// TrackEbayAPICall records an eBay API call.
-func (t *Tracker) TrackEbayAPICall() {
-	t.ebayAPICalls.Add(1)
-}
-
-// TrackProxyBytes records bytes transferred through the proxy.
-func (t *Tracker) TrackProxyBytes(bytes int64) {
-	t.proxyBytesTransferred.Add(bytes)
 }
 
 // TrackCarfaxValuation records a Carfax valuation attempt.
@@ -101,9 +85,6 @@ func (t *Tracker) LogSummary() {
 	region := t.geminiRegion
 	t.mu.Unlock()
 
-	proxyBytes := t.proxyBytesTransferred.Load()
-	proxyMB := float64(proxyBytes) / (1024 * 1024)
-
 	slog.Info("api_usage_summary",
 		"processor", t.processor,
 		"gemini_calls", t.geminiCalls.Load(),
@@ -111,9 +92,6 @@ func (t *Tracker) LogSummary() {
 		"gemini_region", region,
 		"gemini_input_tokens", t.geminiInputTokens.Load(),
 		"gemini_output_tokens", t.geminiOutputTokens.Load(),
-		"ebay_api_calls", t.ebayAPICalls.Load(),
-		"proxy_bytes_transferred", proxyBytes,
-		"proxy_mb_transferred", proxyMB,
 		"carfax_valuations", t.carfaxValuations.Load(),
 		"carfax_failures", t.carfaxFailures.Load(),
 		"discord_messages_sent", t.discordMessagesSent.Load(),

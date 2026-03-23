@@ -7,10 +7,6 @@ func TestTracker_BasicOperations(t *testing.T) {
 
 	tracker.TrackGeminiCall("gemini-2.5-flash", "us-central1", 100, 50)
 	tracker.TrackGeminiCall("gemini-2.5-flash", "us-central1", 200, 75)
-	tracker.TrackEbayAPICall()
-	tracker.TrackEbayAPICall()
-	tracker.TrackEbayAPICall()
-	tracker.TrackProxyBytes(1024 * 1024) // 1 MB
 	tracker.TrackCarfaxValuation(true)
 	tracker.TrackCarfaxValuation(true)
 	tracker.TrackCarfaxValuation(false)
@@ -28,12 +24,6 @@ func TestTracker_BasicOperations(t *testing.T) {
 	}
 	if tracker.geminiOutputTokens.Load() != 125 {
 		t.Errorf("expected 125 output tokens, got %d", tracker.geminiOutputTokens.Load())
-	}
-	if tracker.ebayAPICalls.Load() != 3 {
-		t.Errorf("expected 3 eBay API calls, got %d", tracker.ebayAPICalls.Load())
-	}
-	if tracker.proxyBytesTransferred.Load() != 1024*1024 {
-		t.Errorf("expected 1MB proxy bytes, got %d", tracker.proxyBytesTransferred.Load())
 	}
 	if tracker.carfaxValuations.Load() != 2 {
 		t.Errorf("expected 2 carfax valuations, got %d", tracker.carfaxValuations.Load())
@@ -66,7 +56,6 @@ func TestTracker_ThreadSafety(t *testing.T) {
 		go func() {
 			for j := 0; j < 100; j++ {
 				tracker.TrackGeminiCall("model", "region", 10, 5)
-				tracker.TrackProxyBytes(100)
 				tracker.TrackCarfaxValuation(true)
 			}
 			done <- true
