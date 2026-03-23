@@ -106,8 +106,4 @@ func Critical(msg string, args ...any) {
 	slog.Default().Log(context.Background(), LevelCritical, msg, args...)
 }
 
-// CriticalContext logs at LevelCritical with the given context.
-func CriticalContext(ctx context.Context, msg string, args ...any) {
-	slog.Default().Log(ctx, LevelCritical, msg, args...)
-}
 
