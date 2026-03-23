@@ -204,10 +204,10 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 	case s.sem <- struct{}{}:
 		// acquired
 	default:
-		slog.Info("ProcessDealsHandler: dropped request due to concurrency limit")
+		slog.Info("ProcessDealsHandler: dropped request due to concurrency limit", "processor", "rfd")
 		w.WriteHeader(http.StatusTooManyRequests)
 		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing deals"}); err != nil {
-			slog.Error("Failed to encode response", "error", err)
+			slog.Error("Failed to encode response", "processor", "rfd", "error", err)
 		}
 		return
 	}
@@ -243,10 +243,10 @@ func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 	if s.ebayProcessor == nil {
-		slog.Info("ProcessEbayHandler: eBay processor not configured, skipping")
+		slog.Info("ProcessEbayHandler: eBay processor not configured, skipping", "processor", "ebay")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "eBay features not configured"}); err != nil {
-			slog.Error("Failed to encode response", "error", err)
+			slog.Error("Failed to encode response", "processor", "ebay", "error", err)
 		}
 		return
 	}
@@ -254,10 +254,10 @@ func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 	select {
 	case s.ebaySem <- struct{}{}:
 	default:
-		slog.Info("ProcessEbayHandler: dropped request due to concurrency limit")
+		slog.Info("ProcessEbayHandler: dropped request due to concurrency limit", "processor", "ebay")
 		w.WriteHeader(http.StatusTooManyRequests)
 		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing eBay deals"}); err != nil {
-			slog.Error("Failed to encode response", "error", err)
+			slog.Error("Failed to encode response", "processor", "ebay", "error", err)
 		}
 		return
 	}
@@ -291,10 +291,10 @@ func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) ProcessFacebookHandler(w http.ResponseWriter, r *http.Request) {
 	if s.facebookProcessor == nil {
-		slog.Info("ProcessFacebookHandler: Facebook processor not configured, skipping")
+		slog.Info("ProcessFacebookHandler: Facebook processor not configured, skipping", "processor", "facebook")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "Facebook features not configured"}); err != nil {
-			slog.Error("Failed to encode response", "error", err)
+			slog.Error("Failed to encode response", "processor", "facebook", "error", err)
 		}
 		return
 	}
@@ -307,7 +307,7 @@ func (s *Server) ProcessFacebookHandler(w http.ResponseWriter, r *http.Request) 
 		)
 		w.WriteHeader(http.StatusTooManyRequests)
 		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
-			slog.Error("Failed to encode response", "error", err)
+			slog.Error("Failed to encode response", "processor", "facebook", "error", err)
 		}
 		return
 	}
@@ -348,7 +348,7 @@ func (s *Server) ProcessMemoryExpressHandler(w http.ResponseWriter, r *http.Requ
 		)
 		w.WriteHeader(http.StatusTooManyRequests)
 		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
-			slog.Error("Failed to encode response", "error", err)
+			slog.Error("Failed to encode response", "processor", "memoryexpress", "error", err)
 		}
 		return
 	}
@@ -389,7 +389,7 @@ func (s *Server) ProcessBestBuyHandler(w http.ResponseWriter, r *http.Request) {
 		)
 		w.WriteHeader(http.StatusTooManyRequests)
 		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
-			slog.Error("Failed to encode response", "error", err)
+			slog.Error("Failed to encode response", "processor", "bestbuy", "error", err)
 		}
 		return
 	}
