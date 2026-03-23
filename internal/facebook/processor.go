@@ -270,6 +270,12 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			continue
 		}
 
+		// Skip ads where Gemini couldn't extract a valid year (avoids wasting Carfax/VMR calls)
+		if carData.Year < 1900 || carData.Year > time.Now().Year()+2 {
+			slog.Info("Skipping ad with invalid year", "processor", "facebook", "title", ad.Title, "year", carData.Year)
+			continue
+		}
+
 		// Save to Firestore (deduplication by Facebook listing ID)
 		adRecord := &models.FacebookAdRecord{
 			ID:           ad.ListingID,
