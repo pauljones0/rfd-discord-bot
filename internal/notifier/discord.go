@@ -27,9 +27,6 @@ const (
 	colorWarmDeal = 16098851 // #F5A623 (amber)            — getting traction
 	colorHotDeal  = 16723320 // #FF2D78 (magenta-pink)     — blowing up, act fast
 
-	heatScoreThresholdWarm = 0.05
-	heatScoreThresholdHot  = 0.20
-
 	maxRetries = 3
 
 	discordAPIBase = "https://discord.com/api/v10"
@@ -307,19 +304,6 @@ func retryBackoff(resp *http.Response, attempt int) time.Duration {
 	}
 
 	return 0
-}
-
-// CalculateHeatScore determines the heat of a deal based on engagement.
-func CalculateHeatScore(likes, comments, views int) float64 {
-	if views == 0 {
-		return 0.0
-	}
-	// Clamp negatives — downvoted deals shouldn't generate heat
-	effectiveLikes := max(likes, 0)
-	effectiveComments := max(comments, 0)
-	// Comments are weighted 2x since they represent deeper engagement
-	engagement := float64(effectiveLikes) + 2.0*float64(effectiveComments)
-	return engagement / float64(views)
 }
 
 // IsWarm determines if a deal is considered warm.
