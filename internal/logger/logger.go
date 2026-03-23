@@ -111,22 +111,3 @@ func CriticalContext(ctx context.Context, msg string, args ...any) {
 	slog.Default().Log(ctx, LevelCritical, msg, args...)
 }
 
-// Alert logs at LevelAlert.
-func Alert(msg string, args ...any) {
-	slog.Default().Log(context.Background(), LevelAlert, msg, args...)
-}
-
-// AlertContext logs at LevelAlert with the given context.
-func AlertContext(ctx context.Context, msg string, args ...any) {
-	slog.Default().Log(ctx, LevelAlert, msg, args...)
-}
-
-// Emergency logs at LevelEmergency.
-func Emergency(msg string, args ...any) {
-	slog.Default().Log(context.Background(), LevelEmergency, msg, args...)
-}
-
-// EmergencyContext logs at LevelEmergency with the given context.
-func EmergencyContext(ctx context.Context, msg string, args ...any) {
-	slog.Default().Log(ctx, LevelEmergency, msg, args...)
-}

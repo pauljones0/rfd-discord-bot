@@ -18,9 +18,6 @@ type Subscription struct {
 	StoreCode        string   `firestore:"storeCode,omitempty"` // Memory Express store code (e.g. "SKST")
 }
 
-// IsFacebook returns true if this is a Facebook Marketplace subscription.
-func (s *Subscription) IsFacebook() bool { return s.SubscriptionType == "facebook" }
-
 // IsRFD returns true if this is an RFD subscription (default type).
 func (s *Subscription) IsRFD() bool { return s.SubscriptionType == "" || s.SubscriptionType == "rfd" }
 
