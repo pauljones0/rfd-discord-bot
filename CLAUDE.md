@@ -39,6 +39,5 @@ Optional: `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`
 
 ## Important Notes
 - Facebook scraping uses Playwright + Firefox with request interception (blocks images, videos, fonts, CSS, ad-tracking)
-- Facebook/Carfax scraping runs without a proxy — may get rate-limited or blocked
 - eBay features gracefully disable if credentials missing
 - AI client is shared across all processors — do NOT create separate Gemini clients
