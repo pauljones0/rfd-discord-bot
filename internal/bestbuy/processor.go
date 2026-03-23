@@ -204,7 +204,6 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		if err := p.store.PruneBestBuyProducts(ctx, 30, 1000); err != nil {
 			logger.Warn("Failed to prune old products", "error", err)
 		}
-		stats.exitReason = "success"
 		return nil
 	}
 
