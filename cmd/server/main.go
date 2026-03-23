@@ -111,7 +111,7 @@ func main() {
 
 	// Initialize Best Buy processor (always available — no special credentials needed)
 	bbClient := bestbuy.NewClient()
-	bbProc := bestbuy.NewProcessor(store, bbClient, aiClient, n)
+	bbProc := bestbuy.NewProcessor(store, bbClient, aiClient, n, cfg.BestBuyAffiliatePrefix)
 	slog.Info("Best Buy Marketplace processor initialized")
 
 	srv := &Server{

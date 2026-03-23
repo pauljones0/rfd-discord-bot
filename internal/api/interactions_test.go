@@ -124,6 +124,28 @@ func (m *mockStore) GetMemExpressSubscriptionsByGuild(ctx context.Context, guild
 	return nil, nil
 }
 
+func (m *mockStore) SaveBestBuySubscription(ctx context.Context, sub models.Subscription) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.subscriptions = append(m.subscriptions, sub)
+	return nil
+}
+
+func (m *mockStore) RemoveBestBuySubscription(ctx context.Context, guildID, channelID string) error {
+	if m.removeErr != nil {
+		return m.removeErr
+	}
+	return nil
+}
+
+func (m *mockStore) GetBestBuySubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return nil, nil
+}
+
 func TestHandleRemoveCommand(t *testing.T) {
 	store := &mockStore{
 		subscriptions: []models.Subscription{

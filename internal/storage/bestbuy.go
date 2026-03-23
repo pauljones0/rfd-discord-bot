@@ -8,6 +8,7 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"github.com/pauljones0/rfd-discord-bot/internal/bestbuy"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -105,4 +106,64 @@ func (c *Client) PruneBestBuyProducts(ctx context.Context, maxAgeDays, maxRecord
 	}
 
 	return nil
+}
+
+// bestBuySubscriptionDocID generates a unique document ID for a Best Buy subscription.
+func bestBuySubscriptionDocID(guildID, channelID string) string {
+	return fmt.Sprintf("%s_%s_bestbuy", guildID, channelID)
+}
+
+// SaveBestBuySubscription creates or updates a Best Buy subscription in Firestore.
+func (c *Client) SaveBestBuySubscription(ctx context.Context, sub models.Subscription) error {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	docID := bestBuySubscriptionDocID(sub.GuildID, sub.ChannelID)
+	_, err := c.client.Collection(subscriptionsCollection).Doc(docID).Set(ctx, sub)
+	if err != nil {
+		return fmt.Errorf("failed to save bestbuy subscription %s: %w", docID, err)
+	}
+	return nil
+}
+
+// RemoveBestBuySubscription removes a Best Buy subscription by guild and channel.
+func (c *Client) RemoveBestBuySubscription(ctx context.Context, guildID, channelID string) error {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	docID := bestBuySubscriptionDocID(guildID, channelID)
+	_, err := c.client.Collection(subscriptionsCollection).Doc(docID).Delete(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to remove bestbuy subscription %s: %w", docID, err)
+	}
+	return nil
+}
+
+// GetBestBuySubscriptionsByGuild retrieves all Best Buy subscriptions for a guild.
+func (c *Client) GetBestBuySubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	iter := c.client.Collection(subscriptionsCollection).
+		Where("guildID", "==", guildID).
+		Where("subscriptionType", "==", "bestbuy").
+		Documents(ctx)
+	defer iter.Stop()
+
+	var subs []models.Subscription
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate guild bestbuy subscriptions: %w", err)
+		}
+		var sub models.Subscription
+		if err := doc.DataTo(&sub); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal guild bestbuy subscription: %w", err)
+		}
+		subs = append(subs, sub)
+	}
+	return subs, nil
 }

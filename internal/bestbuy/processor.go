@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -33,18 +34,20 @@ type Notifier interface {
 type Processor struct {
 	store    Store
 	client   *Client
-	analyzer Analyzer
-	notifier Notifier
-	mu       sync.Mutex
+	analyzer        Analyzer
+	notifier        Notifier
+	affiliatePrefix string
+	mu              sync.Mutex
 }
 
 // NewProcessor creates a new Best Buy deal processor.
-func NewProcessor(store Store, client *Client, analyzer Analyzer, notifier Notifier) *Processor {
+func NewProcessor(store Store, client *Client, analyzer Analyzer, notifier Notifier, affiliatePrefix string) *Processor {
 	return &Processor{
-		store:    store,
-		client:   client,
-		analyzer: analyzer,
-		notifier: notifier,
+		store:           store,
+		client:          client,
+		analyzer:        analyzer,
+		notifier:        notifier,
+		affiliatePrefix: affiliatePrefix,
 	}
 }
 
@@ -182,6 +185,11 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		discountPct := 0.0
 		if product.RegularPrice > 0 && product.SalePrice > 0 && product.SalePrice < product.RegularPrice {
 			discountPct = (product.RegularPrice - product.SalePrice) / product.RegularPrice * 100
+		}
+
+		// Wrap product URL with affiliate prefix
+		if p.affiliatePrefix != "" && product.URL != "" {
+			product.URL = p.affiliatePrefix + url.QueryEscape(product.URL)
 		}
 
 		analyzed := AnalyzedProduct{

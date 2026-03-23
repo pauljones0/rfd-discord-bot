@@ -142,6 +142,9 @@ type Store interface {
 	SaveMemExpressSubscription(ctx context.Context, sub models.Subscription) error
 	RemoveMemExpressSubscription(ctx context.Context, guildID, channelID, storeCode string) error
 	GetMemExpressSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
+	SaveBestBuySubscription(ctx context.Context, sub models.Subscription) error
+	RemoveBestBuySubscription(ctx context.Context, guildID, channelID string) error
+	GetBestBuySubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
 }
 
 // Handler holds the dependencies for the interaction endpoint.
@@ -668,7 +671,31 @@ func (h *Handler) handleSetupBestBuy(w http.ResponseWriter, req interactionReque
 		return
 	}
 
-	h.saveRFDEbaySubscription(w, req, channelID, channelName, filter, "bestbuy")
+	username := "Unknown"
+	if req.Member != nil {
+		username = req.Member.User.Username
+	}
+
+	sub := models.Subscription{
+		GuildID:          req.GuildID,
+		ChannelID:        channelID,
+		ChannelName:      channelName,
+		DealType:         filter,
+		AddedBy:          username,
+		AddedAt:          time.Now(),
+		SubscriptionType: "bestbuy",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := h.store.SaveBestBuySubscription(ctx, sub); err != nil {
+		slog.Error("Failed to save Best Buy subscription", "guild", req.GuildID, "channel", channelID, "error", err)
+		h.respondPrivateMessage(w, "Failed to save subscription due to an internal error.")
+		return
+	}
+
+	h.respondPrivateMessage(w, fmt.Sprintf("✅ Best Buy Marketplace & Open Box deals will be posted in <#%s> with filter **%s**!", channelID, filter))
 }
 
 // handleDealsRemove handles /deals remove type:<rfd|ebay|facebook>
@@ -691,7 +718,7 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 	defer cancel()
 
 	switch removeType {
-	case "rfd", "ebay", "bestbuy":
+	case "rfd", "ebay":
 		// Get all subscriptions and filter by type
 		subs, err := h.store.GetSubscriptionsByGuild(ctx, req.GuildID)
 		if err != nil {
@@ -705,8 +732,6 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 			if removeType == "rfd" && sub.IsRFD() {
 				matching = append(matching, sub)
 			} else if removeType == "ebay" && sub.IsEbay() {
-				matching = append(matching, sub)
-			} else if removeType == "bestbuy" && sub.IsBestBuy() {
 				matching = append(matching, sub)
 			}
 		}
@@ -775,6 +800,30 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 		}
 		writeJSON(w, res)
 
+	case "bestbuy":
+		bbSubs, err := h.store.GetBestBuySubscriptionsByGuild(ctx, req.GuildID)
+		if err != nil {
+			slog.Error("Failed to get Best Buy subscriptions", "guild", req.GuildID, "error", err)
+			h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
+			return
+		}
+
+		if len(bbSubs) == 0 {
+			h.respondPrivateMessage(w, "No active **Best Buy** subscriptions found for this server.")
+			return
+		}
+
+		components := buildBestBuyRemoveButtons(bbSubs)
+		res := interactionResponse{
+			Type: InteractionResponseTypeChannelMessageWithSource,
+			Data: &interactionResponseData{
+				Content:    "Here are the active **Best Buy** subscriptions. Click to remove:",
+				Flags:      MessageFlagEphemeral,
+				Components: &components,
+			},
+		}
+		writeJSON(w, res)
+
 	default:
 		h.respondPrivateMessage(w, "Invalid subscription type. Choose rfd, ebay, facebook, memoryexpress, or bestbuy.")
 	}
@@ -802,7 +851,12 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 		slog.Error("Failed to get Memory Express subscriptions", "guild", req.GuildID, "error", err)
 	}
 
-	if len(subs) == 0 && len(fbSubs) == 0 && len(meSubs) == 0 {
+	bbSubs, err := h.store.GetBestBuySubscriptionsByGuild(ctx, req.GuildID)
+	if err != nil {
+		slog.Error("Failed to get Best Buy subscriptions", "guild", req.GuildID, "error", err)
+	}
+
+	if len(subs) == 0 && len(fbSubs) == 0 && len(meSubs) == 0 && len(bbSubs) == 0 {
 		h.respondPrivateMessage(w, "No active deal subscriptions for this server.")
 		return
 	}
@@ -811,12 +865,10 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 	msg.WriteString("📋 **Active Deal Subscriptions**\n\n")
 
 	// Group RFD/eBay subs
-	var rfdSubs, ebaySubs, bbSubs []models.Subscription
+	var rfdSubs, ebaySubs []models.Subscription
 	for _, sub := range subs {
 		if sub.IsEbay() {
 			ebaySubs = append(ebaySubs, sub)
-		} else if sub.IsBestBuy() {
-			bbSubs = append(bbSubs, sub)
 		} else if sub.IsRFD() {
 			rfdSubs = append(rfdSubs, sub)
 		}
@@ -1134,6 +1186,28 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		}
 		writeJSON(w, res)
 		return
+	} else if strings.HasPrefix(req.Data.CustomID, "remove_bb::") {
+		// Best Buy subscription removal: remove_bb::{channelID}
+		bbChannelID := strings.TrimPrefix(req.Data.CustomID, "remove_bb::")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if err := h.store.RemoveBestBuySubscription(ctx, req.GuildID, bbChannelID); err != nil {
+			slog.Error("Failed to remove Best Buy subscription", "guild", req.GuildID, "channel", bbChannelID, "error", err)
+			h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
+			return
+		}
+
+		res := interactionResponse{
+			Type: InteractionResponseTypeUpdateMessage,
+			Data: &interactionResponseData{
+				Content:    fmt.Sprintf("🗑️ Best Buy subscription has been removed from <#%s>.", bbChannelID),
+				Components: &[]discordComponent{},
+			},
+		}
+		writeJSON(w, res)
+		return
 	} else if strings.HasPrefix(req.Data.CustomID, "remove_me::") {
 		// Memory Express subscription removal: remove_me::{channelID}::{storeCode}
 		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_me::")
@@ -1342,6 +1416,29 @@ func buildMemExpressRemoveButtons(subs []models.Subscription) []discordComponent
 					Style:    ButtonStyleDanger,
 					Label:    label,
 					CustomID: fmt.Sprintf("remove_me::%s::%s", sub.ChannelID, sub.StoreCode),
+				},
+			},
+		})
+	}
+	return components
+}
+
+func buildBestBuyRemoveButtons(subs []models.Subscription) []discordComponent {
+	var components []discordComponent
+	for _, sub := range subs {
+		label := fmt.Sprintf("Remove Best Buy from #%s", sub.ChannelName)
+		if sub.ChannelName == "" {
+			label = fmt.Sprintf("Remove Best Buy (%s)", sub.DealType)
+		}
+
+		components = append(components, discordComponent{
+			Type: ComponentTypeActionRow,
+			Components: []discordComponent{
+				{
+					Type:     ComponentTypeButton,
+					Style:    ButtonStyleDanger,
+					Label:    label,
+					CustomID: fmt.Sprintf("remove_bb::%s", sub.ChannelID),
 				},
 			},
 		})
