@@ -14,6 +14,7 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
+	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
@@ -138,6 +139,9 @@ type Store interface {
 	SaveFacebookSubscription(ctx context.Context, sub models.Subscription) error
 	RemoveFacebookSubscription(ctx context.Context, guildID, channelID, city string) error
 	GetFacebookSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
+	SaveMemExpressSubscription(ctx context.Context, sub models.Subscription) error
+	RemoveMemExpressSubscription(ctx context.Context, guildID, channelID, storeCode string) error
+	GetMemExpressSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
 }
 
 // Handler holds the dependencies for the interaction endpoint.
@@ -311,6 +315,8 @@ func (h *Handler) handleDealsCommand(w http.ResponseWriter, req interactionReque
 		h.handleSetupEbay(w, req, subCommand.Options)
 	case "setup-facebook":
 		h.handleSetupFacebook(w, req, subCommand.Options)
+	case "setup-memoryexpress":
+		h.handleSetupMemoryExpress(w, req, subCommand.Options)
 	case "remove":
 		h.handleDealsRemove(w, req, subCommand.Options)
 	case "list":
@@ -554,6 +560,78 @@ func (h *Handler) handleSetupFacebook(w http.ResponseWriter, req interactionRequ
 	h.respondPrivateMessage(w, msg)
 }
 
+// handleSetupMemoryExpress handles /deals setup-memoryexpress channel:<#channel> store:<store> filter:<type>
+func (h *Handler) handleSetupMemoryExpress(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
+	var channelID, channelName, storeCode, filter string
+	for _, opt := range options {
+		switch opt.Name {
+		case "channel":
+			if val, ok := opt.Value.(string); ok {
+				channelID = val
+				if req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
+					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
+						channelName = ch.Name
+					}
+				}
+			}
+		case "store":
+			if val, ok := opt.Value.(string); ok {
+				storeCode = val
+			}
+		case "filter":
+			if val, ok := opt.Value.(string); ok {
+				filter = val
+			}
+		}
+	}
+
+	if channelID == "" || storeCode == "" || filter == "" {
+		h.respondPrivateMessage(w, "Please select a channel, store, and filter type.")
+		return
+	}
+
+	if !memoryexpress.ValidStoreCode(storeCode) {
+		h.respondPrivateMessage(w, fmt.Sprintf("Unknown store **%s**. Please use the autocomplete suggestions.", storeCode))
+		return
+	}
+
+	validFilters := map[string]bool{
+		"me_warm_hot": true, "me_hot": true,
+	}
+	if !validFilters[filter] {
+		h.respondPrivateMessage(w, "Invalid Memory Express filter type.")
+		return
+	}
+
+	username := "Unknown"
+	if req.Member != nil {
+		username = req.Member.User.Username
+	}
+
+	sub := models.Subscription{
+		GuildID:          req.GuildID,
+		ChannelID:        channelID,
+		ChannelName:      channelName,
+		DealType:         filter,
+		AddedBy:          username,
+		AddedAt:          time.Now(),
+		SubscriptionType: "memoryexpress",
+		StoreCode:        storeCode,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := h.store.SaveMemExpressSubscription(ctx, sub); err != nil {
+		slog.Error("Failed to save Memory Express subscription", "guild", req.GuildID, "store", storeCode, "error", err)
+		h.respondPrivateMessage(w, "Failed to save subscription due to an internal error.")
+		return
+	}
+
+	storeName := memoryexpress.StoreName(storeCode)
+	h.respondPrivateMessage(w, fmt.Sprintf("✅ Memory Express clearance deals for **%s** will be posted in <#%s> with filter **%s**!", storeName, channelID, filter))
+}
+
 // handleDealsRemove handles /deals remove type:<rfd|ebay|facebook>
 func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
 	var removeType string
@@ -632,8 +710,32 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 		}
 		writeJSON(w, res)
 
+	case "memoryexpress":
+		meSubs, err := h.store.GetMemExpressSubscriptionsByGuild(ctx, req.GuildID)
+		if err != nil {
+			slog.Error("Failed to get Memory Express subscriptions", "guild", req.GuildID, "error", err)
+			h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
+			return
+		}
+
+		if len(meSubs) == 0 {
+			h.respondPrivateMessage(w, "No active **Memory Express** subscriptions found for this server.")
+			return
+		}
+
+		components := buildMemExpressRemoveButtons(meSubs)
+		res := interactionResponse{
+			Type: InteractionResponseTypeChannelMessageWithSource,
+			Data: &interactionResponseData{
+				Content:    "Here are the active **Memory Express** subscriptions. Click to remove:",
+				Flags:      MessageFlagEphemeral,
+				Components: &components,
+			},
+		}
+		writeJSON(w, res)
+
 	default:
-		h.respondPrivateMessage(w, "Invalid subscription type. Choose rfd, ebay, or facebook.")
+		h.respondPrivateMessage(w, "Invalid subscription type. Choose rfd, ebay, facebook, or memoryexpress.")
 	}
 }
 
@@ -652,10 +754,14 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 	fbSubs, err := h.store.GetFacebookSubscriptionsByGuild(ctx, req.GuildID)
 	if err != nil {
 		slog.Error("Failed to get Facebook subscriptions", "guild", req.GuildID, "error", err)
-		// Non-fatal, continue with what we have
 	}
 
-	if len(subs) == 0 && len(fbSubs) == 0 {
+	meSubs, err := h.store.GetMemExpressSubscriptionsByGuild(ctx, req.GuildID)
+	if err != nil {
+		slog.Error("Failed to get Memory Express subscriptions", "guild", req.GuildID, "error", err)
+	}
+
+	if len(subs) == 0 && len(fbSubs) == 0 && len(meSubs) == 0 {
 		h.respondPrivateMessage(w, "No active deal subscriptions for this server.")
 		return
 	}
@@ -698,6 +804,15 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 			}
 			msg.WriteString(fmt.Sprintf("  • <#%s> — %s (radius: %d km%s)\n", sub.ChannelID, sub.City, sub.RadiusKm, brandInfo))
 		}
+		msg.WriteString("\n")
+	}
+
+	if len(meSubs) > 0 {
+		msg.WriteString("**Memory Express:**\n")
+		for _, sub := range meSubs {
+			storeName := memoryexpress.StoreName(sub.StoreCode)
+			msg.WriteString(fmt.Sprintf("  • <#%s> — %s (%s)\n", sub.ChannelID, storeName, sub.DealType))
+		}
 	}
 
 	h.respondPrivateMessage(w, msg.String())
@@ -730,6 +845,32 @@ func (h *Handler) handleAutocomplete(w http.ResponseWriter, req interactionReque
 		for _, city := range cities {
 			choices = append(choices, autocompleteChoice{Name: city, Value: city})
 			if len(choices) >= 25 { // Discord max autocomplete choices
+				break
+			}
+		}
+
+		writeJSON(w, autocompleteResponse{
+			Type: InteractionResponseTypeAutocompleteResult,
+			Data: autocompleteResponseData{Choices: choices},
+		})
+		return
+	}
+
+	if subCommand.Name == "setup-memoryexpress" {
+		var query string
+		for _, opt := range subCommand.Options {
+			if opt.Name == "store" && opt.Focused {
+				if val, ok := opt.Value.(string); ok {
+					query = val
+				}
+			}
+		}
+
+		stores := memoryexpress.MatchingStores(query)
+		var choices []autocompleteChoice
+		for _, store := range stores {
+			choices = append(choices, autocompleteChoice{Name: store.Name, Value: store.Code})
+			if len(choices) >= 25 {
 				break
 			}
 		}
@@ -942,6 +1083,36 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		}
 		writeJSON(w, res)
 		return
+	} else if strings.HasPrefix(req.Data.CustomID, "remove_me::") {
+		// Memory Express subscription removal: remove_me::{channelID}::{storeCode}
+		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_me::")
+		parts := strings.SplitN(trimmed, "::", 2)
+		if len(parts) < 2 {
+			h.respondError(w, "Invalid Memory Express removal data.")
+			return
+		}
+		meChannelID := parts[0]
+		meStoreCode := parts[1]
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if err := h.store.RemoveMemExpressSubscription(ctx, req.GuildID, meChannelID, meStoreCode); err != nil {
+			slog.Error("Failed to remove Memory Express subscription", "guild", req.GuildID, "channel", meChannelID, "store", meStoreCode, "error", err)
+			h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
+			return
+		}
+
+		storeName := memoryexpress.StoreName(meStoreCode)
+		res := interactionResponse{
+			Type: InteractionResponseTypeUpdateMessage,
+			Data: &interactionResponseData{
+				Content:    fmt.Sprintf("🗑️ Memory Express subscription for **%s** has been removed from <#%s>.", storeName, meChannelID),
+				Components: &[]discordComponent{},
+			},
+		}
+		writeJSON(w, res)
+		return
 	} else if strings.HasPrefix(req.Data.CustomID, "confirm_update::") {
 		trimmed := strings.TrimPrefix(req.Data.CustomID, "confirm_update::")
 		parts := strings.SplitN(trimmed, "::", 3)
@@ -1103,6 +1274,30 @@ func buildRemoveButtons(subs []models.Subscription) []discordComponent {
 }
 
 // buildFacebookRemoveButtons creates remove buttons for Facebook subscriptions.
+func buildMemExpressRemoveButtons(subs []models.Subscription) []discordComponent {
+	var components []discordComponent
+	for _, sub := range subs {
+		storeName := memoryexpress.StoreName(sub.StoreCode)
+		label := fmt.Sprintf("Remove %s from #%s", storeName, sub.ChannelName)
+		if sub.ChannelName == "" {
+			label = fmt.Sprintf("Remove %s", storeName)
+		}
+
+		components = append(components, discordComponent{
+			Type: ComponentTypeActionRow,
+			Components: []discordComponent{
+				{
+					Type:     ComponentTypeButton,
+					Style:    ButtonStyleDanger,
+					Label:    label,
+					CustomID: fmt.Sprintf("remove_me::%s::%s", sub.ChannelID, sub.StoreCode),
+				},
+			},
+		})
+	}
+	return components
+}
+
 func buildFacebookRemoveButtons(subs []models.Subscription) []discordComponent {
 	var components []discordComponent
 	for _, sub := range subs {

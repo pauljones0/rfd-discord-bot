@@ -16,6 +16,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
+	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
@@ -504,6 +505,106 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		Thumbnail:   thumbnail,
 		Footer: discordEmbedFooter{
 			Text: "🛒 eBay Canada",
+		},
+	}
+}
+
+// SendMemExpressDeal sends a Memory Express clearance deal to subscribed Discord channels.
+func (c *Client) SendMemExpressDeal(ctx context.Context, product memoryexpress.AnalyzedProduct, subs []models.Subscription) error {
+	if c.botToken == "" {
+		return nil
+	}
+
+	embed := formatMemExpressEmbed(product)
+	payload := discordWebhookPayload{
+		Content: "",
+		Embeds:  []discordEmbed{embed},
+	}
+
+	for i, sub := range subs {
+		if i > 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+		urlStr := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, sub.ChannelID)
+		_, err := c.doRequest(ctx, "POST", urlStr, payload)
+		if err != nil {
+			slog.Error("Failed to send Memory Express deal to channel",
+				"processor", "memoryexpress",
+				"channel", sub.ChannelID,
+				"title", product.CleanTitle,
+				"error", err,
+			)
+		} else {
+			slog.Info("Memory Express deal sent",
+				"processor", "memoryexpress",
+				"channel", sub.ChannelID,
+				"title", product.CleanTitle,
+			)
+		}
+	}
+
+	return nil
+}
+
+func formatMemExpressEmbed(product memoryexpress.AnalyzedProduct) discordEmbed {
+	title := product.CleanTitle
+	if title == "" {
+		title = product.Title
+	}
+	if product.IsLavaHot {
+		title += " 🔥"
+	}
+
+	embedColor := colorWarmDeal
+	if product.IsLavaHot {
+		embedColor = colorHotDeal
+	}
+
+	var fields []discordEmbedField
+
+	// Price field with strikethrough original
+	finalPrice := product.SalePrice
+	if finalPrice == 0 {
+		finalPrice = product.ClearancePrice
+	}
+	priceVal := fmt.Sprintf("~~$%.2f~~ → **$%.2f**", product.RegularPrice, finalPrice)
+	if product.DiscountPct > 0 {
+		priceVal += fmt.Sprintf(" (%.0f%% off)", product.DiscountPct)
+	}
+	fields = append(fields, discordEmbedField{Name: "Price", Value: priceVal})
+
+	// Category
+	if product.Category != "" {
+		fields = append(fields, discordEmbedField{Name: "Category", Value: product.Category, Inline: true})
+	}
+
+	// Store
+	fields = append(fields, discordEmbedField{Name: "Store", Value: product.StoreName, Inline: true})
+
+	// Stock
+	if product.Stock > 0 {
+		fields = append(fields, discordEmbedField{Name: "Stock", Value: fmt.Sprintf("%d", product.Stock), Inline: true})
+	}
+
+	var description string
+	if product.Summary != "" {
+		description = product.Summary
+	}
+
+	var thumbnail discordEmbedThumbnail
+	if product.ImageURL != "" {
+		thumbnail.URL = product.ImageURL
+	}
+
+	return discordEmbed{
+		Title:       title,
+		URL:         product.URL,
+		Description: description,
+		Color:       embedColor,
+		Fields:      fields,
+		Thumbnail:   thumbnail,
+		Footer: discordEmbedFooter{
+			Text: "Memory Express Clearance • In-store pickup only",
 		},
 	}
 }

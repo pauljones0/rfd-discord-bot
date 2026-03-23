@@ -15,6 +15,7 @@ type Subscription struct {
 	City             string   `firestore:"city,omitempty"`
 	RadiusKm         int      `firestore:"radiusKm,omitempty"`
 	FilterBrands     []string `firestore:"filterBrands,omitempty"`
+	StoreCode        string   `firestore:"storeCode,omitempty"` // Memory Express store code (e.g. "SKST")
 }
 
 // IsFacebook returns true if this is a Facebook Marketplace subscription.
@@ -25,3 +26,6 @@ func (s *Subscription) IsRFD() bool { return s.SubscriptionType == "" || s.Subsc
 
 // IsEbay returns true if this is an eBay subscription.
 func (s *Subscription) IsEbay() bool { return s.SubscriptionType == "ebay" }
+
+// IsMemoryExpress returns true if this is a Memory Express subscription.
+func (s *Subscription) IsMemoryExpress() bool { return s.SubscriptionType == "memoryexpress" }

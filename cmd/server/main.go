@@ -18,6 +18,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
 	"github.com/pauljones0/rfd-discord-bot/internal/logger"
+	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
@@ -26,15 +27,17 @@ import (
 )
 
 type Server struct {
-	processor         processor.Processor
-	ebayProcessor     *ebay.Processor
-	facebookProcessor *facebook.Processor
-	aiClient          *ai.Client
-	store             processor.DealStore
-	wg                sync.WaitGroup
-	sem               chan struct{} // Semaphore to limit concurrent RFD processing requests
-	ebaySem           chan struct{} // Semaphore to limit concurrent eBay processing requests
-	facebookSem       chan struct{} // Semaphore to limit concurrent Facebook processing requests
+	processor           processor.Processor
+	ebayProcessor       *ebay.Processor
+	facebookProcessor   *facebook.Processor
+	memexpressProcessor *memoryexpress.Processor
+	aiClient            *ai.Client
+	store               processor.DealStore
+	wg                  sync.WaitGroup
+	sem                 chan struct{} // Semaphore to limit concurrent RFD processing requests
+	ebaySem             chan struct{} // Semaphore to limit concurrent eBay processing requests
+	facebookSem         chan struct{} // Semaphore to limit concurrent Facebook processing requests
+	memexpressSem       chan struct{} // Semaphore to limit concurrent Memory Express processing requests
 }
 
 func main() {
@@ -99,15 +102,21 @@ func main() {
 		slog.Info("Facebook Marketplace features disabled (AI client unavailable)")
 	}
 
+	// Initialize Memory Express processor (always available — no special credentials needed)
+	meProc := memoryexpress.NewProcessor(store, aiClient, n)
+	slog.Info("Memory Express clearance processor initialized")
+
 	srv := &Server{
-		processor:         p,
-		ebayProcessor:     ebayProc,
-		facebookProcessor: fbProc,
-		aiClient:          aiClient,
-		store:             store,
-		sem:               make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
-		ebaySem:           make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
-		facebookSem:       make(chan struct{}, 1), // Allow 1 concurrent Facebook processing attempt
+		processor:           p,
+		ebayProcessor:       ebayProc,
+		facebookProcessor:   fbProc,
+		memexpressProcessor: meProc,
+		aiClient:            aiClient,
+		store:               store,
+		sem:                 make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
+		ebaySem:             make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
+		facebookSem:         make(chan struct{}, 1), // Allow 1 concurrent Facebook processing attempt
+		memexpressSem:       make(chan struct{}, 1), // Allow 1 concurrent Memory Express processing attempt
 	}
 
 	apiHandler, err := api.NewHandler(cfg, store)
@@ -121,6 +130,7 @@ func main() {
 	mux.HandleFunc("/process-deals", srv.ProcessDealsHandler)
 	mux.HandleFunc("/process-ebay", srv.ProcessEbayHandler)
 	mux.HandleFunc("/process-facebook", srv.ProcessFacebookHandler)
+	mux.HandleFunc("/process-memoryexpress", srv.ProcessMemoryExpressHandler)
 	mux.Handle("/discord/interactions", apiHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -316,6 +326,47 @@ func (s *Server) ProcessFacebookHandler(w http.ResponseWriter, r *http.Request) 
 
 	w.WriteHeader(http.StatusAccepted)
 	fmt.Fprintln(w, "Facebook deal processing started.")
+}
+
+func (s *Server) ProcessMemoryExpressHandler(w http.ResponseWriter, r *http.Request) {
+	select {
+	case s.memexpressSem <- struct{}{}:
+	default:
+		slog.Warn("ProcessMemoryExpressHandler: previous run still active, skipping",
+			"processor", "memoryexpress",
+		)
+		w.WriteHeader(http.StatusTooManyRequests)
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
+			slog.Error("Failed to encode response", "error", err)
+		}
+		return
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() { <-s.memexpressSem }()
+
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Panic in ProcessMemExpressDeals", "processor", "memoryexpress", "panic", r)
+			}
+		}()
+		slog.Info("Starting Memory Express deal processing", "processor", "memoryexpress")
+		if s.aiClient != nil {
+			s.aiClient.LogCurrentState()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		start := time.Now()
+		if err := s.memexpressProcessor.ProcessMemExpressDeals(ctx); err != nil {
+			slog.Error("Error processing Memory Express deals", "processor", "memoryexpress", "error", err)
+		}
+		slog.Info("Memory Express deal processing finished", "processor", "memoryexpress", "duration", time.Since(start))
+	}()
+
+	w.WriteHeader(http.StatusAccepted)
+	fmt.Fprintln(w, "Memory Express deal processing started.")
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

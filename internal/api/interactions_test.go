@@ -103,6 +103,27 @@ func (m *mockStore) GetFacebookSubscriptionsByGuild(ctx context.Context, guildID
 	return match, nil
 }
 
+func (m *mockStore) SaveMemExpressSubscription(ctx context.Context, sub models.Subscription) error {
+	if m.err != nil {
+		return m.err
+	}
+	return nil
+}
+
+func (m *mockStore) RemoveMemExpressSubscription(ctx context.Context, guildID, channelID, storeCode string) error {
+	if m.err != nil {
+		return m.err
+	}
+	return nil
+}
+
+func (m *mockStore) GetMemExpressSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return nil, nil
+}
+
 func TestHandleRemoveCommand(t *testing.T) {
 	store := &mockStore{
 		subscriptions: []models.Subscription{

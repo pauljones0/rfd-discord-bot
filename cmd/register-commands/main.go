@@ -122,7 +122,39 @@ func main() {
 						},
 					},
 				},
-				// remove subcommand
+				// setup-memoryexpress subcommand
+			{
+				"name":        "setup-memoryexpress",
+				"description": "Subscribe this channel to Memory Express clearance deal notifications.",
+				"type":        1, // SUB_COMMAND
+				"options": []map[string]interface{}{
+					{
+						"name":          "channel",
+						"description":   "The channel to publish deals to.",
+						"type":          7,           // CHANNEL
+						"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
+						"required":      true,
+					},
+					{
+						"name":         "store",
+						"description":  "The Memory Express store location (e.g. Saskatoon North).",
+						"type":         3, // STRING
+						"required":     true,
+						"autocomplete": true,
+					},
+					{
+						"name":        "filter",
+						"description": "The type of clearance deals to publish.",
+						"type":        3, // STRING
+						"required":    true,
+						"choices": []map[string]interface{}{
+							{"name": "Warm + Hot deals", "value": "me_warm_hot"},
+							{"name": "Hot deals only", "value": "me_hot"},
+						},
+					},
+				},
+			},
+			// remove subcommand
 				{
 					"name":        "remove",
 					"description": "Remove a deal subscription from this server.",
@@ -137,6 +169,7 @@ func main() {
 								{"name": "RFD", "value": "rfd"},
 								{"name": "eBay", "value": "ebay"},
 								{"name": "Facebook", "value": "facebook"},
+								{"name": "Memory Express", "value": "memoryexpress"},
 							},
 						},
 					},
