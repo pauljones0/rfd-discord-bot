@@ -96,11 +96,6 @@ func Notice(msg string, args ...any) {
 	slog.Default().Log(context.Background(), LevelNotice, msg, args...)
 }
 
-// NoticeContext logs at LevelNotice with the given context.
-func NoticeContext(ctx context.Context, msg string, args ...any) {
-	slog.Default().Log(ctx, LevelNotice, msg, args...)
-}
-
 // Critical logs at LevelCritical.
 func Critical(msg string, args ...any) {
 	slog.Default().Log(context.Background(), LevelCritical, msg, args...)
