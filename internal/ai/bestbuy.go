@@ -13,8 +13,163 @@ import (
 	"google.golang.org/genai"
 )
 
+// ScreenBestBuyBatch performs tier-1 batch screening of Best Buy products.
+// It asks Gemini to select the top ~30% most deal-worthy items from a batch.
+func (c *Client) ScreenBestBuyBatch(ctx context.Context, products []bestbuy.Product) ([]bestbuy.BatchScreenResult, error) {
+	if c == nil || len(c.clients) == 0 {
+		slog.Warn("AI client not initialized, skipping Best Buy batch screening")
+		return nil, nil
+	}
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	if len(products) == 0 {
+		return nil, nil
+	}
+
+	c.mu.Lock()
+	activeModel := c.checkDayRollover(ctx)
+	exhausted := c.allExhausted && (c.exhaustedAt.IsZero() || time.Since(c.exhaustedAt) < exhaustionCooldown)
+	c.mu.Unlock()
+
+	if exhausted {
+		return nil, fmt.Errorf("all model tiers exhausted for the day, skipping batch screening")
+	}
+
+	topN := len(products) * 30 / 100
+	if topN < 1 {
+		topN = 1
+	}
+
+	var itemList strings.Builder
+	for i, p := range products {
+		discountPct := 0.0
+		if p.RegularPrice > 0 && p.SalePrice > 0 && p.SalePrice < p.RegularPrice {
+			discountPct = (p.RegularPrice - p.SalePrice) / p.RegularPrice * 100
+		}
+		finalPrice := p.SalePrice
+		if finalPrice == 0 {
+			finalPrice = p.RegularPrice
+		}
+		source := "Marketplace"
+		if p.Source == "openbox" {
+			source = "Open Box"
+		}
+		itemList.WriteString(fmt.Sprintf("%d. [SKU: %s] \"%s\" — Regular: $%.2f → Sale: $%.2f (%.0f%% off) — Seller: %s — Category: %s — %s\n",
+			i+1, p.SKU, p.Name, p.RegularPrice, finalPrice, discountPct, p.SellerName, p.CategoryName, source))
+	}
+
+	prompt := fmt.Sprintf(`You are a Canadian tech deal expert analyzing Best Buy Canada marketplace and open-box products.
+
+Review these %d products and select the top %d items that are most likely to be genuinely good deals.
+Focus on items where the price appears significantly below typical Canadian retail/market value.
+For marketplace items, compare against new retail pricing.
+For open-box items, consider the condition discount vs typical market value.
+Ignore generic accessories, low-value items, and items where the discount is unremarkable.
+
+Items:
+%s
+For each item, provide a clean title (5-15 words, product-focused, no marketing fluff, no "Refurbished" prefix).
+Mark items that are NOT good deals with is_top_deal: false.
+
+Return a JSON array with ALL items, marking the top deals:
+[{"sku": "...", "clean_title": "...", "is_top_deal": true/false, "reasoning": "brief reason"}]
+`, len(products), topN, itemList.String())
+
+	slog.Debug("Best Buy batch screening prompt",
+		"processor", "bestbuy",
+		"batch_size", len(products),
+		"prompt_length", len(prompt),
+	)
+
+	config := &genai.GenerateContentConfig{
+		Temperature:      genai.Ptr[float32](0.1),
+		ResponseMIMEType: "application/json",
+	}
+
+	var results []bestbuy.BatchScreenResult
+	start := time.Now()
+
+	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+		c.mu.Lock()
+		client := c.activeClient()
+		model := activeModel
+		c.mu.Unlock()
+
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		resp, genErr := client.Models.GenerateContent(callCtx, model, genai.Text(prompt), config)
+		if genErr != nil {
+			c.mu.Lock()
+			retErr, backoff := c.handleGenerationError(ctx, genErr, &activeModel, attempt, "Best Buy batch screening")
+			c.mu.Unlock()
+			if backoff > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
+			return retErr
+		}
+		c.mu.Lock()
+		c.resetConsecutiveErrors()
+		loc := c.currentLocation
+		c.mu.Unlock()
+
+		logTokenUsage(resp, "bestbuy_batch_screening", model, loc)
+
+		parsed, parseErr := parseBestBuyBatchResponse(resp)
+		if parseErr != nil {
+			if strings.Contains(parseErr.Error(), "gemini blocked") {
+				slog.Warn("Gemini blocked Best Buy batch screening",
+					"processor", "bestbuy",
+					"model", activeModel, "attempt", attempt, "error", parseErr)
+				return util.PermanentError(parseErr)
+			}
+			if strings.Contains(parseErr.Error(), "no text response") || strings.Contains(parseErr.Error(), "no response candidates") {
+				slog.Warn("Gemini returned empty response during Best Buy batch screening, retrying",
+					"processor", "bestbuy",
+					"model", activeModel, "attempt", attempt, "error", parseErr)
+				return parseErr
+			}
+			return fmt.Errorf("failed to parse Best Buy batch screening response: %w", parseErr)
+		}
+		results = parsed
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	topCount := 0
+	for _, r := range results {
+		if r.IsTopDeal {
+			topCount++
+		}
+	}
+
+	c.mu.Lock()
+	loc := c.currentLocation
+	c.mu.Unlock()
+	slog.Info("Best Buy batch screening complete",
+		"processor", "bestbuy",
+		"batch_size", len(products),
+		"target_top", topN,
+		"actual_top", topCount,
+		"model", activeModel,
+		"location", loc,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+
+	return results, nil
+}
+
 // AnalyzeBestBuyProduct uses Gemini to analyze a Best Buy product
-// and determine if it's a warm or hot deal.
+// and determine if it's a warm or hot deal (tier-2 individual verification).
 func (c *Client) AnalyzeBestBuyProduct(ctx context.Context, product bestbuy.Product) (*bestbuy.AnalyzeResult, error) {
 	if c == nil || len(c.clients) == 0 {
 		slog.Warn("AI client not initialized, skipping Best Buy product analysis")
@@ -72,6 +227,13 @@ Task:
 Return JSON only: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool, "summary": "..."}
 `, product.Name, product.CategoryName, product.RegularPrice, finalPrice, discountPct, product.SellerName, sourceContext)
 
+	slog.Debug("Best Buy tier-2 analysis prompt",
+		"processor", "bestbuy",
+		"sku", product.SKU,
+		"name", product.Name,
+		"prompt_length", len(prompt),
+	)
+
 	config := &genai.GenerateContentConfig{
 		Temperature:      genai.Ptr[float32](0.1),
 		ResponseMIMEType: "application/json",
@@ -109,15 +271,30 @@ Return JSON only: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool, "
 
 		logTokenUsage(resp, "bestbuy_analysis", model, loc)
 
+		// Log raw response for debugging
+		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+			for _, part := range resp.Candidates[0].Content.Parts {
+				if part.Text != "" {
+					slog.Debug("Best Buy AI raw response",
+						"processor", "bestbuy",
+						"sku", product.SKU,
+						"response", part.Text,
+					)
+				}
+			}
+		}
+
 		parsed, parseErr := parseBestBuyResponse(resp)
 		if parseErr != nil {
 			if strings.Contains(parseErr.Error(), "gemini blocked") {
 				slog.Warn("Gemini blocked Best Buy analysis",
+					"processor", "bestbuy",
 					"model", activeModel, "product", product.Name, "error", parseErr)
 				return util.PermanentError(parseErr)
 			}
 			if strings.Contains(parseErr.Error(), "no text response") || strings.Contains(parseErr.Error(), "no response candidates") {
 				slog.Warn("Gemini returned empty response during Best Buy analysis, retrying",
+					"processor", "bestbuy",
 					"model", activeModel, "product", product.Name, "attempt", attempt, "error", parseErr)
 				return parseErr
 			}
@@ -134,13 +311,14 @@ Return JSON only: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool, "
 	c.mu.Lock()
 	loc := c.currentLocation
 	c.mu.Unlock()
-	slog.Info("Best Buy product analysis complete",
+	slog.Info("Best Buy tier-2 analysis complete",
 		"processor", "bestbuy",
 		"sku", product.SKU,
 		"name", product.Name,
 		"clean_title", result.CleanTitle,
 		"is_warm", result.IsWarm,
 		"is_lava_hot", result.IsLavaHot,
+		"summary", result.Summary,
 		"discount_pct", discountPct,
 		"model", activeModel,
 		"location", loc,
@@ -148,6 +326,28 @@ Return JSON only: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool, "
 	)
 
 	return result, nil
+}
+
+func parseBestBuyBatchResponse(resp *genai.GenerateContentResponse) ([]bestbuy.BatchScreenResult, error) {
+	if reason := checkResponseBlocked(resp); reason != "" {
+		return nil, fmt.Errorf("gemini blocked batch screening response: %s", reason)
+	}
+	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+		return nil, fmt.Errorf("no response candidates from gemini")
+	}
+
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if part.Text != "" {
+			jsonStr := stripCodeBlock(part.Text)
+
+			var results []bestbuy.BatchScreenResult
+			if err := json.Unmarshal([]byte(jsonStr), &results); err == nil {
+				return results, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("no text response from gemini for batch screening (finish_reason=%s, parts=%d)",
+		resp.Candidates[0].FinishReason, len(resp.Candidates[0].Content.Parts))
 }
 
 func parseBestBuyResponse(resp *genai.GenerateContentResponse) (*bestbuy.AnalyzeResult, error) {

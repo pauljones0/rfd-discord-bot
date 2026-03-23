@@ -53,3 +53,11 @@ type AnalyzeResult struct {
 	IsLavaHot  bool   `json:"is_lava_hot"`
 	Summary    string `json:"summary"`
 }
+
+// BatchScreenResult represents the tier-1 AI screening result for a single item.
+type BatchScreenResult struct {
+	SKU        string `json:"sku"`
+	CleanTitle string `json:"clean_title"`
+	IsTopDeal  bool   `json:"is_top_deal"`
+	Reasoning  string `json:"reasoning"`
+}
