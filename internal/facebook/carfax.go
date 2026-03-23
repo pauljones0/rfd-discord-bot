@@ -86,9 +86,18 @@ const (
 
 		// Get reCAPTCHA token
 		let token = '';
+		let recaptchaError = '';
 		const siteKey = document.querySelector('script[src*="recaptcha/api.js"]')?.src?.match(/render=([^&]+)/)?.[1];
-		if (siteKey && window.grecaptcha) {
-			try { token = await grecaptcha.execute(siteKey, {action: 'submit'}); } catch(e) {}
+		if (!siteKey) {
+			recaptchaError = 'site key not found in script tag';
+		} else if (!window.grecaptcha) {
+			recaptchaError = 'grecaptcha not loaded';
+		} else {
+			try {
+				token = await grecaptcha.execute(siteKey, {action: 'submit'});
+			} catch(e) {
+				recaptchaError = 'grecaptcha.execute failed: ' + e.message;
+			}
 		}
 
 		const headers = {};
@@ -96,9 +105,19 @@ const (
 
 		try {
 			const resp = await fetch(url, {method: 'GET', headers});
-			if (!resp.ok) return {error: 'API returned ' + resp.status};
+			if (!resp.ok) {
+				const body = await resp.text().catch(() => '');
+				return {
+					error: 'API returned ' + resp.status,
+					apiStatus: resp.status,
+					apiBody: body.substring(0, 200),
+					hasToken: !!token,
+					tokenLength: token.length,
+					recaptchaError: recaptchaError || null,
+				};
+			}
 			const json = await resp.json();
-			if (!json.data || !json.data.length) return {error: 'no data returned'};
+			if (!json.data || !json.data.length) return {error: 'no data returned', hasToken: !!token};
 
 			// Find the target select element
 			const selectors = ['select[aria-label="' + property + '"]', 'select#' + property + 's', 'select#' + property];
@@ -117,9 +136,9 @@ const (
 			}
 
 			sel.disabled = false;
-			return {populated: sel.options.length - 1};
+			return {populated: sel.options.length - 1, hasToken: !!token, tokenLength: token.length};
 		} catch(e) {
-			return {error: e.message};
+			return {error: e.message, hasToken: !!token, recaptchaError: recaptchaError || null};
 		}
 	}`
 
@@ -569,6 +588,16 @@ func (c *CarfaxClient) populateDropdownViaAPI(page playwright.Page, property str
 	}
 
 	if errMsg, hasErr := resultMap["error"]; hasErr {
+		slog.Warn("Carfax API fallback failed",
+			"processor", "facebook",
+			"property", property,
+			"error", errMsg,
+			"api_status", resultMap["apiStatus"],
+			"api_body", resultMap["apiBody"],
+			"has_recaptcha_token", resultMap["hasToken"],
+			"recaptcha_token_length", resultMap["tokenLength"],
+			"recaptcha_error", resultMap["recaptchaError"],
+		)
 		return fmt.Errorf("API populate %s: %v", property, errMsg)
 	}
 
@@ -577,6 +606,8 @@ func (c *CarfaxClient) populateDropdownViaAPI(page playwright.Page, property str
 		"processor", "facebook",
 		"property", property,
 		"options_count", int(count),
+		"has_recaptcha_token", resultMap["hasToken"],
+		"recaptcha_token_length", resultMap["tokenLength"],
 	)
 	return nil
 }
