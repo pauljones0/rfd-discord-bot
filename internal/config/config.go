@@ -20,9 +20,8 @@ type Config struct {
 	MaxStoredDeals         int
 	AllowedDomains         []string
 	RFDBaseURL             string
-	GeminiAPIKey           string
-	GeminiLocation         string
-	GeminiLocations        []string
+	GeminiAPIKey         string
+	GeminiLocations      []string
 	GeminiFallbackModels   []string
 
 	// Discord App Auth
@@ -36,6 +35,12 @@ type Config struct {
 
 	// Proxy (optional — Facebook/Carfax scraping runs without proxy if not set)
 	ProxyURL string
+
+	// Carfax Token Service (optional — if not set, Carfax falls back to Playwright UI automation)
+	// The token service runs a real headed Chrome that generates high-scoring reCAPTCHA v3 tokens.
+	// See cmd/token-service/main.go for setup instructions.
+	CarfaxTokenServiceURL    string
+	CarfaxTokenServiceSecret string
 }
 
 func Load() (*Config, error) {
@@ -128,9 +133,8 @@ func Load() (*Config, error) {
 		MaxStoredDeals:         maxStoredDeals,
 		AllowedDomains:         []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com", "bestbuy.ca"},
 		RFDBaseURL:             "https://forums.redflagdeals.com",
-		GeminiAPIKey:           geminiAPIKey,
-		GeminiLocation:         geminiLocation,
-		GeminiLocations:        geminiLocations,
+		GeminiAPIKey:    geminiAPIKey,
+		GeminiLocations: geminiLocations,
 		GeminiFallbackModels: []string{
 			"gemini-2.5-flash-lite",
 			"gemini-2.5-flash",
@@ -139,8 +143,10 @@ func Load() (*Config, error) {
 		DiscordAppID:     os.Getenv("DISCORD_APP_ID"),
 		DiscordPublicKey: discordPublicKey,
 		DiscordBotToken:  discordBotToken,
-		EbayClientID:     os.Getenv("EBAY_CLIENT_ID"),
-		EbayClientSecret: os.Getenv("EBAY_CLIENT_SECRET"),
-		ProxyURL:         os.Getenv("PROXY_URL"),
+		EbayClientID:             os.Getenv("EBAY_CLIENT_ID"),
+		EbayClientSecret:         os.Getenv("EBAY_CLIENT_SECRET"),
+		ProxyURL:                 os.Getenv("PROXY_URL"),
+		CarfaxTokenServiceURL:    os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
+		CarfaxTokenServiceSecret: os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
 	}, nil
 }
