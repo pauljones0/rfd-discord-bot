@@ -409,8 +409,6 @@ func (c *CarfaxClient) selectFuzzy(page playwright.Page, label, targetText strin
 	}
 
 	// Use Playwright's native SelectOption to fire proper browser events.
-	// This triggers framework-level change handlers (React, Angular, etc.)
-	// that plain JS dispatchEvent misses, which is critical for dropdown cascades.
 	loc := page.Locator("[data-carfax-select='" + label + "']")
 	if _, err := loc.SelectOption(playwright.SelectOptionValues{
 		Values: playwright.StringSlice(value),
@@ -421,6 +419,20 @@ func (c *CarfaxClient) selectFuzzy(page playwright.Page, label, targetText strin
 			"value", value, "error", err)
 		return fmt.Errorf("failed to select option for %s: %w", label, err)
 	}
+
+	// Dispatch events using React's native value setter trick as a fallback.
+	// React overrides HTMLSelectElement.prototype.value, so Playwright's
+	// SelectOption may not update React's internal state. Using the original
+	// native setter + dispatching change/input events ensures the framework
+	// sees the change and triggers dropdown cascades (Year→Make→Model).
+	page.Evaluate(`([label, val]) => {
+		const sel = document.querySelector('[data-carfax-select="' + label + '"]');
+		if (!sel) return;
+		const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+		if (nativeSetter) nativeSetter.call(sel, val);
+		sel.dispatchEvent(new Event('input', { bubbles: true }));
+		sel.dispatchEvent(new Event('change', { bubbles: true }));
+	}`, []interface{}{label, value})
 
 	// Clean up the temporary attribute
 	page.Evaluate("(label) => document.querySelector('[data-carfax-select=\"' + label + '\"]')?.removeAttribute('data-carfax-select')", label)
@@ -516,14 +528,16 @@ func (c *CarfaxClient) logDropdownDiagnostics(page playwright.Page, year int, ta
 		};
 	}`)
 
-	// Check Make dropdown state
+	// Check Make dropdown state — include actual option texts for debugging
 	makeInfo, _ := page.Evaluate(`() => {
 		const sel = document.querySelector('select[aria-label="Make"]');
 		if (!sel) return {found: false};
+		const optTexts = Array.from(sel.options).slice(0, 10).map(o => o.text);
 		return {
 			found: true,
 			disabled: sel.disabled,
 			optionCount: sel.options.length,
+			options: optTexts,
 		};
 	}`)
 
