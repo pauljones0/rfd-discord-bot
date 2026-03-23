@@ -27,6 +27,26 @@ func sanitizeFacebookDocID(s string) string {
 	return s
 }
 
+// FacebookAdExists checks whether a Facebook ad with the given listing ID already exists in Firestore.
+// This enables early dedup checks before expensive Gemini normalization calls.
+func (c *Client) FacebookAdExists(ctx context.Context, listingID string) (bool, error) {
+	if listingID == "" {
+		return false, nil
+	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	docID := fmt.Sprintf("fb-%s", listingID)
+	_, err := c.client.Collection(facebookAdsCollection).Doc(docID).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check facebook ad existence: %v", err)
+	}
+	return true, nil
+}
+
 // SaveFacebookAd saves or updates a Facebook ad record, returning true if it's a new record.
 // Uses the Facebook listing ID as the primary dedup key when available, falling back
 // to model-price-year composite key for backwards compatibility.

@@ -16,6 +16,7 @@ import (
 // Store defines the Firestore operations needed by the Facebook processor.
 type Store interface {
 	GetFacebookSubscriptions(ctx context.Context) ([]models.Subscription, error)
+	FacebookAdExists(ctx context.Context, listingID string) (bool, error)
 	SaveFacebookAd(ctx context.Context, ad *models.FacebookAdRecord) (bool, error)
 	PruneFacebookAds(ctx context.Context, maxAgeMonths int, maxRecords int) error
 	SavePriceHistory(ctx context.Context, model string, value float64) error
@@ -206,6 +207,19 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 				slog.Debug("Failed to scrape listing detail", "processor", "facebook", "url", ad.URL, "error", err)
 			} else if desc != "" {
 				ad.Description = desc
+			}
+		}
+
+		// Early dedup: check Firestore BEFORE the expensive NormalizeAd Gemini
+		// call. If this listing ID was already processed (even if the previous
+		// AnalyzeDeal failed), skip it to save AI quota.
+		if ad.ListingID != "" {
+			exists, err := p.store.FacebookAdExists(ctx, ad.ListingID)
+			if err != nil {
+				slog.Warn("Early dedup check failed", "processor", "facebook", "title", ad.Title, "error", err)
+			} else if exists {
+				slog.Debug("Skipping already-processed ad (early dedup)", "processor", "facebook", "title", ad.Title)
+				continue
 			}
 		}
 
