@@ -181,9 +181,9 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 		"postal", postalCode,
 	)
 
-	bCtx, err := c.pm.NewContext("")
+	bCtx, err := c.pm.NewChromiumContext()
 	if err != nil {
-		return 0, fmt.Errorf("failed to create playwright context: %w", err)
+		return 0, fmt.Errorf("failed to create chromium context for carfax: %w", err)
 	}
 	defer bCtx.Close()
 
