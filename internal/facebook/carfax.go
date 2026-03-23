@@ -577,7 +577,13 @@ func parseValueRange(valStr string) (float64, error) {
 // the page's built-in cascade handler fails (typically due to reCAPTCHA blocking
 // the API call in headless browsers).
 func (c *CarfaxClient) populateDropdownViaAPI(page playwright.Page, property string, params map[string]string) error {
-	result, err := page.Evaluate(jsPopulateDropdown, []interface{}{property, params})
+	// Convert map[string]string to map[string]interface{} for Playwright serialization.
+	// Playwright's serializeValue does a bare assertion to map[string]any which panics on map[string]string.
+	paramsAny := make(map[string]interface{}, len(params))
+	for k, v := range params {
+		paramsAny[k] = v
+	}
+	result, err := page.Evaluate(jsPopulateDropdown, []interface{}{property, paramsAny})
 	if err != nil {
 		return fmt.Errorf("JS error populating %s: %w", property, err)
 	}
