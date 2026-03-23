@@ -420,18 +420,41 @@ func (c *CarfaxClient) selectFuzzy(page playwright.Page, label, targetText strin
 		return fmt.Errorf("failed to select option for %s: %w", label, err)
 	}
 
-	// Dispatch events using React's native value setter trick as a fallback.
-	// React overrides HTMLSelectElement.prototype.value, so Playwright's
-	// SelectOption may not update React's internal state. Using the original
-	// native setter + dispatching change/input events ensures the framework
-	// sees the change and triggers dropdown cascades (Year→Make→Model).
+	// Trigger React state update for dropdown cascades (Year→Make→Model).
+	// Playwright's SelectOption fires native browser events, but React's
+	// internal _valueTracker has already recorded the new value, so React
+	// suppresses the "duplicate" change. Resetting the tracker forces React
+	// to see it as a genuine change. As a second fallback, invoke the
+	// onChange handler directly via the React fiber tree.
 	page.Evaluate(`([label, val]) => {
 		const sel = document.querySelector('[data-carfax-select="' + label + '"]');
 		if (!sel) return;
+
+		// 1. Reset React's value tracker so it detects the change
+		const tracker = sel._valueTracker;
+		if (tracker) tracker.setValue('');
+
+		// 2. Set value via native setter (bypasses React's override)
 		const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
 		if (nativeSetter) nativeSetter.call(sel, val);
+
+		// 3. Dispatch events for React's event delegation
 		sel.dispatchEvent(new Event('input', { bubbles: true }));
 		sel.dispatchEvent(new Event('change', { bubbles: true }));
+
+		// 4. Fallback: directly invoke React's onChange via the fiber tree
+		const fiberKey = Object.keys(sel).find(k =>
+			k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+		if (fiberKey) {
+			let fiber = sel[fiberKey];
+			for (let i = 0; i < 20 && fiber; i++, fiber = fiber.return) {
+				const props = fiber.memoizedProps || fiber.pendingProps;
+				if (props && typeof props.onChange === 'function') {
+					props.onChange({ target: sel, currentTarget: sel });
+					break;
+				}
+			}
+		}
 	}`, []interface{}{label, value})
 
 	// Clean up the temporary attribute
