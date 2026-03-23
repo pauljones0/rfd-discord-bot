@@ -135,7 +135,6 @@ func buildDealUpdates(deal models.DealInfo) []firestore.Update {
 		{Path: "threadImageURL", Value: deal.ThreadImageURL},
 		{Path: "actualDealURL", Value: deal.ActualDealURL},
 		{Path: "lastUpdated", Value: deal.LastUpdated},
-		{Path: "discordMessageID", Value: deal.DiscordMessageID},
 		{Path: "discordMessageIDs", Value: deal.DiscordMessageIDs},
 		{Path: "discordLastUpdatedTime", Value: deal.DiscordLastUpdatedTime},
 		{Path: "publishedTimestamp", Value: deal.PublishedTimestamp},
