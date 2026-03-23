@@ -31,14 +31,46 @@ func TestVmrModelSlug(t *testing.T) {
 		{"Honda", "Civic", "civic"},
 		{"Honda", "CR-V", "cr-v"},
 		{"Ford", "F-150", "f-150"},
-		{"BMW", "3 Series", "3-series"},
+		{"BMW", "3 Series", "3%20series"},
 		{"Toyota", "RAV4", "rav4"},
 		{"Mercedes-Benz", "C-Class", "c-class"},
+		{"Suzuki", "Grand Vitara", "grand%20vitara"},
+		{"Ford", "Crown Victoria", "crown%20victoria"},
+		{"Dodge", "1500 Ram", "1500%20ram"},
+		{"Dodge", "Grand Caravan", "grand%20caravan"},
 	}
 	for _, tt := range tests {
 		got := vmrModelSlug(tt.make, tt.model)
 		if got != tt.want {
 			t.Errorf("vmrModelSlug(%q, %q) = %q, want %q", tt.make, tt.model, got, tt.want)
+		}
+	}
+}
+
+func TestVmrNormalize(t *testing.T) {
+	tests := []struct {
+		make      string
+		model     string
+		wantMake  string
+		wantModel string
+	}{
+		// Ram as standalone make → Dodge
+		{"Ram", "1500", "Dodge", "1500 Ram"},
+		{"Ram", "2500", "Dodge", "2500 Ram"},
+		{"Ram", "ProMaster", "Dodge", "ProMaster Ram"},
+		// Dodge + Ram model → rearranged
+		{"Dodge", "Ram 1500", "Dodge", "1500 Ram"},
+		{"Dodge", "Ram 3500 TD", "Dodge", "3500 TD Ram"},
+		// Non-Ram vehicles unchanged
+		{"Dodge", "Challenger", "Dodge", "Challenger"},
+		{"Honda", "Civic", "Honda", "Civic"},
+		{"Ford", "Crown Victoria", "Ford", "Crown Victoria"},
+	}
+	for _, tt := range tests {
+		gotMake, gotModel := vmrNormalize(tt.make, tt.model)
+		if gotMake != tt.wantMake || gotModel != tt.wantModel {
+			t.Errorf("vmrNormalize(%q, %q) = (%q, %q), want (%q, %q)",
+				tt.make, tt.model, gotMake, gotModel, tt.wantMake, tt.wantModel)
 		}
 	}
 }

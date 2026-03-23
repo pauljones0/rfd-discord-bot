@@ -96,19 +96,22 @@ func GetVMRValue(ctx context.Context, ai AIClient, year int, makeName, model, tr
 		"year", year, "make", makeName, "model", model,
 		"trim", trim, "province", province, "odometer", odometer)
 
-	slug := vmrModelSlug(makeName, model)
-	pageURL := fmt.Sprintf("https://www.vmrcanada.com/used-car/values/%d-%s-%s.html", year, vmrMakeSlug(makeName), slug)
+	// Remap make/model to VMR's naming conventions (e.g. Ram → Dodge)
+	vmrMake, vmrModel := vmrNormalize(makeName, model)
+
+	slug := vmrModelSlug(vmrMake, vmrModel)
+	pageURL := fmt.Sprintf("https://www.vmrcanada.com/used-car/values/%d-%s-%s.html", year, vmrMakeSlug(vmrMake), slug)
 
 	body, err := fetchVMRPage(ctx, pageURL)
 	if err != nil {
 		// If 404, try Gemini to suggest the correct model slug
 		if strings.Contains(err.Error(), "404") && ai != nil {
-			corrected, aiErr := suggestVMRSlug(ctx, ai, year, makeName, model)
+			corrected, aiErr := suggestVMRSlug(ctx, ai, year, vmrMake, vmrModel)
 			if aiErr == nil && corrected != "" && corrected != slug {
 				slog.Info("VMR URL corrected by AI",
 					"processor", "facebook",
 					"original_slug", slug, "corrected_slug", corrected)
-				pageURL = fmt.Sprintf("https://www.vmrcanada.com/used-car/values/%d-%s-%s.html", year, vmrMakeSlug(makeName), corrected)
+				pageURL = fmt.Sprintf("https://www.vmrcanada.com/used-car/values/%d-%s-%s.html", year, vmrMakeSlug(vmrMake), corrected)
 				body, err = fetchVMRPage(ctx, pageURL)
 			}
 		}
@@ -176,23 +179,47 @@ func GetVMRValue(ctx context.Context, ai AIClient, year int, makeName, model, tr
 }
 
 // vmrMakeSlug converts a make name to VMR's URL slug format.
+// VMR uses lowercase with hyphens for multi-word makes (e.g. "land-rover").
+// Ram trucks are listed under "dodge" on VMR — use vmrNormalize to remap first.
 func vmrMakeSlug(makeName string) string {
 	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(makeName), " ", "-"))
 }
 
 // vmrModelSlug converts a model name to VMR's URL slug format.
-// Handles common patterns: "CR-V" → "cr-v", "F-150" → "f-150", "3 Series" → "3-series"
+// VMR uses URL-encoded spaces (%20) in multi-word model names, not hyphens.
+// Examples: "Grand Vitara" → "grand%20vitara", "Crown Victoria" → "crown%20victoria"
+// Hyphens in model names are preserved: "CR-V" → "cr-v", "F-150" → "f-150"
 func vmrModelSlug(makeName, model string) string {
 	slug := strings.ToLower(strings.TrimSpace(model))
-	slug = strings.ReplaceAll(slug, " ", "-")
-	// Remove any characters that aren't alphanumeric or hyphens
+	// Remove any characters that aren't alphanumeric, hyphens, or spaces
 	var b strings.Builder
 	for _, r := range slug {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == ' ' {
 			b.WriteRune(r)
 		}
 	}
-	return b.String()
+	// URL-encode spaces as %20 (VMR uses spaces, not hyphens, in model slugs)
+	return strings.ReplaceAll(b.String(), " ", "%20")
+}
+
+// vmrNormalize remaps make/model to match VMR's naming conventions.
+// VMR lists all Ram trucks under "Dodge" with the model format "1500 Ram".
+func vmrNormalize(makeName, model string) (string, string) {
+	lowerMake := strings.ToLower(strings.TrimSpace(makeName))
+	lowerModel := strings.ToLower(strings.TrimSpace(model))
+
+	// Ram as a standalone make: "Ram" + "1500" → "Dodge" + "1500 Ram"
+	if lowerMake == "ram" {
+		return "Dodge", model + " Ram"
+	}
+
+	// Dodge Ram models: "Dodge" + "Ram 1500" → "Dodge" + "1500 Ram"
+	if lowerMake == "dodge" && strings.HasPrefix(lowerModel, "ram ") {
+		suffix := strings.TrimSpace(model[4:]) // everything after "Ram "
+		return "Dodge", suffix + " Ram"
+	}
+
+	return makeName, model
 }
 
 // fetchVMRPage fetches the VMR valuation page HTML.
@@ -392,21 +419,28 @@ func mileageAdjustment(wholesale float64, actualKm int, vehicleAge int) (wsAdj, 
 func suggestVMRSlug(ctx context.Context, ai AIClient, year int, makeName, model string) (string, error) {
 	prompt := fmt.Sprintf(`The VMR Canada website uses URL slugs for vehicle models.
 URL pattern: vmrcanada.com/used-car/values/{year}-{make}-{model}.html
-Example: 2018-honda-civic.html, 2020-ford-f-150.html, 2019-mercedes-benz-c-class.html
+The model part uses URL-encoded spaces (%%20) for multi-word names, NOT hyphens.
+Hyphens in model names are preserved (e.g. CR-V stays cr-v, F-150 stays f-150).
+Examples: 2018-honda-civic.html, 2020-ford-f-150.html, 2008-suzuki-grand%%20vitara.html, 2017-dodge-1500%%20ram.html
 
-What would be the correct slug for: %d %s %s
-Reply with ONLY the model slug (lowercase, hyphens for spaces). Nothing else.`, year, makeName, model)
+What would be the correct model slug for: %d %s %s
+Reply with ONLY the model slug (lowercase, %%20 for spaces, preserve hyphens). Nothing else.`, year, makeName, model)
 
 	result, err := ai.GenerateContentRaw(ctx, prompt, nil)
 	if err != nil {
 		return "", err
 	}
 	slug := strings.TrimSpace(strings.ToLower(result))
-	// Sanitize — only allow alphanumeric and hyphens
+	// Sanitize — only allow alphanumeric, hyphens, and %20
+	slug = strings.ReplaceAll(slug, " ", "%20")
 	var b strings.Builder
-	for _, r := range slug {
+	for i := 0; i < len(slug); i++ {
+		r := rune(slug[i])
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' {
 			b.WriteRune(r)
+		} else if i+2 < len(slug) && slug[i:i+3] == "%20" {
+			b.WriteString("%20")
+			i += 2 // skip the "20" part
 		}
 	}
 	return b.String(), nil
