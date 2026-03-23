@@ -243,6 +243,11 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			continue
 		}
 
+		if isWantedAd(ad.Title, ad.Description) {
+			slog.Debug("Skipping wanted/ISO ad", "processor", "facebook", "title", ad.Title)
+			continue
+		}
+
 		// Gemini Normalization
 		randomDelay(100*time.Millisecond, 300*time.Millisecond)
 		extraContext := ""
@@ -474,6 +479,27 @@ func isTooVague(title, description, mileage string) bool {
 	// alone is not enough context for Gemini.
 	desc := strings.TrimSpace(description)
 	return desc == "" || !hasDigit(desc)
+}
+
+// isWantedAd returns true for "wanted/ISO/WTB" ads where the poster is
+// looking to buy, not selling. These waste Gemini + Carfax/VMR calls and
+// should never be posted to Discord.
+func isWantedAd(title, description string) bool {
+	t := strings.ToLower(strings.TrimSpace(title))
+	for _, prefix := range []string{
+		"looking for ",
+		"looking to buy ",
+		"iso ",
+		"wtb ",
+		"wanted ",
+		"wanting ",
+		"in search of ",
+	} {
+		if strings.HasPrefix(t, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func isTransientError(err error) bool {

@@ -64,6 +64,34 @@ func TestIsLikelyNonCar(t *testing.T) {
 	}
 }
 
+func TestIsWantedAd(t *testing.T) {
+	tests := []struct {
+		title string
+		desc  string
+		want  bool
+	}{
+		{"Looking for brick/obs ford shortbed", "", true},
+		{"Looking to buy a civic", "", true},
+		{"ISO 2015 Toyota Camry", "", true},
+		{"WTB Ford F-150", "", true},
+		{"Wanted 2019 Honda Civic", "", true},
+		{"Wanting a truck", "", true},
+		{"In search of a minivan", "", true},
+		{"  Looking for a car  ", "", true},
+		// Should NOT match — real for-sale ads
+		{"2019 Honda Civic", "", false},
+		{"2020 Ford F-150 looking good", "", false},
+		{"Great looking truck", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			if got := isWantedAd(tt.title, tt.desc); got != tt.want {
+				t.Errorf("isWantedAd(%q, %q) = %v, want %v", tt.title, tt.desc, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHasDigit(t *testing.T) {
 	tests := []struct {
 		input string
