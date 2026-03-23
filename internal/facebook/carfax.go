@@ -357,7 +357,13 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 	// Read available trim options and let the caller pick the best one
 	selectedTrim := trim
 	if pickTrim != nil {
-		trimOpts, _ := c.readOptions(page, "Trim")
+		trimOpts, trimErr := c.readOptions(page, "Trim")
+		if trimErr != nil {
+			slog.Warn("Carfax failed to read trim options",
+				"processor", "facebook",
+				"error", trimErr,
+				"year", year, "make", make, "model", model)
+		}
 		if len(trimOpts) > 0 {
 			selectedTrim = pickTrim(ctx, year, make, model, trimOpts)
 			slog.Info("Carfax trim selection",
@@ -511,17 +517,25 @@ func (c *CarfaxClient) selectFuzzy(page playwright.Page, label, targetText strin
 	// handlers (which use event delegation on a parent container) see the change.
 	// Playwright's SelectOption should fire events, but in headless Chromium the
 	// cascade handler sometimes doesn't trigger without this extra dispatch.
-	page.Evaluate(`([label, val]) => {
+	if _, err := page.Evaluate(`([label, val]) => {
 		const sel = document.querySelector('[data-carfax-select="' + label + '"]');
 		if (!sel) return;
 		const nativeSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
 		if (nativeSetter) nativeSetter.call(sel, val);
 		sel.dispatchEvent(new Event('input', { bubbles: true }));
 		sel.dispatchEvent(new Event('change', { bubbles: true }));
-	}`, []interface{}{label, value})
+	}`, []interface{}{label, value}); err != nil {
+		slog.Warn("Carfax change event re-dispatch failed",
+			"processor", "facebook",
+			"label", label, "target", targetText, "error", err)
+	}
 
 	// Clean up the temporary attribute
-	page.Evaluate("(label) => document.querySelector('[data-carfax-select=\"' + label + '\"]')?.removeAttribute('data-carfax-select')", label)
+	if _, err := page.Evaluate("(label) => document.querySelector('[data-carfax-select=\"' + label + '\"]')?.removeAttribute('data-carfax-select')", label); err != nil {
+		slog.Warn("Carfax attribute cleanup failed",
+			"processor", "facebook",
+			"label", label, "error", err)
+	}
 
 	return nil
 }
