@@ -122,7 +122,6 @@ func DefaultSellers() []EbaySeller {
 		{username: "fsanchez89"},
 		{username: "qnrvr17"},
 		{username: "buythatapple"},
-		{username: "grview"},                 // Discount Computers and Electronics
 		{username: "outlut"},                 // Outlut Computers & Electronics Inc.
 		{username: "montrealcomputers"},      // Montreal Computers CANADA
 	}
