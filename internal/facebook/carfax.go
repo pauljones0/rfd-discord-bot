@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"regexp"
 	"strconv"
 	"strings"
@@ -11,6 +12,13 @@ import (
 
 	"github.com/playwright-community/playwright-go"
 )
+
+// humanDelay pauses for a random duration between min and max milliseconds
+// to mimic human interaction timing, improving reCAPTCHA v3 scores.
+func humanDelay(minMs, maxMs int) {
+	d := time.Duration(minMs+rand.Intn(maxMs-minMs)) * time.Millisecond
+	time.Sleep(d)
+}
 
 // CarfaxClient automates the Carfax Canada valuation form using Playwright.
 type CarfaxClient struct {
@@ -289,6 +297,13 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 	// Dismiss cookie consent / overlay banners that may block interaction
 	c.dismissCarfaxOverlays(page)
 
+	// Simulate human behavior before interacting with the form.
+	// reCAPTCHA v3 scores the session holistically — sessions with zero mouse/scroll
+	// events before form interaction are a strong automation signal.
+	humanDelay(800, 1500)
+	SimulateHumanBehavior(page)
+	humanDelay(300, 600)
+
 	if err := c.selectFuzzy(page, "Year", fmt.Sprintf("%d", year)); err != nil {
 		slog.Warn("Carfax Year dropdown failed",
 			"processor", "facebook", "error", err,
@@ -296,6 +311,8 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 			"page_url", page.URL())
 		return 0, fmt.Errorf("failed to select year: %w", err)
 	}
+	// Human-like pause between dropdown selections to improve reCAPTCHA score
+	humanDelay(400, 800)
 	if err := c.selectFuzzy(page, "Make", make); err != nil {
 		// Cascade likely failed because reCAPTCHA blocked the API call in headless.
 		// Fallback: populate the Make dropdown via direct API call with reCAPTCHA token.
@@ -310,6 +327,7 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 			return 0, fmt.Errorf("failed to select make after API fallback: %w", err)
 		}
 	}
+	humanDelay(400, 800)
 	if err := c.selectFuzzy(page, "Model", model); err != nil {
 		// Same reCAPTCHA fallback for Model
 		slog.Info("Carfax Model cascade failed, trying direct API fallback",
@@ -325,16 +343,22 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 		}
 	}
 
+	// Scroll down to the form fields and pause like a human reading the page
+	_ = page.Mouse().Wheel(0, float64(150+rand.Intn(100)))
+	humanDelay(300, 600)
+
 	cleanPostal := strings.ReplaceAll(strings.TrimSpace(postalCode), " ", "")
 	postalLoc := page.GetByRole("textbox", playwright.PageGetByRoleOptions{Name: "Postal Code"})
 	if err := postalLoc.Fill(cleanPostal); err != nil {
 		return 0, fmt.Errorf("failed to fill postal code: %w", err)
 	}
+	humanDelay(200, 500)
 
 	odometerLoc := page.GetByRole("textbox", playwright.PageGetByRoleOptions{Name: "Odometer"})
 	if err := odometerLoc.Fill(fmt.Sprintf("%d", odometer)); err != nil {
 		return 0, fmt.Errorf("failed to fill odometer: %w", err)
 	}
+	humanDelay(300, 600)
 
 	continueBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Continue"})
 	if err := continueBtn.Click(); err != nil {
@@ -375,23 +399,32 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 		}
 	}
 
+	humanDelay(300, 600)
 	if err := c.selectFuzzy(page, "Trim", selectedTrim); err != nil {
 		return 0, fmt.Errorf("failed to select trim: %w", err)
 	}
 	// After selecting trim, other fields cascade — use fuzzy match with Gemini's
 	// initial guess as a hint, falling back to the first available option.
+	humanDelay(300, 500)
 	if err := c.selectFuzzy(page, "Engine", engine); err != nil {
 		return 0, fmt.Errorf("failed to select engine: %w", err)
 	}
+	humanDelay(200, 400)
 	if err := c.selectFuzzy(page, "Drivetrain", drivetrain); err != nil {
 		return 0, fmt.Errorf("failed to select drivetrain: %w", err)
 	}
+	humanDelay(200, 400)
 	if err := c.selectFuzzy(page, "Transmission", transmission); err != nil {
 		return 0, fmt.Errorf("failed to select transmission: %w", err)
 	}
+	humanDelay(200, 400)
 	if err := c.selectFuzzy(page, "Body Style", bodyStyle); err != nil {
 		return 0, fmt.Errorf("failed to select body style: %w", err)
 	}
+
+	// Scroll and pause before submitting — humans review their selections
+	_ = page.Mouse().Wheel(0, float64(100+rand.Intn(100)))
+	humanDelay(500, 1000)
 
 	getValueBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Get Value Range"})
 	if _, err := page.WaitForFunction("btn => !btn.disabled", getValueBtn, playwright.PageWaitForFunctionOptions{

@@ -335,12 +335,12 @@ func (c *Client) IsHot(deal models.DealInfo) bool {
 // --- Facebook Deal Notifications ---
 
 // SendFacebookDeal sends a Facebook car deal notification to all subscribed channels.
-func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary, knownIssues string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool, subs []models.Subscription) error {
+func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary, knownIssues string, askingPrice, carfaxValue, vmrRetail float64, isWarm, isLavaHot bool, subs []models.Subscription) error {
 	if c.botToken == "" {
 		return nil
 	}
 
-	embed := formatFacebookEmbed(title, url, summary, knownIssues, askingPrice, carfaxValue, isWarm, isLavaHot)
+	embed := formatFacebookEmbed(title, url, summary, knownIssues, askingPrice, carfaxValue, vmrRetail, isWarm, isLavaHot)
 	payload := discordWebhookPayload{
 		Content: "",
 		Embeds:  []discordEmbed{embed},
@@ -362,7 +362,7 @@ func (c *Client) SendFacebookDeal(ctx context.Context, title, url, summary, know
 	return nil
 }
 
-func formatFacebookEmbed(title, url, summary, knownIssues string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool) discordEmbed {
+func formatFacebookEmbed(title, url, summary, knownIssues string, askingPrice, carfaxValue, vmrRetail float64, isWarm, isLavaHot bool) discordEmbed {
 	if isLavaHot {
 		title += " 🔥"
 	}
@@ -374,17 +374,29 @@ func formatFacebookEmbed(title, url, summary, knownIssues string, askingPrice, c
 
 	var fields []discordEmbedField
 
-	// Dense single-line pricing: "12.5k / 18k Carfax / 31% off"
-	if carfaxValue > 0 {
+	// Dense single-line pricing with multiple valuation sources
+	priceVal := formatPriceShort(askingPrice)
+	if carfaxValue > 0 && vmrRetail > 0 {
+		avg := (carfaxValue + vmrRetail) / 2
+		discount := (1 - askingPrice/avg) * 100
+		priceVal = fmt.Sprintf("%s / %s Carfax / %s VMR", priceVal, formatPriceShort(carfaxValue), formatPriceShort(vmrRetail))
+		if discount > 0 {
+			priceVal += fmt.Sprintf(" / %.0f%% off avg", discount)
+		}
+	} else if carfaxValue > 0 {
 		discount := (1 - askingPrice/carfaxValue) * 100
-		priceVal := fmt.Sprintf("%s / %s Carfax", formatPriceShort(askingPrice), formatPriceShort(carfaxValue))
+		priceVal = fmt.Sprintf("%s / %s Carfax", priceVal, formatPriceShort(carfaxValue))
 		if discount > 0 {
 			priceVal += fmt.Sprintf(" / %.0f%% off", discount)
 		}
-		fields = append(fields, discordEmbedField{Name: "Price", Value: priceVal})
-	} else {
-		fields = append(fields, discordEmbedField{Name: "Price", Value: formatPriceShort(askingPrice)})
+	} else if vmrRetail > 0 {
+		discount := (1 - askingPrice/vmrRetail) * 100
+		priceVal = fmt.Sprintf("%s / %s VMR", priceVal, formatPriceShort(vmrRetail))
+		if discount > 0 {
+			priceVal += fmt.Sprintf(" / %.0f%% off", discount)
+		}
 	}
+	fields = append(fields, discordEmbedField{Name: "Price", Value: priceVal})
 
 	if knownIssues != "" {
 		fields = append(fields, discordEmbedField{Name: "⚠️ Watch Out", Value: knownIssues})

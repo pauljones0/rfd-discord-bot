@@ -26,7 +26,7 @@ type Store interface {
 
 // Notifier defines the Discord notification operations.
 type Notifier interface {
-	SendFacebookDeal(ctx context.Context, title, url, summary, knownIssues string, askingPrice, carfaxValue float64, isWarm, isLavaHot bool, subs []models.Subscription) error
+	SendFacebookDeal(ctx context.Context, title, url, summary, knownIssues string, askingPrice, carfaxValue, vmrRetail float64, isWarm, isLavaHot bool, subs []models.Subscription) error
 }
 
 // Processor handles Facebook Marketplace deal scraping and analysis.
@@ -315,13 +315,27 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			}
 		}
 
+		// VMR Canada Valuation (HTTP only — no browser needed)
+		var vmrResult *VMRResult
+		if carData.IsCarfaxEligible() {
+			vmrResult, err = GetVMRValue(ctx, p.ai, carData.Year, carData.Make, carData.Model, carData.Trim, group.postal, carData.Odometer)
+			if err != nil {
+				slog.Warn("VMR valuation failed", "processor", "facebook", "title", ad.Title, "error", err)
+			}
+		}
+
 		// Gemini FOMO Analysis
 		randomDelay(100*time.Millisecond, 300*time.Millisecond)
 		tracker.TrackGeminiCall("", "", 0, 0) // track call count; tokens logged separately
-		analysis, err := AnalyzeDeal(ctx, p.ai, carData, carfaxValue, ad.Price)
+		analysis, err := AnalyzeDeal(ctx, p.ai, carData, carfaxValue, vmrResult, ad.Price)
 		if err != nil {
 			slog.Error("FOMO analysis failed", "processor", "facebook", "title", ad.Title, "error", err)
 			continue
+		}
+
+		var vmrRetail float64
+		if vmrResult != nil {
+			vmrRetail = vmrResult.Retail
 		}
 
 		slog.Info("Facebook FOMO analysis result",
@@ -332,6 +346,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			"ai_title", analysis.Title,
 			"asking_price", ad.Price,
 			"carfax_value", carfaxValue,
+			"vmr_retail", vmrRetail,
 			"year", carData.Year,
 			"make", carData.Make,
 			"model", carData.Model,
@@ -341,12 +356,12 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		// Fan out deal to subscribers — only warm or lava-hot deals get posted
 		if analysis.IsWarm || analysis.IsLavaHot {
 			tracker.TrackDealFound()
-			p.fanOutDeal(ctx, group.subs, ad, analysis, carfaxValue, tracker)
+			p.fanOutDeal(ctx, group.subs, ad, analysis, carfaxValue, vmrRetail, tracker)
 		}
 	}
 }
 
-func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, ad models.ScrapedAd, analysis *models.FacebookDealAnalysis, carfaxValue float64, tracker *metrics.Tracker) {
+func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, ad models.ScrapedAd, analysis *models.FacebookDealAnalysis, carfaxValue, vmrRetail float64, tracker *metrics.Tracker) {
 	// Filter subs by brand and send
 	var matchingSubs []models.Subscription
 	for _, sub := range subs {
@@ -370,7 +385,7 @@ func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, 
 		return
 	}
 
-	if err := p.notifier.SendFacebookDeal(ctx, analysis.Title, ad.URL, analysis.Summary, analysis.KnownIssues, ad.Price, carfaxValue, analysis.IsWarm, analysis.IsLavaHot, matchingSubs); err != nil {
+	if err := p.notifier.SendFacebookDeal(ctx, analysis.Title, ad.URL, analysis.Summary, analysis.KnownIssues, ad.Price, carfaxValue, vmrRetail, analysis.IsWarm, analysis.IsLavaHot, matchingSubs); err != nil {
 		slog.Error("Failed to send facebook deal", "processor", "facebook", "title", analysis.Title, "error", err)
 	} else {
 		tracker.TrackDiscordMessage()

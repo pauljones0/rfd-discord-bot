@@ -232,14 +232,43 @@ Reply with ONLY the exact option text, nothing else.`, year, make, model, string
 }
 
 // AnalyzeDeal uses Gemini with Google Search Grounding to assess if a deal is worth posting.
-func AnalyzeDeal(ctx context.Context, client AIClient, car *models.CarData, carfaxValue float64, askingPrice float64) (*models.FacebookDealAnalysis, error) {
-	var carfaxContext string
-	if carfaxValue > 0 {
+func AnalyzeDeal(ctx context.Context, client AIClient, car *models.CarData, carfaxValue float64, vmr *VMRResult, askingPrice float64) (*models.FacebookDealAnalysis, error) {
+	var valuationContext string
+	if carfaxValue > 0 && vmr != nil && vmr.Retail > 0 {
+		avg := (carfaxValue + vmr.Retail) / 2
+		discount := (1 - askingPrice/avg) * 100
+		valuationContext = fmt.Sprintf(
+			"Carfax Canada private-sale value: $%.0f. VMR Canada retail: $%.0f (wholesale: $%.0f). Average: $%.0f (asking is %.0f%% %s).\n"+
+				"VMR reliability score for %s: %.2f/4.0 (%s).",
+			carfaxValue, vmr.Retail, vmr.Wholesale, avg,
+			abs(discount), discountLabel(discount),
+			car.Make, vmr.ReliabilityRank, vmr.ReliabilityTier)
+		if vmr.ProvinceAdj > 0 {
+			valuationContext += fmt.Sprintf(" Province premium: +%.0f%%.", vmr.ProvinceAdj)
+		}
+	} else if carfaxValue > 0 {
 		discount := (1 - askingPrice/carfaxValue) * 100
-		carfaxContext = fmt.Sprintf("Carfax Canada private-sale value: $%.0f (asking is %.0f%% %s).",
+		valuationContext = fmt.Sprintf("Carfax Canada private-sale value: $%.0f (asking is %.0f%% %s).",
 			carfaxValue, abs(discount), discountLabel(discount))
+	} else if vmr != nil && vmr.Retail > 0 {
+		discount := (1 - askingPrice/vmr.Retail) * 100
+		valuationContext = fmt.Sprintf(
+			"VMR Canada retail value: $%.0f (wholesale: $%.0f). Asking is %.0f%% %s.\n"+
+				"VMR reliability score for %s: %.2f/4.0 (%s).",
+			vmr.Retail, vmr.Wholesale,
+			abs(discount), discountLabel(discount),
+			car.Make, vmr.ReliabilityRank, vmr.ReliabilityTier)
+		if vmr.ProvinceAdj > 0 {
+			valuationContext += fmt.Sprintf(" Province premium: +%.0f%%.", vmr.ProvinceAdj)
+		}
 	} else {
-		carfaxContext = "Carfax valuation unavailable — you MUST use Google Search to find the typical market price."
+		valuationContext = "Carfax and VMR valuations unavailable — you MUST use Google Search to find the typical market price."
+	}
+
+	// Inject VMR reliability data into the prompt if available
+	var reliabilityNote string
+	if vmr != nil && vmr.ReliabilityRank > 0 {
+		reliabilityNote = fmt.Sprintf("\nReliability data: %s scores %.2f/4.0 on VMR Canada owner survey (%s).\n", car.Make, vmr.ReliabilityRank, vmr.ReliabilityTier)
 	}
 
 	// Calculate vehicle age for odometer plausibility check
@@ -261,7 +290,7 @@ Engine: %s | Transmission: %s | Drivetrain: %s | Body: %s
 Odometer: %d km | Condition: %s
 Asking Price: $%.0f
 %s
-%sDescription: %s
+%s%sDescription: %s
 
 STEP 1 — Market Value:
 Find the typical Canadian private-sale price for this year/make/model/trim at similar km using Google Search. If Carfax value is provided, use it as anchor.
@@ -320,7 +349,8 @@ Respond with exactly this JSON:
 		car.Engine, car.Transmission, car.Drivetrain, car.BodyStyle,
 		car.Odometer, car.Condition,
 		askingPrice,
-		carfaxContext,
+		valuationContext,
+		reliabilityNote,
 		odometerNote,
 		car.Description,
 		car.Odometer)

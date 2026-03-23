@@ -1,0 +1,413 @@
+package facebook
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+
+	"golang.org/x/net/html"
+)
+
+// VMRResult holds the valuation data from VMR Canada.
+type VMRResult struct {
+	Wholesale       float64 // adjusted wholesale value
+	Retail          float64 // adjusted retail value
+	TrimName        string  // which trim was matched
+	ProvinceAdj     float64 // province percentage applied (e.g. 5.0)
+	ReliabilityRank float64 // make's reliability score (0-4)
+	ReliabilityTier string  // "Tier 1", "Tier 2", "Tier 3"
+}
+
+// vmrTrim holds a single trim option parsed from the VMR page.
+type vmrTrim struct {
+	Name      string
+	Wholesale float64
+	Retail    float64
+}
+
+// provinceAdjustments maps Canadian province codes to VMR price adjustments (%).
+// Baseline is Ontario South (0%). Source: vmrcanada.com/help/province_considerations.html
+var provinceAdjustments = map[string]float64{
+	"AB": 3, "BC": 6, "MB": 3, "NB": 4, "NL": 8,
+	"NT": 10, "NS": 5, "NU": 10, "ON": 0, "PE": 8,
+	"QC": 2, "SK": 5, "YT": 10,
+}
+
+// reliabilityScores maps vehicle makes to VMR Canada reliability survey scores (0-4).
+// Source: vmrcanada.com/research/reliability-vmrcanada-results.html
+var reliabilityScores = map[string]float64{
+	"Lexus": 3.67, "Honda": 3.48, "Toyota": 3.47, "Lincoln": 3.42,
+	"Mazda": 3.40, "Buick": 3.38, "Acura": 3.33, "Subaru": 3.30,
+	"Infiniti": 3.29, "Kia": 3.17, "Nissan": 3.06, "Chevrolet": 3.04,
+	"GMC": 3.02, "Ram": 2.99, "Dodge": 2.95, "Ford": 2.93,
+	"Mitsubishi": 2.86, "Cadillac": 2.83, "Hyundai": 2.75,
+	"Mercedes-Benz": 2.74, "Jeep": 2.74, "Audi": 2.73,
+	"Chrysler": 2.68, "Volkswagen": 2.67,
+}
+
+// postalToProvince maps the first letter of a Canadian postal code to its province code.
+var postalToProvince = map[byte]string{
+	'A': "NL", 'B': "NS", 'C': "PE", 'E': "NB",
+	'G': "QC", 'H': "QC", 'J': "QC",
+	'K': "ON", 'L': "ON", 'M': "ON", 'N': "ON", 'P': "ON",
+	'R': "MB", 'S': "SK", 'T': "AB", 'V': "BC",
+	'X': "NT", // NT and NU both use X
+	'Y': "YT",
+}
+
+// ProvinceFromPostal derives the province code from a Canadian postal code.
+func ProvinceFromPostal(postal string) string {
+	postal = strings.TrimSpace(strings.ToUpper(postal))
+	if len(postal) == 0 {
+		return "ON" // default to Ontario
+	}
+	if prov, ok := postalToProvince[postal[0]]; ok {
+		return prov
+	}
+	return "ON"
+}
+
+// ReliabilityTier returns the tier classification for a reliability score.
+func ReliabilityTier(score float64) string {
+	if score >= 3.3 {
+		return "Tier 1"
+	}
+	if score >= 2.9 {
+		return "Tier 2"
+	}
+	return "Tier 3"
+}
+
+// GetVMRValue fetches a vehicle valuation from VMR Canada via HTTP.
+// No browser/Playwright needed — the data is embedded in static HTML.
+func GetVMRValue(ctx context.Context, ai AIClient, year int, makeName, model, trim, postalCode string, odometer int) (*VMRResult, error) {
+	start := time.Now()
+	province := ProvinceFromPostal(postalCode)
+
+	slog.Info("VMR valuation starting",
+		"processor", "facebook",
+		"year", year, "make", makeName, "model", model,
+		"trim", trim, "province", province, "odometer", odometer)
+
+	slug := vmrModelSlug(makeName, model)
+	pageURL := fmt.Sprintf("https://www.vmrcanada.com/used-car/values/%d-%s-%s.html", year, vmrMakeSlug(makeName), slug)
+
+	body, err := fetchVMRPage(ctx, pageURL)
+	if err != nil {
+		// If 404, try Gemini to suggest the correct model slug
+		if strings.Contains(err.Error(), "404") && ai != nil {
+			corrected, aiErr := suggestVMRSlug(ctx, ai, year, makeName, model)
+			if aiErr == nil && corrected != "" && corrected != slug {
+				slog.Info("VMR URL corrected by AI",
+					"processor", "facebook",
+					"original_slug", slug, "corrected_slug", corrected)
+				pageURL = fmt.Sprintf("https://www.vmrcanada.com/used-car/values/%d-%s-%s.html", year, vmrMakeSlug(makeName), corrected)
+				body, err = fetchVMRPage(ctx, pageURL)
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch VMR page: %w", err)
+		}
+	}
+
+	trims, err := parseVMRTrims(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse VMR page: %w", err)
+	}
+	if len(trims) == 0 {
+		return nil, fmt.Errorf("no trims found on VMR page for %d %s %s", year, makeName, model)
+	}
+
+	// Fuzzy-match the best trim
+	matched := matchTrim(trims, trim)
+
+	// Apply mileage adjustment
+	vehicleAge := time.Now().Year() - year
+	if vehicleAge < 1 {
+		vehicleAge = 1
+	}
+	wsAdj, rtAdj := mileageAdjustment(matched.Wholesale, odometer, vehicleAge)
+	adjusted := vmrTrim{
+		Name:      matched.Name,
+		Wholesale: matched.Wholesale + wsAdj,
+		Retail:    matched.Retail + rtAdj,
+	}
+
+	// Apply province adjustment
+	provAdj := provinceAdjustments[province]
+	if provAdj > 0 {
+		adjusted.Wholesale *= (1 + provAdj/100)
+		adjusted.Retail *= (1 + provAdj/100)
+	}
+
+	// Round to nearest $25
+	adjusted.Wholesale = math.Round(adjusted.Wholesale/25) * 25
+	adjusted.Retail = math.Round(adjusted.Retail/25) * 25
+
+	// Reliability data
+	relScore := reliabilityScores[makeName]
+	relTier := ReliabilityTier(relScore)
+
+	result := &VMRResult{
+		Wholesale:       adjusted.Wholesale,
+		Retail:          adjusted.Retail,
+		TrimName:        adjusted.Name,
+		ProvinceAdj:     provAdj,
+		ReliabilityRank: relScore,
+		ReliabilityTier: relTier,
+	}
+
+	slog.Info("VMR valuation complete",
+		"processor", "facebook",
+		"year", year, "make", makeName, "model", model,
+		"trim_matched", result.TrimName,
+		"wholesale", result.Wholesale, "retail", result.Retail,
+		"province_adj", provAdj, "reliability", relScore,
+		"duration_ms", time.Since(start).Milliseconds())
+
+	return result, nil
+}
+
+// vmrMakeSlug converts a make name to VMR's URL slug format.
+func vmrMakeSlug(makeName string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(makeName), " ", "-"))
+}
+
+// vmrModelSlug converts a model name to VMR's URL slug format.
+// Handles common patterns: "CR-V" → "cr-v", "F-150" → "f-150", "3 Series" → "3-series"
+func vmrModelSlug(makeName, model string) string {
+	slug := strings.ToLower(strings.TrimSpace(model))
+	slug = strings.ReplaceAll(slug, " ", "-")
+	// Remove any characters that aren't alphanumeric or hyphens
+	var b strings.Builder
+	for _, r := range slug {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// fetchVMRPage fetches the VMR valuation page HTML.
+func fetchVMRPage(ctx context.Context, pageURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return "", err
+	}
+	// Basic headers — VMR has no bot protection
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-CA,en-US;q=0.9,en;q=0.8")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		return "", fmt.Errorf("VMR page not found (404): %s", pageURL)
+	}
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("VMR returned status %d for %s", resp.StatusCode, pageURL)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read VMR response: %w", err)
+	}
+	return string(bodyBytes), nil
+}
+
+// parseVMRTrims extracts trim options from VMR HTML.
+// Each trim is a radio button: <input name="submodel_prices" value="|wholesale|retail">
+// The label text contains the trim description.
+func parseVMRTrims(body string) ([]vmrTrim, error) {
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse HTML: %w", err)
+	}
+
+	var trims []vmrTrim
+	var findTrims func(*html.Node)
+	findTrims = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "input" {
+			var name, value string
+			for _, a := range n.Attr {
+				if a.Key == "name" {
+					name = a.Val
+				}
+				if a.Key == "value" {
+					value = a.Val
+				}
+			}
+			if name == "submodel_prices" && strings.HasPrefix(value, "|") {
+				parts := strings.Split(value, "|")
+				if len(parts) >= 3 {
+					ws, wsErr := strconv.ParseFloat(parts[1], 64)
+					rt, rtErr := strconv.ParseFloat(parts[2], 64)
+					if wsErr == nil && rtErr == nil {
+						// Find the label text — it's usually the sibling text or parent label
+						label := findTrimLabel(n)
+						trims = append(trims, vmrTrim{
+							Name:      label,
+							Wholesale: ws,
+							Retail:    rt,
+						})
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			findTrims(c)
+		}
+	}
+	findTrims(doc)
+
+	return trims, nil
+}
+
+// findTrimLabel extracts the text label for a radio button input.
+// Walks up to the parent <label> or <td> and collects text content.
+func findTrimLabel(n *html.Node) string {
+	// Check if the input is inside a <label>
+	parent := n.Parent
+	for parent != nil {
+		if parent.Type == html.ElementNode && (parent.Data == "label" || parent.Data == "td" || parent.Data == "tr") {
+			text := collectText(parent)
+			// Clean up — remove the radio button value artifacts
+			text = strings.TrimSpace(text)
+			if text != "" {
+				return text
+			}
+		}
+		parent = parent.Parent
+	}
+	// Fallback: check next sibling text
+	if n.NextSibling != nil && n.NextSibling.Type == html.TextNode {
+		return strings.TrimSpace(n.NextSibling.Data)
+	}
+	return "Unknown"
+}
+
+// collectText recursively collects all text from a node, skipping input elements.
+func collectText(n *html.Node) string {
+	if n.Type == html.ElementNode && n.Data == "input" {
+		return ""
+	}
+	if n.Type == html.TextNode {
+		return n.Data
+	}
+	var sb strings.Builder
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		sb.WriteString(collectText(c))
+	}
+	return sb.String()
+}
+
+// matchTrim fuzzy-matches the AI-provided trim against available VMR trims.
+func matchTrim(trims []vmrTrim, targetTrim string) vmrTrim {
+	if len(trims) == 0 {
+		return vmrTrim{}
+	}
+	target := strings.ToLower(strings.TrimSpace(targetTrim))
+
+	// Exact match
+	for _, t := range trims {
+		if strings.ToLower(t.Name) == target {
+			return t
+		}
+	}
+
+	// Substring match
+	for _, t := range trims {
+		tLower := strings.ToLower(t.Name)
+		if strings.Contains(tLower, target) || strings.Contains(target, tLower) {
+			return t
+		}
+	}
+
+	// Cleaned match (alphanumeric only)
+	cleanTarget := cleanAlphaNum(target)
+	for _, t := range trims {
+		cleanName := cleanAlphaNum(strings.ToLower(t.Name))
+		if strings.Contains(cleanName, cleanTarget) || strings.Contains(cleanTarget, cleanName) {
+			return t
+		}
+	}
+
+	// Default to cheapest trim (most conservative estimate)
+	cheapest := trims[0]
+	for _, t := range trims[1:] {
+		if t.Wholesale < cheapest.Wholesale {
+			cheapest = t
+		}
+	}
+	return cheapest
+}
+
+func cleanAlphaNum(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// mileageAdjustment calculates the VMR mileage adjustment for wholesale and retail.
+// Replicates VMR's client-side calcvalue() formula.
+func mileageAdjustment(wholesale float64, actualKm int, vehicleAge int) (wsAdj, rtAdj float64) {
+	normalKm := float64(20000 * vehicleAge)
+	diff := normalKm - float64(actualKm)
+
+	factor := 0.12 * ((wholesale / 28000) + 0.27)
+	wsAdj = diff * factor
+	rtAdj = wsAdj // same adjustment for both
+
+	// Cap at 70% of wholesale (positive or negative)
+	maxAdj := wholesale * 0.70
+	if wsAdj > maxAdj {
+		wsAdj = maxAdj
+		rtAdj = maxAdj
+	}
+	if wsAdj < -maxAdj {
+		wsAdj = -maxAdj
+		rtAdj = -maxAdj
+	}
+
+	return wsAdj, rtAdj
+}
+
+// suggestVMRSlug uses Gemini to suggest the correct VMR model slug when the direct URL 404s.
+func suggestVMRSlug(ctx context.Context, ai AIClient, year int, makeName, model string) (string, error) {
+	prompt := fmt.Sprintf(`The VMR Canada website uses URL slugs for vehicle models.
+URL pattern: vmrcanada.com/used-car/values/{year}-{make}-{model}.html
+Example: 2018-honda-civic.html, 2020-ford-f-150.html, 2019-mercedes-benz-c-class.html
+
+What would be the correct slug for: %d %s %s
+Reply with ONLY the model slug (lowercase, hyphens for spaces). Nothing else.`, year, makeName, model)
+
+	result, err := ai.GenerateContentRaw(ctx, prompt, nil)
+	if err != nil {
+		return "", err
+	}
+	slug := strings.TrimSpace(strings.ToLower(result))
+	// Sanitize — only allow alphanumeric and hyphens
+	var b strings.Builder
+	for _, r := range slug {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String(), nil
+}

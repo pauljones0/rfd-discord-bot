@@ -63,6 +63,8 @@ type FacebookAdRecord struct {
 	Transmission string    `firestore:"transmission"`
 	Condition    string    `firestore:"condition"`
 	CarfaxValue  float64   `firestore:"carfax_value"`
+	VMRWholesale float64   `firestore:"vmr_wholesale"`
+	VMRRetail    float64   `firestore:"vmr_retail"`
 	IsGoodDeal   bool      `firestore:"is_good_deal"`
 	ProcessedAt  time.Time `firestore:"processed_at"`
 	LastSeen     time.Time `firestore:"last_seen"`
