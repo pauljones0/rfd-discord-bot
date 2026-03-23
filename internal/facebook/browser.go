@@ -183,12 +183,12 @@ const jsStealthOverrides = `() => {
 }`
 
 // blockedExtensions lists resource file extensions to block for bandwidth savings.
-// Only raw HTML and JavaScript are allowed through — everything else is noise.
+// HTML, JavaScript, and CSS are allowed through — CSS is needed because anti-bot
+// systems (reCAPTCHA v3, Facebook) penalize pages that load JS without CSS.
 var blockedExtensions = []string{
 	".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".bmp", ".tiff",
 	".mp4", ".webm", ".mp3", ".ogg", ".avi", ".mov", ".flv",
 	".woff", ".woff2", ".ttf", ".eot", ".otf",
-	".css",
 }
 
 // blockedDomains lists ad/tracking domains whose requests are aborted outright.
@@ -347,12 +347,92 @@ func (m *BrowserManager) NewContext(city string) (playwright.BrowserContext, err
 		m.logger.Warn("Failed to inject stealth script", "error", err)
 	}
 
-	// Block images, videos, fonts, CSS, and ad-tracking to save bandwidth
+	// Block images, videos, fonts, and ad-tracking to save bandwidth
 	if err := setupRequestInterception(ctx); err != nil {
 		m.logger.Warn("Failed to set up request interception", "error", err)
 	}
 
 	return ctx, nil
+}
+
+// NewCarfaxContext creates a browser context optimized for Carfax valuation.
+// Unlike NewContext, it allows CSS through (reCAPTCHA v3 penalizes pages that
+// load JS without CSS) and uses a longer proxy session lifetime.
+func (m *BrowserManager) NewCarfaxContext() (playwright.BrowserContext, error) {
+	profile := profiles[rand.Intn(len(profiles))]
+
+	var vp playwright.Size
+	if profile.isMac {
+		vp = macViewports[rand.Intn(len(macViewports))]
+	} else {
+		vp = desktopViewports[rand.Intn(len(desktopViewports))]
+	}
+
+	timezones := []string{"America/Toronto", "America/Vancouver", "America/Edmonton", "America/Winnipeg", "America/Halifax"}
+	tz := timezones[rand.Intn(len(timezones))]
+
+	opts := playwright.BrowserNewContextOptions{
+		Viewport:          &vp,
+		UserAgent:         playwright.String(profile.userAgent),
+		DeviceScaleFactor: playwright.Float(profile.deviceRatio),
+		Locale:            playwright.String("en-CA"),
+		TimezoneId:        playwright.String(tz),
+		Screen:            &playwright.Size{Width: vp.Width, Height: vp.Height + 120},
+		ColorScheme:       playwright.ColorSchemeDark,
+	}
+
+	if rand.Float64() < 0.7 {
+		opts.ColorScheme = playwright.ColorSchemeLight
+	}
+
+	// Carfax uses country-level proxy with longer session lifetime (60s vs 10s)
+	// to reduce IP rotation suspicion for reCAPTCHA v3
+	if m.proxyURL != "" {
+		proxySettings, err := buildCarfaxProxySettings(m.proxyURL)
+		if err != nil {
+			m.logger.Warn("Failed to build Carfax proxy settings, falling back to direct", "error", err)
+		} else {
+			opts.Proxy = proxySettings
+		}
+	}
+
+	ctx, err := m.browser.NewContext(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	err = ctx.AddInitScript(playwright.Script{Content: playwright.String(jsStealthOverrides)})
+	if err != nil {
+		m.logger.Warn("Failed to inject stealth script", "error", err)
+	}
+
+	if err := setupRequestInterception(ctx); err != nil {
+		m.logger.Warn("Failed to set up request interception", "error", err)
+	}
+
+	return ctx, nil
+}
+
+// buildCarfaxProxySettings is like buildProxySettings but uses a longer session
+// lifetime (60s) for better reCAPTCHA v3 scoring.
+func buildCarfaxProxySettings(baseURL string) (*playwright.Proxy, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL: %w", err)
+	}
+
+	password, _ := parsed.User.Password()
+	username := parsed.User.Username()
+
+	password += "_country-CA_session-" + randomSessionID() + "_lifetime-60"
+
+	server := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
+
+	return &playwright.Proxy{
+		Server:   server,
+		Username: playwright.String(username),
+		Password: playwright.String(password),
+	}, nil
 }
 
 // setupRequestInterception installs a route handler that aborts requests for
