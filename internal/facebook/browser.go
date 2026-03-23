@@ -216,7 +216,7 @@ type BrowserManager struct {
 // If proxyURL is non-empty, all browser contexts will route traffic through it.
 func NewBrowserManager(logger *slog.Logger, proxyURL string) (*BrowserManager, error) {
 	if proxyURL != "" {
-		logger.Info("Initializing Playwright with proxy", "proxy", MaskProxyURL(proxyURL))
+		logger.Info("Initializing Playwright with proxy", "proxy", maskProxyURL(proxyURL))
 	} else {
 		logger.Info("Initializing Playwright (no proxy)")
 	}
@@ -470,11 +470,11 @@ func setupRequestInterception(ctx playwright.BrowserContext) error {
 	})
 }
 
-// SimulateHumanBehavior performs random mouse movements and a scroll on the page
+// simulateHumanBehavior performs random mouse movements and a scroll on the page
 // to mimic human interaction patterns. Anti-bot systems like Facebook's track
 // whether a session has any mouse/scroll events — a session with zero interaction
 // before JS extraction is a strong signal of automation.
-func SimulateHumanBehavior(page playwright.Page) {
+func simulateHumanBehavior(page playwright.Page) {
 	vp := page.ViewportSize()
 	if vp == nil {
 		return
@@ -535,8 +535,8 @@ func randomSessionID() string {
 	return string(b)
 }
 
-// MaskProxyURL redacts credentials from a proxy URL for safe logging.
-func MaskProxyURL(proxyURL string) string {
+// maskProxyURL redacts credentials from a proxy URL for safe logging.
+func maskProxyURL(proxyURL string) string {
 	parsed, err := url.Parse(proxyURL)
 	if err != nil {
 		return "<invalid-url>"

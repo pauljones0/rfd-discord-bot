@@ -138,7 +138,7 @@ func ScrapeListingDetail(ctx context.Context, logger *slog.Logger, page playwrig
 	})
 
 	// Simulate human interaction before extracting data
-	SimulateHumanBehavior(page)
+	simulateHumanBehavior(page)
 
 	result, err := page.Evaluate(jsExtractListingDetail)
 	if err != nil {
@@ -361,7 +361,7 @@ func scrapeMarketplaceOnce(ctx context.Context, logger *slog.Logger, pm *Browser
 	dismissOverlays(page)
 
 	// Simulate human interaction before extracting data
-	SimulateHumanBehavior(page)
+	simulateHumanBehavior(page)
 
 	result, err := page.Evaluate(jsScrapeMarketplace)
 	if err != nil {
