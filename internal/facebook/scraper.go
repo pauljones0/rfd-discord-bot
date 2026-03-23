@@ -19,9 +19,14 @@ type ProxyBlocklist interface {
 	BlockProxyIP(ctx context.Context, ip, city string) error
 }
 
-// maxProxyRetries is the number of times to retry with a fresh proxy IP
+// maxProxyRetries is the number of times to retry with city-targeted proxy IPs
 // when the current IP is blocked or gets soft-blocked.
-const maxProxyRetries = 5
+const maxProxyRetries = 3
+
+// maxCountryFallbackRetries is how many additional retries to attempt with
+// country-level proxy targeting (any Canadian IP) after city-targeted retries
+// are exhausted.
+const maxCountryFallbackRetries = 3
 
 const (
 	// jsExtractListingDetail dismisses the login modal, clicks "See more" if present,
@@ -167,7 +172,9 @@ func ScrapeListingDetail(ctx context.Context, logger *slog.Logger, page playwrig
 // and extracts ad data using JavaScript evaluation on the rendered page.
 // If blocklist is non-nil and a proxy is configured, it detects the proxy IP
 // before navigating to Facebook, skips known-blocked IPs, and records newly
-// blocked IPs on soft-block detection.
+// blocked IPs on soft-block detection. After city-targeted retries are
+// exhausted, falls back to country-level proxy (any Canadian IP).
+
 func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserManager, cfg *FacebookScrapeConfig, blocklist ProxyBlocklist) ([]models.ScrapedAd, error) {
 	if cfg.City == "" {
 		return nil, fmt.Errorf("scrape config has no city configured")
@@ -194,36 +201,99 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 	}
 
 	var lastErr error
+
+	// Phase 1: city-targeted proxy retries
 	for attempt := 0; attempt < retries; attempt++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		if attempt > 0 {
-			// Brief pause before retrying with a new proxy IP
 			time.Sleep(time.Duration(500+attempt*500) * time.Millisecond)
 		}
 
-		ads, proxyIP, err := scrapeMarketplaceOnce(ctx, logger, pm, cfg, targetURL, blocklist)
+		ads, proxyIP, err := scrapeMarketplaceOnce(ctx, logger, pm, cfg, cfg.City, targetURL, blocklist)
 		if err == nil {
 			return ads, nil
 		}
 
 		lastErr = err
 
-		// If this was a soft block, record the IP and retry
-		if strings.Contains(err.Error(), "soft block detected") && hasProxy && blocklist != nil {
-			if proxyIP != "" {
-				if blockErr := blocklist.BlockProxyIP(ctx, proxyIP, cfg.City); blockErr != nil {
-					logger.Warn("Failed to save blocked proxy IP", "processor", "facebook", "ip", proxyIP, "error", blockErr)
-				} else {
-					logger.Info("Blocked proxy IP recorded", "processor", "facebook", "ip", proxyIP, "city", cfg.City, "attempt", attempt+1)
-				}
-			}
-			logger.Info("Soft block detected, rotating proxy", "processor", "facebook", "city", cfg.City, "attempt", attempt+1, "max_retries", retries)
+		if !hasProxy || blocklist == nil {
+			return nil, err
+		}
+
+		// Known-blocked IP from blocklist — don't re-save, just rotate
+		if strings.Contains(err.Error(), "already blocked") {
+			logger.Info("Skipping known-blocked proxy IP, rotating",
+				"processor", "facebook", "ip", proxyIP, "city", cfg.City,
+				"attempt", attempt+1, "max_retries", retries)
 			continue
 		}
 
-		// Non-soft-block errors are not retryable here
+		// Fresh Facebook block — save IP to blocklist and rotate
+		if strings.Contains(err.Error(), "soft block detected") {
+			if proxyIP != "" {
+				if blockErr := blocklist.BlockProxyIP(ctx, proxyIP, cfg.City); blockErr != nil {
+					logger.Warn("Failed to save blocked proxy IP", "processor", "facebook", "ip", proxyIP, "error", blockErr)
+				}
+			}
+			logger.Warn("Facebook blocked fresh IP, adding to blocklist and rotating",
+				"processor", "facebook", "ip", proxyIP, "city", cfg.City,
+				"attempt", attempt+1, "max_retries", retries)
+			continue
+		}
+
+		// Non-proxy error — not retryable
+		return nil, err
+	}
+
+	// Phase 2: country-level fallback (any Canadian IP) after city pool exhausted
+	if !hasProxy || lastErr == nil {
+		return nil, lastErr
+	}
+	errMsg := lastErr.Error()
+	if !strings.Contains(errMsg, "soft block detected") && !strings.Contains(errMsg, "already blocked") {
+		return nil, lastErr
+	}
+
+	logger.Info("City proxy pool exhausted, falling back to country-level proxy",
+		"processor", "facebook", "city", cfg.City)
+
+	for attempt := 0; attempt < maxCountryFallbackRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attempt > 0 {
+			time.Sleep(time.Duration(500+attempt*500) * time.Millisecond)
+		}
+
+		// Pass "" as proxyCity — NewContext("") omits city targeting, uses any Canadian IP
+		ads, proxyIP, err := scrapeMarketplaceOnce(ctx, logger, pm, cfg, "", targetURL, blocklist)
+		if err == nil {
+			logger.Info("Country-level proxy succeeded",
+				"processor", "facebook", "city", cfg.City, "proxy_ip", proxyIP)
+			return ads, nil
+		}
+
+		lastErr = err
+
+		if strings.Contains(err.Error(), "already blocked") {
+			logger.Info("Skipping known-blocked proxy IP (country fallback), rotating",
+				"processor", "facebook", "ip", proxyIP, "city", cfg.City, "attempt", attempt+1)
+			continue
+		}
+
+		if strings.Contains(err.Error(), "soft block detected") {
+			if proxyIP != "" && blocklist != nil {
+				if blockErr := blocklist.BlockProxyIP(ctx, proxyIP, cfg.City); blockErr != nil {
+					logger.Warn("Failed to save blocked proxy IP", "processor", "facebook", "ip", proxyIP, "error", blockErr)
+				}
+			}
+			logger.Warn("Facebook blocked fresh IP (country fallback), rotating",
+				"processor", "facebook", "ip", proxyIP, "city", cfg.City, "attempt", attempt+1)
+			continue
+		}
+
 		return nil, err
 	}
 
@@ -231,11 +301,12 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 }
 
 // scrapeMarketplaceOnce performs a single scrape attempt. It creates a new
-// browser context (with a fresh proxy session), optionally checks the proxy IP
-// against the blocklist, navigates to Facebook, and extracts ads.
+// browser context (with a fresh proxy session targeted at proxyCity), optionally
+// checks the proxy IP against the blocklist, navigates to Facebook, and extracts ads.
+// proxyCity controls proxy geo-targeting: non-empty targets that city, empty uses any Canadian IP.
 // Returns the scraped ads, the detected proxy IP (empty if unavailable), and any error.
-func scrapeMarketplaceOnce(ctx context.Context, logger *slog.Logger, pm *BrowserManager, cfg *FacebookScrapeConfig, targetURL string, blocklist ProxyBlocklist) ([]models.ScrapedAd, string, error) {
-	bCtx, err := pm.NewContext(cfg.City)
+func scrapeMarketplaceOnce(ctx context.Context, logger *slog.Logger, pm *BrowserManager, cfg *FacebookScrapeConfig, proxyCity string, targetURL string, blocklist ProxyBlocklist) ([]models.ScrapedAd, string, error) {
+	bCtx, err := pm.NewContext(proxyCity)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create playwright context: %w", err)
 	}
@@ -255,8 +326,7 @@ func scrapeMarketplaceOnce(ctx context.Context, logger *slog.Logger, pm *Browser
 		if err != nil {
 			logger.Warn("Failed to check proxy blocklist", "processor", "facebook", "ip", proxyIP, "error", err)
 		} else if blocked {
-			logger.Info("Proxy IP is blocked, skipping", "processor", "facebook", "ip", proxyIP, "city", cfg.City)
-			return nil, proxyIP, fmt.Errorf("soft block detected for %s: proxy IP %s is in blocklist", cfg.City, proxyIP)
+			return nil, proxyIP, fmt.Errorf("proxy IP %s already blocked for %s", proxyIP, cfg.City)
 		}
 	}
 

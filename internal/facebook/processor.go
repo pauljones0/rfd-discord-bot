@@ -435,9 +435,10 @@ func hasDigit(s string) bool {
 }
 
 // isTooVague returns true for ads that lack enough information for Gemini to
-// extract structured vehicle data. Specifically: a single-word title with no
-// year digits and no supplementary description/mileage. These always cause
-// Gemini to return explanatory prose instead of JSON.
+// extract structured vehicle data. A single-word title without digits (e.g.
+// "Bravo") is too vague unless the description contains real vehicle info
+// (year/make/model). Mileage alone doesn't help — Gemini can't determine
+// make/model from a title like "Bravo" with just "120000 km".
 func isTooVague(title, description, mileage string) bool {
 	title = strings.TrimSpace(title)
 	words := strings.Fields(title)
@@ -447,8 +448,11 @@ func isTooVague(title, description, mileage string) bool {
 	if hasDigit(title) {
 		return false // has a year or number — worth trying
 	}
-	// Single word, no digits: only skip if there's no description or mileage
-	return strings.TrimSpace(description) == "" && strings.TrimSpace(mileage) == ""
+	// Single word, no digits: only a description with real vehicle details
+	// (containing year digits like "2015 Fiat Bravo") can save it. Mileage
+	// alone is not enough context for Gemini.
+	desc := strings.TrimSpace(description)
+	return desc == "" || !hasDigit(desc)
 }
 
 func isTransientError(err error) bool {

@@ -199,7 +199,7 @@ func BuildMarketplaceURL(city, category string, radiusKm int) (string, error) {
 	}
 
 	return fmt.Sprintf(
-		"https://www.facebook.com/marketplace/%s/%s/?exact=false&radius=%d",
+		"https://www.facebook.com/marketplace/%s/%s/?exact=false&radius=%d&maxPrice=5000",
 		locationID, catSlug, radiusKm,
 	), nil
 }

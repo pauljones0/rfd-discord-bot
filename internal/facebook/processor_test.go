@@ -12,8 +12,9 @@ func TestIsTooVague(t *testing.T) {
 	}{
 		{"single word no info", "Bravo", "", "", true},
 		{"single word with spaces", "  Bravo  ", "", "", true},
-		{"single word with description", "Bravo", "2015 Fiat Bravo hatchback", "", false},
-		{"single word with mileage", "Bravo", "", "120000 km", false},
+		{"single word with description containing year", "Bravo", "2015 Fiat Bravo hatchback", "", false},
+		{"single word with vague description", "Bravo", "nice car low km", "", true},
+		{"single word with mileage only", "Bravo", "", "120000 km", true},
 		{"single word with digits", "F150", "", "", false},
 		{"two words no info", "Honda Civic", "", "", false},
 		{"normal listing", "2019 Honda Civic", "", "", false},

@@ -190,19 +190,19 @@ func TestBuildMarketplaceURL(t *testing.T) {
 			city:     "Toronto",
 			category: "Vehicles",
 			radius:   500,
-			wantURL:  "https://www.facebook.com/marketplace/110941395597405/vehicles/?exact=false&radius=500",
+			wantURL:  "https://www.facebook.com/marketplace/110941395597405/vehicles/?exact=false&radius=500&maxPrice=5000",
 		},
 		{
 			city:     "Vancouver",
 			category: "Vehicles",
 			radius:   100,
-			wantURL:  "https://www.facebook.com/marketplace/114497808567786/vehicles/?exact=false&radius=100",
+			wantURL:  "https://www.facebook.com/marketplace/114497808567786/vehicles/?exact=false&radius=100&maxPrice=5000",
 		},
 		{
 			city:     "Toronto",
 			category: "Vehicles",
 			radius:   0,
-			wantURL:  "https://www.facebook.com/marketplace/110941395597405/vehicles/?exact=false&radius=500",
+			wantURL:  "https://www.facebook.com/marketplace/110941395597405/vehicles/?exact=false&radius=500&maxPrice=5000",
 		},
 		{
 			city:    "Fake City",
