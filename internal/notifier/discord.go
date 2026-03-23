@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/bestbuy"
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -605,6 +606,108 @@ func formatMemExpressEmbed(product memoryexpress.AnalyzedProduct) discordEmbed {
 		Thumbnail:   thumbnail,
 		Footer: discordEmbedFooter{
 			Text: "Memory Express Clearance • In-store pickup only",
+		},
+	}
+}
+
+// SendBestBuyDeal sends a Best Buy deal notification to all eligible subscriptions.
+func (c *Client) SendBestBuyDeal(ctx context.Context, product bestbuy.AnalyzedProduct, subs []models.Subscription) error {
+	if c.botToken == "" {
+		return nil
+	}
+
+	embed := formatBestBuyEmbed(product)
+	payload := discordWebhookPayload{
+		Content: "",
+		Embeds:  []discordEmbed{embed},
+	}
+
+	for i, sub := range subs {
+		if i > 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+		urlStr := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, sub.ChannelID)
+		_, err := c.doRequest(ctx, "POST", urlStr, payload)
+		if err != nil {
+			slog.Error("Failed to send Best Buy deal to channel",
+				"processor", "bestbuy",
+				"channel", sub.ChannelID,
+				"title", product.CleanTitle,
+				"error", err,
+			)
+		} else {
+			slog.Info("Best Buy deal sent",
+				"processor", "bestbuy",
+				"channel", sub.ChannelID,
+				"title", product.CleanTitle,
+			)
+		}
+	}
+
+	return nil
+}
+
+func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
+	title := product.CleanTitle
+	if title == "" {
+		title = product.Name
+	}
+	if product.IsLavaHot {
+		title += " 🔥"
+	}
+
+	embedColor := colorWarmDeal
+	if product.IsLavaHot {
+		embedColor = colorHotDeal
+	}
+
+	var fields []discordEmbedField
+
+	// Price field with strikethrough original
+	if product.SalePrice > 0 && product.SalePrice < product.RegularPrice {
+		priceVal := fmt.Sprintf("~~$%.2f~~ → **$%.2f**", product.RegularPrice, product.SalePrice)
+		if product.DiscountPct > 0 {
+			priceVal += fmt.Sprintf(" (%.0f%% off)", product.DiscountPct)
+		}
+		fields = append(fields, discordEmbedField{Name: "Price", Value: priceVal})
+	} else if product.RegularPrice > 0 {
+		fields = append(fields, discordEmbedField{Name: "Price", Value: fmt.Sprintf("**$%.2f**", product.RegularPrice)})
+	}
+
+	// Seller
+	if product.SellerName != "" {
+		fields = append(fields, discordEmbedField{Name: "Seller", Value: product.SellerName, Inline: true})
+	}
+
+	// Category
+	if product.CategoryName != "" {
+		fields = append(fields, discordEmbedField{Name: "Category", Value: product.CategoryName, Inline: true})
+	}
+
+	var description string
+	if product.Summary != "" {
+		description = product.Summary
+	}
+
+	var thumbnail discordEmbedThumbnail
+	if product.ImageURL != "" {
+		thumbnail.URL = product.ImageURL
+	}
+
+	footerText := "Best Buy Marketplace"
+	if product.Source == "openbox" || product.IsOpenBox {
+		footerText = "Geek Squad Certified Open Box"
+	}
+
+	return discordEmbed{
+		Title:       title,
+		URL:         product.URL,
+		Description: description,
+		Color:       embedColor,
+		Fields:      fields,
+		Thumbnail:   thumbnail,
+		Footer: discordEmbedFooter{
+			Text: footerText,
 		},
 	}
 }

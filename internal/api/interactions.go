@@ -317,6 +317,8 @@ func (h *Handler) handleDealsCommand(w http.ResponseWriter, req interactionReque
 		h.handleSetupFacebook(w, req, subCommand.Options)
 	case "setup-memoryexpress":
 		h.handleSetupMemoryExpress(w, req, subCommand.Options)
+	case "setup-bestbuy":
+		h.handleSetupBestBuy(w, req, subCommand.Options)
 	case "remove":
 		h.handleDealsRemove(w, req, subCommand.Options)
 	case "list":
@@ -632,6 +634,43 @@ func (h *Handler) handleSetupMemoryExpress(w http.ResponseWriter, req interactio
 	h.respondPrivateMessage(w, fmt.Sprintf("✅ Memory Express clearance deals for **%s** will be posted in <#%s> with filter **%s**!", storeName, channelID, filter))
 }
 
+// handleSetupBestBuy handles /deals setup-bestbuy channel:<#channel> filter:<type>
+func (h *Handler) handleSetupBestBuy(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
+	var channelID, channelName, filter string
+	for _, opt := range options {
+		switch opt.Name {
+		case "channel":
+			if val, ok := opt.Value.(string); ok {
+				channelID = val
+				if req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
+					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
+						channelName = ch.Name
+					}
+				}
+			}
+		case "filter":
+			if val, ok := opt.Value.(string); ok {
+				filter = val
+			}
+		}
+	}
+
+	if channelID == "" || filter == "" {
+		h.respondPrivateMessage(w, "Please select a channel and filter type.")
+		return
+	}
+
+	validFilters := map[string]bool{
+		"bb_warm_hot": true, "bb_hot": true,
+	}
+	if !validFilters[filter] {
+		h.respondPrivateMessage(w, "Invalid Best Buy filter type.")
+		return
+	}
+
+	h.saveRFDEbaySubscription(w, req, channelID, channelName, filter, "bestbuy")
+}
+
 // handleDealsRemove handles /deals remove type:<rfd|ebay|facebook>
 func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
 	var removeType string
@@ -652,7 +691,7 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 	defer cancel()
 
 	switch removeType {
-	case "rfd", "ebay":
+	case "rfd", "ebay", "bestbuy":
 		// Get all subscriptions and filter by type
 		subs, err := h.store.GetSubscriptionsByGuild(ctx, req.GuildID)
 		if err != nil {
@@ -666,6 +705,8 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 			if removeType == "rfd" && sub.IsRFD() {
 				matching = append(matching, sub)
 			} else if removeType == "ebay" && sub.IsEbay() {
+				matching = append(matching, sub)
+			} else if removeType == "bestbuy" && sub.IsBestBuy() {
 				matching = append(matching, sub)
 			}
 		}
@@ -735,7 +776,7 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 		writeJSON(w, res)
 
 	default:
-		h.respondPrivateMessage(w, "Invalid subscription type. Choose rfd, ebay, facebook, or memoryexpress.")
+		h.respondPrivateMessage(w, "Invalid subscription type. Choose rfd, ebay, facebook, memoryexpress, or bestbuy.")
 	}
 }
 
@@ -770,10 +811,12 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 	msg.WriteString("📋 **Active Deal Subscriptions**\n\n")
 
 	// Group RFD/eBay subs
-	var rfdSubs, ebaySubs []models.Subscription
+	var rfdSubs, ebaySubs, bbSubs []models.Subscription
 	for _, sub := range subs {
 		if sub.IsEbay() {
 			ebaySubs = append(ebaySubs, sub)
+		} else if sub.IsBestBuy() {
+			bbSubs = append(bbSubs, sub)
 		} else if sub.IsRFD() {
 			rfdSubs = append(rfdSubs, sub)
 		}
@@ -812,6 +855,14 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 		for _, sub := range meSubs {
 			storeName := memoryexpress.StoreName(sub.StoreCode)
 			msg.WriteString(fmt.Sprintf("  • <#%s> — %s (%s)\n", sub.ChannelID, storeName, sub.DealType))
+		}
+		msg.WriteString("\n")
+	}
+
+	if len(bbSubs) > 0 {
+		msg.WriteString("**Best Buy:**\n")
+		for _, sub := range bbSubs {
+			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, sub.DealType))
 		}
 	}
 

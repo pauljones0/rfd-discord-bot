@@ -14,6 +14,7 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/ai"
 	"github.com/pauljones0/rfd-discord-bot/internal/api"
+	"github.com/pauljones0/rfd-discord-bot/internal/bestbuy"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
@@ -31,6 +32,7 @@ type Server struct {
 	ebayProcessor       *ebay.Processor
 	facebookProcessor   *facebook.Processor
 	memexpressProcessor *memoryexpress.Processor
+	bestbuyProcessor    *bestbuy.Processor
 	aiClient            *ai.Client
 	store               processor.DealStore
 	wg                  sync.WaitGroup
@@ -38,6 +40,7 @@ type Server struct {
 	ebaySem             chan struct{} // Semaphore to limit concurrent eBay processing requests
 	facebookSem         chan struct{} // Semaphore to limit concurrent Facebook processing requests
 	memexpressSem       chan struct{} // Semaphore to limit concurrent Memory Express processing requests
+	bestbuySem          chan struct{} // Semaphore to limit concurrent Best Buy processing requests
 }
 
 func main() {
@@ -106,17 +109,24 @@ func main() {
 	meProc := memoryexpress.NewProcessor(store, aiClient, n)
 	slog.Info("Memory Express clearance processor initialized")
 
+	// Initialize Best Buy processor (always available — no special credentials needed)
+	bbClient := bestbuy.NewClient()
+	bbProc := bestbuy.NewProcessor(store, bbClient, aiClient, n)
+	slog.Info("Best Buy Marketplace processor initialized")
+
 	srv := &Server{
 		processor:           p,
 		ebayProcessor:       ebayProc,
 		facebookProcessor:   fbProc,
 		memexpressProcessor: meProc,
+		bestbuyProcessor:    bbProc,
 		aiClient:            aiClient,
 		store:               store,
 		sem:                 make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
 		ebaySem:             make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
 		facebookSem:         make(chan struct{}, 1), // Allow 1 concurrent Facebook processing attempt
 		memexpressSem:       make(chan struct{}, 1), // Allow 1 concurrent Memory Express processing attempt
+		bestbuySem:          make(chan struct{}, 1), // Allow 1 concurrent Best Buy processing attempt
 	}
 
 	apiHandler, err := api.NewHandler(cfg, store)
@@ -131,6 +141,7 @@ func main() {
 	mux.HandleFunc("/process-ebay", srv.ProcessEbayHandler)
 	mux.HandleFunc("/process-facebook", srv.ProcessFacebookHandler)
 	mux.HandleFunc("/process-memoryexpress", srv.ProcessMemoryExpressHandler)
+	mux.HandleFunc("/process-bestbuy", srv.ProcessBestBuyHandler)
 	mux.Handle("/discord/interactions", apiHandler)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -367,6 +378,47 @@ func (s *Server) ProcessMemoryExpressHandler(w http.ResponseWriter, r *http.Requ
 
 	w.WriteHeader(http.StatusAccepted)
 	fmt.Fprintln(w, "Memory Express deal processing started.")
+}
+
+func (s *Server) ProcessBestBuyHandler(w http.ResponseWriter, r *http.Request) {
+	select {
+	case s.bestbuySem <- struct{}{}:
+	default:
+		slog.Warn("ProcessBestBuyHandler: previous run still active, skipping",
+			"processor", "bestbuy",
+		)
+		w.WriteHeader(http.StatusTooManyRequests)
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
+			slog.Error("Failed to encode response", "error", err)
+		}
+		return
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() { <-s.bestbuySem }()
+
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Panic in ProcessBestBuyDeals", "processor", "bestbuy", "panic", r)
+			}
+		}()
+		slog.Info("Starting Best Buy deal processing", "processor", "bestbuy")
+		if s.aiClient != nil {
+			s.aiClient.LogCurrentState()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		start := time.Now()
+		if err := s.bestbuyProcessor.ProcessBestBuyDeals(ctx); err != nil {
+			slog.Error("Error processing Best Buy deals", "processor", "bestbuy", "error", err)
+		}
+		slog.Info("Best Buy deal processing finished", "processor", "bestbuy", "duration", time.Since(start))
+	}()
+
+	w.WriteHeader(http.StatusAccepted)
+	fmt.Fprintln(w, "Best Buy deal processing started.")
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

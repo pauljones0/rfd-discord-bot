@@ -154,6 +154,31 @@ func main() {
 					},
 				},
 			},
+			// setup-bestbuy subcommand
+			{
+				"name":        "setup-bestbuy",
+				"description": "Subscribe this channel to Best Buy Marketplace & Open Box deal notifications.",
+				"type":        1, // SUB_COMMAND
+				"options": []map[string]interface{}{
+					{
+						"name":          "channel",
+						"description":   "The channel to publish deals to.",
+						"type":          7,           // CHANNEL
+						"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
+						"required":      true,
+					},
+					{
+						"name":        "filter",
+						"description": "The type of Best Buy deals to publish.",
+						"type":        3, // STRING
+						"required":    true,
+						"choices": []map[string]interface{}{
+							{"name": "Warm + Hot deals", "value": "bb_warm_hot"},
+							{"name": "Hot deals only", "value": "bb_hot"},
+						},
+					},
+				},
+			},
 			// remove subcommand
 				{
 					"name":        "remove",
@@ -170,6 +195,7 @@ func main() {
 								{"name": "eBay", "value": "ebay"},
 								{"name": "Facebook", "value": "facebook"},
 								{"name": "Memory Express", "value": "memoryexpress"},
+								{"name": "Best Buy", "value": "bestbuy"},
 							},
 						},
 					},
