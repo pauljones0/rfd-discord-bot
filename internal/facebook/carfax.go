@@ -72,7 +72,11 @@ const (
 		return match ? match[0] : null;
 	}`
 
-	jsSelectFuzzy = `async ([label, targetText]) => {
+	// jsFindBestOption locates the best matching option in a dropdown by label
+	// using fuzzy matching, marks the element for Playwright selection, and returns
+	// the option value. Unlike jsSelectFuzzy, it does NOT select the option itself —
+	// the caller uses Playwright's native SelectOption for proper event dispatching.
+	jsFindBestOption = `async ([label, targetText]) => {
 		const labels = Array.from(document.querySelectorAll('label, div, span')).filter(el => el.innerText && el.innerText.trim() === label);
 		let selectEl = null;
 
@@ -98,7 +102,7 @@ const (
 			}
 		}
 
-		if (!selectEl) return "Select element not found for " + label;
+		if (!selectEl) return {error: "Select element not found for " + label};
 
 		let retries = 20;
 		while ((selectEl.disabled || selectEl.options.length <= 1) && retries > 0) {
@@ -106,10 +110,10 @@ const (
 			retries--;
 		}
 
-		if (selectEl.disabled) return "Select element disabled for " + label;
+		if (selectEl.disabled) return {error: "Select element disabled for " + label};
 
 		const opts = Array.from(selectEl.options);
-		if (selectEl.selectedIndex > 0 && !targetText) return null;
+		if (selectEl.selectedIndex > 0 && !targetText) return {alreadySelected: true};
 
 		let bestIdx = -1;
 		if (targetText) {
@@ -144,13 +148,12 @@ const (
 		}
 
 		if (bestIdx !== -1) {
-			selectEl.selectedIndex = bestIdx;
-			selectEl.dispatchEvent(new Event('input', { bubbles: true }));
-			selectEl.dispatchEvent(new Event('change', { bubbles: true }));
-			return null;
+			// Tag the element so Playwright can locate it
+			selectEl.setAttribute('data-carfax-select', label);
+			return {value: opts[bestIdx].value};
 		}
 
-		return "No matching option found for " + label;
+		return {error: "No matching option found for " + label};
 	}`
 )
 
@@ -372,7 +375,7 @@ func (c *CarfaxClient) readOptions(page playwright.Page, label string) ([]string
 }
 
 func (c *CarfaxClient) selectFuzzy(page playwright.Page, label, targetText string) error {
-	result, err := page.Evaluate(jsSelectFuzzy, []interface{}{label, targetText})
+	result, err := page.Evaluate(jsFindBestOption, []interface{}{label, targetText})
 	if err != nil {
 		slog.Warn("Carfax selectFuzzy JS error",
 			"processor", "facebook",
@@ -380,14 +383,48 @@ func (c *CarfaxClient) selectFuzzy(page playwright.Page, label, targetText strin
 			"error", err, "page_url", page.URL())
 		return fmt.Errorf("failed to evaluate JS for %s: %w", label, err)
 	}
-	if result != nil {
-		resultStr := fmt.Sprintf("%v", result)
+
+	resultMap, ok := result.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("unexpected result type for %s", label)
+	}
+
+	if errMsg, hasErr := resultMap["error"]; hasErr {
+		errStr := fmt.Sprintf("%v", errMsg)
 		slog.Warn("Carfax selectFuzzy failed",
 			"processor", "facebook",
 			"label", label, "target", targetText,
-			"result", resultStr)
-		return fmt.Errorf("%s for %s", resultStr, label)
+			"result", errStr)
+		return fmt.Errorf("%s for %s", errStr, label)
 	}
+
+	// Already selected and no target — nothing to do
+	if _, alreadySet := resultMap["alreadySelected"]; alreadySet {
+		return nil
+	}
+
+	value, ok := resultMap["value"].(string)
+	if !ok {
+		return fmt.Errorf("no value returned for %s", label)
+	}
+
+	// Use Playwright's native SelectOption to fire proper browser events.
+	// This triggers framework-level change handlers (React, Angular, etc.)
+	// that plain JS dispatchEvent misses, which is critical for dropdown cascades.
+	loc := page.Locator("[data-carfax-select='" + label + "']")
+	if _, err := loc.SelectOption(playwright.SelectOptionValues{
+		Values: playwright.StringSlice(value),
+	}); err != nil {
+		slog.Warn("Carfax Playwright SelectOption failed",
+			"processor", "facebook",
+			"label", label, "target", targetText,
+			"value", value, "error", err)
+		return fmt.Errorf("failed to select option for %s: %w", label, err)
+	}
+
+	// Clean up the temporary attribute
+	page.Evaluate("(label) => document.querySelector('[data-carfax-select=\"' + label + '\"]')?.removeAttribute('data-carfax-select')", label)
+
 	return nil
 }
 
