@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"log/slog"
-	"sync"
 	"sync/atomic"
 )
 
@@ -15,9 +14,6 @@ type Tracker struct {
 	geminiCalls        atomic.Int64
 	geminiInputTokens  atomic.Int64
 	geminiOutputTokens atomic.Int64
-	mu                 sync.Mutex
-	geminiModel        string
-	geminiRegion       string
 
 	// Carfax metrics
 	carfaxValuations atomic.Int64
@@ -38,14 +34,10 @@ func NewTracker(processor string) *Tracker {
 }
 
 // TrackGeminiCall records a Gemini API call with token counts.
-func (t *Tracker) TrackGeminiCall(model, region string, inputTokens, outputTokens int) {
+func (t *Tracker) TrackGeminiCall(inputTokens, outputTokens int) {
 	t.geminiCalls.Add(1)
 	t.geminiInputTokens.Add(int64(inputTokens))
 	t.geminiOutputTokens.Add(int64(outputTokens))
-	t.mu.Lock()
-	t.geminiModel = model
-	t.geminiRegion = region
-	t.mu.Unlock()
 }
 
 // TrackCarfaxValuation records a Carfax valuation attempt.
@@ -80,16 +72,9 @@ func (t *Tracker) TrackDealFound() {
 // LogSummary emits an INFO-level log with all accumulated metrics.
 // Call this at the end of each processor run.
 func (t *Tracker) LogSummary() {
-	t.mu.Lock()
-	model := t.geminiModel
-	region := t.geminiRegion
-	t.mu.Unlock()
-
 	slog.Info("api_usage_summary",
 		"processor", t.processor,
 		"gemini_calls", t.geminiCalls.Load(),
-		"gemini_model", model,
-		"gemini_region", region,
 		"gemini_input_tokens", t.geminiInputTokens.Load(),
 		"gemini_output_tokens", t.geminiOutputTokens.Load(),
 		"carfax_valuations", t.carfaxValuations.Load(),

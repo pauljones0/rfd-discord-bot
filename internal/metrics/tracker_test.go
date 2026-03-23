@@ -5,8 +5,8 @@ import "testing"
 func TestTracker_BasicOperations(t *testing.T) {
 	tracker := NewTracker("test")
 
-	tracker.TrackGeminiCall("gemini-2.5-flash", "us-central1", 100, 50)
-	tracker.TrackGeminiCall("gemini-2.5-flash", "us-central1", 200, 75)
+	tracker.TrackGeminiCall(100, 50)
+	tracker.TrackGeminiCall(200, 75)
 	tracker.TrackCarfaxValuation(true)
 	tracker.TrackCarfaxValuation(true)
 	tracker.TrackCarfaxValuation(false)
@@ -55,7 +55,7 @@ func TestTracker_ThreadSafety(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func() {
 			for j := 0; j < 100; j++ {
-				tracker.TrackGeminiCall("model", "region", 10, 5)
+				tracker.TrackGeminiCall(10, 5)
 				tracker.TrackCarfaxValuation(true)
 			}
 			done <- true

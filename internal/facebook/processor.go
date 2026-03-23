@@ -262,7 +262,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		}
 
 		carData, err := NormalizeAd(ctx, p.ai, ad.Title, extraContext)
-		tracker.TrackGeminiCall("", "", 0, 0) // track call count; tokens logged separately
+		tracker.TrackGeminiCall(0, 0)
 		if err != nil {
 			slog.Error("Failed to normalize ad", "processor", "facebook", "title", ad.Title, "error", err)
 			continue
@@ -337,7 +337,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 
 		// Gemini FOMO Analysis
 		randomDelay(100*time.Millisecond, 300*time.Millisecond)
-		tracker.TrackGeminiCall("", "", 0, 0) // track call count; tokens logged separately
+		tracker.TrackGeminiCall(0, 0)
 		analysis, err := AnalyzeDeal(ctx, p.ai, carData, carfaxValue, vmrResult, ad.Price)
 		if err != nil {
 			slog.Error("FOMO analysis failed", "processor", "facebook", "title", ad.Title, "error", err)

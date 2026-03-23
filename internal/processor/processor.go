@@ -293,7 +293,7 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 			// Call AI
 			// Note: This is done sequentially here. For high volume, we might want concurrency,
 			// but for a few deals every 10 mins, sequential is fine and safer for rate limits.
-			tracker.TrackGeminiCall("", "", 0, 0) // track call count; tokens logged in ai package
+			tracker.TrackGeminiCall(0, 0)
 			cleanedTitle, isWarm, isHot, err := p.aiClient.AnalyzeDeal(ctx, deal)
 
 			if err != nil {
