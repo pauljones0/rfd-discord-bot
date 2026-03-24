@@ -128,6 +128,7 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 	groups := groupByCity(subs)
 	slog.Info("Starting scrape cycle", "processor", "facebook", "subscriptions", len(subs), "cities", len(groups))
 
+	carfaxFailures := 0 // global circuit breaker shared across all cities
 	for i, group := range groups {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -135,7 +136,7 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 		if i > 0 {
 			randomDelay(3*time.Second, 6*time.Second)
 		}
-		p.processCity(ctx, group, carfaxClient, pm, tracker)
+		p.processCity(ctx, group, carfaxClient, pm, tracker, &carfaxFailures)
 	}
 
 	// Prune old ads — use a separate context so pruning isn't starved for time
@@ -191,7 +192,7 @@ func groupByCity(subs []models.Subscription) []cityGroup {
 	return groups
 }
 
-func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClient CarfaxValuer, pm *BrowserManager, tracker *metrics.Tracker) {
+func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClient CarfaxValuer, pm *BrowserManager, tracker *metrics.Tracker, carfaxFailures *int) {
 	slog.Info("Processing city", "processor", "facebook", "city", group.city, "subscribers", len(group.subs))
 
 	cfg := &FacebookScrapeConfig{
@@ -233,7 +234,6 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		}
 	}
 
-	carfaxFailures := 0
 	const carfaxCircuitBreakerThreshold = 3
 
 	cityStart := time.Now()
@@ -361,19 +361,19 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 
 		// Carfax Valuation
 		var carfaxValue float64
-		if carfaxFailures >= carfaxCircuitBreakerThreshold {
-			slog.Warn("Carfax circuit breaker open", "processor", "facebook", "title", ad.Title, "consecutive_failures", carfaxFailures)
+		if *carfaxFailures >= carfaxCircuitBreakerThreshold {
+			slog.Warn("Carfax circuit breaker open", "processor", "facebook", "title", ad.Title, "consecutive_failures", *carfaxFailures)
 		} else {
 			trimPicker := TrimPicker(func(ctx context.Context, year int, make, model string, options []string) string {
 				return PickCheapestTrim(ctx, p.ai, year, make, model, options)
 			})
 			carfaxValue, err = carfaxClient.GetValue(ctx, carData.Year, carData.Make, carData.Model, carData.Trim, carData.Engine, carData.Transmission, carData.Drivetrain, carData.BodyStyle, group.postal, carData.Odometer, trimPicker)
 			if err != nil {
-				carfaxFailures++
+				*carfaxFailures++
 				tracker.TrackCarfaxValuation(false)
-				slog.Warn("Carfax valuation failed", "processor", "facebook", "title", ad.Title, "error", err, "consecutive_failures", carfaxFailures)
+				slog.Warn("Carfax valuation failed", "processor", "facebook", "title", ad.Title, "error", err, "consecutive_failures", *carfaxFailures)
 			} else {
-				carfaxFailures = 0
+				*carfaxFailures = 0
 				tracker.TrackCarfaxValuation(true)
 				if saveErr := p.store.SavePriceHistory(ctx, carData.Model, carfaxValue); saveErr != nil {
 					slog.Warn("Failed to save price history", "processor", "facebook", "model", carData.Model, "error", saveErr)
@@ -436,7 +436,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		"ads_processed", adsProcessed,
 		"ads_skipped", adsSkipped,
 		"deals_found", dealsFound,
-		"carfax_failures", carfaxFailures,
+		"carfax_failures", *carfaxFailures,
 	)
 }
 
