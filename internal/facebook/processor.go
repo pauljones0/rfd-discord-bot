@@ -72,6 +72,7 @@ type cityGroup struct {
 
 // ProcessFacebookDeals is the main entry point for Facebook deal processing.
 func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
+	scrapeStart := time.Now()
 	slog.Info("Starting Facebook deal processing", "processor", "facebook")
 
 	tracker := metrics.NewTracker("facebook")
@@ -130,7 +131,9 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 		slog.Warn("Failed to prune old facebook ads", "processor", "facebook", "error", err)
 	}
 
-	slog.Info("Facebook scrape cycle complete", "processor", "facebook")
+	slog.Info("Facebook scrape cycle complete", "processor", "facebook",
+		"duration_ms", time.Since(scrapeStart).Milliseconds(),
+		"cities", len(groups))
 	return nil
 }
 

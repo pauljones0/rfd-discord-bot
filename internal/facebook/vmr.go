@@ -498,6 +498,9 @@ func matchTrim(trims []vmrTrim, targetTrim string) vmrTrim {
 	// Exact match
 	for _, t := range trims {
 		if strings.ToLower(t.Name) == target {
+			slog.Info("VMR trim matched",
+				"processor", "facebook", "component", "vmr",
+				"strategy", "exact", "target_trim", targetTrim, "matched_trim", t.Name)
 			return t
 		}
 	}
@@ -506,6 +509,9 @@ func matchTrim(trims []vmrTrim, targetTrim string) vmrTrim {
 	for _, t := range trims {
 		tLower := strings.ToLower(t.Name)
 		if strings.Contains(tLower, target) || strings.Contains(target, tLower) {
+			slog.Info("VMR trim matched",
+				"processor", "facebook", "component", "vmr",
+				"strategy", "substring", "target_trim", targetTrim, "matched_trim", t.Name)
 			return t
 		}
 	}
@@ -515,6 +521,9 @@ func matchTrim(trims []vmrTrim, targetTrim string) vmrTrim {
 	for _, t := range trims {
 		cleanName := cleanAlphaNum(strings.ToLower(t.Name))
 		if strings.Contains(cleanName, cleanTarget) || strings.Contains(cleanTarget, cleanName) {
+			slog.Info("VMR trim matched",
+				"processor", "facebook", "component", "vmr",
+				"strategy", "cleaned", "target_trim", targetTrim, "matched_trim", t.Name)
 			return t
 		}
 	}
