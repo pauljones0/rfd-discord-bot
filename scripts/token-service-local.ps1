@@ -16,7 +16,21 @@ $Host.UI.RawUI.WindowTitle = "Carfax Token Service"
 $ServiceDir     = Split-Path -Parent $PSScriptRoot  # repo root
 $TokenExe       = Join-Path $ServiceDir "token-service.exe"
 $ChromeDataDir  = Join-Path $ServiceDir "carfax-chrome-data"
-$Secret         = "fjRLzCS03Bal0hmR5eqb73LtPvsaFFRi"
+# Read secret from .env file in repo root (CARFAX_TOKEN_SERVICE_SECRET=...)
+$envFile = Join-Path $ServiceDir ".env"
+$Secret = ""
+if (Test-Path $envFile) {
+    Get-Content $envFile | ForEach-Object {
+        if ($_ -match '^CARFAX_TOKEN_SERVICE_SECRET=(.+)$') { $Secret = $Matches[1].Trim('"', "'", ' ') }
+    }
+}
+if (-not $Secret) {
+    $Secret = $env:CARFAX_TOKEN_SERVICE_SECRET
+}
+if (-not $Secret) {
+    Write-Host "ERROR: Set CARFAX_TOKEN_SERVICE_SECRET in .env or environment" -ForegroundColor Red
+    exit 1
+}
 $Port           = "8081"
 $GCPProject     = "may2025-01"
 $GCPRegion      = "us-central1"
