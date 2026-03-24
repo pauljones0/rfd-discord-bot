@@ -1,4 +1,4 @@
-# token-service-local.ps1 — Eternal launcher for local Carfax token service
+# token-service-local.ps1 - Eternal launcher for local Carfax token service
 #
 # Runs the token service with a headed Chrome browser on this machine,
 # exposes it via Cloudflare Tunnel, and auto-updates Cloud Run when the
@@ -160,24 +160,10 @@ while ($true) {
     # Chrome's subprocess spawning. The window title helps identify it.
     Write-Host "  Starting token-service.exe (port $Port, no proxy)..." -ForegroundColor White
 
-    $tokenProc = Start-Process -FilePath $TokenExe `
-        -WorkingDirectory $ServiceDir `
-        -PassThru `
-        -ArgumentList "" `
-        -EnvironmentVariables @{
-        } `
-        -WindowStyle Normal
-
-    # Set env vars before launch — Start-Process inherits the current env
-    # (we already set TOKEN_SERVICE_SECRET and PORT above in first iteration,
-    #  but let's be explicit for restarts)
+    # Set env vars (Start-Process inherits current process env)
     $env:TOKEN_SERVICE_SECRET = $Secret
     $env:TOKEN_SERVICE_PORT = $Port
     Remove-Item Env:\PROXY_URL -ErrorAction SilentlyContinue
-
-    # Re-launch with env vars properly set (Start-Process inherits current process env)
-    if ($tokenProc) { Stop-Process $tokenProc -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Seconds 1
 
     $tokenProc = Start-Process -FilePath $TokenExe `
         -WorkingDirectory $ServiceDir `
@@ -197,10 +183,13 @@ while ($true) {
 
     Write-Host "  Starting cloudflared tunnel..." -ForegroundColor White
 
-    # cloudflared writes its info to stderr. We redirect stderr to a log file
-    # using cmd.exe wrapper to avoid PowerShell redirection issues.
+    # cloudflared writes tunnel info to stderr. Use a wrapper batch script
+    # to capture stderr since PowerShell Start-Process can't redirect stderr
+    # without also redirecting stdout.
+    $tunnelBat = Join-Path $ServiceDir "cloudflared-run.bat"
+    Set-Content -Path $tunnelBat -Value "@`"$CloudflaredExe`" tunnel --url http://localhost:$Port --no-autoupdate 2>`"$tunnelLog`""
     $tunnelProc = Start-Process -FilePath "cmd.exe" `
-        -ArgumentList "/c", "`"$CloudflaredExe`" tunnel --url http://localhost:$Port --no-autoupdate 2>`"$tunnelLog`"" `
+        -ArgumentList "/c", $tunnelBat `
         -PassThru `
         -WindowStyle Minimized
 
@@ -269,7 +258,7 @@ while ($true) {
                 $timestamp = Get-Date -Format "HH:mm:ss"
                 Write-Host "  [$timestamp] Health OK" -ForegroundColor DarkGray
             } catch {
-                Write-Host "  Health check failed: $_ — restarting..." -ForegroundColor Yellow
+                Write-Host "  Health check failed: $_ - restarting..." -ForegroundColor Yellow
                 Stop-Process $tokenProc -Force -ErrorAction SilentlyContinue
                 Stop-Process $tunnelProc -Force -ErrorAction SilentlyContinue
                 Start-Sleep -Seconds $RestartDelay
