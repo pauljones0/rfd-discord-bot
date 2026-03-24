@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -42,6 +43,10 @@ type Client struct {
 	exhaustedAt     time.Time
 	consecutive429s int
 	consecutive504s int
+
+	// Atomic token counters accumulated by logTokenUsage, drained by DrainTokens.
+	pendingInputTokens  atomic.Int64
+	pendingOutputTokens atomic.Int64
 }
 
 type AnalysisResult struct {
@@ -530,8 +535,9 @@ func extractJSONValue(s string) string {
 	return s
 }
 
-// logTokenUsage logs token counts from a Gemini response if available.
-func logTokenUsage(resp *genai.GenerateContentResponse, context, model, location string) {
+// logTokenUsage logs token counts from a Gemini response if available
+// and accumulates them on the client for later retrieval via DrainTokens.
+func (c *Client) logTokenUsage(resp *genai.GenerateContentResponse, context, model, location string) {
 	if resp == nil || resp.UsageMetadata == nil {
 		return
 	}
@@ -544,6 +550,20 @@ func logTokenUsage(resp *genai.GenerateContentResponse, context, model, location
 		"output_tokens", um.CandidatesTokenCount,
 		"total_tokens", um.TotalTokenCount,
 	)
+	c.pendingInputTokens.Add(int64(um.PromptTokenCount))
+	c.pendingOutputTokens.Add(int64(um.CandidatesTokenCount))
+}
+
+// DrainTokens returns the accumulated input and output token counts since the
+// last drain, then resets both counters to zero. This is used by callers to feed
+// real token counts into the metrics tracker.
+func (c *Client) DrainTokens() (int, int) {
+	if c == nil {
+		return 0, 0
+	}
+	in := c.pendingInputTokens.Swap(0)
+	out := c.pendingOutputTokens.Swap(0)
+	return int(in), int(out)
 }
 
 // GenerateContentRaw sends a prompt to the active Gemini model and returns the
@@ -600,7 +620,7 @@ func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *
 			)
 		}
 
-		logTokenUsage(resp, "generate_content_raw", model, loc)
+		c.logTokenUsage(resp, "generate_content_raw", model, loc)
 
 		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
 			return fmt.Errorf("no response content from gemini")
@@ -792,7 +812,7 @@ Respond with exactly this JSON format:
 			)
 		}
 
-		logTokenUsage(resp, "deal_analysis", model, loc)
+		c.logTokenUsage(resp, "deal_analysis", model, loc)
 
 		// Parse the response inside the retry loop so malformed responses
 		// (e.g. Gemini returning prose instead of JSON) are retried.

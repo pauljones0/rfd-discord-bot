@@ -34,6 +34,7 @@ type DealProcessor struct {
 
 type DealAnalyzer interface {
 	AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error)
+	DrainTokens() (int, int)
 }
 
 func New(store DealStore, n DealNotifier, s DealScraper, v DealValidator, cfg *config.Config, ai DealAnalyzer) *DealProcessor {
@@ -293,8 +294,9 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 			// Call AI
 			// Note: This is done sequentially here. For high volume, we might want concurrency,
 			// but for a few deals every 10 mins, sequential is fine and safer for rate limits.
-			tracker.TrackGeminiCall(0, 0)
 			cleanedTitle, isWarm, isHot, err := p.aiClient.AnalyzeDeal(ctx, deal)
+			inTok, outTok := p.aiClient.DrainTokens()
+			tracker.TrackGeminiCall(inTok, outTok)
 
 			if err != nil {
 				// Log error but continue. Deal stays "unprocessed" effectively.

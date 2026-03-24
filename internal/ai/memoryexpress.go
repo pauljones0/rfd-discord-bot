@@ -109,7 +109,7 @@ Return a JSON array with ALL items, marking the top deals:
 		loc := c.currentLocation
 		c.mu.Unlock()
 
-		logTokenUsage(resp, "memexpress_batch_screening", model, loc)
+		c.logTokenUsage(resp, "memexpress_batch_screening", model, loc)
 
 		parsed, parseErr := parseMemExpressBatchResponse(resp)
 		if parseErr != nil {
@@ -247,7 +247,7 @@ Return JSON only: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool, "
 		loc := c.currentLocation
 		c.mu.Unlock()
 
-		logTokenUsage(resp, "memexpress_analysis", model, loc)
+		c.logTokenUsage(resp, "memexpress_analysis", model, loc)
 
 		// Log raw response for debugging
 		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {

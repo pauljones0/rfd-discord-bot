@@ -20,6 +20,8 @@ type AIClient interface {
 	// GenerateContentRaw generates content using the AI model.
 	// This is a lower-level method that the Facebook-specific functions wrap.
 	GenerateContentRaw(ctx context.Context, prompt string, config *genai.GenerateContentConfig) (string, error)
+	// DrainTokens returns accumulated input/output token counts since the last drain.
+	DrainTokens() (int, int)
 }
 
 func abs(x float64) float64 {

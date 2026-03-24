@@ -181,6 +181,10 @@ func (m *mockDealAnalyzer) AnalyzeDeal(ctx context.Context, deal *models.DealInf
 	return m.cleanTitle, m.isWarm, m.isHot, m.err
 }
 
+func (m *mockDealAnalyzer) DrainTokens() (int, int) {
+	return 100, 50
+}
+
 func newTestProcessor(store DealStore, notifier DealNotifier, scraper DealScraper) *DealProcessor {
 	cfg := &config.Config{
 		DiscordUpdateInterval: 10 * time.Minute,

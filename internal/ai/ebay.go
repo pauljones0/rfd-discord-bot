@@ -116,7 +116,7 @@ Return a JSON array with ALL items, marking the top deals:
 		loc := c.currentLocation
 		c.mu.Unlock()
 
-		logTokenUsage(resp, "ebay_batch_screening", model, loc)
+		c.logTokenUsage(resp, "ebay_batch_screening", model, loc)
 
 		parsed, parseErr := parseEbayBatchResponse(resp)
 		if parseErr != nil {
@@ -252,7 +252,7 @@ Return JSON: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool}
 		loc := c.currentLocation
 		c.mu.Unlock()
 
-		logTokenUsage(resp, "ebay_deal_verification", model, loc)
+		c.logTokenUsage(resp, "ebay_deal_verification", model, loc)
 
 		parsed, parseErr := parseEbayVerifyResponse(resp)
 		if parseErr != nil {
