@@ -287,6 +287,7 @@ func vmrNormalize(makeName, model string) (string, string) {
 
 // fetchVMRPage fetches the VMR valuation page HTML.
 func fetchVMRPage(ctx context.Context, pageURL string) (string, error) {
+	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
 		return "", err
@@ -299,14 +300,27 @@ func fetchVMRPage(ctx context.Context, pageURL string) (string, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		slog.Warn("VMR page fetch failed",
+			"processor", "facebook", "component", "vmr",
+			"url", pageURL, "error", err,
+			"duration_ms", time.Since(start).Milliseconds())
 		return "", err
 	}
 	defer resp.Body.Close()
 
+	durationMs := time.Since(start).Milliseconds()
+
 	if resp.StatusCode == 404 {
+		slog.Info("VMR page returned 404",
+			"processor", "facebook", "component", "vmr",
+			"url", pageURL, "duration_ms", durationMs)
 		return "", fmt.Errorf("VMR page not found (404): %s", pageURL)
 	}
 	if resp.StatusCode != 200 {
+		slog.Warn("VMR page unexpected status",
+			"processor", "facebook", "component", "vmr",
+			"url", pageURL, "status", resp.StatusCode,
+			"duration_ms", durationMs)
 		return "", fmt.Errorf("VMR returned status %d for %s", resp.StatusCode, pageURL)
 	}
 
@@ -320,8 +334,17 @@ func fetchVMRPage(ctx context.Context, pageURL string) (string, error) {
 	// slug correction path can fire (it checks for "404" in the error).
 	body := string(bodyBytes)
 	if strings.Contains(body, "Missing Page Report") {
+		slog.Info("VMR page soft-404 detected",
+			"processor", "facebook", "component", "vmr",
+			"url", pageURL, "body_length", len(body),
+			"duration_ms", durationMs)
 		return "", fmt.Errorf("VMR page not found (404): %s (soft-404: Missing Page Report)", pageURL)
 	}
+
+	slog.Info("VMR page fetched successfully",
+		"processor", "facebook", "component", "vmr",
+		"url", pageURL, "body_length", len(body),
+		"duration_ms", durationMs)
 
 	return body, nil
 }
