@@ -469,41 +469,42 @@ func (c *CarfaxHTTPClient) fetchResults(ctx context.Context, reportID string) (l
 		return 0, 0, fmt.Errorf("failed to read results page: %w", err)
 	}
 
-	// parseValueRange is defined in carfax.go and handles "$X,XXX - $Y,YYY" extraction.
-	midValue, err := parseValueRange(string(bodyBytes))
-	if err != nil {
-		return 0, 0, err
+	bodyStr := string(bodyBytes)
+
+	// Extract the price range text from the specific area of the page rather
+	// than running the regex against the full HTML. The Playwright client uses
+	// a JS equivalent that finds "Estimated Private Range" label and reads the
+	// next sibling. Here we do a targeted text search:
+	//   1. Find the price range near "Estimated Private Range" or "Estimated Trade-In Range"
+	//   2. Extract the "$X,XXX - $Y,YYY" pattern from that region only
+	//   3. Fall back to full-body regex ONLY if targeted search fails
+	priceText := extractCarfaxPriceRegion(bodyStr)
+
+	if priceText != "" {
+		slog.Debug("Carfax price region extracted",
+			"processor", "facebook", "component", "carfax_http",
+			"price_text", priceText)
 	}
 
-	// Also extract the individual low/high values for caching
-	bodyStr := string(bodyBytes)
-	if m := valueRangeRe.FindStringSubmatch(bodyStr); len(m) >= 3 {
+	// Try targeted extraction first, then full body as fallback
+	source := priceText
+	if source == "" {
+		source = bodyStr
+	}
+
+	if m := valueRangeRe.FindStringSubmatch(source); len(m) >= 3 {
 		lowStr := strings.ReplaceAll(m[1], ",", "")
 		highStr := strings.ReplaceAll(m[2], ",", "")
 		fmt.Sscanf(lowStr, "%f", &low)
 		fmt.Sscanf(highStr, "%f", &high)
-
-		// Log the regex match context for debugging parsing issues
-		matchIdx := valueRangeRe.FindStringIndex(bodyStr)
-		if matchIdx != nil {
-			ctxStart := matchIdx[0] - 50
-			if ctxStart < 0 {
-				ctxStart = 0
-			}
-			ctxEnd := matchIdx[1] + 50
-			if ctxEnd > len(bodyStr) {
-				ctxEnd = len(bodyStr)
-			}
-			slog.Debug("Carfax value range regex match context",
-				"processor", "facebook", "component", "carfax_http",
-				"matched_low", m[1], "matched_high", m[2],
-				"context", bodyStr[ctxStart:ctxEnd])
-		}
-
 		return low, high, nil
 	}
 
-	// Fallback: use midValue for both
+	// Fallback: try parseValueRange for single-value extraction
+	midValue, err := parseValueRange(source)
+	if err != nil {
+		return 0, 0, fmt.Errorf("could not extract price from results page (body_length=%d)", len(bodyStr))
+	}
 	return midValue, midValue, nil
 }
 
@@ -729,4 +730,43 @@ func carfaxTruncate(s string, n int) string {
 		return s[:n] + "..."
 	}
 	return s
+}
+
+// htmlTagRe strips HTML tags to extract visible text from a region.
+var htmlTagRe = regexp.MustCompile(`<[^>]+>`)
+
+// extractCarfaxPriceRegion finds the price range text near the
+// "Estimated Private Range" or "Estimated Trade-In Range" labels on
+// the Carfax results page. Returns a short text region (~500 chars)
+// containing the price, or empty string if not found.
+//
+// This avoids running the price regex against the full HTML body,
+// which matches SVG path data and other unrelated numeric patterns.
+func extractCarfaxPriceRegion(body string) string {
+	markers := []string{
+		"Estimated Private Range",
+		"Estimated Trade-In Range",
+		"Estimated Value Range",
+		"Private Party Value",
+	}
+
+	for _, marker := range markers {
+		idx := strings.Index(body, marker)
+		if idx == -1 {
+			continue
+		}
+		// Grab a region around the marker — the price is usually within ~500 chars after
+		start := idx
+		end := idx + 500
+		if end > len(body) {
+			end = len(body)
+		}
+		region := body[start:end]
+		// Strip HTML tags to get visible text only
+		text := htmlTagRe.ReplaceAllString(region, " ")
+		text = strings.Join(strings.Fields(text), " ")
+		return text
+	}
+
+	return ""
 }
