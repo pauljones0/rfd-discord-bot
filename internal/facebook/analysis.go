@@ -174,6 +174,9 @@ Respond with ONLY the JSON object. No explanation, no commentary, no markdown fe
 	err := util.RetryWithBackoff(ctx, 2, func(attempt int) error {
 		rawText, apiErr := client.GenerateContentRaw(ctx, prompt, config)
 		if apiErr != nil {
+			slog.Warn("NormalizeAd Gemini API error",
+				"processor", "facebook", "component", "gemini",
+				"title", adTitle, "error", apiErr)
 			return util.PermanentError(apiErr)
 		}
 
@@ -366,6 +369,10 @@ Respond with exactly this JSON:
 	err := util.RetryWithBackoff(ctx, 2, func(attempt int) error {
 		rawText, apiErr := client.GenerateContentRaw(ctx, prompt, config)
 		if apiErr != nil {
+			slog.Warn("AnalyzeDeal Gemini API error",
+				"processor", "facebook", "component", "gemini",
+				"title", fmt.Sprintf("%d %s %s", car.Year, car.Make, car.Model),
+				"error", apiErr)
 			return util.PermanentError(apiErr)
 		}
 

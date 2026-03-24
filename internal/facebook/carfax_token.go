@@ -48,6 +48,10 @@ func (c *CarfaxTokenClient) GetToken(ctx context.Context) (string, error) {
 		time.Sleep(500 * time.Millisecond)
 		token, err = c.fetchToken(ctx)
 		if err != nil {
+			slog.Error("Token fetch failed after retry",
+				"processor", "facebook", "component", "carfax_http",
+				"error", err, "duration_ms", time.Since(start).Milliseconds(),
+				"service_url", c.serviceURL)
 			return "", fmt.Errorf("token service unavailable after retry: %w", err)
 		}
 	}
