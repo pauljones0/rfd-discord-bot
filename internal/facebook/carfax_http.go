@@ -217,6 +217,19 @@ func (c *CarfaxHTTPClient) GetValue(ctx context.Context, year int, make, model, 
 		return 0, fmt.Errorf("carfax results fetch: %w", err)
 	}
 
+	// Sanity check: no passenger vehicle should value above $300k.
+	// The regex can match unrelated numbers in the HTML page source,
+	// producing absurd values (e.g. $11M for a 2007 Tiburon).
+	const maxPlausibleValue = 300_000
+	if low > maxPlausibleValue || high > maxPlausibleValue {
+		slog.Error("Carfax returned implausible valuation, discarding",
+			"processor", "facebook", "component", "carfax_http",
+			"year", year, "make", make, "model", model,
+			"low", low, "high", high,
+			"report_id", reportID)
+		return 0, fmt.Errorf("carfax valuation implausible: low=$%.0f high=$%.0f for %d %s %s", low, high, year, make, model)
+	}
+
 	midValue := (low + high) / 2
 
 	// --- Cache the result ---
@@ -463,11 +476,30 @@ func (c *CarfaxHTTPClient) fetchResults(ctx context.Context, reportID string) (l
 	}
 
 	// Also extract the individual low/high values for caching
-	if m := valueRangeRe.FindStringSubmatch(string(bodyBytes)); len(m) >= 3 {
+	bodyStr := string(bodyBytes)
+	if m := valueRangeRe.FindStringSubmatch(bodyStr); len(m) >= 3 {
 		lowStr := strings.ReplaceAll(m[1], ",", "")
 		highStr := strings.ReplaceAll(m[2], ",", "")
 		fmt.Sscanf(lowStr, "%f", &low)
 		fmt.Sscanf(highStr, "%f", &high)
+
+		// Log the regex match context for debugging parsing issues
+		matchIdx := valueRangeRe.FindStringIndex(bodyStr)
+		if matchIdx != nil {
+			ctxStart := matchIdx[0] - 50
+			if ctxStart < 0 {
+				ctxStart = 0
+			}
+			ctxEnd := matchIdx[1] + 50
+			if ctxEnd > len(bodyStr) {
+				ctxEnd = len(bodyStr)
+			}
+			slog.Debug("Carfax value range regex match context",
+				"processor", "facebook", "component", "carfax_http",
+				"matched_low", m[1], "matched_high", m[2],
+				"context", bodyStr[ctxStart:ctxEnd])
+		}
+
 		return low, high, nil
 	}
 
