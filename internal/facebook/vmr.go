@@ -314,7 +314,16 @@ func fetchVMRPage(ctx context.Context, pageURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read VMR response: %w", err)
 	}
-	return string(bodyBytes), nil
+
+	// VMR returns HTTP 200 for missing vehicles — a "Missing Page Report"
+	// error page instead of a proper 404. Detect this soft-404 so the AI
+	// slug correction path can fire (it checks for "404" in the error).
+	body := string(bodyBytes)
+	if strings.Contains(body, "Missing Page Report") {
+		return "", fmt.Errorf("VMR page not found (404): %s (soft-404: Missing Page Report)", pageURL)
+	}
+
+	return body, nil
 }
 
 // parseVMRTrims extracts trim options from VMR HTML.
