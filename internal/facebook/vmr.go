@@ -88,6 +88,11 @@ func ReliabilityTier(score float64) string {
 // GetVMRValue fetches a vehicle valuation from VMR Canada via HTTP.
 // No browser/Playwright needed — the data is embedded in static HTML.
 func GetVMRValue(ctx context.Context, ai AIClient, year int, makeName, model, trim, postalCode string, odometer int) (*VMRResult, error) {
+	// Guard: skip VMR for invalid years (Gemini sometimes extracts year=0 from "wanted" posts)
+	if year <= 1950 || year > time.Now().Year()+2 {
+		return nil, fmt.Errorf("VMR skipped: year %d is outside valid range (1950-%d)", year, time.Now().Year()+2)
+	}
+
 	start := time.Now()
 	province := ProvinceFromPostal(postalCode)
 
@@ -128,7 +133,35 @@ func GetVMRValue(ctx context.Context, ai AIClient, year int, makeName, model, tr
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse VMR page: %w", err)
 	}
+
+	// Fallback: VMR uses a static table (Trim/Fair/Clean/Exc) for older vehicles
+	// instead of the <input name="submodel_prices"> radio buttons used for newer ones.
 	if len(trims) == 0 {
+		trims = parseVMRTable(body)
+		if len(trims) > 0 {
+			slog.Info("VMR parsed trims from table fallback",
+				"processor", "facebook", "component", "vmr",
+				"url", pageURL, "trim_count", len(trims))
+		}
+	}
+
+	if len(trims) == 0 {
+		// Diagnostic: detect what VMR returned so we can identify template changes
+		bodySnippet := body
+		if len(bodySnippet) > 500 {
+			bodySnippet = bodySnippet[:500]
+		}
+		hasForm := strings.Contains(body, "submodel_prices")
+		hasTable := strings.Contains(body, "<table")
+		hasScript := strings.Contains(body, "document.pricing")
+		slog.Warn("VMR page returned 0 trims from both parsers",
+			"processor", "facebook", "component", "vmr",
+			"url", pageURL,
+			"body_length", len(body),
+			"has_submodel_form", hasForm,
+			"has_table", hasTable,
+			"has_pricing_script", hasScript,
+			"body_snippet", bodySnippet)
 		return nil, fmt.Errorf("no trims found on VMR page for %d %s %s", year, makeName, model)
 	}
 
@@ -304,6 +337,82 @@ func parseVMRTrims(body string) ([]vmrTrim, error) {
 	findTrims(doc)
 
 	return trims, nil
+}
+
+// parseVMRTable extracts trim data from VMR's static table format.
+// Older vehicles use a table with columns: Trim | Fair | Clean | Exc (or similar).
+// We map Fair → Wholesale, Clean → Retail as the closest equivalents.
+func parseVMRTable(body string) []vmrTrim {
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		return nil
+	}
+
+	var trims []vmrTrim
+
+	// Find all <tr> rows and check if they contain pricing data
+	var walkRows func(*html.Node)
+	walkRows = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "tr" {
+			cells := collectCells(n)
+			// We need at least 4 cells: Trim, Fair, Clean, Exc
+			if len(cells) >= 4 {
+				name := strings.TrimSpace(cells[0])
+				// Skip header rows
+				lowerName := strings.ToLower(name)
+				if lowerName == "trim" || lowerName == "" || lowerName == "model" || lowerName == "submodel" {
+					goto next
+				}
+
+				// Try to parse the numeric columns.
+				// VMR table formats vary — try columns 1,2 (Fair, Clean) first
+				fair := parseVMRPrice(cells[1])
+				clean := parseVMRPrice(cells[2])
+
+				if fair > 0 && clean > 0 {
+					trims = append(trims, vmrTrim{
+						Name:      name,
+						Wholesale: fair,
+						Retail:    clean,
+					})
+				}
+			}
+		}
+	next:
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walkRows(c)
+		}
+	}
+	walkRows(doc)
+
+	return trims
+}
+
+// collectCells extracts text content from each <td> or <th> child of a <tr>.
+func collectCells(tr *html.Node) []string {
+	var cells []string
+	for c := tr.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode && (c.Data == "td" || c.Data == "th") {
+			cells = append(cells, strings.TrimSpace(collectText(c)))
+		}
+	}
+	return cells
+}
+
+// parseVMRPrice parses a price string that may contain commas, dollar signs, or spaces.
+func parseVMRPrice(s string) float64 {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "$", "")
+	s = strings.ReplaceAll(s, ",", "")
+	s = strings.ReplaceAll(s, " ", "")
+	if s == "" || s == "-" || s == "N/A" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // findTrimLabel extracts the text label for a radio button input.

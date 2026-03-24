@@ -179,6 +179,61 @@ func TestParseVMRTrims(t *testing.T) {
 	}
 }
 
+func TestParseVMRTable(t *testing.T) {
+	// Simulates VMR's static table format used for older vehicles
+	tableHTML := `<html><body>
+<table>
+<tr><th>Trim</th><th>Fair</th><th>Clean</th><th>Exc</th></tr>
+<tr><td>S 4dr Sdn</td><td>1,375</td><td>3,375</td><td>5,450</td></tr>
+<tr><td>Base 4dr Sdn</td><td>1,500</td><td>3,550</td><td>5,675</td></tr>
+<tr><td>LX 4dr Sdn</td><td>1,650</td><td>3,725</td><td>5,975</td></tr>
+</table>
+</body></html>`
+
+	trims := parseVMRTable(tableHTML)
+	if len(trims) != 3 {
+		t.Fatalf("expected 3 trims from table, got %d", len(trims))
+	}
+	if trims[0].Name != "S 4dr Sdn" {
+		t.Errorf("trim 0 name = %q, want 'S 4dr Sdn'", trims[0].Name)
+	}
+	if trims[0].Wholesale != 1375 {
+		t.Errorf("trim 0 wholesale = %v, want 1375", trims[0].Wholesale)
+	}
+	if trims[0].Retail != 3375 {
+		t.Errorf("trim 0 retail = %v, want 3375", trims[0].Retail)
+	}
+	if trims[2].Name != "LX 4dr Sdn" {
+		t.Errorf("trim 2 name = %q, want 'LX 4dr Sdn'", trims[2].Name)
+	}
+}
+
+func TestParseVMRTableWithDollarSigns(t *testing.T) {
+	tableHTML := `<html><body>
+<table>
+<tr><th>Trim</th><th>Fair</th><th>Clean</th><th>Exc</th></tr>
+<tr><td>Base 4dr Sdn</td><td>$2,500</td><td>$4,500</td><td>$6,500</td></tr>
+</table>
+</body></html>`
+
+	trims := parseVMRTable(tableHTML)
+	if len(trims) != 1 {
+		t.Fatalf("expected 1 trim, got %d", len(trims))
+	}
+	if trims[0].Wholesale != 2500 || trims[0].Retail != 4500 {
+		t.Errorf("got wholesale=%v retail=%v, want 2500/4500", trims[0].Wholesale, trims[0].Retail)
+	}
+}
+
+func TestParseVMRTableNoData(t *testing.T) {
+	// A page with no pricing table should return nil
+	noTableHTML := `<html><body><h1>Page Not Found</h1></body></html>`
+	trims := parseVMRTable(noTableHTML)
+	if len(trims) != 0 {
+		t.Errorf("expected 0 trims from empty page, got %d", len(trims))
+	}
+}
+
 func TestMatchTrim(t *testing.T) {
 	trims := []vmrTrim{
 		{Name: "LX 4dr Sdn", Wholesale: 9925, Retail: 12400},
