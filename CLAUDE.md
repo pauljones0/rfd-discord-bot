@@ -41,3 +41,10 @@ Optional: `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`
 - Facebook scraping uses Playwright + Firefox with request interception (blocks images, videos, fonts, CSS, ad-tracking)
 - eBay features gracefully disable if credentials missing
 - AI client is shared across all processors — do NOT create separate Gemini clients
+
+## Finding Archived Claude Code Chats
+- **Session metadata** (titles, timestamps, archived flag): `<APPDATA>/Claude/claude-code-sessions/<project-uuid>/<sub-uuid>/local_*.json`
+- **Full conversation JSONL**: `~/.claude/projects/<project-path-with-dashes>/<cliSessionId>.jsonl`
+- Metadata files contain `cliSessionId` which maps to the JSONL filename
+- In JSONL: user messages have `type: "user"`, text inside `message.content`
+- Workflow: grep metadata for titles/timestamps, get `cliSessionId`, read the JSONL
