@@ -87,8 +87,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/fetch"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -136,6 +138,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer svc.cleanup()
+
+	svc.closeExtraTabs()
 
 	if err := svc.warmPage(); err != nil {
 		slog.Error("Failed to warm page", "error", err)
@@ -254,6 +258,62 @@ func (s *tokenService) initBrowser() error {
 
 	slog.Info("Chrome launched successfully")
 	return nil
+}
+
+// closeExtraTabs closes blank/empty browser tabs that accumulate over restarts.
+// Chrome opens a default blank/new-tab page on every launch, and on Windows with
+// a persistent --user-data-dir, singleton detection can hand off to an already-running
+// Chrome, creating yet another blank tab. If the service restart-loops (e.g. proxy
+// down), this accumulates thousands of blank tabs. This method cleans them all up.
+//
+// Only closes tabs whose URL is about:blank, empty, or chrome:// — never touches
+// tabs that have real content (e.g. an existing Carfax page).
+func (s *tokenService) closeExtraTabs() {
+	c := chromedp.FromContext(s.ctx)
+	if c == nil || c.Browser == nil {
+		slog.Warn("Browser context not ready, skipping tab cleanup")
+		return
+	}
+	browserCtx := cdp.WithExecutor(s.ctx, c.Browser)
+
+	targets, err := target.GetTargets().Do(browserCtx)
+	if err != nil {
+		slog.Warn("Failed to list browser targets for cleanup", "error", err)
+		return
+	}
+
+	// Identify chromedp's own tab so we never close it.
+	var ownTarget target.ID
+	if c.Target != nil {
+		ownTarget = c.Target.TargetID
+	}
+
+	slog.Info("Browser tab audit", "total_targets", len(targets), "own_target", ownTarget)
+
+	var closed int
+	for _, t := range targets {
+		if t.Type != "page" || t.TargetID == ownTarget {
+			continue
+		}
+		// Only close blank/empty/chrome tabs — leave real pages alone.
+		if isBlankURL(t.URL) {
+			if err := target.CloseTarget(t.TargetID).Do(browserCtx); err != nil {
+				slog.Warn("Failed to close tab", "target_id", t.TargetID, "url", t.URL, "error", err)
+			} else {
+				closed++
+			}
+		} else {
+			slog.Info("Keeping non-blank tab", "target_id", t.TargetID, "url", t.URL)
+		}
+	}
+	if closed > 0 {
+		slog.Info("Closed stale blank tabs", "count", closed)
+	}
+}
+
+// isBlankURL returns true for URLs that represent empty/default tabs.
+func isBlankURL(u string) bool {
+	return u == "" || u == "about:blank" || strings.HasPrefix(u, "chrome://") || strings.HasPrefix(u, "chrome-search://")
 }
 
 // warmPage navigates to the Carfax valuation page and waits for reCAPTCHA to load.
