@@ -76,7 +76,7 @@ func (c *CarfaxTokenClient) fetchToken(ctx context.Context) (string, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("token service returned %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("token service returned %d: %s (url=%s)", resp.StatusCode, string(body), c.serviceURL+"/token")
 	}
 
 	var tr tokenResponse

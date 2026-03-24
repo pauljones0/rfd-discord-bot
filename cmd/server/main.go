@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,6 +40,7 @@ type Server struct {
 	sem                 chan struct{} // Semaphore to limit concurrent RFD processing requests
 	ebaySem             chan struct{} // Semaphore to limit concurrent eBay processing requests
 	facebookSem         chan struct{} // Semaphore to limit concurrent Facebook processing requests
+	facebookRunStart    atomic.Int64 // Unix timestamp (seconds) when the current Facebook run started
 	memexpressSem       chan struct{} // Semaphore to limit concurrent Memory Express processing requests
 	bestbuySem          chan struct{} // Semaphore to limit concurrent Best Buy processing requests
 }
@@ -305,8 +307,13 @@ func (s *Server) ProcessFacebookHandler(w http.ResponseWriter, r *http.Request) 
 	select {
 	case s.facebookSem <- struct{}{}:
 	default:
+		runningFor := time.Duration(0)
+		if started := s.facebookRunStart.Load(); started > 0 {
+			runningFor = time.Since(time.Unix(started, 0))
+		}
 		slog.Warn("ProcessFacebookHandler: previous run still active, skipping",
 			"processor", "facebook",
+			"running_for", runningFor.Round(time.Second).String(),
 		)
 		w.WriteHeader(http.StatusTooManyRequests)
 		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
@@ -315,10 +322,14 @@ func (s *Server) ProcessFacebookHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	s.facebookRunStart.Store(time.Now().Unix())
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		defer func() { <-s.facebookSem }()
+		defer func() {
+			s.facebookRunStart.Store(0)
+			<-s.facebookSem
+		}()
 
 		defer func() {
 			if r := recover(); r != nil {

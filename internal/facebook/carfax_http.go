@@ -482,10 +482,12 @@ func (c *CarfaxHTTPClient) fetchResults(ctx context.Context, reportID string) (l
 func (c *CarfaxHTTPClient) carfaxGETWithRetry(ctx context.Context, apiURL string) ([]byte, error) {
 	var lastErr error
 	for attempt := range maxTokenRetries {
+		tokenStart := time.Now()
 		token, err := c.tokens.GetToken(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("token fetch (attempt %d): %w", attempt+1, err)
 		}
+		tokenAge := time.Since(tokenStart)
 
 		body, err := c.carfaxGET(ctx, apiURL, token)
 		if err == nil {
@@ -500,6 +502,8 @@ func (c *CarfaxHTTPClient) carfaxGETWithRetry(ctx context.Context, apiURL string
 		slog.Warn("Carfax reCAPTCHA rejection, retrying with fresh token",
 			"processor", "facebook", "component", "carfax_http",
 			"attempt", attempt+1, "max_attempts", maxTokenRetries,
+			"token_age_ms", tokenAge.Milliseconds(),
+			"token_length", len(token),
 			"url", truncateURL(apiURL))
 	}
 	return nil, fmt.Errorf("carfax GET failed after %d attempts: %w", maxTokenRetries, lastErr)
@@ -509,10 +513,12 @@ func (c *CarfaxHTTPClient) carfaxGETWithRetry(ctx context.Context, apiURL string
 func (c *CarfaxHTTPClient) carfaxPOSTWithRetry(ctx context.Context, apiURL, formBody string) ([]byte, error) {
 	var lastErr error
 	for attempt := range maxTokenRetries {
+		tokenStart := time.Now()
 		token, err := c.tokens.GetToken(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("token fetch (attempt %d): %w", attempt+1, err)
 		}
+		tokenAge := time.Since(tokenStart)
 
 		body, err := c.carfaxPOST(ctx, apiURL, token, formBody)
 		if err == nil {
@@ -526,7 +532,9 @@ func (c *CarfaxHTTPClient) carfaxPOSTWithRetry(ctx context.Context, apiURL, form
 
 		slog.Warn("Carfax reCAPTCHA rejection on POST, retrying",
 			"processor", "facebook", "component", "carfax_http",
-			"attempt", attempt+1, "max_attempts", maxTokenRetries)
+			"attempt", attempt+1, "max_attempts", maxTokenRetries,
+			"token_age_ms", tokenAge.Milliseconds(),
+			"token_length", len(token))
 	}
 	return nil, fmt.Errorf("carfax POST failed after %d attempts: %w", maxTokenRetries, lastErr)
 }
