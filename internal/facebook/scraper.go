@@ -218,6 +218,17 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 
 		lastErr = err
 
+		// Timeout — transient network failure, retry once regardless of proxy config
+		if strings.Contains(err.Error(), "Timeout") && attempt == 0 {
+			logger.Warn("Navigation timeout, retrying",
+				"processor", "facebook", "city", cfg.City,
+				"attempt", attempt+1)
+			if retries < 2 {
+				retries = 2
+			}
+			continue
+		}
+
 		if !hasProxy || blocklist == nil {
 			return nil, err
 		}
