@@ -221,7 +221,8 @@ func ScrapeMarketplace(ctx context.Context, logger *slog.Logger, pm *BrowserMana
 		// Timeout — transient network failure, retry once regardless of proxy config
 		if strings.Contains(err.Error(), "Timeout") && attempt == 0 {
 			logger.Warn("Navigation timeout, retrying",
-				"processor", "facebook", "city", cfg.City,
+				"processor", "facebook", "component", "fb_scrape",
+				"city", cfg.City, "error", err,
 				"attempt", attempt+1)
 			if retries < 2 {
 				retries = 2
@@ -344,7 +345,8 @@ func scrapeMarketplaceOnce(ctx context.Context, logger *slog.Logger, pm *Browser
 	var allAds []models.ScrapedAd
 	seenIDs := make(map[string]bool)
 
-	logger.Info("Navigating to marketplace", "city", cfg.City, "url", targetURL, "proxy_ip", proxyIP)
+	logger.Info("Navigating to marketplace", "processor", "facebook", "component", "fb_scrape",
+		"city", cfg.City, "url", targetURL, "proxy_ip", proxyIP)
 
 	_, err = page.Goto(targetURL, playwright.PageGotoOptions{
 		Timeout:   playwright.Float(30000),
@@ -364,7 +366,8 @@ func scrapeMarketplaceOnce(ctx context.Context, logger *slog.Logger, pm *Browser
 		if strings.Contains(currentURL, "login") || strings.Contains(currentURL, "checkpoint") {
 			return nil, proxyIP, fmt.Errorf("soft block detected for %s: redirected to %s", cfg.City, currentURL)
 		}
-		logger.Warn("Timeout waiting for ads", "city", cfg.City, "url", currentURL)
+		logger.Warn("Timeout waiting for ads", "processor", "facebook", "component", "fb_scrape",
+			"city", cfg.City, "url", currentURL)
 		return allAds, proxyIP, nil
 	}
 
@@ -398,7 +401,8 @@ func scrapeMarketplaceOnce(ctx context.Context, logger *slog.Logger, pm *Browser
 		allAds = append(allAds, *scrapedAd)
 	}
 
-	logger.Info("Extracted ads", "count", len(allAds), "city", cfg.City)
+	logger.Info("Extracted ads", "processor", "facebook", "component", "fb_scrape",
+		"count", len(allAds), "city", cfg.City, "proxy_ip", proxyIP)
 
 	return allAds, proxyIP, nil
 }

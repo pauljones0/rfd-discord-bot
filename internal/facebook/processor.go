@@ -236,6 +236,11 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 	carfaxFailures := 0
 	const carfaxCircuitBreakerThreshold = 3
 
+	cityStart := time.Now()
+	dealsFound := 0
+	adsProcessed := 0
+	adsSkipped := 0
+
 	for i, ad := range ads {
 		if ctx.Err() != nil {
 			return
@@ -263,6 +268,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 				slog.Warn("Early dedup check failed", "processor", "facebook", "title", ad.Title, "error", err)
 			} else if exists {
 				slog.Debug("Skipping already-processed ad (early dedup)", "processor", "facebook", "title", ad.Title)
+				adsSkipped++
 				continue
 			}
 		}
@@ -275,6 +281,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		// a cost optimisation that catches the easy cases early.
 		if isLikelyNonCar(ad.Title) {
 			slog.Debug("Skipping likely non-car listing (keyword match)", "processor", "facebook", "title", ad.Title)
+			adsSkipped++
 			continue
 		}
 
@@ -284,11 +291,13 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		// return prose instead of JSON, wasting a call.
 		if isTooVague(ad.Title, ad.Description, ad.Mileage) {
 			slog.Debug("Skipping vague listing (insufficient info)", "processor", "facebook", "title", ad.Title)
+			adsSkipped++
 			continue
 		}
 
 		if isWantedAd(ad.Title, ad.Description) {
 			slog.Debug("Skipping wanted/ISO ad", "processor", "facebook", "title", ad.Title)
+			adsSkipped++
 			continue
 		}
 
@@ -312,6 +321,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			continue
 		}
 		tracker.TrackAdProcessed()
+		adsProcessed++
 
 		// Skip non-car vehicle types (motorcycles, boats, ATVs, trailers, etc.)
 		if !carData.IsCarfaxEligible() {
@@ -410,10 +420,22 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 
 		// Fan out deal to subscribers — only warm or lava-hot deals get posted
 		if analysis.IsWarm || analysis.IsLavaHot {
+			dealsFound++
 			tracker.TrackDealFound()
 			p.fanOutDeal(ctx, group.subs, ad, analysis, carfaxValue, vmrRetail, tracker)
 		}
 	}
+
+	slog.Info("City processing complete",
+		"processor", "facebook", "component", "fb_scrape",
+		"city", group.city,
+		"duration_ms", time.Since(cityStart).Milliseconds(),
+		"ads_scraped", len(ads),
+		"ads_processed", adsProcessed,
+		"ads_skipped", adsSkipped,
+		"deals_found", dealsFound,
+		"carfax_failures", carfaxFailures,
+	)
 }
 
 func (p *Processor) fanOutDeal(ctx context.Context, subs []models.Subscription, ad models.ScrapedAd, analysis *models.FacebookDealAnalysis, carfaxValue, vmrRetail float64, tracker *metrics.Tracker) {

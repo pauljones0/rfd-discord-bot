@@ -216,14 +216,14 @@ type BrowserManager struct {
 // If proxyURL is non-empty, all browser contexts will route traffic through it.
 func NewBrowserManager(logger *slog.Logger, proxyURL string) (*BrowserManager, error) {
 	if proxyURL != "" {
-		logger.Info("Initializing Playwright with proxy", "proxy", maskProxyURL(proxyURL))
+		logger.Info("Initializing Playwright with proxy", "processor", "facebook", "proxy", maskProxyURL(proxyURL))
 	} else {
-		logger.Info("Initializing Playwright (no proxy)")
+		logger.Info("Initializing Playwright (no proxy)", "processor", "facebook")
 	}
 
 	err := playwright.Install()
 	if err != nil {
-		logger.Warn("playwright install returned (can usually be ignored if already installed)", "error", err)
+		logger.Warn("playwright install returned (can usually be ignored if already installed)", "processor", "facebook", "error", err)
 	}
 
 	pw, err := playwright.Run()
@@ -271,7 +271,7 @@ func NewBrowserManager(logger *slog.Logger, proxyURL string) (*BrowserManager, e
 		},
 	}
 
-	logger.Info("Launching headless Firefox with stealth preferences")
+	logger.Info("Launching headless Firefox with stealth preferences", "processor", "facebook")
 	browser, err := pw.Firefox.Launch(launchOpts)
 	if err != nil {
 		pw.Stop()
@@ -546,7 +546,7 @@ func maskProxyURL(proxyURL string) string {
 
 // Close shuts down the browser and Playwright runtime.
 func (m *BrowserManager) Close() error {
-	m.logger.Info("Shutting down Playwright...")
+	m.logger.Info("Shutting down Playwright...", "processor", "facebook")
 	var err error
 	if m.browser != nil {
 		err = m.browser.Close()
