@@ -1,17 +1,18 @@
 # token-service-local.ps1 - Eternal launcher for local Carfax token service
 #
-# Runs the token service with a headed Chrome browser on this machine,
-# exposes it via Cloudflare Tunnel, and auto-updates Cloud Run when the
-# tunnel URL changes. Restarts everything automatically on crash.
+# Single-window script: runs token-service.exe and cloudflared as hidden
+# background processes, monitors them, and auto-restarts on crash.
+# Chrome opens headed (visible) for reCAPTCHA trust, everything else is hidden.
 #
-# Usage (run from repo root):
+# Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\token-service-local.ps1
 #
-# To stop: close the PowerShell window or Ctrl+C
+# To stop: Ctrl+C or close this window
 
 $ErrorActionPreference = "Continue"
+$Host.UI.RawUI.WindowTitle = "Carfax Token Service"
 
-# ── Configuration ──────────────────────────────────────────────────────────────
+# -- Configuration ------------------------------------------------------------
 $ServiceDir     = Split-Path -Parent $PSScriptRoot  # repo root
 $TokenExe       = Join-Path $ServiceDir "token-service.exe"
 $ChromeDataDir  = Join-Path $ServiceDir "carfax-chrome-data"
@@ -21,58 +22,82 @@ $GCPProject     = "may2025-01"
 $GCPRegion      = "us-central1"
 $CloudRunSvc    = "rfd-discord-bot"
 $GHRepo         = "pauljones0/rfd-discord-bot"
-$RestartDelay   = 10  # seconds between restart attempts
+$RestartDelay   = 10
+$TunnelLog      = Join-Path $ServiceDir "cloudflared.log"
 $CloudflaredExe = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
 
-# Fallback cloudflared path
 if (-not (Test-Path $CloudflaredExe)) {
     $CloudflaredExe = (Get-Command cloudflared -ErrorAction SilentlyContinue).Source
     if (-not $CloudflaredExe) {
-        Write-Host "ERROR: cloudflared not found. Install via: winget install Cloudflare.cloudflared" -ForegroundColor Red
+        Write-Host "ERROR: cloudflared not found. Install: winget install Cloudflare.cloudflared" -ForegroundColor Red
         exit 1
     }
 }
 
-# Build token service if missing
 if (-not (Test-Path $TokenExe)) {
     Write-Host "Building token-service.exe..." -ForegroundColor Yellow
     Push-Location $ServiceDir
     go build -o token-service.exe ./cmd/token-service
     Pop-Location
-    if (-not (Test-Path $TokenExe)) {
-        Write-Host "ERROR: Failed to build token-service.exe" -ForegroundColor Red
-        exit 1
-    }
+    if (-not (Test-Path $TokenExe)) { Write-Host "Build failed" -ForegroundColor Red; exit 1 }
 }
+
+# Set env for token service (inherited by child processes)
+$env:TOKEN_SERVICE_SECRET = $Secret
+$env:TOKEN_SERVICE_PORT   = $Port
+Remove-Item Env:\PROXY_URL -ErrorAction SilentlyContinue
 
 Write-Host @"
 
-  =====================================================
-    Carfax Token Service - Local Launcher
-    Chrome + Cloudflare Tunnel + Auto-Update
-    Press Ctrl+C to stop
-  =====================================================
-
+  Carfax Token Service - Local
+  Port $Port | No proxy | Auto-restart
+  Ctrl+C to stop
+  ----------------------------------------
 "@ -ForegroundColor Cyan
 
-# ── Helper: Extract tunnel URL from cloudflared output ─────────────────────────
-function Get-TunnelUrl {
-    param([string]$LogFile)
+# -- Helpers -------------------------------------------------------------------
 
-    $timeout = 30
+function Stop-All {
+    Get-Process -Name "token-service" -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue |
+        Where-Object { $_.StartTime -gt (Get-Date).AddHours(-12) } |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
+function Remove-StaleLocks {
+    foreach ($f in @("SingletonLock", "SingletonSocket", "lockfile")) {
+        $p = Join-Path $ChromeDataDir $f
+        if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Wait-ForHealth {
+    param([int]$TimeoutSec = 90)
     $start = Get-Date
+    while (((Get-Date) - $start).TotalSeconds -lt $TimeoutSec) {
+        try {
+            $r = Invoke-RestMethod -Uri "http://localhost:$Port/health" -TimeoutSec 3 -ErrorAction Stop
+            if ($r.page_ready -eq $true) { return $true }
+        } catch {}
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
 
+function Get-TunnelUrl {
+    $timeout = 30; $start = Get-Date
     while (((Get-Date) - $start).TotalSeconds -lt $timeout) {
-        if (Test-Path $LogFile) {
-            $content = Get-Content $LogFile -Raw -ErrorAction SilentlyContinue
-            # cloudflared prints the tunnel URL in a line like:
-            #   INF +----------------------------+
-            #   INF |  https://xxx-xxx.trycloudflare.com |
-            #   INF +----------------------------+
-            # Match the actual random subdomain URL, NOT api.trycloudflare.com
-            $matches_found = [regex]::Matches($content, 'https://([a-z0-9]+-)+[a-z0-9]+\.trycloudflare\.com')
-            if ($matches_found.Count -gt 0) {
-                return $matches_found[0].Value
+        if (Test-Path $TunnelLog) {
+            $content = Get-Content $TunnelLog -Raw -ErrorAction SilentlyContinue
+            if ($content) {
+                $m = [regex]::Matches($content, 'https://[a-z0-9][-a-z0-9]*\.trycloudflare\.com')
+                # Skip api.trycloudflare.com, pick the actual tunnel URL
+                foreach ($match in $m) {
+                    if ($match.Value -ne "https://api.trycloudflare.com") {
+                        return $match.Value
+                    }
+                }
             }
         }
         Start-Sleep -Milliseconds 500
@@ -80,189 +105,108 @@ function Get-TunnelUrl {
     return $null
 }
 
-# ── Helper: Update Cloud Run env var ───────────────────────────────────────────
 function Update-CloudRunUrl {
-    param([string]$TunnelUrl)
+    param([string]$Url)
+    Write-Host "  Cloud Run -> $Url" -ForegroundColor Yellow
+    & gcloud run services update $CloudRunSvc --region $GCPRegion --project $GCPProject `
+        --update-env-vars "CARFAX_TOKEN_SERVICE_URL=$Url" --quiet 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host "  Cloud Run OK" -ForegroundColor Green }
+    else { Write-Host "  Cloud Run update failed" -ForegroundColor Red }
 
-    Write-Host "  Updating Cloud Run CARFAX_TOKEN_SERVICE_URL -> $TunnelUrl" -ForegroundColor Yellow
-
-    & gcloud run services update $CloudRunSvc `
-        --region $GCPRegion `
-        --project $GCPProject `
-        --update-env-vars "CARFAX_TOKEN_SERVICE_URL=$TunnelUrl" `
-        --quiet 2>&1 | Out-Null
-
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  Cloud Run updated successfully" -ForegroundColor Green
-    } else {
-        Write-Host "  WARNING: Failed to update Cloud Run" -ForegroundColor Red
-    }
-
-    # Also update GitHub secret so future deploys use the new URL
-    Write-Host "  Updating GitHub secret..." -ForegroundColor Yellow
-    & gh secret set CARFAX_TOKEN_SERVICE_URL --body $TunnelUrl --repo $GHRepo 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  GitHub secret updated" -ForegroundColor Green
-    } else {
-        Write-Host "  WARNING: Failed to update GitHub secret" -ForegroundColor Red
-    }
+    & gh secret set CARFAX_TOKEN_SERVICE_URL --body $Url --repo $GHRepo 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host "  GitHub secret OK" -ForegroundColor Green }
+    else { Write-Host "  GitHub secret failed" -ForegroundColor Red }
 }
 
-# ── Helper: Wait for token service health ──────────────────────────────────────
-function Wait-ForHealth {
-    param([int]$TimeoutSec = 90)
-    $start = Get-Date
-    while (((Get-Date) - $start).TotalSeconds -lt $TimeoutSec) {
-        try {
-            $resp = Invoke-RestMethod -Uri "http://localhost:$Port/health" -TimeoutSec 3 -ErrorAction Stop
-            if ($resp.page_ready -eq $true) {
-                return $true
-            }
-        } catch {}
-        Start-Sleep -Seconds 2
-    }
-    return $false
+# -- Cleanup on Ctrl+C --------------------------------------------------------
+$null = Register-EngineEvent PowerShell.Exiting -Action {
+    Stop-All
+    Write-Host "`nStopped." -ForegroundColor Yellow
 }
 
-# ── Helper: Remove stale Chrome locks ──────────────────────────────────────────
-function Remove-StaleLocks {
-    $lockFile = Join-Path $ChromeDataDir "SingletonLock"
-    if (Test-Path $lockFile) {
-        Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
-        Write-Host "  Removed stale Chrome lock" -ForegroundColor Yellow
-    }
-    $lockFile2 = Join-Path $ChromeDataDir "SingletonSocket"
-    if (Test-Path $lockFile2) {
-        Remove-Item $lockFile2 -Force -ErrorAction SilentlyContinue
-    }
-}
-
-# ── Main loop ──────────────────────────────────────────────────────────────────
+# -- Main loop -----------------------------------------------------------------
 $lastTunnelUrl = ""
 
 while ($true) {
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Write-Host "`n[$timestamp] Starting token service + tunnel..." -ForegroundColor Cyan
+    $ts = Get-Date -Format "HH:mm:ss"
+    Write-Host "`n[$ts] Starting..." -ForegroundColor Cyan
 
-    # Clean up stale processes
-    Get-Process -Name "token-service" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    # Only kill cloudflared instances that we started (leave system ones alone)
-    Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue | Where-Object {
-        $_.MainWindowTitle -like "*token*" -or $_.StartTime -gt (Get-Date).AddMinutes(-2)
-    } | Stop-Process -Force -ErrorAction SilentlyContinue
+    Stop-All
     Start-Sleep -Seconds 2
-
-    # Remove stale Chrome locks from previous crash
     Remove-StaleLocks
 
-    # ── Start token service in its own window ──────────────────────────────────
-    # Using a separate window avoids stdout redirection issues that break
-    # Chrome's subprocess spawning. The window title helps identify it.
-    Write-Host "  Starting token-service.exe (port $Port, no proxy)..." -ForegroundColor White
-
-    # Set env vars (Start-Process inherits current process env)
-    $env:TOKEN_SERVICE_SECRET = $Secret
-    $env:TOKEN_SERVICE_PORT = $Port
-    Remove-Item Env:\PROXY_URL -ErrorAction SilentlyContinue
-
+    # -- Token service: hidden window (Chrome itself stays visible) -------------
+    # Start-Process with -WindowStyle Hidden hides the console window but
+    # Chrome's GUI window still appears since it's a separate process.
     $tokenProc = Start-Process -FilePath $TokenExe `
         -WorkingDirectory $ServiceDir `
+        -WindowStyle Hidden `
         -PassThru
 
-    # Wait for health (Chrome + reCAPTCHA init takes ~30-60s)
-    Write-Host "  Waiting for Chrome + reCAPTCHA to initialize (up to 90s)..." -ForegroundColor White
+    Write-Host "  Token service PID $($tokenProc.Id) - waiting for reCAPTCHA..." -ForegroundColor White
     if (Wait-ForHealth -TimeoutSec 90) {
-        Write-Host "  Token service is READY" -ForegroundColor Green
+        Write-Host "  Ready" -ForegroundColor Green
     } else {
-        Write-Host "  WARNING: Health check timed out (Chrome may still be loading)" -ForegroundColor Yellow
+        Write-Host "  Health timeout (Chrome may still load)" -ForegroundColor Yellow
     }
 
-    # ── Start cloudflared tunnel ───────────────────────────────────────────────
-    $tunnelLog = Join-Path $ServiceDir "cloudflared.log"
-    if (Test-Path $tunnelLog) { Remove-Item $tunnelLog -Force }
-
-    Write-Host "  Starting cloudflared tunnel..." -ForegroundColor White
-
-    # cloudflared writes tunnel info to stderr. Use a wrapper batch script
-    # to capture stderr since PowerShell Start-Process can't redirect stderr
-    # without also redirecting stdout.
-    $tunnelBat = Join-Path $ServiceDir "cloudflared-run.bat"
-    Set-Content -Path $tunnelBat -Value "@`"$CloudflaredExe`" tunnel --url http://localhost:$Port --no-autoupdate 2>`"$tunnelLog`""
-    $tunnelProc = Start-Process -FilePath "cmd.exe" `
-        -ArgumentList "/c", $tunnelBat `
+    # -- Cloudflared: hidden, stderr -> log file --------------------------------
+    if (Test-Path $TunnelLog) { Remove-Item $TunnelLog -Force }
+    $tunnelProc = Start-Process -FilePath $CloudflaredExe `
+        -ArgumentList "tunnel", "--url", "http://localhost:$Port", "--no-autoupdate" `
+        -WindowStyle Hidden `
         -PassThru `
-        -WindowStyle Minimized
+        -RedirectStandardError $TunnelLog
 
-    # Extract tunnel URL
-    $tunnelUrl = Get-TunnelUrl -LogFile $tunnelLog
+    $tunnelUrl = Get-TunnelUrl
     if ($tunnelUrl) {
-        Write-Host "  Tunnel URL: $tunnelUrl" -ForegroundColor Green
-
-        # Update Cloud Run if URL changed
+        Write-Host "  Tunnel: $tunnelUrl" -ForegroundColor Green
         if ($tunnelUrl -ne $lastTunnelUrl) {
-            Update-CloudRunUrl -TunnelUrl $tunnelUrl
+            Update-CloudRunUrl -Url $tunnelUrl
             $lastTunnelUrl = $tunnelUrl
-        } else {
-            Write-Host "  Tunnel URL unchanged, skipping update" -ForegroundColor Gray
         }
-
-        # Quick verification
-        Write-Host "  Verifying tunnel..." -ForegroundColor White
-        Start-Sleep -Seconds 3  # give tunnel a moment to stabilize
+        # Verify
+        Start-Sleep -Seconds 3
         try {
-            $healthResp = Invoke-RestMethod -Uri "$tunnelUrl/health" -TimeoutSec 10 -ErrorAction Stop
-            Write-Host "  Tunnel OK: page_ready=$($healthResp.page_ready)" -ForegroundColor Green
+            $h = Invoke-RestMethod -Uri "$tunnelUrl/health" -TimeoutSec 10 -ErrorAction Stop
+            Write-Host "  Verified: page_ready=$($h.page_ready)" -ForegroundColor Green
         } catch {
-            Write-Host "  WARNING: Tunnel verification failed (may still be connecting)" -ForegroundColor Yellow
+            Write-Host "  Tunnel verify failed (may still be connecting)" -ForegroundColor Yellow
         }
     } else {
-        Write-Host "  WARNING: Could not get tunnel URL within 30s" -ForegroundColor Red
-        Write-Host "  Check cloudflared.log for errors" -ForegroundColor Red
+        Write-Host "  No tunnel URL (check cloudflared.log)" -ForegroundColor Red
     }
 
-    # ── Monitor both processes ─────────────────────────────────────────────────
-    Write-Host "`n  Running. Monitoring every 30s... (Ctrl+C to stop)" -ForegroundColor Gray
-    $healthCheckTimer = Get-Date
+    # -- Monitor ----------------------------------------------------------------
+    Write-Host "  Running. Health check every 2 min." -ForegroundColor DarkGray
+    $hcTimer = Get-Date
 
     while ($true) {
         Start-Sleep -Seconds 10
 
-        $tokenAlive = $tokenProc -and -not $tokenProc.HasExited
-        $tunnelAlive = $tunnelProc -and -not $tunnelProc.HasExited
+        $tOk = $tokenProc -and -not $tokenProc.HasExited
+        $cOk = $tunnelProc -and -not $tunnelProc.HasExited
 
-        if (-not $tokenAlive -or -not $tunnelAlive) {
-            $which = if (-not $tokenAlive) { "Token service" } else { "Cloudflared tunnel" }
-            $timestamp = Get-Date -Format "HH:mm:ss"
-            Write-Host "`n  [$timestamp] $which died! Restarting in ${RestartDelay}s..." -ForegroundColor Red
-
-            # Kill the survivor
-            if ($tokenAlive) { Stop-Process $tokenProc -Force -ErrorAction SilentlyContinue }
-            if ($tunnelAlive) { Stop-Process $tunnelProc -Force -ErrorAction SilentlyContinue }
-
+        if (-not $tOk -or -not $cOk) {
+            $who = if (-not $tOk) { "Token service" } else { "Tunnel" }
+            Write-Host "  $(Get-Date -Format 'HH:mm:ss') $who died, restarting in ${RestartDelay}s..." -ForegroundColor Red
+            Stop-All
             Start-Sleep -Seconds $RestartDelay
-            break  # restart outer loop
+            break
         }
 
-        # Health check every 2 minutes
-        if (((Get-Date) - $healthCheckTimer).TotalMinutes -ge 2) {
-            $healthCheckTimer = Get-Date
+        if (((Get-Date) - $hcTimer).TotalMinutes -ge 2) {
+            $hcTimer = Get-Date
             try {
-                $health = Invoke-RestMethod -Uri "http://localhost:$Port/health" -TimeoutSec 5 -ErrorAction Stop
-                if ($health.page_ready -ne $true) {
-                    Write-Host "  Page not ready, restarting..." -ForegroundColor Yellow
-                    Stop-Process $tokenProc -Force -ErrorAction SilentlyContinue
-                    Stop-Process $tunnelProc -Force -ErrorAction SilentlyContinue
-                    Start-Sleep -Seconds $RestartDelay
-                    break
+                $h = Invoke-RestMethod -Uri "http://localhost:$Port/health" -TimeoutSec 5 -ErrorAction Stop
+                if ($h.page_ready -ne $true) {
+                    Write-Host "  $(Get-Date -Format 'HH:mm:ss') Page not ready, restarting..." -ForegroundColor Yellow
+                    Stop-All; Start-Sleep -Seconds $RestartDelay; break
                 }
-                $timestamp = Get-Date -Format "HH:mm:ss"
-                Write-Host "  [$timestamp] Health OK" -ForegroundColor DarkGray
+                Write-Host "  $(Get-Date -Format 'HH:mm:ss') OK" -ForegroundColor DarkGray
             } catch {
-                Write-Host "  Health check failed: $_ - restarting..." -ForegroundColor Yellow
-                Stop-Process $tokenProc -Force -ErrorAction SilentlyContinue
-                Stop-Process $tunnelProc -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds $RestartDelay
-                break
+                Write-Host "  $(Get-Date -Format 'HH:mm:ss') Health failed, restarting..." -ForegroundColor Yellow
+                Stop-All; Start-Sleep -Seconds $RestartDelay; break
             }
         }
     }
