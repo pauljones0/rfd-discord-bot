@@ -3,6 +3,7 @@ package facebook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -541,7 +542,8 @@ func (c *CarfaxHTTPClient) carfaxGETWithRetry(ctx context.Context, apiURL string
 			"attempt", attempt+1, "max_attempts", maxTokenRetries,
 			"token_age_ms", tokenAge.Milliseconds(),
 			"token_length", len(token),
-			"url", truncateURL(apiURL))
+			"url", truncateURL(apiURL),
+			"rejection_body", recaptchaBody(err))
 	}
 	return nil, fmt.Errorf("carfax GET failed after %d attempts: %w", maxTokenRetries, lastErr)
 }
@@ -575,7 +577,8 @@ func (c *CarfaxHTTPClient) carfaxPOSTWithRetry(ctx context.Context, apiURL, form
 			"processor", "facebook", "component", "carfax_http",
 			"attempt", attempt+1, "max_attempts", maxTokenRetries,
 			"token_age_ms", tokenAge.Milliseconds(),
-			"token_length", len(token))
+			"token_length", len(token),
+			"rejection_body", recaptchaBody(err))
 	}
 	return nil, fmt.Errorf("carfax POST failed after %d attempts: %w", maxTokenRetries, lastErr)
 }
@@ -714,6 +717,15 @@ func isRecaptchaRejection(err error) bool {
 	}
 	_, ok := err.(*recaptchaError)
 	return ok
+}
+
+// recaptchaBody extracts the truncated response body from a recaptchaError.
+func recaptchaBody(err error) string {
+	var re *recaptchaError
+	if errors.As(err, &re) {
+		return carfaxTruncate(re.body, 200)
+	}
+	return ""
 }
 
 // --- Utilities ---
