@@ -205,6 +205,12 @@ func (s *tokenService) initBrowser() error {
 		// uncomment the next line, but expect lower token scores:
 		// chromedp.Flag("headless", "new"),
 
+		// Force a specific debugging port. On Windows, --remote-debugging-port=0
+		// (chromedp's default) does NOT bypass Chrome's singleton detection, so
+		// Chrome hands off to the existing instance and exits. A specific non-zero
+		// port forces Chrome to start a genuinely new instance.
+		chromedp.Flag("remote-debugging-port", "9222"),
+
 		chromedp.Flag("no-first-run", true),
 		chromedp.Flag("no-default-browser-check", true),
 		chromedp.Flag("disable-background-timer-throttling", true),
