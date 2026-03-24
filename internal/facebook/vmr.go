@@ -102,6 +102,10 @@ func GetVMRValue(ctx context.Context, ai AIClient, year int, makeName, model, tr
 	slug := vmrModelSlug(vmrMake, vmrModel)
 	pageURL := fmt.Sprintf("https://www.vmrcanada.com/used-car/values/%d-%s-%s.html", year, vmrMakeSlug(vmrMake), slug)
 
+	slog.Info("VMR fetching page",
+		"processor", "facebook", "component", "vmr",
+		"url", pageURL, "vmr_make", vmrMake, "vmr_model", vmrModel)
+
 	body, err := fetchVMRPage(ctx, pageURL)
 	if err != nil {
 		// If 404, try Gemini to suggest the correct model slug
@@ -378,6 +382,10 @@ func matchTrim(trims []vmrTrim, targetTrim string) vmrTrim {
 			cheapest = t
 		}
 	}
+	slog.Info("VMR trim fallback to cheapest",
+		"processor", "facebook", "component", "vmr",
+		"target_trim", targetTrim, "cheapest_trim", cheapest.Name,
+		"available_count", len(trims))
 	return cheapest
 }
 

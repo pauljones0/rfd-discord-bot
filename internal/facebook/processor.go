@@ -10,6 +10,7 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/metrics"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/storage"
 	"github.com/playwright-community/playwright-go"
 )
 
@@ -22,6 +23,10 @@ type Store interface {
 	SavePriceHistory(ctx context.Context, model string, value float64) error
 	IsProxyBlocked(ctx context.Context, ip string) (bool, error)
 	BlockProxyIP(ctx context.Context, ip, city string) error
+	GetCarfaxCache(ctx context.Context, year int, make, model, trim, postalPrefix string) (*storage.CarfaxCacheEntry, error)
+	SaveCarfaxCache(ctx context.Context, entry *storage.CarfaxCacheEntry) error
+	GetCarfaxOptions(ctx context.Context, property, normalizedParams string) ([]string, error)
+	SaveCarfaxOptions(ctx context.Context, property, normalizedParams string, options []string) error
 }
 
 // Notifier defines the Discord notification operations.
@@ -31,20 +36,27 @@ type Notifier interface {
 
 // Processor handles Facebook Marketplace deal scraping and analysis.
 type Processor struct {
-	store    Store
-	notifier Notifier
-	ai       AIClient
-	proxyURL string
+	store                    Store
+	notifier                 Notifier
+	ai                       AIClient
+	proxyURL                 string
+	carfaxTokenServiceURL    string
+	carfaxTokenServiceSecret string
 }
 
 // NewProcessor creates a new Facebook deal processor.
 // proxyURL is optional — if empty, scraping runs without a proxy.
-func NewProcessor(store Store, notifier Notifier, ai AIClient, proxyURL string) *Processor {
+// carfaxTokenServiceURL/Secret are optional — if set, Carfax valuations use
+// direct HTTP API calls with tokens from the remote service (much faster and
+// more reliable). If not set, falls back to Playwright UI automation.
+func NewProcessor(store Store, notifier Notifier, ai AIClient, proxyURL, carfaxTokenServiceURL, carfaxTokenServiceSecret string) *Processor {
 	return &Processor{
-		store:    store,
-		notifier: notifier,
-		ai:       ai,
-		proxyURL: proxyURL,
+		store:                    store,
+		notifier:                 notifier,
+		ai:                       ai,
+		proxyURL:                 proxyURL,
+		carfaxTokenServiceURL:    carfaxTokenServiceURL,
+		carfaxTokenServiceSecret: carfaxTokenServiceSecret,
 	}
 }
 
@@ -83,7 +95,18 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 	}
 	defer pm.Close()
 
-	carfaxClient := NewCarfaxClient(pm)
+	// Initialize Carfax valuation client.
+	// If the token service is configured, use direct HTTP API calls (fast, reliable).
+	// Otherwise fall back to Playwright UI automation (slow, ~60% success rate).
+	var carfaxClient CarfaxValuer
+	if p.carfaxTokenServiceURL != "" {
+		tokenClient := NewCarfaxTokenClient(p.carfaxTokenServiceURL, p.carfaxTokenServiceSecret)
+		carfaxClient = NewCarfaxHTTPClient(tokenClient, p.proxyURL, p.store)
+		slog.Info("Using Carfax HTTP client with token service", "processor", "facebook")
+	} else {
+		carfaxClient = NewCarfaxClient(pm)
+		slog.Info("Using Carfax Playwright client (no token service configured)", "processor", "facebook")
+	}
 
 	// Group subscriptions by city
 	groups := groupByCity(subs)
@@ -99,8 +122,11 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 		p.processCity(ctx, group, carfaxClient, pm, tracker)
 	}
 
-	// Prune old ads
-	if err := p.store.PruneFacebookAds(ctx, 6, 1000); err != nil {
+	// Prune old ads — use a separate context so pruning isn't starved for time
+	// when the scraping phase consumes most of the parent context's deadline.
+	pruneCtx, pruneCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer pruneCancel()
+	if err := p.store.PruneFacebookAds(pruneCtx, 6, 1000); err != nil {
 		slog.Warn("Failed to prune old facebook ads", "processor", "facebook", "error", err)
 	}
 
@@ -147,7 +173,7 @@ func groupByCity(subs []models.Subscription) []cityGroup {
 	return groups
 }
 
-func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClient *CarfaxClient, pm *BrowserManager, tracker *metrics.Tracker) {
+func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClient CarfaxValuer, pm *BrowserManager, tracker *metrics.Tracker) {
 	slog.Info("Processing city", "processor", "facebook", "city", group.city, "subscribers", len(group.subs))
 
 	cfg := &FacebookScrapeConfig{
