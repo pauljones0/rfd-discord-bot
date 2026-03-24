@@ -148,6 +148,32 @@ func main() {
 	mux.HandleFunc("/process-memoryexpress", srv.ProcessMemoryExpressHandler)
 	mux.HandleFunc("/process-bestbuy", srv.ProcessBestBuyHandler)
 	mux.Handle("/discord/interactions", apiHandler)
+	mux.HandleFunc("POST /register-token-service", func(w http.ResponseWriter, r *http.Request) {
+		// Authenticate with the token service secret
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || authHeader != "Bearer "+cfg.CarfaxTokenServiceSecret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var body struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.URL == "" {
+			http.Error(w, "invalid request: must provide {\"url\": \"...\"}", http.StatusBadRequest)
+			return
+		}
+
+		if err := store.SaveTokenServiceURL(r.Context(), body.URL); err != nil {
+			slog.Error("Failed to save token service URL", "error", err, "url", body.URL)
+			http.Error(w, "failed to save URL", http.StatusInternalServerError)
+			return
+		}
+
+		slog.Info("Token service URL registered", "url", body.URL)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "url": body.URL})
+	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 

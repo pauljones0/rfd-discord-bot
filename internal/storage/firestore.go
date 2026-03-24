@@ -375,3 +375,54 @@ func (c *Client) UpdateGeminiQuotaStatus(ctx context.Context, quota models.Gemin
 
 	return nil
 }
+
+// TokenServiceConfig stores the dynamic URL for the Carfax reCAPTCHA token service.
+type TokenServiceConfig struct {
+	URL       string    `firestore:"url"`
+	UpdatedAt time.Time `firestore:"updated_at"`
+}
+
+// GetTokenServiceURL retrieves the current Carfax token service URL from bot_config.
+// Returns ("", nil) if not configured.
+func (c *Client) GetTokenServiceURL(ctx context.Context) (string, error) {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	doc, err := c.client.Collection("bot_config").Doc("token_service").Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to get token service config: %w", err)
+	}
+
+	var cfg TokenServiceConfig
+	if err := doc.DataTo(&cfg); err != nil {
+		return "", fmt.Errorf("failed to unmarshal token service config: %w", err)
+	}
+
+	// Reject URLs older than 1 hour — the tunnel has likely expired
+	if time.Since(cfg.UpdatedAt) > time.Hour {
+		slog.Warn("Token service URL is stale (>1h old), ignoring",
+			"processor", "facebook", "component", "carfax_http",
+			"url", cfg.URL, "age", time.Since(cfg.UpdatedAt).Round(time.Minute))
+		return "", nil
+	}
+
+	return cfg.URL, nil
+}
+
+// SaveTokenServiceURL stores the current Carfax token service URL in bot_config.
+func (c *Client) SaveTokenServiceURL(ctx context.Context, url string) error {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	_, err := c.client.Collection("bot_config").Doc("token_service").Set(ctx, TokenServiceConfig{
+		URL:       url,
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to save token service URL: %w", err)
+	}
+	return nil
+}

@@ -27,6 +27,7 @@ type Store interface {
 	SaveCarfaxCache(ctx context.Context, entry *storage.CarfaxCacheEntry) error
 	GetCarfaxOptions(ctx context.Context, property, normalizedParams string) ([]string, error)
 	SaveCarfaxOptions(ctx context.Context, property, normalizedParams string, options []string) error
+	GetTokenServiceURL(ctx context.Context) (string, error)
 }
 
 // Notifier defines the Discord notification operations.
@@ -97,13 +98,27 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 	defer pm.Close()
 
 	// Initialize Carfax valuation client.
-	// If the token service is configured, use direct HTTP API calls (fast, reliable).
-	// Otherwise fall back to Playwright UI automation (slow, ~60% success rate).
+	// Resolve the token service URL dynamically from Firestore first (updated by
+	// the tunnel script), falling back to the static env var. This avoids stale
+	// URLs when the Cloudflare quick tunnel restarts and gets a new hostname.
+	tokenServiceURL := p.carfaxTokenServiceURL
+	if dynamicURL, err := p.store.GetTokenServiceURL(ctx); err != nil {
+		slog.Warn("Failed to fetch dynamic token service URL, using static config",
+			"processor", "facebook", "component", "carfax_http",
+			"error", err, "static_url", p.carfaxTokenServiceURL)
+	} else if dynamicURL != "" {
+		tokenServiceURL = dynamicURL
+		slog.Info("Using dynamic token service URL from Firestore",
+			"processor", "facebook", "component", "carfax_http",
+			"url", dynamicURL)
+	}
+
 	var carfaxClient CarfaxValuer
-	if p.carfaxTokenServiceURL != "" {
-		tokenClient := NewCarfaxTokenClient(p.carfaxTokenServiceURL, p.carfaxTokenServiceSecret)
+	if tokenServiceURL != "" {
+		tokenClient := NewCarfaxTokenClient(tokenServiceURL, p.carfaxTokenServiceSecret)
 		carfaxClient = NewCarfaxHTTPClient(tokenClient, p.proxyURL, p.store)
-		slog.Info("Using Carfax HTTP client with token service", "processor", "facebook")
+		slog.Info("Using Carfax HTTP client with token service",
+			"processor", "facebook", "url", tokenServiceURL)
 	} else {
 		carfaxClient = NewCarfaxClient(pm)
 		slog.Info("Using Carfax Playwright client (no token service configured)", "processor", "facebook")
