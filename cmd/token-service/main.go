@@ -437,6 +437,60 @@ func (s *tokenService) handleToken(w http.ResponseWriter, r *http.Request) {
 		"token":      token,
 		"expires_at": time.Now().Add(2 * time.Minute).Format(time.RFC3339),
 	})
+
+	// Post-token refresh: reload the Carfax page in the background so the
+	// next token request gets a fresh reCAPTCHA context. Without this,
+	// successive tokens are generated from a stale idle page, which lowers
+	// the reCAPTCHA v3 score and causes Carfax to reject them.
+	go s.refreshPageAfterToken(reqID)
+}
+
+// refreshPageAfterToken reloads the Carfax page after a token is sent.
+// This gives the next token request a fresh reCAPTCHA context with a new
+// page load event, which improves the v3 score. A short delay simulates
+// natural browsing behavior (user reading the page before navigating).
+func (s *tokenService) refreshPageAfterToken(reqID string) {
+	// Brief delay — simulates a user spending time on the page before
+	// navigating. Immediate reloads look bot-like to reCAPTCHA.
+	time.Sleep(2 * time.Second)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	start := time.Now()
+
+	// Soft refresh: navigate to the same page (not a hard reload).
+	// This triggers a full page load event which resets the reCAPTCHA
+	// interaction timer, while preserving cookies and session state.
+	err := chromedp.Run(s.ctx,
+		chromedp.Navigate(carfaxPageURL),
+		chromedp.WaitReady("body"),
+		chromedp.Sleep(1*time.Second),
+	)
+	if err != nil {
+		slog.Warn("Post-token page refresh failed",
+			"request_id", reqID,
+			"error", err,
+			"duration_ms", time.Since(start).Milliseconds())
+		s.pageReady = false
+		return
+	}
+
+	// Verify reCAPTCHA is still ready
+	var ready bool
+	err = chromedp.Run(s.ctx,
+		chromedp.Evaluate(`typeof window.grecaptcha !== 'undefined' && typeof window.grecaptcha.execute === 'function'`, &ready),
+	)
+	if err != nil || !ready {
+		slog.Warn("reCAPTCHA not ready after refresh, will recover on next request",
+			"request_id", reqID)
+		s.pageReady = false
+		return
+	}
+
+	slog.Info("Post-token page refresh complete",
+		"request_id", reqID,
+		"duration_ms", time.Since(start).Milliseconds())
 }
 
 // handleHealth serves GET /health — reports service and page status.

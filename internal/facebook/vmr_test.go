@@ -229,6 +229,47 @@ func TestParseVMRTableWithDollarSigns(t *testing.T) {
 	}
 }
 
+func TestParseVMRTableNestedOlderFormat(t *testing.T) {
+	// Real VMR HTML structure for older vehicles: nested tables with <td> headers
+	// and CSS classes like "older-hdrtrim", "older-trim", "older-prc-r".
+	// This is the actual format used for 2004 Toyota Echo, Pontiac Wave, etc.
+	nestedHTML := `<html><body>
+<table class="main-table-older">
+<tr><td><h1>Canadian Used Value 2004 Toyota Echo</h1>
+FWD/1.5L-I4/108hp
+</td></tr>
+ <tr><td style="width:100%;max-width:840px">
+ <table style="width:100%;max-width:830px;padding:2px;border-collapse:collapse;">
+ <tr><td class="older-hdrtrim">Trim</td>
+ <td class="older-hdr-wsret">Fair</td>
+ <td class="older-hdr-wsret">Clean</td>
+ <td class="older-hdr-wsret">Exc</td>
+ </tr>
+<tr><td class="older-trim">Base 4dr Sdn</td>
+<td class="older-prc-r"> 1075</td><td class="older-prc-r"> 2875</td><td class="older-prc-r"> 4800</td></tr>
+<tr><td class="older-trim">CE 2dr Hbk</td>
+<td class="older-prc-r"> 1050</td><td class="older-prc-r"> 2825</td><td class="older-prc-r"> 4725</td></tr>
+<tr><td class="older-trim">LE 4dr Hbk</td>
+<td class="older-prc-r"> 1075</td><td class="older-prc-r"> 2850</td><td class="older-prc-r"> 4750</td></tr>
+ </table>
+</td></tr></table>
+</body></html>`
+
+	trims := parseVMRTable(nestedHTML)
+	if len(trims) != 3 {
+		t.Fatalf("expected 3 trims from nested older table, got %d", len(trims))
+	}
+	if trims[0].Name != "Base 4dr Sdn" {
+		t.Errorf("trim 0 name = %q, want 'Base 4dr Sdn'", trims[0].Name)
+	}
+	if trims[0].Wholesale != 1075 {
+		t.Errorf("trim 0 wholesale = %v, want 1075", trims[0].Wholesale)
+	}
+	if trims[0].Retail != 2875 {
+		t.Errorf("trim 0 retail = %v, want 2875", trims[0].Retail)
+	}
+}
+
 func TestParseVMRTableNoData(t *testing.T) {
 	// A page with no pricing table should return nil
 	noTableHTML := `<html><body><h1>Page Not Found</h1></body></html>`
