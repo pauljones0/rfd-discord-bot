@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -401,9 +402,10 @@ func (c *Client) GetTokenServiceURL(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to unmarshal token service config: %w", err)
 	}
 
-	// Reject URLs older than 1 hour — the tunnel has likely expired
-	if time.Since(cfg.UpdatedAt) > time.Hour {
-		slog.Warn("Token service URL is stale (>1h old), ignoring",
+	// Reject stale URLs for ephemeral Cloudflare quick tunnels (trycloudflare.com)
+	// which get new random subdomains on restart. Stable custom domains are always trusted.
+	if strings.Contains(cfg.URL, "trycloudflare.com") && time.Since(cfg.UpdatedAt) > time.Hour {
+		slog.Warn("Token service URL is stale (>1h old), ignoring ephemeral tunnel",
 			"processor", "facebook", "component", "carfax_http",
 			"url", cfg.URL, "age", time.Since(cfg.UpdatedAt).Round(time.Minute))
 		return "", nil
