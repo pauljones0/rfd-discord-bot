@@ -591,6 +591,15 @@ func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *
 		loc := c.currentLocation
 		c.mu.Unlock()
 
+		if attempt > 0 {
+			slog.Info("Gemini retry succeeded",
+				"model", model,
+				"location", loc,
+				"context", "generate_content_raw",
+				"attempt", attempt,
+			)
+		}
+
 		logTokenUsage(resp, "generate_content_raw", model, loc)
 
 		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
@@ -613,7 +622,10 @@ func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *
 	})
 
 	if err == nil {
-		slog.Debug("GenerateContentRaw completed", "model", activeModel, "duration_ms", time.Since(start).Milliseconds())
+		c.mu.Lock()
+		loc := c.currentLocation
+		c.mu.Unlock()
+		slog.Info("GenerateContentRaw completed", "model", activeModel, "location", loc, "duration_ms", time.Since(start).Milliseconds())
 	}
 
 	return result, err
@@ -770,6 +782,15 @@ Respond with exactly this JSON format:
 		c.resetConsecutiveErrors()
 		loc := c.currentLocation
 		c.mu.Unlock()
+
+		if attempt > 0 {
+			slog.Info("Gemini retry succeeded",
+				"model", model,
+				"location", loc,
+				"context", "deal_analysis",
+				"attempt", attempt,
+			)
+		}
 
 		logTokenUsage(resp, "deal_analysis", model, loc)
 
