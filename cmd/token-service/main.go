@@ -459,11 +459,11 @@ func (s *tokenService) refreshPageAfterToken(reqID string) {
 
 	start := time.Now()
 
-	// Soft refresh: navigate to the same page (not a hard reload).
-	// This triggers a full page load event which resets the reCAPTCHA
-	// interaction timer, while preserving cookies and session state.
+	// Reload the current tab (not Navigate, which opens a new tab in the
+	// browser context). Reload triggers a fresh page load event which resets
+	// the reCAPTCHA interaction timer, while preserving cookies and session.
 	err := chromedp.Run(s.ctx,
-		chromedp.Navigate(carfaxPageURL),
+		chromedp.Reload(),
 		chromedp.WaitReady("body"),
 		chromedp.Sleep(1*time.Second),
 	)
