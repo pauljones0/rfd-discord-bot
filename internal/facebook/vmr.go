@@ -85,12 +85,32 @@ func ReliabilityTier(score float64) string {
 	return "Tier 3"
 }
 
+// commercialMakes lists vehicle makes that VMR Canada does not cover.
+// These are commercial truck/equipment manufacturers — skip them to avoid
+// wasting API calls and generating noisy "no trims found" errors.
+var commercialMakes = map[string]bool{
+	"hino": true, "international": true, "freightliner": true,
+	"peterbilt": true, "kenworth": true, "mack": true,
+	"western star": true, "isuzu": true, "fuso": true,
+	"panterra": true, "autocar": true, "capacity": true,
+}
+
 // GetVMRValue fetches a vehicle valuation from VMR Canada via HTTP.
 // No browser/Playwright needed — the data is embedded in static HTML.
 func GetVMRValue(ctx context.Context, ai AIClient, year int, makeName, model, trim, postalCode string, odometer int) (*VMRResult, error) {
 	// Guard: skip VMR for invalid years (Gemini sometimes extracts year=0 from "wanted" posts)
 	if year <= 1950 || year > time.Now().Year()+2 {
 		return nil, fmt.Errorf("VMR skipped: year %d is outside valid range (1950-%d)", year, time.Now().Year()+2)
+	}
+
+	// Guard: skip commercial truck makes that VMR doesn't cover
+	if commercialMakes[strings.ToLower(strings.TrimSpace(makeName))] {
+		return nil, fmt.Errorf("VMR skipped: commercial make %q not covered by VMR", makeName)
+	}
+
+	// Guard: VMR data starts around 1992 for most makes; older vehicles waste API calls
+	if year < 1992 {
+		return nil, fmt.Errorf("VMR skipped: year %d too old (VMR coverage starts ~1992)", year)
 	}
 
 	start := time.Now()
@@ -254,6 +274,12 @@ func vmrNormalize(makeName, model string) (string, string) {
 	if lowerMake == "dodge" && strings.HasPrefix(lowerModel, "ram ") {
 		suffix := strings.TrimSpace(model[4:]) // everything after "Ram "
 		return "Dodge", suffix + " Ram"
+	}
+
+	// Dodge bare-number models: "Dodge" + "1500" → "Dodge" + "1500 Ram"
+	// Gemini sometimes extracts just the number without "Ram" prefix.
+	if lowerMake == "dodge" && (lowerModel == "1500" || lowerModel == "2500" || lowerModel == "3500") {
+		return "Dodge", model + " Ram"
 	}
 
 	return makeName, model

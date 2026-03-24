@@ -61,6 +61,10 @@ func TestVmrNormalize(t *testing.T) {
 		// Dodge + Ram model → rearranged
 		{"Dodge", "Ram 1500", "Dodge", "1500 Ram"},
 		{"Dodge", "Ram 3500 TD", "Dodge", "3500 TD Ram"},
+		// Dodge bare-number models → appends Ram
+		{"Dodge", "1500", "Dodge", "1500 Ram"},
+		{"Dodge", "2500", "Dodge", "2500 Ram"},
+		{"Dodge", "3500", "Dodge", "3500 Ram"},
 		// Non-Ram vehicles unchanged
 		{"Dodge", "Challenger", "Dodge", "Challenger"},
 		{"Honda", "Civic", "Honda", "Civic"},
