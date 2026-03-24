@@ -397,6 +397,12 @@ func (s *tokenService) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	start := time.Now()
+	reqID := fmt.Sprintf("%d", start.UnixMilli()%100000) // short request ID for log correlation
+	slog.Info("Token request received",
+		"request_id", reqID,
+		"remote_addr", r.RemoteAddr)
+
 	var token string
 	var lastErr error
 	for attempt := range 3 {
@@ -405,17 +411,26 @@ func (s *tokenService) handleToken(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		slog.Warn("Token generation attempt failed, retrying",
+			"request_id", reqID,
 			"attempt", attempt+1, "error", lastErr)
 		// Page is likely stale — warmPage will be called on next generateToken
 		time.Sleep(time.Duration(500*(attempt+1)) * time.Millisecond)
 	}
 
 	if lastErr != nil {
-		slog.Error("Token generation failed after 3 attempts", "error", lastErr)
+		slog.Error("Token generation failed — unable to send token",
+			"request_id", reqID,
+			"error", lastErr,
+			"duration_ms", time.Since(start).Milliseconds())
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]string{"error": lastErr.Error()})
 		return
 	}
+
+	slog.Info("Token sent successfully",
+		"request_id", reqID,
+		"token_length", len(token),
+		"duration_ms", time.Since(start).Milliseconds())
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{

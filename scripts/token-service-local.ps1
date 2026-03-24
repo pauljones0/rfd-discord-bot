@@ -38,6 +38,8 @@ $CloudRunSvc    = "rfd-discord-bot"
 $GHRepo         = "pauljones0/rfd-discord-bot"
 $RestartDelay   = 10
 $TunnelLog      = Join-Path $ServiceDir "cloudflared.log"
+$TokenStdout    = Join-Path $ServiceDir "token-service-stdout.log"
+$TokenStderr    = Join-Path $ServiceDir "token-service-stderr.log"
 $CloudflaredExe = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
 
 if (-not (Test-Path $CloudflaredExe)) {
@@ -48,13 +50,12 @@ if (-not (Test-Path $CloudflaredExe)) {
     }
 }
 
-if (-not (Test-Path $TokenExe)) {
-    Write-Host "Building token-service.exe..." -ForegroundColor Yellow
-    Push-Location $ServiceDir
-    go build -o token-service.exe ./cmd/token-service
-    Pop-Location
-    if (-not (Test-Path $TokenExe)) { Write-Host "Build failed" -ForegroundColor Red; exit 1 }
-}
+# Always rebuild to pick up code changes
+Write-Host "Building token-service.exe..." -ForegroundColor Yellow
+Push-Location $ServiceDir
+go build -o token-service.exe ./cmd/token-service 2>&1
+Pop-Location
+if (-not (Test-Path $TokenExe)) { Write-Host "Build failed" -ForegroundColor Red; exit 1 }
 
 # Set env for token service (inherited by child processes)
 $env:TOKEN_SERVICE_SECRET = $Secret
@@ -152,10 +153,15 @@ while ($true) {
     # -- Token service: hidden window (Chrome itself stays visible) -------------
     # Start-Process with -WindowStyle Hidden hides the console window but
     # Chrome's GUI window still appears since it's a separate process.
+    # Capture stdout/stderr so we can tail token service logs.
+    if (Test-Path $TokenStdout) { Remove-Item $TokenStdout -Force }
+    if (Test-Path $TokenStderr) { Remove-Item $TokenStderr -Force }
     $tokenProc = Start-Process -FilePath $TokenExe `
         -WorkingDirectory $ServiceDir `
         -WindowStyle Hidden `
-        -PassThru
+        -PassThru `
+        -RedirectStandardOutput $TokenStdout `
+        -RedirectStandardError $TokenStderr
 
     Write-Host "  Token service PID $($tokenProc.Id) - waiting for reCAPTCHA..." -ForegroundColor White
     if (Wait-ForHealth -TimeoutSec 90) {
@@ -192,11 +198,35 @@ while ($true) {
     }
 
     # -- Monitor ----------------------------------------------------------------
-    Write-Host "  Running. Health check every 2 min." -ForegroundColor DarkGray
+    Write-Host "  Running. Health check every 2 min. Token activity shown below." -ForegroundColor DarkGray
     $hcTimer = Get-Date
+    $lastLogLine = 0  # track how many stderr lines we've shown
 
     while ($true) {
         Start-Sleep -Seconds 10
+
+        # -- Show new token service log lines (stderr has slog output) ---------
+        if (Test-Path $TokenStderr) {
+            $lines = @(Get-Content $TokenStderr -ErrorAction SilentlyContinue)
+            if ($lines.Count -gt $lastLogLine) {
+                for ($i = $lastLogLine; $i -lt $lines.Count; $i++) {
+                    $line = $lines[$i]
+                    # Color-code by log level
+                    if ($line -match '"level":"ERROR"' -or $line -match 'level=ERROR') {
+                        Write-Host "  LOG: $line" -ForegroundColor Red
+                    } elseif ($line -match '"level":"WARN"' -or $line -match 'level=WARN') {
+                        Write-Host "  LOG: $line" -ForegroundColor Yellow
+                    } elseif ($line -match 'Token request received' -or $line -match 'Token sent successfully') {
+                        Write-Host "  LOG: $line" -ForegroundColor Green
+                    } elseif ($line -match 'Token generation failed') {
+                        Write-Host "  LOG: $line" -ForegroundColor Red
+                    } else {
+                        Write-Host "  LOG: $line" -ForegroundColor DarkGray
+                    }
+                }
+                $lastLogLine = $lines.Count
+            }
+        }
 
         $tOk = $tokenProc -and -not $tokenProc.HasExited
         $cOk = $tunnelProc -and -not $tunnelProc.HasExited
@@ -217,7 +247,7 @@ while ($true) {
                     Write-Host "  $(Get-Date -Format 'HH:mm:ss') Page not ready, restarting..." -ForegroundColor Yellow
                     Stop-All; Start-Sleep -Seconds $RestartDelay; break
                 }
-                Write-Host "  $(Get-Date -Format 'HH:mm:ss') OK" -ForegroundColor DarkGray
+                Write-Host "  $(Get-Date -Format 'HH:mm:ss') Healthy (page_ready=true)" -ForegroundColor DarkGray
             } catch {
                 Write-Host "  $(Get-Date -Format 'HH:mm:ss') Health failed, restarting..." -ForegroundColor Yellow
                 Stop-All; Start-Sleep -Seconds $RestartDelay; break

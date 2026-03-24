@@ -20,7 +20,7 @@ type Config struct {
 	MaxStoredDeals         int
 	AllowedDomains         []string
 	RFDBaseURL             string
-	GeminiAPIKey         string
+	GeminiAPIKeys        []string
 	GeminiLocations      []string
 	GeminiFallbackModels   []string
 
@@ -122,7 +122,15 @@ func Load() (*Config, error) {
 		}
 	}
 
-	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
+	var geminiAPIKeys []string
+	if v := os.Getenv("GEMINI_API_KEY"); v != "" {
+		for _, k := range strings.Split(v, ",") {
+			k = strings.TrimSpace(k)
+			if k != "" {
+				geminiAPIKeys = append(geminiAPIKeys, k)
+			}
+		}
+	}
 
 	return &Config{
 		ProjectID:              projectID,
@@ -133,7 +141,7 @@ func Load() (*Config, error) {
 		MaxStoredDeals:         maxStoredDeals,
 		AllowedDomains:         []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com", "bestbuy.ca"},
 		RFDBaseURL:             "https://forums.redflagdeals.com",
-		GeminiAPIKey:    geminiAPIKey,
+		GeminiAPIKeys:   geminiAPIKeys,
 		GeminiLocations: geminiLocations,
 		GeminiFallbackModels: []string{
 			"gemini-2.5-flash-lite",

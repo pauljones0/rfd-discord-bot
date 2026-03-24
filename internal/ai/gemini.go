@@ -50,8 +50,8 @@ type AnalysisResult struct {
 	IsLavaHot  bool   `json:"is_lava_hot"`
 }
 
-func NewClient(ctx context.Context, projectID string, locations []string, apiKey string, fallbackModels []string, store QuotaStore) (*Client, error) {
-	if apiKey == "" && projectID == "" {
+func NewClient(ctx context.Context, projectID string, locations []string, apiKeys []string, fallbackModels []string, store QuotaStore) (*Client, error) {
+	if len(apiKeys) == 0 && projectID == "" {
 		return nil, nil // Return nil client if no credentials provided
 	}
 
@@ -61,19 +61,37 @@ func NewClient(ctx context.Context, projectID string, locations []string, apiKey
 
 	clients := make(map[string]*genai.Client)
 
-	if apiKey != "" {
-		// Gemini API backend: single client, no region concept
-		cfg := &genai.ClientConfig{
-			APIKey:  apiKey,
-			Backend: genai.BackendGeminiAPI,
+	if len(apiKeys) > 0 {
+		// Gemini API backend: one client per API key for quota rotation.
+		// Each key is treated as a "location" so the existing region failover
+		// mechanism rotates through keys on quota exhaustion.
+		for i, key := range apiKeys {
+			cfg := &genai.ClientConfig{
+				APIKey:  key,
+				Backend: genai.BackendGeminiAPI,
+			}
+			client, err := genai.NewClient(ctx, cfg)
+			if err != nil {
+				slog.Warn("Failed to create Gemini API client for key, skipping",
+					"key_index", i, "error", err)
+				continue
+			}
+			loc := fmt.Sprintf("key%d", i)
+			clients[loc] = client
 		}
-		client, err := genai.NewClient(ctx, cfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create gemini client: %w", err)
+		if len(clients) == 0 {
+			return nil, fmt.Errorf("failed to create any Gemini API clients")
 		}
-		clients[""] = client
-		locations = []string{""} // no region failover for API key mode
-		slog.Info("Using Gemini API backend (API key)")
+		// Build locations list from successfully created clients
+		locations = make([]string, 0, len(clients))
+		for i := range apiKeys {
+			loc := fmt.Sprintf("key%d", i)
+			if _, ok := clients[loc]; ok {
+				locations = append(locations, loc)
+			}
+		}
+		slog.Info("Using Gemini API backend with key rotation",
+			"num_keys", len(locations))
 	} else {
 		// Vertex AI backend: one client per region
 		if len(locations) == 0 {

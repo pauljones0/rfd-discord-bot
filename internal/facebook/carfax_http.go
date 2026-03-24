@@ -491,6 +491,10 @@ func (c *CarfaxHTTPClient) carfaxGETWithRetry(ctx context.Context, apiURL string
 
 		body, err := c.carfaxGET(ctx, apiURL, token)
 		if err == nil {
+			slog.Info("Carfax token accepted (GET)",
+				"processor", "facebook", "component", "carfax_http",
+				"attempt", attempt+1,
+				"token_age_ms", tokenAge.Milliseconds())
 			return body, nil
 		}
 
@@ -499,7 +503,7 @@ func (c *CarfaxHTTPClient) carfaxGETWithRetry(ctx context.Context, apiURL string
 			return nil, err // non-retryable error
 		}
 
-		slog.Warn("Carfax reCAPTCHA rejection, retrying with fresh token",
+		slog.Warn("Carfax token rejected (GET), retrying with fresh token",
 			"processor", "facebook", "component", "carfax_http",
 			"attempt", attempt+1, "max_attempts", maxTokenRetries,
 			"token_age_ms", tokenAge.Milliseconds(),
@@ -522,6 +526,10 @@ func (c *CarfaxHTTPClient) carfaxPOSTWithRetry(ctx context.Context, apiURL, form
 
 		body, err := c.carfaxPOST(ctx, apiURL, token, formBody)
 		if err == nil {
+			slog.Info("Carfax token accepted (POST)",
+				"processor", "facebook", "component", "carfax_http",
+				"attempt", attempt+1,
+				"token_age_ms", tokenAge.Milliseconds())
 			return body, nil
 		}
 
@@ -530,7 +538,7 @@ func (c *CarfaxHTTPClient) carfaxPOSTWithRetry(ctx context.Context, apiURL, form
 			return nil, err
 		}
 
-		slog.Warn("Carfax reCAPTCHA rejection on POST, retrying",
+		slog.Warn("Carfax token rejected (POST), retrying with fresh token",
 			"processor", "facebook", "component", "carfax_http",
 			"attempt", attempt+1, "max_attempts", maxTokenRetries,
 			"token_age_ms", tokenAge.Milliseconds(),
