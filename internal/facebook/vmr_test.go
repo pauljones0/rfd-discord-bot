@@ -51,30 +51,40 @@ func TestVmrNormalize(t *testing.T) {
 	tests := []struct {
 		make      string
 		model     string
+		year      int
 		wantMake  string
 		wantModel string
 	}{
 		// Ram as standalone make → Dodge
-		{"Ram", "1500", "Dodge", "1500 Ram"},
-		{"Ram", "2500", "Dodge", "2500 Ram"},
-		{"Ram", "ProMaster", "Dodge", "ProMaster Ram"},
+		{"Ram", "1500", 2020, "Dodge", "1500 Ram"},
+		{"Ram", "2500", 2020, "Dodge", "2500 Ram"},
+		{"Ram", "ProMaster", 2020, "Dodge", "ProMaster Ram"},
 		// Dodge + Ram model → rearranged
-		{"Dodge", "Ram 1500", "Dodge", "1500 Ram"},
-		{"Dodge", "Ram 3500 TD", "Dodge", "3500 TD Ram"},
+		{"Dodge", "Ram 1500", 2020, "Dodge", "1500 Ram"},
+		{"Dodge", "Ram 3500 TD", 2020, "Dodge", "3500 TD Ram"},
 		// Dodge bare-number models → appends Ram
-		{"Dodge", "1500", "Dodge", "1500 Ram"},
-		{"Dodge", "2500", "Dodge", "2500 Ram"},
-		{"Dodge", "3500", "Dodge", "3500 Ram"},
+		{"Dodge", "1500", 2020, "Dodge", "1500 Ram"},
+		{"Dodge", "2500", 2020, "Dodge", "2500 Ram"},
+		{"Dodge", "3500", 2020, "Dodge", "3500 Ram"},
 		// Non-Ram vehicles unchanged
-		{"Dodge", "Challenger", "Dodge", "Challenger"},
-		{"Honda", "Civic", "Honda", "Civic"},
-		{"Ford", "Crown Victoria", "Ford", "Crown Victoria"},
+		{"Dodge", "Challenger", 2020, "Dodge", "Challenger"},
+		{"Honda", "Civic", 2020, "Honda", "Civic"},
+		{"Ford", "Crown Victoria", 2008, "Ford", "Crown Victoria"},
+		// Subaru WRX: pre-2015 → Impreza WRX, 2015+ stays WRX
+		{"Subaru", "WRX", 2002, "Subaru", "Impreza WRX"},
+		{"Subaru", "WRX", 2014, "Subaru", "Impreza WRX"},
+		{"Subaru", "WRX", 2015, "Subaru", "WRX"},
+		{"Subaru", "WRX", 2020, "Subaru", "WRX"},
+		// Subaru STI variants
+		{"Subaru", "WRX STI", 2010, "Subaru", "Impreza WRX STI"},
+		{"Subaru", "STI", 2012, "Subaru", "Impreza WRX STI"},
+		{"Subaru", "WRX STI", 2018, "Subaru", "WRX STI"},
 	}
 	for _, tt := range tests {
-		gotMake, gotModel := vmrNormalize(tt.make, tt.model)
+		gotMake, gotModel := vmrNormalize(tt.make, tt.model, tt.year)
 		if gotMake != tt.wantMake || gotModel != tt.wantModel {
-			t.Errorf("vmrNormalize(%q, %q) = (%q, %q), want (%q, %q)",
-				tt.make, tt.model, gotMake, gotModel, tt.wantMake, tt.wantModel)
+			t.Errorf("vmrNormalize(%q, %q, %d) = (%q, %q), want (%q, %q)",
+				tt.make, tt.model, tt.year, gotMake, gotModel, tt.wantMake, tt.wantModel)
 		}
 	}
 }

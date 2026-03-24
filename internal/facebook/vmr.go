@@ -122,7 +122,7 @@ func GetVMRValue(ctx context.Context, ai AIClient, year int, makeName, model, tr
 		"trim", trim, "province", province, "odometer", odometer)
 
 	// Remap make/model to VMR's naming conventions (e.g. Ram → Dodge)
-	vmrMake, vmrModel := vmrNormalize(makeName, model)
+	vmrMake, vmrModel := vmrNormalize(makeName, model, year)
 
 	slug := vmrModelSlug(vmrMake, vmrModel)
 	pageURL := fmt.Sprintf("https://www.vmrcanada.com/used-car/values/%d-%s-%s.html", year, vmrMakeSlug(vmrMake), slug)
@@ -136,7 +136,17 @@ func GetVMRValue(ctx context.Context, ai AIClient, year int, makeName, model, tr
 		// If 404, try Gemini to suggest the correct model slug
 		if strings.Contains(err.Error(), "404") && ai != nil {
 			corrected, aiErr := suggestVMRSlug(ctx, ai, year, vmrMake, vmrModel)
-			if aiErr == nil && corrected != "" && corrected != slug {
+			if aiErr != nil {
+				slog.Warn("VMR AI slug suggestion failed",
+					"processor", "facebook", "component", "vmr",
+					"year", year, "make", vmrMake, "model", vmrModel,
+					"error", aiErr)
+			} else if corrected == "" || corrected == slug {
+				slog.Info("VMR AI slug suggestion unchanged",
+					"processor", "facebook", "component", "vmr",
+					"year", year, "make", vmrMake, "model", vmrModel,
+					"original_slug", slug, "suggested_slug", corrected)
+			} else {
 				slog.Info("VMR URL corrected by AI",
 					"processor", "facebook",
 					"original_slug", slug, "corrected_slug", corrected)
@@ -261,7 +271,8 @@ func vmrModelSlug(makeName, model string) string {
 
 // vmrNormalize remaps make/model to match VMR's naming conventions.
 // VMR lists all Ram trucks under "Dodge" with the model format "1500 Ram".
-func vmrNormalize(makeName, model string) (string, string) {
+// Year is needed for models that changed naming over time (e.g. WRX was Impreza WRX before 2015).
+func vmrNormalize(makeName, model string, year int) (string, string) {
 	lowerMake := strings.ToLower(strings.TrimSpace(makeName))
 	lowerModel := strings.ToLower(strings.TrimSpace(model))
 
@@ -280,6 +291,16 @@ func vmrNormalize(makeName, model string) (string, string) {
 	// Gemini sometimes extracts just the number without "Ram" prefix.
 	if lowerMake == "dodge" && (lowerModel == "1500" || lowerModel == "2500" || lowerModel == "3500") {
 		return "Dodge", model + " Ram"
+	}
+
+	// Subaru WRX was sold as "Impreza WRX" until 2014; became standalone "WRX" in 2015.
+	// VMR lists pre-2015 as "Impreza WRX" and 2015+ as "WRX".
+	if lowerMake == "subaru" && lowerModel == "wrx" && year < 2015 {
+		return "Subaru", "Impreza WRX"
+	}
+	// Same for STI variant
+	if lowerMake == "subaru" && (lowerModel == "wrx sti" || lowerModel == "sti") && year < 2015 {
+		return "Subaru", "Impreza WRX STI"
 	}
 
 	return makeName, model
