@@ -405,13 +405,20 @@ func (c *CarfaxClient) GetValue(ctx context.Context, year int, make, model, trim
 		return 0, fmt.Errorf("failed to select body style: %w", err)
 	}
 
-	getValueBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Get Value Range"})
-	if _, err := page.WaitForFunction("btn => !btn.disabled", getValueBtn, playwright.PageWaitForFunctionOptions{
+	// Wait for Get Value Range button to become enabled using pure JS to avoid
+	// Locator serialization issues with WaitForFunction (btn can be undefined).
+	if _, err := page.WaitForFunction(`() => {
+		const buttons = [...document.querySelectorAll('button')];
+		const btn = buttons.find(b => b.textContent.includes('Get Value Range'));
+		if (!btn) return false;
+		return !btn.disabled;
+	}`, playwright.PageWaitForFunctionOptions{
 		Timeout: playwright.Float(10000),
 	}); err != nil {
 		return 0, fmt.Errorf("timeout waiting for Get Value Range button to enable: %w", err)
 	}
 
+	getValueBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Get Value Range"})
 	if err := getValueBtn.Click(playwright.LocatorClickOptions{Timeout: playwright.Float(10000)}); err != nil {
 		return 0, fmt.Errorf("failed to click Get Value Range button: %w", err)
 	}

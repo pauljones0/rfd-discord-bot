@@ -39,17 +39,21 @@ func NewCarfaxTokenClient(serviceURL, secret string) *CarfaxTokenClient {
 // GetToken obtains a fresh reCAPTCHA v3 token from the token service.
 // Retries once on transient errors (connection refused, timeout).
 func (c *CarfaxTokenClient) GetToken(ctx context.Context) (string, error) {
+	start := time.Now()
 	token, err := c.fetchToken(ctx)
 	if err != nil {
-		// Retry once for transient failures
 		slog.Warn("Token fetch failed, retrying once",
-			"processor", "facebook", "error", err)
+			"processor", "facebook", "component", "carfax_http",
+			"error", err, "duration_ms", time.Since(start).Milliseconds())
 		time.Sleep(500 * time.Millisecond)
 		token, err = c.fetchToken(ctx)
 		if err != nil {
 			return "", fmt.Errorf("token service unavailable after retry: %w", err)
 		}
 	}
+	slog.Info("Token fetched from service",
+		"processor", "facebook", "component", "carfax_http",
+		"token_length", len(token), "duration_ms", time.Since(start).Milliseconds())
 	return token, nil
 }
 
