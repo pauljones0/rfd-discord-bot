@@ -95,11 +95,14 @@ func main() {
 	// Initialize Facebook processor (requires AI client for analysis)
 	var fbProc *facebook.Processor
 	if aiClient != nil {
-		fbProc = facebook.NewProcessor(store, n, aiClient, cfg.ProxyURL)
-		if cfg.ProxyURL != "" {
-			slog.Info("Facebook Marketplace deal processor initialized with proxy")
+		fbProc = facebook.NewProcessor(store, n, aiClient, cfg.ProxyURL, cfg.CarfaxTokenServiceURL, cfg.CarfaxTokenServiceSecret)
+		if cfg.CarfaxTokenServiceURL != "" {
+			slog.Info("Facebook Marketplace deal processor initialized with Carfax token service",
+				"token_service_url", cfg.CarfaxTokenServiceURL)
+		} else if cfg.ProxyURL != "" {
+			slog.Info("Facebook Marketplace deal processor initialized with proxy (Carfax Playwright fallback)")
 		} else {
-			slog.Info("Facebook Marketplace deal processor initialized (no proxy)")
+			slog.Info("Facebook Marketplace deal processor initialized (no proxy, no token service)")
 		}
 	} else {
 		slog.Info("Facebook Marketplace features disabled (AI client unavailable)")

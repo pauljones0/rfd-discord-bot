@@ -30,6 +30,8 @@ jobs:
       EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       PROXY_URL: ${{ secrets.PROXY_URL }}
+      CARFAX_TOKEN_SERVICE_URL: ${{ secrets.CARFAX_TOKEN_SERVICE_URL }}
+      CARFAX_TOKEN_SERVICE_SECRET: ${{ secrets.CARFAX_TOKEN_SERVICE_SECRET }}
 
     steps:
       - name: Checkout
@@ -56,3 +58,5 @@ jobs:
             EBAY_CLIENT_SECRET=${{ env.EBAY_CLIENT_SECRET }}
             GEMINI_API_KEY=${{ env.GEMINI_API_KEY }}
             PROXY_URL=${{ env.PROXY_URL }}
+            CARFAX_TOKEN_SERVICE_URL=${{ env.CARFAX_TOKEN_SERVICE_URL }}
+            CARFAX_TOKEN_SERVICE_SECRET=${{ env.CARFAX_TOKEN_SERVICE_SECRET }}
