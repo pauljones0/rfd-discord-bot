@@ -267,8 +267,10 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			continue
 		}
 
-		// Pre-filter: keyword check as fallback for ads without category data
-		if ad.Category == "" && isLikelyNonCar(ad.Title) {
+		// Pre-filter: keyword check for obvious non-car listings.
+		// Runs even when Category is set because Facebook sometimes miscategorizes
+		// golf carts, ATVs, etc. under "Cars & Trucks".
+		if isLikelyNonCar(ad.Title) {
 			slog.Debug("Skipping likely non-car listing (keyword match)", "processor", "facebook", "title", ad.Title)
 			adsSkipped++
 			continue
@@ -495,7 +497,7 @@ var nonCarKeywords = []string{
 	"generator", "parts only", "parting out",
 	// Brands that never manufacture consumer cars — safe to pre-filter.
 	"kawasaki", "harley", "ducati", "yamaha", "polaris",
-	"can-am", "canam", "arctic cat",
+	"can-am", "canam", "can am", "arctic cat", "clubcar", "club car",
 	"peterbilt", "freightliner", "kenworth", "western star",
 	// RV / camper manufacturers — none of these make consumer cars.
 	"gulf stream", "gulfstream", "jayco", "coachmen", "forest river",
