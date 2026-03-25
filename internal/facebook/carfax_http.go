@@ -193,16 +193,38 @@ func (c *CarfaxHTTPClient) GetValue(ctx context.Context, year int, make, model, 
 		"trim":  {matchedTrim},
 	}
 
-	matchedEngine := c.cascadeOrDefault(ctx, "Engine", engine, cascadeParams)
+	// Secondary cascade steps are optional — on failure, defaults are used.
+	// If any step fails (typically reCAPTCHA token rejection exhausting all retries),
+	// skip remaining steps to avoid wasting tokens on doomed API calls.
+	matchedEngine, engFailed := c.cascadeOrDefault(ctx, "Engine", engine, cascadeParams)
 	cascadeParams.Set("engine", matchedEngine)
 
-	matchedDrivetrain := c.cascadeOrDefault(ctx, "Drivetrain", drivetrain, cascadeParams)
-	cascadeParams.Set("drivetrain", matchedDrivetrain)
+	var matchedDrivetrain, matchedTransmission, matchedBodyStyle string
+	if engFailed {
+		slog.Info("Skipping remaining cascade steps after Engine cascade failed",
+			"processor", "facebook", "component", "carfax_http",
+			"year", year, "make", matchedMake, "model", matchedModel)
+		matchedDrivetrain = drivetrain
+		matchedTransmission = transmission
+		matchedBodyStyle = bodyStyle
+	} else {
+		var drFailed bool
+		matchedDrivetrain, drFailed = c.cascadeOrDefault(ctx, "Drivetrain", drivetrain, cascadeParams)
+		cascadeParams.Set("drivetrain", matchedDrivetrain)
 
-	matchedTransmission := c.cascadeOrDefault(ctx, "Transmission", transmission, cascadeParams)
-	cascadeParams.Set("transmission", matchedTransmission)
+		if drFailed {
+			slog.Info("Skipping remaining cascade steps after Drivetrain cascade failed",
+				"processor", "facebook", "component", "carfax_http",
+				"year", year, "make", matchedMake, "model", matchedModel)
+			matchedTransmission = transmission
+			matchedBodyStyle = bodyStyle
+		} else {
+			matchedTransmission, _ = c.cascadeOrDefault(ctx, "Transmission", transmission, cascadeParams)
+			cascadeParams.Set("transmission", matchedTransmission)
 
-	matchedBodyStyle := c.cascadeOrDefault(ctx, "BodyStyle", bodyStyle, cascadeParams)
+			matchedBodyStyle, _ = c.cascadeOrDefault(ctx, "BodyStyle", bodyStyle, cascadeParams)
+		}
+	}
 
 	// --- Submit valuation ---
 	reportID, err := c.submitValuation(ctx, year, matchedMake, matchedModel, matchedTrim,
@@ -365,8 +387,9 @@ func (c *CarfaxHTTPClient) cascadeOptions(ctx context.Context, property string, 
 }
 
 // cascadeOrDefault attempts to cascade a property; on failure, returns the provided default.
+// Returns (value, apiFailed) where apiFailed indicates the API call failed (e.g. reCAPTCHA rejection).
 // Logs extensively so we know exactly what happened when things break.
-func (c *CarfaxHTTPClient) cascadeOrDefault(ctx context.Context, property, defaultVal string, params url.Values) string {
+func (c *CarfaxHTTPClient) cascadeOrDefault(ctx context.Context, property, defaultVal string, params url.Values) (string, bool) {
 	options, err := c.cascadeOptions(ctx, property, params)
 	if err != nil {
 		slog.Warn("Carfax cascade failed, using provided default",
@@ -375,21 +398,21 @@ func (c *CarfaxHTTPClient) cascadeOrDefault(ctx context.Context, property, defau
 			"default", defaultVal,
 			"params", params.Encode(),
 			"error", err)
-		return defaultVal
+		return defaultVal, true
 	}
 	if len(options) == 0 {
 		slog.Warn("Carfax cascade returned no options, using provided default",
 			"processor", "facebook",
 			"property", property,
 			"default", defaultVal)
-		return defaultVal
+		return defaultVal, false
 	}
 	if len(options) == 1 {
 		slog.Debug("Carfax cascade: single option available",
 			"processor", "facebook",
 			"property", property,
 			"only_option", options[0])
-		return options[0]
+		return options[0], false
 	}
 
 	matched := fuzzyMatch(defaultVal, options)
@@ -401,7 +424,7 @@ func (c *CarfaxHTTPClient) cascadeOrDefault(ctx context.Context, property, defau
 			"matched", matched,
 			"all_options", options)
 	}
-	return matched
+	return matched, false
 }
 
 // submitValuation POSTs to the valuation-report endpoint and returns the reportID.
