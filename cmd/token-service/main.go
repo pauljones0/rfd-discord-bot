@@ -711,6 +711,10 @@ func (s *tokenService) browseRandomPage(reqID string) {
 // interactions via CDP to boost reCAPTCHA v3 trust scores. reCAPTCHA v3 heavily
 // weights behavioral signals — a page with zero mouse/scroll activity scores low.
 //
+// Targets real interactive UI elements (nav items, form fields, radio buttons)
+// discovered via DOM queries, rather than random coordinates. A real user moves
+// their mouse to things they can see and interact with.
+//
 // Uses CDP's Input.dispatchMouseEvent which creates "trusted" browser events.
 // JavaScript-created events (new MouseEvent()) are explicitly flagged as untrusted
 // and ignored by reCAPTCHA's scoring model.
@@ -719,29 +723,53 @@ func (s *tokenService) browseRandomPage(reqID string) {
 func (s *tokenService) simulateHumanBehavior() {
 	slog.Debug("Simulating human behavior on page")
 
-	// Phase 1: Mouse movements — 3-5 Bézier curves across the page
-	curX, curY := 500.0, 400.0
-	numMoves := 3 + rand.Intn(3)
-	for i := range numMoves {
-		targetX := 100.0 + rand.Float64()*1600
-		targetY := 100.0 + rand.Float64()*700
-		s.smoothMouseMove(curX, curY, targetX, targetY)
-		curX, curY = targetX, targetY
-		time.Sleep(time.Duration(150+rand.Intn(400)) * time.Millisecond)
+	// Discover interactive elements on the page for realistic targeting.
+	targets := s.discoverPageTargets()
+	curX, curY := 640.0, 400.0
 
-		// Occasionally click on empty page area (not links/buttons)
-		if i == 1 {
+	// Phase 1: Hover a nav item (opens dropdown, very human-like)
+	if navTargets := filterTargets(targets, "nav"); len(navTargets) > 0 {
+		t := navTargets[rand.Intn(len(navTargets))]
+		s.smoothMouseMove(curX, curY, t.X, t.Y)
+		curX, curY = t.X, t.Y
+		// Dwell on the nav item to let the dropdown appear
+		time.Sleep(time.Duration(400+rand.Intn(600)) * time.Millisecond)
+		// Move away to close the dropdown
+		awayX := curX + 200.0 + rand.Float64()*100
+		awayY := curY + 150.0 + rand.Float64()*100
+		s.smoothMouseMove(curX, curY, awayX, awayY)
+		curX, curY = awayX, awayY
+		time.Sleep(time.Duration(200+rand.Intn(300)) * time.Millisecond)
+	}
+
+	// Phase 2: Interact with form elements — hover and click a field
+	if formTargets := filterTargets(targets, "form"); len(formTargets) > 0 {
+		// Pick 1-2 form elements to interact with
+		numInteractions := 1 + rand.Intn(2)
+		for i := range numInteractions {
+			if i >= len(formTargets) {
+				break
+			}
+			t := formTargets[rand.Intn(len(formTargets))]
+			s.smoothMouseMove(curX, curY, t.X, t.Y)
+			curX, curY = t.X, t.Y
+			time.Sleep(time.Duration(150+rand.Intn(250)) * time.Millisecond)
+
+			// Click the element (focuses dropdowns, toggles radio buttons)
 			_ = chromedp.Run(s.ctx,
 				input.DispatchMouseEvent(input.MousePressed, curX, curY).
 					WithButton(input.Left).WithClickCount(1),
 				input.DispatchMouseEvent(input.MouseReleased, curX, curY).
 					WithButton(input.Left).WithClickCount(1),
 			)
-			time.Sleep(time.Duration(100+rand.Intn(200)) * time.Millisecond)
+			time.Sleep(time.Duration(200+rand.Intn(400)) * time.Millisecond)
 		}
+
+		// If we toggled to VIN mode, switch back to Year/Make
+		s.ensureYearMakeMode()
 	}
 
-	// Phase 2: Scroll down, pause, scroll back up (smooth scrolling)
+	// Phase 3: Scroll down, pause to read, scroll back up
 	scrollDown := 250 + rand.Intn(200)
 	_ = chromedp.Run(s.ctx, chromedp.Evaluate(
 		fmt.Sprintf(`window.scrollBy({top: %d, behavior: 'smooth'})`, scrollDown), nil))
@@ -752,35 +780,130 @@ func (s *tokenService) simulateHumanBehavior() {
 		fmt.Sprintf(`window.scrollBy({top: -%d, behavior: 'smooth'})`, scrollUp), nil))
 	time.Sleep(time.Duration(300+rand.Intn(500)) * time.Millisecond)
 
-	// Phase 3: Hover over a form element (Year dropdown is visible on Carfax page)
-	var elemJSON string
-	_ = chromedp.Run(s.ctx, chromedp.Evaluate(`(() => {
-		const el = document.querySelector('[name="Year"], select, .form-control');
-		if (el) {
-			const r = el.getBoundingClientRect();
-			return JSON.stringify({x: r.x + r.width/2, y: r.y + r.height/2});
-		}
-		return '';
-	})()`, &elemJSON))
-
-	if elemJSON != "" {
-		var pos struct{ X, Y float64 }
-		if json.Unmarshal([]byte(elemJSON), &pos) == nil && pos.X > 0 && pos.Y > 0 {
-			s.smoothMouseMove(curX, curY, pos.X, pos.Y)
-			time.Sleep(time.Duration(200+rand.Intn(300)) * time.Millisecond)
-		}
+	// Phase 4: Move to a content area (heading, image, text block)
+	if contentTargets := filterTargets(targets, "content"); len(contentTargets) > 0 {
+		t := contentTargets[rand.Intn(len(contentTargets))]
+		s.smoothMouseMove(curX, curY, t.X, t.Y)
+		curX, curY = t.X, t.Y
+		time.Sleep(time.Duration(200+rand.Intn(400)) * time.Millisecond)
 	}
 
-	// Phase 4: A couple more random mouse movements to finish
-	for range 2 {
-		targetX := 300.0 + rand.Float64()*1200
-		targetY := 200.0 + rand.Float64()*500
-		s.smoothMouseMove(curX, curY, targetX, targetY)
-		curX, curY = targetX, targetY
-		time.Sleep(time.Duration(100+rand.Intn(300)) * time.Millisecond)
-	}
+	// Phase 5: One final random movement to avoid a perfectly patterned path
+	finalX := 300.0 + rand.Float64()*600
+	finalY := 200.0 + rand.Float64()*300
+	s.smoothMouseMove(curX, curY, finalX, finalY)
+	time.Sleep(time.Duration(100+rand.Intn(200)) * time.Millisecond)
+
+	// Scroll back to top so the form is visible for the next token generation
+	_ = chromedp.Run(s.ctx, chromedp.Evaluate(
+		`window.scrollTo({top: 0, behavior: 'smooth'})`, nil))
+	time.Sleep(time.Duration(300+rand.Intn(200)) * time.Millisecond)
 
 	slog.Debug("Human behavior simulation complete")
+}
+
+// pageTarget represents a discovered interactive element on the page.
+type pageTarget struct {
+	X, Y     float64
+	Category string // "nav", "form", "content"
+}
+
+// discoverPageTargets queries the DOM for interactive elements and returns
+// their center coordinates grouped by category.
+func (s *tokenService) discoverPageTargets() []pageTarget {
+	var targetsJSON string
+	_ = chromedp.Run(s.ctx, chromedp.Evaluate(`(() => {
+		const targets = [];
+		const add = (el, cat) => {
+			const r = el.getBoundingClientRect();
+			if (r.width > 0 && r.height > 0 && r.y >= 0 && r.y < window.innerHeight) {
+				targets.push({x: r.x + r.width/2, y: r.y + r.height/2, cat: cat});
+			}
+		};
+
+		// Nav items — the main navigation links with dropdowns
+		document.querySelectorAll('nav a, header a, [class*="nav"] > li > a, [class*="menu"] > li > a').forEach(el => {
+			const text = el.textContent.trim().toLowerCase();
+			// Only nav-level items, not dropdown children
+			if (text && !text.includes('login') && !text.includes('sign') && el.closest('nav, header, [class*="nav"]')) {
+				add(el, 'nav');
+			}
+		});
+
+		// Form elements — dropdowns, radio buttons, inputs, selects
+		document.querySelectorAll('select, [role="listbox"], .form-control, input[type="radio"], input[type="text"], [class*="dropdown"], [class*="select"]').forEach(el => {
+			add(el, 'form');
+		});
+
+		// Radio button labels (more clickable area than the radio itself)
+		document.querySelectorAll('label').forEach(el => {
+			if (el.querySelector('input[type="radio"]') || el.getAttribute('for')) {
+				add(el, 'form');
+			}
+		});
+
+		// Content areas — headings, images, text blocks users naturally look at
+		document.querySelectorAll('h1, h2, h3, img[src*="car"], [class*="hero"], [class*="banner"]').forEach(el => {
+			add(el, 'content');
+		});
+
+		return JSON.stringify(targets);
+	})()`, &targetsJSON))
+
+	if targetsJSON == "" || targetsJSON == "[]" {
+		return nil
+	}
+
+	var raw []struct {
+		X   float64 `json:"x"`
+		Y   float64 `json:"y"`
+		Cat string  `json:"cat"`
+	}
+	if json.Unmarshal([]byte(targetsJSON), &raw) != nil {
+		return nil
+	}
+
+	targets := make([]pageTarget, 0, len(raw))
+	for _, r := range raw {
+		if r.X > 0 && r.Y > 0 {
+			targets = append(targets, pageTarget{X: r.X, Y: r.Y, Category: r.Cat})
+		}
+	}
+	return targets
+}
+
+// filterTargets returns targets matching the given category.
+func filterTargets(targets []pageTarget, category string) []pageTarget {
+	var out []pageTarget
+	for _, t := range targets {
+		if t.Category == category {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// ensureYearMakeMode clicks the Year/Make radio button if the VIN radio is
+// currently selected. This prevents the form from being stuck in VIN mode
+// after a simulated radio toggle.
+func (s *tokenService) ensureYearMakeMode() {
+	var isVINMode bool
+	_ = chromedp.Run(s.ctx, chromedp.Evaluate(`(() => {
+		const vinRadio = document.querySelector('input[type="radio"][value*="vin" i], input[type="radio"][value*="VIN"]');
+		return vinRadio ? vinRadio.checked : false;
+	})()`, &isVINMode))
+
+	if isVINMode {
+		// Click the Year/Make radio to switch back
+		_ = chromedp.Run(s.ctx, chromedp.Evaluate(`(() => {
+			const ymRadio = document.querySelector('input[type="radio"]:not([value*="vin" i]):not([value*="VIN"])');
+			if (ymRadio) {
+				const label = ymRadio.closest('label') || document.querySelector('label[for="' + ymRadio.id + '"]');
+				if (label) label.click(); else ymRadio.click();
+			}
+		})()`, nil))
+		time.Sleep(time.Duration(200+rand.Intn(200)) * time.Millisecond)
+	}
 }
 
 // smoothMouseMove generates a quadratic Bézier-curved mouse path and dispatches
