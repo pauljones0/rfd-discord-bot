@@ -75,12 +75,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -89,6 +91,7 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/cdproto/input"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -400,6 +403,11 @@ func (s *tokenService) warmPage() error {
 		if (btn) btn.click();
 	`, nil))
 
+	// Simulate human browsing behavior to build initial reCAPTCHA trust.
+	// reCAPTCHA v3 scores heavily on mouse movement, scroll, and interaction
+	// signals — a page with zero behavioral events scores low.
+	s.simulateHumanBehavior()
+
 	s.pageReady = true
 	slog.Info("Carfax page warmed, reCAPTCHA ready")
 	return nil
@@ -552,9 +560,115 @@ func (s *tokenService) refreshPageAfterToken(reqID string) {
 		return
 	}
 
+	// Simulate browsing behavior after page reload to build reCAPTCHA trust
+	// for the next token request. This runs in the background goroutine so
+	// it doesn't block token delivery.
+	s.simulateHumanBehavior()
+
 	slog.Info("Post-token page refresh complete",
 		"request_id", reqID,
 		"duration_ms", time.Since(start).Milliseconds())
+}
+
+// simulateHumanBehavior performs realistic mouse movements, scrolls, and
+// interactions via CDP to boost reCAPTCHA v3 trust scores. reCAPTCHA v3 heavily
+// weights behavioral signals — a page with zero mouse/scroll activity scores low.
+//
+// Uses CDP's Input.dispatchMouseEvent which creates "trusted" browser events.
+// JavaScript-created events (new MouseEvent()) are explicitly flagged as untrusted
+// and ignored by reCAPTCHA's scoring model.
+//
+// Caller must hold s.mu.
+func (s *tokenService) simulateHumanBehavior() {
+	slog.Debug("Simulating human behavior on page")
+
+	// Phase 1: Mouse movements — 3-5 Bézier curves across the page
+	curX, curY := 500.0, 400.0
+	numMoves := 3 + rand.Intn(3)
+	for i := range numMoves {
+		targetX := 100.0 + rand.Float64()*1600
+		targetY := 100.0 + rand.Float64()*700
+		s.smoothMouseMove(curX, curY, targetX, targetY)
+		curX, curY = targetX, targetY
+		time.Sleep(time.Duration(150+rand.Intn(400)) * time.Millisecond)
+
+		// Occasionally click on empty page area (not links/buttons)
+		if i == 1 {
+			_ = chromedp.Run(s.ctx,
+				input.DispatchMouseEvent(input.MousePressed, curX, curY).
+					WithButton(input.Left).WithClickCount(1),
+				input.DispatchMouseEvent(input.MouseReleased, curX, curY).
+					WithButton(input.Left).WithClickCount(1),
+			)
+			time.Sleep(time.Duration(100+rand.Intn(200)) * time.Millisecond)
+		}
+	}
+
+	// Phase 2: Scroll down, pause, scroll back up (smooth scrolling)
+	scrollDown := 250 + rand.Intn(200)
+	_ = chromedp.Run(s.ctx, chromedp.Evaluate(
+		fmt.Sprintf(`window.scrollBy({top: %d, behavior: 'smooth'})`, scrollDown), nil))
+	time.Sleep(time.Duration(600+rand.Intn(800)) * time.Millisecond)
+
+	scrollUp := 100 + rand.Intn(150)
+	_ = chromedp.Run(s.ctx, chromedp.Evaluate(
+		fmt.Sprintf(`window.scrollBy({top: -%d, behavior: 'smooth'})`, scrollUp), nil))
+	time.Sleep(time.Duration(300+rand.Intn(500)) * time.Millisecond)
+
+	// Phase 3: Hover over a form element (Year dropdown is visible on Carfax page)
+	var elemJSON string
+	_ = chromedp.Run(s.ctx, chromedp.Evaluate(`(() => {
+		const el = document.querySelector('[name="Year"], select, .form-control');
+		if (el) {
+			const r = el.getBoundingClientRect();
+			return JSON.stringify({x: r.x + r.width/2, y: r.y + r.height/2});
+		}
+		return '';
+	})()`, &elemJSON))
+
+	if elemJSON != "" {
+		var pos struct{ X, Y float64 }
+		if json.Unmarshal([]byte(elemJSON), &pos) == nil && pos.X > 0 && pos.Y > 0 {
+			s.smoothMouseMove(curX, curY, pos.X, pos.Y)
+			time.Sleep(time.Duration(200+rand.Intn(300)) * time.Millisecond)
+		}
+	}
+
+	// Phase 4: A couple more random mouse movements to finish
+	for range 2 {
+		targetX := 300.0 + rand.Float64()*1200
+		targetY := 200.0 + rand.Float64()*500
+		s.smoothMouseMove(curX, curY, targetX, targetY)
+		curX, curY = targetX, targetY
+		time.Sleep(time.Duration(100+rand.Intn(300)) * time.Millisecond)
+	}
+
+	slog.Debug("Human behavior simulation complete")
+}
+
+// smoothMouseMove generates a quadratic Bézier-curved mouse path and dispatches
+// mouseMoved events along it via CDP. The curve has natural acceleration/deceleration
+// (slower at start/end, faster in the middle) and a randomized control point to
+// avoid perfectly straight or repetitive paths.
+func (s *tokenService) smoothMouseMove(x1, y1, x2, y2 float64) {
+	steps := 12 + rand.Intn(8) // 12-20 intermediate points
+
+	// Control point — offset randomly from midpoint to create a natural curve
+	cpX := (x1+x2)/2 + (rand.Float64()-0.5)*200
+	cpY := (y1+y2)/2 + (rand.Float64()-0.5)*150
+
+	for i := range steps + 1 {
+		t := float64(i) / float64(steps)
+		// Quadratic Bézier: B(t) = (1-t)²·P0 + 2(1-t)t·P1 + t²·P2
+		x := (1-t)*(1-t)*x1 + 2*(1-t)*t*cpX + t*t*x2
+		y := (1-t)*(1-t)*y1 + 2*(1-t)*t*cpY + t*t*y2
+
+		_ = chromedp.Run(s.ctx, input.DispatchMouseEvent(input.MouseMoved, x, y))
+
+		// Variable timing — ease-in-out mimics natural hand deceleration
+		baseDel := 8 + int(15*math.Sin(math.Pi*t))
+		time.Sleep(time.Duration(baseDel+rand.Intn(8)) * time.Millisecond)
+	}
 }
 
 // handleHealth serves GET /health — reports service and page status.
