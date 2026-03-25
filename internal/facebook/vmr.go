@@ -631,7 +631,7 @@ Examples: 2018-honda-civic.html, 2020-ford-f-150.html, 2008-suzuki-grand%%20vita
 What would be the correct model slug for: %d %s %s
 Reply with ONLY the model slug (lowercase, %%20 for spaces, preserve hyphens). Nothing else.`, year, makeName, model)
 
-	result, err := ai.GenerateContentRaw(ctx, prompt, nil)
+	result, _, _, err := ai.GenerateContentRaw(ctx, prompt, nil)
 	if err != nil {
 		return "", err
 	}

@@ -17,11 +17,9 @@ import (
 // AIClient defines the interface for AI operations needed by the Facebook processor.
 // The existing internal/ai Client can be adapted to satisfy this interface.
 type AIClient interface {
-	// GenerateContentRaw generates content using the AI model.
-	// This is a lower-level method that the Facebook-specific functions wrap.
-	GenerateContentRaw(ctx context.Context, prompt string, config *genai.GenerateContentConfig) (string, error)
-	// DrainTokens returns accumulated input/output token counts since the last drain.
-	DrainTokens() (int, int)
+	// GenerateContentRaw generates content using the AI model and returns the
+	// response text along with the input and output token counts for that call.
+	GenerateContentRaw(ctx context.Context, prompt string, config *genai.GenerateContentConfig) (string, int, int, error)
 }
 
 func abs(x float64) float64 {
@@ -142,7 +140,7 @@ func extractJSON(raw string) string {
 }
 
 // NormalizeAd uses Gemini to extract structured vehicle data from an ad title and description.
-func NormalizeAd(ctx context.Context, client AIClient, adTitle, adDescription string) (*models.CarData, error) {
+func NormalizeAd(ctx context.Context, client AIClient, adTitle, adDescription string) (*models.CarData, int, int, error) {
 	prompt := fmt.Sprintf(`Analyze the following Facebook Marketplace vehicle ad.
 Title: %s
 Description: %s
@@ -168,13 +166,16 @@ Respond with ONLY the JSON object. No explanation, no commentary, no markdown fe
 `, adTitle, adDescription)
 
 	var data models.CarData
+	var totalIn, totalOut int
 
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
 	}
 
 	err := util.RetryWithBackoff(ctx, 2, func(attempt int) error {
-		rawText, apiErr := client.GenerateContentRaw(ctx, prompt, config)
+		rawText, inTok, outTok, apiErr := client.GenerateContentRaw(ctx, prompt, config)
+		totalIn += inTok
+		totalOut += outTok
 		if apiErr != nil {
 			slog.Warn("NormalizeAd Gemini API error",
 				"processor", "facebook", "component", "gemini",
@@ -197,10 +198,10 @@ Respond with ONLY the JSON object. No explanation, no commentary, no markdown fe
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, totalIn, totalOut, err
 	}
 
-	return &data, nil
+	return &data, totalIn, totalOut, nil
 }
 
 // PickCheapestTrim asks Gemini to select the cheapest/most basic trim from a list.
@@ -214,7 +215,7 @@ Options: %s
 
 Reply with ONLY the exact option text, nothing else.`, year, make, model, strings.Join(options, ", "))
 
-	answer, err := client.GenerateContentRaw(ctx, prompt, nil)
+	answer, _, _, err := client.GenerateContentRaw(ctx, prompt, nil)
 	if err != nil {
 		slog.Warn("PickCheapestTrim failed, using first option", "error", err)
 		return options[0]
@@ -237,7 +238,8 @@ Reply with ONLY the exact option text, nothing else.`, year, make, model, string
 }
 
 // AnalyzeDeal uses Gemini with Google Search Grounding to assess if a deal is worth posting.
-func AnalyzeDeal(ctx context.Context, client AIClient, car *models.CarData, carfaxValue float64, vmr *VMRResult, askingPrice float64) (*models.FacebookDealAnalysis, error) {
+// Returns the analysis result, input token count, output token count, and any error.
+func AnalyzeDeal(ctx context.Context, client AIClient, car *models.CarData, carfaxValue float64, vmr *VMRResult, askingPrice float64) (*models.FacebookDealAnalysis, int, int, error) {
 	var valuationContext string
 	if carfaxValue > 0 && vmr != nil && vmr.Retail > 0 {
 		avg := (carfaxValue + vmr.Retail) / 2
@@ -367,9 +369,12 @@ Respond with exactly this JSON:
 	}
 
 	var analysis models.FacebookDealAnalysis
+	var totalIn, totalOut int
 
 	err := util.RetryWithBackoff(ctx, 2, func(attempt int) error {
-		rawText, apiErr := client.GenerateContentRaw(ctx, prompt, config)
+		rawText, inTok, outTok, apiErr := client.GenerateContentRaw(ctx, prompt, config)
+		totalIn += inTok
+		totalOut += outTok
 		if apiErr != nil {
 			slog.Warn("AnalyzeDeal Gemini API error",
 				"processor", "facebook", "component", "gemini",
@@ -393,7 +398,7 @@ Respond with exactly this JSON:
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, totalIn, totalOut, err
 	}
 
 	// Post-parse validation: catch contradictions between the summary text and
@@ -433,5 +438,5 @@ Respond with exactly this JSON:
 		analysis.KnownIssues = ""
 	}
 
-	return &analysis, nil
+	return &analysis, totalIn, totalOut, nil
 }

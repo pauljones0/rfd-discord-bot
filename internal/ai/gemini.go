@@ -567,12 +567,16 @@ func (c *Client) DrainTokens() (int, int) {
 }
 
 // GenerateContentRaw sends a prompt to the active Gemini model and returns the
-// raw text response. An optional config can specify tools (e.g. Google Search
-// Grounding) or response format constraints. This method is used by the Facebook
-// processor for ad normalization and deal analysis.
-func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *genai.GenerateContentConfig) (string, error) {
+// raw text response along with the input and output token counts for that call.
+// An optional config can specify tools (e.g. Google Search Grounding) or response
+// format constraints. This method is used by the Facebook processor for ad
+// normalization and deal analysis.
+//
+// Token counts are returned directly (not accumulated on the client) so that
+// concurrent callers sharing the same Client get accurate per-call counts.
+func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *genai.GenerateContentConfig) (string, int, int, error) {
 	if c == nil || len(c.clients) == 0 {
-		return "", fmt.Errorf("AI client not initialized")
+		return "", 0, 0, fmt.Errorf("AI client not initialized")
 	}
 
 	start := time.Now()
@@ -581,6 +585,7 @@ func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *
 	c.mu.Unlock()
 
 	var result string
+	var inTokens, outTokens int
 
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		c.mu.Lock()
@@ -622,6 +627,12 @@ func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *
 
 		c.logTokenUsage(resp, "generate_content_raw", model, loc)
 
+		// Capture token counts for the caller (not via shared atomics).
+		if resp != nil && resp.UsageMetadata != nil {
+			inTokens = int(resp.UsageMetadata.PromptTokenCount)
+			outTokens = int(resp.UsageMetadata.CandidatesTokenCount)
+		}
+
 		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
 			return fmt.Errorf("no response content from gemini")
 		}
@@ -648,7 +659,7 @@ func (c *Client) GenerateContentRaw(ctx context.Context, prompt string, config *
 		slog.Info("GenerateContentRaw completed", "model", activeModel, "location", loc, "duration_ms", time.Since(start).Milliseconds())
 	}
 
-	return result, err
+	return result, inTokens, outTokens, err
 }
 
 // LogCurrentState emits an INFO log with the current model, region, and exhaustion state.
