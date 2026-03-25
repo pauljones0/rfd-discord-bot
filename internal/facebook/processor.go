@@ -2,6 +2,7 @@ package facebook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -11,7 +12,6 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/metrics"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/storage"
-	"github.com/playwright-community/playwright-go"
 )
 
 // Store defines the Firestore operations needed by the Facebook processor.
@@ -90,12 +90,8 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 		return nil
 	}
 
-	// Initialize Playwright
-	pm, err := NewBrowserManager(slog.Default(), p.proxyURL)
-	if err != nil {
-		return fmt.Errorf("failed to init playwright: %w", err)
-	}
-	defer pm.Close()
+	// Initialize HTTP scraper (no browser needed)
+	httpScraper := NewHTTPScraper(slog.Default(), p.proxyURL)
 
 	// Initialize Carfax valuation client.
 	// Resolve the token service URL dynamically from Firestore first (updated by
@@ -120,8 +116,7 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 		slog.Info("Using Carfax HTTP client with token service",
 			"processor", "facebook", "url", tokenServiceURL)
 	} else {
-		carfaxClient = NewCarfaxClient(pm)
-		slog.Info("Using Carfax Playwright client (no token service configured)", "processor", "facebook")
+		slog.Warn("No Carfax token service configured, Carfax valuations disabled", "processor", "facebook")
 	}
 
 	// Group subscriptions by city
@@ -136,7 +131,7 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 		if i > 0 {
 			randomDelay(3*time.Second, 6*time.Second)
 		}
-		p.processCity(ctx, group, carfaxClient, pm, tracker, &carfaxFailures)
+		p.processCity(ctx, group, carfaxClient, httpScraper, tracker, &carfaxFailures)
 	}
 
 	// Prune old ads — use a separate context so pruning isn't starved for time
@@ -192,7 +187,7 @@ func groupByCity(subs []models.Subscription) []cityGroup {
 	return groups
 }
 
-func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClient CarfaxValuer, pm *BrowserManager, tracker *metrics.Tracker, carfaxFailures *int) {
+func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClient CarfaxValuer, httpScraper *HTTPScraper, tracker *metrics.Tracker, carfaxFailures *int) {
 	slog.Info("Processing city", "processor", "facebook", "city", group.city, "subscribers", len(group.subs))
 
 	cfg := &FacebookScrapeConfig{
@@ -201,8 +196,8 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 		RadiusKm: group.radiusKm,
 	}
 
-	// Scrape marketplace
-	ads, err := ScrapeMarketplace(ctx, slog.Default(), pm, cfg, p.store)
+	// Scrape marketplace via HTTP (no browser needed)
+	ads, err := ScrapeMarketplaceHTTP(ctx, slog.Default(), httpScraper, cfg, p.store)
 	if err != nil {
 		if isTransientError(err) {
 			slog.Warn("Failed to scrape marketplace (transient)", "processor", "facebook", "city", group.city, "error", err)
@@ -220,20 +215,6 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 	tracker.TrackAdsScraped(len(ads))
 	slog.Info("Processing ads", "processor", "facebook", "city", group.city, "count", len(ads))
 
-	// Create a reusable page for listing details
-	detailCtx, detailErr := pm.NewContext(group.city)
-	if detailErr != nil {
-		slog.Warn("Failed to create detail browser context", "processor", "facebook", "error", detailErr)
-	}
-	var detailPage playwright.Page
-	if detailCtx != nil {
-		defer detailCtx.Close()
-		detailPage, detailErr = detailCtx.NewPage()
-		if detailErr != nil {
-			slog.Warn("Failed to create detail page", "processor", "facebook", "error", detailErr)
-		}
-	}
-
 	const carfaxCircuitBreakerThreshold = 3
 
 	cityStart := time.Now()
@@ -246,16 +227,21 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			return
 		}
 
-		// Scrape full description
-		if detailPage != nil {
-			if i > 0 {
-				randomDelay(500*time.Millisecond, 1500*time.Millisecond)
-			}
-			desc, err := ScrapeListingDetail(ctx, slog.Default(), detailPage, ad.URL)
-			if err != nil {
-				slog.Debug("Failed to scrape listing detail", "processor", "facebook", "url", ad.URL, "error", err)
-			} else if desc != "" {
+		var err error
+
+		// Fetch listing detail via HTTP to get structured vehicle data
+		if i > 0 {
+			randomDelay(500*time.Millisecond, 1500*time.Millisecond)
+		}
+		detailCarData, desc, detailErr := ScrapeListingDetailHTTP(ctx, slog.Default(), httpScraper, ad.URL, group.city, p.store)
+		if detailErr != nil {
+			slog.Debug("Failed to scrape listing detail via HTTP", "processor", "facebook", "url", ad.URL, "error", detailErr)
+		} else {
+			if desc != "" {
 				ad.Description = desc
+			}
+			if detailCarData != nil {
+				ad.CarData = detailCarData
 			}
 		}
 
@@ -273,13 +259,16 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			}
 		}
 
-		// Pre-filter: cheap keyword check on the ad title to skip obvious non-car
-		// listings (boats, ATVs, trailers, motorcycles, etc.) BEFORE calling Gemini.
-		// Without this, every ad—including "$500 lawn mower"—would burn a NormalizeAd
-		// Gemini call just to learn it's not a car. The post-normalization
-		// IsCarfaxEligible() check below is the authoritative filter; this is purely
-		// a cost optimisation that catches the easy cases early.
-		if isLikelyNonCar(ad.Title) {
+		// Pre-filter: category-based filter from structured feed data.
+		// Much more reliable than keyword matching — Facebook already categorized it.
+		if ad.Category != "" && ad.Category != "Cars & Trucks" {
+			slog.Debug("Skipping non-car category", "processor", "facebook", "title", ad.Title, "category", ad.Category)
+			adsSkipped++
+			continue
+		}
+
+		// Pre-filter: keyword check as fallback for ads without category data
+		if ad.Category == "" && isLikelyNonCar(ad.Title) {
 			slog.Debug("Skipping likely non-car listing (keyword match)", "processor", "facebook", "title", ad.Title)
 			adsSkipped++
 			continue
@@ -301,27 +290,38 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			continue
 		}
 
-		// Gemini Normalization
-		randomDelay(100*time.Millisecond, 300*time.Millisecond)
-		extraContext := ""
-		if ad.Description != "" {
-			extraContext = ad.Description + "\n"
-		}
-		if ad.Mileage != "" {
-			extraContext += fmt.Sprintf("Mileage: %s. ", ad.Mileage)
-		}
-		if len(ad.Subtitles) > 1 {
-			extraContext += fmt.Sprintf("Specs: %s", strings.Join(ad.Subtitles[1:], ", "))
-		}
+		// Vehicle normalization: use pre-filled CarData from HTTP scraper if
+		// available, otherwise fall back to Gemini NormalizeAd.
+		var carData *models.CarData
+		if ad.CarData != nil && ad.CarData.Make != "" && ad.CarData.Year > 0 {
+			carData = ad.CarData
+			slog.Debug("Using structured CarData from HTTP scraper", "processor", "facebook",
+				"title", ad.Title, "make", carData.Make, "model", carData.Model)
+			tracker.TrackAdProcessed()
+			adsProcessed++
+		} else {
+			randomDelay(100*time.Millisecond, 300*time.Millisecond)
+			extraContext := ""
+			if ad.Description != "" {
+				extraContext = ad.Description + "\n"
+			}
+			if ad.Mileage != "" {
+				extraContext += fmt.Sprintf("Mileage: %s. ", ad.Mileage)
+			}
+			if len(ad.Subtitles) > 1 {
+				extraContext += fmt.Sprintf("Specs: %s", strings.Join(ad.Subtitles[1:], ", "))
+			}
 
-		carData, inTok, outTok, err := NormalizeAd(ctx, p.ai, ad.Title, extraContext)
-		tracker.TrackGeminiCall(inTok, outTok)
-		if err != nil {
-			slog.Error("Failed to normalize ad", "processor", "facebook", "title", ad.Title, "error", err)
-			continue
+			var inTok, outTok int
+			carData, inTok, outTok, err = NormalizeAd(ctx, p.ai, ad.Title, extraContext)
+			tracker.TrackGeminiCall(inTok, outTok)
+			if err != nil {
+				slog.Error("Failed to normalize ad", "processor", "facebook", "title", ad.Title, "error", err)
+				continue
+			}
+			tracker.TrackAdProcessed()
+			adsProcessed++
 		}
-		tracker.TrackAdProcessed()
-		adsProcessed++
 
 		// Skip non-car vehicle types (motorcycles, boats, ATVs, trailers, etc.)
 		if !carData.IsCarfaxEligible() {
@@ -360,7 +360,9 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 
 		// Carfax Valuation
 		var carfaxValue float64
-		if *carfaxFailures >= carfaxCircuitBreakerThreshold {
+		if carfaxClient == nil {
+			// No token service configured — skip Carfax
+		} else if *carfaxFailures >= carfaxCircuitBreakerThreshold {
 			slog.Warn("Carfax circuit breaker open", "processor", "facebook", "title", ad.Title, "consecutive_failures", *carfaxFailures)
 		} else {
 			trimPicker := TrimPicker(func(ctx context.Context, year int, make, model string, options []string) string {
@@ -572,6 +574,9 @@ func isTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, ErrLoginWall) {
+		return true
+	}
 	msg := err.Error()
 	transientPatterns := []string{
 		"NS_ERROR_PROXY_CONNECTION_REFUSED",
@@ -585,6 +590,7 @@ func isTransientError(err error) bool {
 		"net::ERR_TIMED_OUT",
 		"net::ERR_CONNECTION",
 		"soft block detected",
+		"already blocked",
 	}
 	for _, p := range transientPatterns {
 		if strings.Contains(msg, p) {

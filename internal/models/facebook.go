@@ -48,6 +48,8 @@ type ScrapedAd struct {
 	Mileage     string
 	Subtitles   []string
 	Description string
+	Category    string   // Feed category, e.g. "Cars & Trucks", "Motorcycles & Scooters"
+	CarData     *CarData // Pre-filled from structured detail page data; nil = use Gemini
 }
 
 // FacebookAdRecord represents a processed Facebook ad stored in Firestore.
