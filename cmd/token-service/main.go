@@ -518,9 +518,9 @@ func (s *tokenService) handleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // refreshPageAfterToken reloads the Carfax page after a token is sent.
-// This gives the next token request a fresh reCAPTCHA context with a new
-// page load event, which improves the v3 score. A short delay simulates
-// natural browsing behavior (user reading the page before navigating).
+// Sometimes (~30% of the time) it first browses to a random page on carfax.ca
+// to build cross-page browsing history, which reCAPTCHA v3 uses for scoring.
+// A real user doesn't just reload the same page in a loop — they browse around.
 func (s *tokenService) refreshPageAfterToken(reqID string) {
 	// Brief delay — simulates a user spending time on the page before
 	// navigating. Immediate reloads look bot-like to reCAPTCHA.
@@ -531,11 +531,18 @@ func (s *tokenService) refreshPageAfterToken(reqID string) {
 
 	start := time.Now()
 
-	// Reload the current tab (not Navigate, which opens a new tab in the
-	// browser context). Reload triggers a fresh page load event which resets
-	// the reCAPTCHA interaction timer, while preserving cookies and session.
+	// ~30% of the time, browse to a random page on carfax.ca first.
+	// This builds cross-page browsing history and cookie trail. We keep it
+	// at 30% to avoid holding the mutex too long (token requests block while
+	// we're browsing).
+	if rand.Intn(100) < 30 {
+		s.browseRandomPage(reqID)
+	}
+
+	// Navigate (back) to the valuation page. Using Navigate instead of Reload
+	// so this works whether we browsed away or stayed on the same page.
 	err := chromedp.Run(s.ctx,
-		chromedp.Reload(),
+		chromedp.Navigate(carfaxPageURL),
 		chromedp.WaitReady("body"),
 		chromedp.Sleep(1*time.Second),
 	)
@@ -547,6 +554,12 @@ func (s *tokenService) refreshPageAfterToken(reqID string) {
 		s.pageReady = false
 		return
 	}
+
+	// Dismiss cookie banner if it reappeared
+	_ = chromedp.Run(s.ctx, chromedp.Evaluate(`
+		const btn = document.querySelector('#onetrust-accept-btn-handler');
+		if (btn) btn.click();
+	`, nil))
 
 	// Verify reCAPTCHA is still ready
 	var ready bool
@@ -560,14 +573,138 @@ func (s *tokenService) refreshPageAfterToken(reqID string) {
 		return
 	}
 
-	// Simulate browsing behavior after page reload to build reCAPTCHA trust
-	// for the next token request. This runs in the background goroutine so
-	// it doesn't block token delivery.
+	// Simulate browsing behavior on the valuation page
 	s.simulateHumanBehavior()
 
 	slog.Info("Post-token page refresh complete",
 		"request_id", reqID,
 		"duration_ms", time.Since(start).Milliseconds())
+}
+
+// browseRandomPage navigates to a random internal page on carfax.ca, simulates
+// human browsing behavior there, then returns. The caller (refreshPageAfterToken)
+// will navigate back to the valuation page afterward.
+//
+// This builds cross-page browsing history and interaction signals that reCAPTCHA
+// v3 uses for trust scoring. A user who only ever sits on one page looks robotic;
+// a user who browses around the site looks legitimate.
+//
+// Caller must hold s.mu.
+func (s *tokenService) browseRandomPage(reqID string) {
+	// Step 1: Discover internal links on the current page
+	var linksJSON string
+	err := chromedp.Run(s.ctx, chromedp.Evaluate(`(() => {
+		const seen = new Set();
+		return JSON.stringify(
+			Array.from(document.querySelectorAll('a[href]'))
+				.filter(a => {
+					const href = a.getAttribute('href');
+					if (!href) return false;
+					// Internal links only — relative or same-origin
+					if (!href.startsWith('/') && !href.startsWith('https://www.carfax.ca/')) return false;
+					// Skip anchors, PDFs, current page, login, external-looking
+					if (href === '#' || href.includes('.pdf') || href.includes('login') ||
+						href.includes('signup') || href.includes('register') ||
+						href === window.location.pathname) return false;
+					// Must be visible
+					const r = a.getBoundingClientRect();
+					if (r.width === 0 || r.height === 0) return false;
+					// Deduplicate by href
+					const fullHref = a.href;
+					if (seen.has(fullHref)) return false;
+					seen.add(fullHref);
+					return true;
+				})
+				.slice(0, 30)
+				.map(a => {
+					const r = a.getBoundingClientRect();
+					return {
+						href: a.href,
+						x: r.x + r.width / 2,
+						y: r.y + r.height / 2,
+						text: a.textContent.trim().substring(0, 50)
+					};
+				})
+		);
+	})()`, &linksJSON))
+
+	if err != nil || linksJSON == "" || linksJSON == "[]" {
+		// No links found — fall back to a known Carfax page
+		linksJSON = `[{"href":"https://www.carfax.ca/","x":100,"y":50,"text":"Carfax Home"}]`
+	}
+
+	type pageLink struct {
+		Href string  `json:"href"`
+		X    float64 `json:"x"`
+		Y    float64 `json:"y"`
+		Text string  `json:"text"`
+	}
+	var links []pageLink
+	if json.Unmarshal([]byte(linksJSON), &links) != nil || len(links) == 0 {
+		return
+	}
+
+	// Step 2: Pick a random link
+	link := links[rand.Intn(len(links))]
+	slog.Info("Browsing to random carfax page",
+		"request_id", reqID,
+		"url", link.Href,
+		"link_text", link.Text)
+
+	// Step 3: Scroll the link into view if needed, then move mouse to it
+	if link.Y > 600 {
+		scrollAmt := int(link.Y) - 300
+		_ = chromedp.Run(s.ctx, chromedp.Evaluate(
+			fmt.Sprintf(`window.scrollBy({top: %d, behavior: 'smooth'})`, scrollAmt), nil))
+		time.Sleep(time.Duration(400+rand.Intn(300)) * time.Millisecond)
+		// Re-query position after scroll
+		link.Y -= float64(scrollAmt)
+	}
+
+	// Move mouse to the link with a natural curve
+	startX := 500.0 + rand.Float64()*400
+	startY := 300.0 + rand.Float64()*200
+	s.smoothMouseMove(startX, startY, link.X, link.Y)
+	time.Sleep(time.Duration(100+rand.Intn(200)) * time.Millisecond)
+
+	// Step 4: Click the link. Force target="_self" first to prevent new tabs.
+	_ = chromedp.Run(s.ctx, chromedp.Evaluate(fmt.Sprintf(
+		`document.querySelector('a[href="%s"], a[href$="%s"]')?.removeAttribute('target')`,
+		link.Href, link.Href), nil))
+
+	_ = chromedp.Run(s.ctx,
+		input.DispatchMouseEvent(input.MousePressed, link.X, link.Y).
+			WithButton(input.Left).WithClickCount(1),
+		input.DispatchMouseEvent(input.MouseReleased, link.X, link.Y).
+			WithButton(input.Left).WithClickCount(1),
+	)
+
+	// Step 5: Wait for the new page to load
+	err = chromedp.Run(s.ctx,
+		chromedp.WaitReady("body"),
+		chromedp.Sleep(time.Duration(1500+rand.Intn(1500))*time.Millisecond),
+	)
+	if err != nil {
+		slog.Warn("Page load after link click failed, will navigate back",
+			"request_id", reqID, "error", err)
+		return
+	}
+
+	// Step 6: Simulate browsing behavior on the new page
+	s.simulateHumanBehavior()
+
+	// Verify we're still on carfax.ca (safety check)
+	var currentURL string
+	_ = chromedp.Run(s.ctx, chromedp.Evaluate(`window.location.href`, &currentURL))
+	if !strings.HasPrefix(currentURL, "https://www.carfax.ca") {
+		slog.Warn("Landed on unexpected domain, navigating back",
+			"request_id", reqID, "url", currentURL)
+	} else {
+		slog.Info("Browsed random page successfully",
+			"request_id", reqID,
+			"landed_url", currentURL)
+	}
+	// Caller will navigate back to the valuation page
 }
 
 // simulateHumanBehavior performs realistic mouse movements, scrolls, and
