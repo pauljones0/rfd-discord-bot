@@ -38,6 +38,10 @@ func TestVmrModelSlug(t *testing.T) {
 		{"Ford", "Crown Victoria", "crown%20victoria"},
 		{"Dodge", "1500 Ram", "1500%20ram"},
 		{"Dodge", "Grand Caravan", "grand%20caravan"},
+		{"Chevrolet", "1500 Silverado", "1500%20silverado"},
+		{"Chevrolet", "2500 Silverado HD", "2500%20silverado%20hd"},
+		{"GMC", "1500 Sierra", "1500%20sierra"},
+		{"GMC", "2500 Sierra HD", "2500%20sierra%20hd"},
 	}
 	for _, tt := range tests {
 		got := vmrModelSlug(tt.make, tt.model)
@@ -70,6 +74,20 @@ func TestVmrNormalize(t *testing.T) {
 		{"Dodge", "Challenger", 2020, "Dodge", "Challenger"},
 		{"Honda", "Civic", 2020, "Honda", "Civic"},
 		{"Ford", "Crown Victoria", 2008, "Ford", "Crown Victoria"},
+		// Chevrolet Silverado → number-first (VMR convention)
+		{"Chevrolet", "Silverado 1500", 2017, "Chevrolet", "1500 Silverado"},
+		{"Chevrolet", "Silverado 2500 HD", 2020, "Chevrolet", "2500 Silverado HD"},
+		{"Chevrolet", "Silverado 2500HD", 2020, "Chevrolet", "2500 Silverado HD"},
+		{"Chevrolet", "Silverado 3500 HD", 2020, "Chevrolet", "3500 Silverado HD"},
+		{"Chevrolet", "1500", 2017, "Chevrolet", "1500 Silverado"},
+		// GMC Sierra → number-first (VMR convention)
+		{"GMC", "Sierra 1500", 2020, "GMC", "1500 Sierra"},
+		{"GMC", "Sierra 2500 HD", 2020, "GMC", "2500 Sierra HD"},
+		{"GMC", "Sierra 2500HD", 2020, "GMC", "2500 Sierra HD"},
+		{"GMC", "1500", 2020, "GMC", "1500 Sierra"},
+		// Non-truck Chevrolet/GMC unchanged
+		{"Chevrolet", "Malibu", 2020, "Chevrolet", "Malibu"},
+		{"GMC", "Terrain", 2020, "GMC", "Terrain"},
 		// Subaru WRX: pre-2015 → Impreza WRX, 2015+ stays WRX
 		{"Subaru", "WRX", 2002, "Subaru", "Impreza WRX"},
 		{"Subaru", "WRX", 2014, "Subaru", "Impreza WRX"},
