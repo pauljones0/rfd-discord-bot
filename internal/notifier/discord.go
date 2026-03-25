@@ -557,35 +557,27 @@ func formatMemExpressEmbed(product memoryexpress.AnalyzedProduct) discordEmbed {
 		embedColor = colorHotDeal
 	}
 
-	var fields []discordEmbedField
+	// Build a compact description like RFD embeds — no fields, just inline text.
+	var desc strings.Builder
 
-	// Price field with strikethrough original
+	// Price line: ~~$199.99~~ → **$99.99** (50% off)
 	finalPrice := product.SalePrice
 	if finalPrice == 0 {
 		finalPrice = product.ClearancePrice
 	}
-	priceVal := fmt.Sprintf("~~$%.2f~~ → **$%.2f**", product.RegularPrice, finalPrice)
+	desc.WriteString(fmt.Sprintf("~~$%.2f~~ → **$%.2f**", product.RegularPrice, finalPrice))
 	if product.DiscountPct > 0 {
-		priceVal += fmt.Sprintf(" (%.0f%% off)", product.DiscountPct)
+		desc.WriteString(fmt.Sprintf(" (%.0f%% off)", product.DiscountPct))
 	}
-	fields = append(fields, discordEmbedField{Name: "Price", Value: priceVal})
+	desc.WriteString("\n\n")
 
-	// Category
-	if product.Category != "" {
-		fields = append(fields, discordEmbedField{Name: "Category", Value: product.Category, Inline: true})
-	}
-
-	// Store
-	fields = append(fields, discordEmbedField{Name: "Store", Value: product.StoreName, Inline: true})
-
-	// Stock
+	// Metadata line: 📍 Store  •  📦 3 in stock  •  Category
+	desc.WriteString(fmt.Sprintf("📍 %s", product.StoreName))
 	if product.Stock > 0 {
-		fields = append(fields, discordEmbedField{Name: "Stock", Value: fmt.Sprintf("%d", product.Stock), Inline: true})
+		desc.WriteString(fmt.Sprintf("  •  📦 %d in stock", product.Stock))
 	}
-
-	var description string
-	if product.Summary != "" {
-		description = product.Summary
+	if product.Category != "" {
+		desc.WriteString(fmt.Sprintf("  •  %s", product.Category))
 	}
 
 	var thumbnail discordEmbedThumbnail
@@ -596,12 +588,11 @@ func formatMemExpressEmbed(product memoryexpress.AnalyzedProduct) discordEmbed {
 	return discordEmbed{
 		Title:       title,
 		URL:         product.URL,
-		Description: description,
+		Description: desc.String(),
 		Color:       embedColor,
-		Fields:      fields,
 		Thumbnail:   thumbnail,
 		Footer: discordEmbedFooter{
-			Text: "Memory Express Clearance • In-store pickup only",
+			Text: "Memory Express Clearance",
 		},
 	}
 }

@@ -217,6 +217,11 @@ func GetVMRValue(ctx context.Context, ai AIClient, year int, makeName, model, tr
 		adjusted.Retail *= (1 + provAdj/100)
 	}
 
+	// VMR valuations tend to be optimistic compared to real-world private sale
+	// prices. Apply a 30% haircut to bring estimates closer to actual market value.
+	adjusted.Wholesale *= 0.70
+	adjusted.Retail *= 0.70
+
 	// Round to nearest $25
 	adjusted.Wholesale = math.Round(adjusted.Wholesale/25) * 25
 	adjusted.Retail = math.Round(adjusted.Retail/25) * 25
@@ -293,6 +298,29 @@ func vmrNormalize(makeName, model string, year int) (string, string) {
 		return "Dodge", model + " Ram"
 	}
 
+	// Chevrolet Silverado: VMR lists as "1500 Silverado", "2500 Silverado HD", etc.
+	// Same number-first convention as Dodge Ram.
+	if lowerMake == "chevrolet" {
+		if num, rest, ok := extractTruckNumber(lowerModel, "silverado"); ok {
+			return "Chevrolet", num + " Silverado" + rest
+		}
+		// Bare number: "1500" → "1500 Silverado"
+		if lowerModel == "1500" || lowerModel == "2500" || lowerModel == "3500" {
+			return "Chevrolet", model + " Silverado"
+		}
+	}
+
+	// GMC Sierra: VMR lists as "1500 Sierra", "2500 Sierra HD", etc.
+	if lowerMake == "gmc" {
+		if num, rest, ok := extractTruckNumber(lowerModel, "sierra"); ok {
+			return "GMC", num + " Sierra" + rest
+		}
+		// Bare number: "1500" → "1500 Sierra"
+		if lowerModel == "1500" || lowerModel == "2500" || lowerModel == "3500" {
+			return "GMC", model + " Sierra"
+		}
+	}
+
 	// Subaru WRX was sold as "Impreza WRX" until 2014; became standalone "WRX" in 2015.
 	// VMR lists pre-2015 as "Impreza WRX" and 2015+ as "WRX".
 	if lowerMake == "subaru" && lowerModel == "wrx" && year < 2015 {
@@ -304,6 +332,34 @@ func vmrNormalize(makeName, model string, year int) (string, string) {
 	}
 
 	return makeName, model
+}
+
+// extractTruckNumber parses truck models like "Silverado 1500", "Sierra 2500 HD",
+// "Sierra 2500HD" into (number, suffix, ok). The suffix includes " HD" if present.
+// Examples: "silverado 1500" → ("1500", "", true), "sierra 2500 hd" → ("2500", " HD", true)
+func extractTruckNumber(lowerModel, truckName string) (string, string, bool) {
+	if !strings.HasPrefix(lowerModel, truckName+" ") {
+		return "", "", false
+	}
+	after := strings.TrimSpace(lowerModel[len(truckName)+1:])
+	// Extract the number part (1500, 2500, 3500)
+	parts := strings.Fields(after)
+	if len(parts) == 0 {
+		return "", "", false
+	}
+	num := parts[0]
+	// Strip "hd" suffix from number if stuck together (e.g. "2500hd")
+	numClean := strings.TrimSuffix(num, "hd")
+	if numClean != "1500" && numClean != "2500" && numClean != "3500" {
+		return "", "", false
+	}
+	// Check for HD suffix (either as separate word or attached to number)
+	hasHD := num != numClean || (len(parts) > 1 && strings.ToLower(parts[1]) == "hd")
+	suffix := ""
+	if hasHD {
+		suffix = " HD"
+	}
+	return strings.ToUpper(numClean), suffix, true
 }
 
 // fetchVMRPage fetches the VMR valuation page HTML.

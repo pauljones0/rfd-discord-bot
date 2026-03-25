@@ -53,11 +53,23 @@ func (c *Client) ScreenMemExpressBatch(ctx context.Context, products []memoryexp
 			i+1, p.SKU, p.Title, p.RegularPrice, finalPrice, p.DiscountPct, p.Category, p.StoreName))
 	}
 
-	prompt := fmt.Sprintf(`You are a Canadian tech deal expert analyzing Memory Express clearance items.
+	prompt := fmt.Sprintf(`You are a ruthlessly selective Canadian tech deal analyst for Memory Express clearance.
 
-Review these %d clearance items and select the top %d items that are most likely to be genuinely good deals.
-Focus on items where the clearance price is significantly below typical retail/market value.
-Ignore generic accessories, low-value items, and items where the discount is unremarkable.
+Most clearance items are arcane, niche products nobody wants. Your job is to find the RARE gems — items ordinary consumers would actually get excited about.
+
+HIGH-VALUE categories (be generous marking these as top deals):
+- GPUs, CPUs, RAM, SSDs, motherboards
+- Desktop computers, all-in-ones, laptops
+- Monitors, TVs, gaming peripherals (popular brands)
+- A 40%%+ discount on any of these is noteworthy. A 50%%+ discount is exceptional.
+
+LOW-VALUE categories (require extreme discounts 70%%+ to be noteworthy):
+- Cables, adapters, obscure accessories
+- Server/enterprise parts with no consumer use
+- Niche specialty items (KVM switches, rack mounts, etc.)
+- Phone cases, screen protectors, low-value peripherals
+
+Review these %d clearance items. Be very selective — only mark items as top deals if a typical tech enthusiast would genuinely care. A GPU at 40%% off matters far more than an arcane adapter at 80%% off.
 
 Items:
 %s
@@ -66,7 +78,7 @@ Mark items that are NOT good deals with is_top_deal: false.
 
 Return a JSON array with ALL items, marking the top deals:
 [{"sku": "...", "clean_title": "...", "is_top_deal": true/false, "reasoning": "brief reason"}]
-`, len(products), topN, itemList.String())
+`, len(products), itemList.String())
 
 	slog.Debug("Memory Express batch screening prompt",
 		"processor", "memoryexpress",
@@ -184,7 +196,7 @@ func (c *Client) AnalyzeMemExpressProduct(ctx context.Context, product memoryexp
 		finalPrice = product.ClearancePrice
 	}
 
-	prompt := fmt.Sprintf(`You are a Canadian tech deal expert analyzing a Memory Express clearance item.
+	prompt := fmt.Sprintf(`You are a ruthlessly selective Canadian tech deal analyst. Most Memory Express clearance items are arcane junk nobody wants — your job is to separate the rare gems from the noise.
 
 Product: "%s"
 Category: %s
@@ -196,11 +208,11 @@ Store: %s (in-store pickup only)
 Task:
 1. Clean up the title to be concise (5-15 words, product name and key specs only, no marketing fluff).
 2. Write a one-line summary of why this is or isn't a good deal (max 100 chars).
-3. Determine if this is a "warm" deal:
-   - The clearance price is significantly below typical retail for this product.
-   - The product has broad appeal or is a desirable tech item.
-   - 30%%+ discount on a quality product with general demand qualifies as warm.
-4. Determine if this is "Lava Hot" — be strict. Only if the price is absurdly good (50%%+ off on a popular, in-demand product, or a clear pricing error).
+3. Determine if this is a "warm" deal. Ask: would a typical tech enthusiast actually want this?
+   - GPUs, CPUs, RAM, SSDs, desktops, laptops, monitors at 40%%+ off → warm.
+   - Obscure cables, adapters, enterprise-only parts, niche accessories → NOT warm even at 80%%+ off.
+   - The product must have BROAD consumer appeal AND a meaningful discount.
+4. Determine if this is "Lava Hot" — extremely strict. Only for popular, in-demand products (GPUs, CPUs, gaming gear, computers) at 50%%+ off, or clear pricing errors. An obscure item can NEVER be lava hot.
 
 Return JSON only: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool, "summary": "..."}
 `, product.Title, product.Category, product.RegularPrice, finalPrice, product.DiscountPct, product.StoreName)

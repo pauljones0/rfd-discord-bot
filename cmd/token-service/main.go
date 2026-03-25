@@ -146,6 +146,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Monitor Chrome process — if the user accidentally closes the browser
+	// window, automatically relaunch it and re-warm the page.
+	go svc.watchChrome()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /token", svc.handleToken)
 	mux.HandleFunc("GET /health", svc.handleHealth)
@@ -575,6 +579,53 @@ func (s *tokenService) cleanup() {
 	}
 	if s.allocCancel != nil {
 		s.allocCancel()
+	}
+}
+
+// watchChrome polls the Chrome process every 5 seconds and relaunches it if
+// the user accidentally closes the browser window (or if Chrome crashes).
+func (s *tokenService) watchChrome() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Quick health check: try to evaluate a trivial expression via CDP.
+		// If Chrome is gone, this will fail immediately.
+		var ok bool
+		err := chromedp.Run(s.ctx, chromedp.Evaluate(`true`, &ok))
+		if err == nil && ok {
+			continue // Chrome is alive
+		}
+
+		slog.Warn("Chrome appears to have closed, relaunching...", "error", err)
+
+		s.mu.Lock()
+		s.pageReady = false
+		// Tear down old allocator/context
+		if s.cancel != nil {
+			s.cancel()
+		}
+		if s.allocCancel != nil {
+			s.allocCancel()
+		}
+		s.mu.Unlock()
+
+		// Brief pause before relaunch to avoid tight loops
+		time.Sleep(2 * time.Second)
+
+		if err := s.initBrowser(); err != nil {
+			slog.Error("Failed to relaunch Chrome", "error", err)
+			continue
+		}
+
+		s.closeExtraTabs()
+
+		if err := s.warmPage(); err != nil {
+			slog.Error("Failed to warm page after Chrome relaunch", "error", err)
+			continue
+		}
+
+		slog.Info("Chrome relaunched and page warmed successfully")
 	}
 }
 

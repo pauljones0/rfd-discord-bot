@@ -61,3 +61,6 @@ logs/
 
 # MCP server config
 .mcp.json
+
+# Local startup scripts with secrets
+start-token-service.bat
