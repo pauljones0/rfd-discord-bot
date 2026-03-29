@@ -210,6 +210,49 @@ func main() {
 		},
 	}
 
+	// HardwareSwap commands (top-level, not subcommands of /deals)
+	payload = append(payload, map[string]interface{}{
+		"name":                       "hw-setup",
+		"description":                "Configure HardwareSwap bot for this server (Admin Only).",
+		"default_member_permissions": "32",
+		"options": []map[string]interface{}{
+			{
+				"name":          "feed_channel",
+				"description":   "Channel where deals will be posted.",
+				"type":          7,
+				"channel_types": []int{0, 5},
+				"required":      true,
+			},
+			{
+				"name":          "ping_channel",
+				"description":   "Channel where users will be pinged for alert matches.",
+				"type":          7,
+				"channel_types": []int{0, 5},
+				"required":      true,
+			},
+		},
+	})
+	payload = append(payload, map[string]interface{}{
+		"name":        "hw-help",
+		"description": "Learn how to use the HardwareSwap alert bot.",
+	})
+	payload = append(payload, map[string]interface{}{
+		"name":        "hw-alert",
+		"description": "Manage your HardwareSwap alerts.",
+		"options": []map[string]interface{}{
+			{
+				"name":        "add",
+				"description": "Add a new hardware alert.",
+				"type":        1,
+			},
+			{
+				"name":        "list",
+				"description": "List and manage your active alerts.",
+				"type":        1,
+			},
+		},
+	})
+
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		log.Fatalf("Failed to marshal payload: %v", err)

@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/ai"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
+	"github.com/pauljones0/rfd-discord-bot/internal/hardwareswap"
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -30,12 +32,15 @@ const (
 	InteractionResponseTypePong                     = 1
 	InteractionResponseTypeChannelMessageWithSource = 4
 	InteractionResponseTypeUpdateMessage            = 7
+	InteractionResponseTypeDeferredChannelMessage    = 5
 	InteractionResponseTypeAutocompleteResult       = 8
+	InteractionResponseTypeModal                    = 9
 
 	InteractionTypePing               = 1
 	InteractionTypeApplicationCommand = 2
 	InteractionTypeMessageComponent   = 3
 	InteractionTypeAutocomplete       = 4
+	InteractionTypeModalSubmit        = 5
 )
 
 // Discord component type and style constants
@@ -57,13 +62,16 @@ type interactionRequest struct {
 	GuildID string             `json:"guild_id,omitempty"`
 	Member  *interactionMember `json:"member,omitempty"`
 	Message *discordMessage    `json:"message,omitempty"`
+	Token   string             `json:"token,omitempty"`   // Interaction token for deferred responses
+	AppID   string             `json:"application_id,omitempty"`
 }
 
 type interactionData struct {
-	Name     string               `json:"name,omitempty"`
-	Options  []interactionOption  `json:"options,omitempty"`
-	CustomID string               `json:"custom_id,omitempty"` // For components
-	Resolved *interactionResolved `json:"resolved,omitempty"`
+	Name       string               `json:"name,omitempty"`
+	Options    []interactionOption  `json:"options,omitempty"`
+	CustomID   string               `json:"custom_id,omitempty"`   // For components and modals
+	Resolved   *interactionResolved `json:"resolved,omitempty"`
+	Components []interface{}        `json:"components,omitempty"` // For modal submit data
 }
 
 type interactionResolved struct {
@@ -149,14 +157,24 @@ type Store interface {
 
 // Handler holds the dependencies for the interaction endpoint.
 type Handler struct {
-	pubKey ed25519.PublicKey
-	store  Store
+	pubKey       ed25519.PublicKey
+	store        Store
+	hwStore      *hardwareswap.Store
+	aiClient     *ai.Client
+	discordToken string
+	discordAppID string
 }
 
 // NewHandler creates a new API interactions handler.
-func NewHandler(cfg *config.Config, store Store) (*Handler, error) {
+func NewHandler(cfg *config.Config, store Store, hwStore *hardwareswap.Store, aiClient *ai.Client) (*Handler, error) {
 	if cfg.DiscordPublicKey == "" {
-		return &Handler{store: store}, nil // Run without verifier if missing key, useful for testing or disabled state
+		return &Handler{
+			store:        store,
+			hwStore:      hwStore,
+			aiClient:     aiClient,
+			discordToken: cfg.DiscordBotToken,
+			discordAppID: cfg.DiscordAppID,
+		}, nil // Run without verifier if missing key, useful for testing or disabled state
 	}
 
 	keyBytes, err := hex.DecodeString(cfg.DiscordPublicKey)
@@ -168,8 +186,12 @@ func NewHandler(cfg *config.Config, store Store) (*Handler, error) {
 	}
 
 	return &Handler{
-		pubKey: ed25519.PublicKey(keyBytes),
-		store:  store,
+		pubKey:       ed25519.PublicKey(keyBytes),
+		store:        store,
+		hwStore:      hwStore,
+		aiClient:     aiClient,
+		discordToken: cfg.DiscordBotToken,
+		discordAppID: cfg.DiscordAppID,
 	}, nil
 }
 
@@ -244,6 +266,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Modal Submit
+	if req.Type == InteractionTypeModalSubmit {
+		h.handleModalSubmit(w, req)
+		return
+	}
+
 	http.Error(w, "Unknown interaction type", http.StatusBadRequest)
 }
 
@@ -269,6 +297,8 @@ func (h *Handler) handleCommand(w http.ResponseWriter, req interactionRequest) {
 		h.handleLegacyCommand(w, req)
 	case "deals":
 		h.handleDealsCommand(w, req)
+	case "hw-setup", "hw-help", "hw-alert":
+		h.handleHWCommand(w, req)
 	default:
 		h.respondError(w, "Unknown command.")
 	}
@@ -1150,6 +1180,11 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 	dealType := "all"
 	channelName := ""
 
+	if strings.HasPrefix(req.Data.CustomID, "hw_") {
+		h.handleHWComponent(w, req)
+		return
+	}
+
 	if strings.HasPrefix(req.Data.CustomID, "remove_sub::") {
 		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_sub::")
 		parts := strings.SplitN(trimmed, "::", 2)
@@ -1467,4 +1502,132 @@ func buildFacebookRemoveButtons(subs []models.Subscription) []discordComponent {
 		})
 	}
 	return components
+}
+
+// handleHWCommand routes hw-setup, hw-help, hw-alert commands to the hardwareswap package.
+func (h *Handler) handleHWCommand(w http.ResponseWriter, req interactionRequest) {
+	if h.hwStore == nil {
+		h.respondPrivateMessage(w, "HardwareSwap features are not configured on this bot.")
+		return
+	}
+
+	if req.GuildID == "" {
+		h.respondPrivateMessage(w, "This command can only be used in a server.")
+		return
+	}
+
+	userID := ""
+	if req.Member != nil {
+		userID = req.Member.User.ID
+	}
+
+	// Convert typed options to []interface{} for the hardwareswap package
+	options := convertOptionsToGeneric(req.Data.Options)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	result := hardwareswap.HandleCommand(ctx, w, h.hwStore, req.Data.Name, options, req.GuildID, userID)
+	if result == nil {
+		h.respondError(w, "Unknown HardwareSwap command.")
+		return
+	}
+
+	writeJSON(w, result)
+}
+
+// handleHWComponent routes hw_ prefixed component interactions to the hardwareswap package.
+func (h *Handler) handleHWComponent(w http.ResponseWriter, req interactionRequest) {
+	if h.hwStore == nil {
+		h.respondPrivateMessage(w, "HardwareSwap features are not configured on this bot.")
+		return
+	}
+
+	userID := ""
+	if req.Member != nil {
+		userID = req.Member.User.ID
+	}
+
+	// Collect message embeds as []interface{} from the raw message
+	var messageEmbeds []interface{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	result := hardwareswap.HandleComponent(ctx, h.hwStore, h.aiClient, h.discordToken, req.Data.CustomID, req.GuildID, userID, messageEmbeds)
+	if result == nil {
+		h.respondError(w, "Unknown HardwareSwap component.")
+		return
+	}
+
+	writeJSON(w, result)
+}
+
+// handleModalSubmit routes modal submissions.
+func (h *Handler) handleModalSubmit(w http.ResponseWriter, req interactionRequest) {
+	if req.Data == nil || req.Data.CustomID == "" {
+		h.respondError(w, "Missing modal data.")
+		return
+	}
+
+	if strings.HasPrefix(req.Data.CustomID, "hw_modal_") {
+		h.handleHWModalSubmit(w, req)
+		return
+	}
+
+	h.respondError(w, "Unknown modal submission.")
+}
+
+// handleHWModalSubmit handles HardwareSwap modal submissions with a deferred response.
+func (h *Handler) handleHWModalSubmit(w http.ResponseWriter, req interactionRequest) {
+	if h.hwStore == nil {
+		h.respondPrivateMessage(w, "HardwareSwap features are not configured on this bot.")
+		return
+	}
+
+	userID := ""
+	if req.Member != nil {
+		userID = req.Member.User.ID
+	}
+
+	// Write deferred response immediately (type 5 — DeferredChannelMessageWithSource)
+	writeJSON(w, map[string]interface{}{
+		"type": InteractionResponseTypeDeferredChannelMessage,
+		"data": map[string]interface{}{
+			"flags": MessageFlagEphemeral,
+		},
+	})
+
+	// Process asynchronously — HandleModalSubmit sends follow-up messages via the Discord API
+	hardwareswap.HandleModalSubmit(
+		h.hwStore,
+		h.aiClient,
+		h.discordToken,
+		req.Data.CustomID,
+		req.Data.Components,
+		h.discordAppID,
+		req.Token,
+		req.GuildID,
+		userID,
+	)
+}
+
+// convertOptionsToGeneric converts typed interactionOption slices to []interface{}
+// for use by the hardwareswap package which works with raw JSON maps.
+func convertOptionsToGeneric(options []interactionOption) []interface{} {
+	result := make([]interface{}, len(options))
+	for i, opt := range options {
+		m := map[string]interface{}{
+			"name": opt.Name,
+			"type": opt.Type,
+		}
+		if opt.Value != nil {
+			m["value"] = opt.Value
+		}
+		if len(opt.Options) > 0 {
+			m["options"] = convertOptionsToGeneric(opt.Options)
+		}
+		result[i] = m
+	}
+	return result
 }

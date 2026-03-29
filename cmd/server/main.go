@@ -19,10 +19,12 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
+	"github.com/pauljones0/rfd-discord-bot/internal/hardwareswap"
 	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
+	"github.com/pauljones0/rfd-discord-bot/internal/reddit"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
 	"github.com/pauljones0/rfd-discord-bot/internal/storage"
 	"github.com/pauljones0/rfd-discord-bot/internal/validator"
@@ -34,6 +36,7 @@ type Server struct {
 	facebookProcessor   *facebook.Processor
 	memexpressProcessor *memoryexpress.Processor
 	bestbuyProcessor    *bestbuy.Processor
+	hwProcessor         *hardwareswap.Processor
 	aiClient            *ai.Client
 	store               processor.DealStore
 	wg                  sync.WaitGroup
@@ -43,6 +46,7 @@ type Server struct {
 	facebookRunStart    atomic.Int64 // Unix timestamp (seconds) when the current Facebook run started
 	memexpressSem       chan struct{} // Semaphore to limit concurrent Memory Express processing requests
 	bestbuySem          chan struct{} // Semaphore to limit concurrent Best Buy processing requests
+	hwSem               chan struct{} // Semaphore to limit concurrent HardwareSwap processing requests
 }
 
 func main() {
@@ -119,12 +123,24 @@ func main() {
 	bbProc := bestbuy.NewProcessor(store, bbClient, aiClient, n, cfg.BestBuyAffiliatePrefix)
 	slog.Info("Best Buy Marketplace processor initialized")
 
+	// Initialize HardwareSwap processor (requires AI client and Reddit relay service)
+	var hwProc *hardwareswap.Processor
+	if aiClient != nil {
+		hwStore := hardwareswap.NewStore(store.FirestoreClient())
+		redditClient := reddit.NewClient(cfg.RedditServiceURL, cfg.RedditServiceSecret, store)
+		hwProc = hardwareswap.NewProcessor(hwStore, redditClient, aiClient, cfg.DiscordBotToken)
+		slog.Info("HardwareSwap processor initialized")
+	} else {
+		slog.Info("HardwareSwap features disabled (AI client unavailable)")
+	}
+
 	srv := &Server{
 		processor:           p,
 		ebayProcessor:       ebayProc,
 		facebookProcessor:   fbProc,
 		memexpressProcessor: meProc,
 		bestbuyProcessor:    bbProc,
+		hwProcessor:         hwProc,
 		aiClient:            aiClient,
 		store:               store,
 		sem:                 make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
@@ -132,9 +148,15 @@ func main() {
 		facebookSem:         make(chan struct{}, 1), // Allow 1 concurrent Facebook processing attempt
 		memexpressSem:       make(chan struct{}, 1), // Allow 1 concurrent Memory Express processing attempt
 		bestbuySem:          make(chan struct{}, 1), // Allow 1 concurrent Best Buy processing attempt
+		hwSem:               make(chan struct{}, 1), // Allow 1 concurrent HardwareSwap processing attempt
 	}
 
-	apiHandler, err := api.NewHandler(cfg, store)
+	// Build HardwareSwap store for the API handler (may be nil if AI is unavailable)
+	var hwStoreForAPI *hardwareswap.Store
+	if hwProc != nil {
+		hwStoreForAPI = hardwareswap.NewStore(store.FirestoreClient())
+	}
+	apiHandler, err := api.NewHandler(cfg, store, hwStoreForAPI, aiClient)
 	if err != nil {
 		slog.Error("Failed to initialize API handler", "error", err)
 		os.Exit(1)
@@ -147,6 +169,7 @@ func main() {
 	mux.HandleFunc("/process-facebook", srv.ProcessFacebookHandler)
 	mux.HandleFunc("/process-memoryexpress", srv.ProcessMemoryExpressHandler)
 	mux.HandleFunc("/process-bestbuy", srv.ProcessBestBuyHandler)
+	mux.HandleFunc("/process-hardwareswap", srv.ProcessHardwareSwapHandler)
 	mux.Handle("/discord/interactions", apiHandler)
 	mux.HandleFunc("POST /register-token-service", func(w http.ResponseWriter, r *http.Request) {
 		// Authenticate with the token service secret
@@ -484,6 +507,49 @@ func (s *Server) ProcessBestBuyHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusAccepted)
 	fmt.Fprintln(w, "Best Buy deal processing started.")
+}
+
+func (s *Server) ProcessHardwareSwapHandler(w http.ResponseWriter, r *http.Request) {
+	if s.hwProcessor == nil {
+		slog.Info("ProcessHardwareSwapHandler: HardwareSwap processor not configured, skipping", "processor", "hardwareswap")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "HardwareSwap features not configured"})
+		return
+	}
+
+	select {
+	case s.hwSem <- struct{}{}:
+	default:
+		slog.Warn("ProcessHardwareSwapHandler: previous run still active, skipping", "processor", "hardwareswap")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]string{"status": "busy"})
+		return
+	}
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() { <-s.hwSem }()
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Panic in ProcessHardwareSwapDeals", "processor", "hardwareswap", "panic", r)
+			}
+		}()
+		slog.Info("Starting HardwareSwap deal processing", "processor", "hardwareswap")
+		if s.aiClient != nil {
+			s.aiClient.LogCurrentState()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		start := time.Now()
+		if err := s.hwProcessor.ProcessHardwareSwapDeals(ctx); err != nil {
+			slog.Error("Error processing HardwareSwap deals", "processor", "hardwareswap", "error", err)
+		}
+		slog.Info("HardwareSwap deal processing finished", "processor", "hardwareswap", "duration", time.Since(start))
+	}()
+
+	w.WriteHeader(http.StatusAccepted)
+	fmt.Fprintln(w, "HardwareSwap deal processing started.")
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
