@@ -434,3 +434,46 @@ func (c *Client) SaveTokenServiceURL(ctx context.Context, url string) error {
 	}
 	return nil
 }
+
+// GetRedditServiceURL retrieves the dynamically registered Reddit relay service URL.
+func (c *Client) GetRedditServiceURL(ctx context.Context) (string, error) {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	doc, err := c.client.Collection("bot_config").Doc("reddit_service").Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to get reddit service URL: %w", err)
+	}
+
+	var cfg TokenServiceConfig
+	if err := doc.DataTo(&cfg); err != nil {
+		return "", fmt.Errorf("failed to decode reddit service config: %w", err)
+	}
+
+	if strings.Contains(cfg.URL, "trycloudflare.com") && time.Since(cfg.UpdatedAt) > time.Hour {
+		slog.Warn("Reddit service URL is stale, ignoring",
+			"url", cfg.URL, "age", time.Since(cfg.UpdatedAt).Round(time.Second))
+		return "", nil
+	}
+
+	return cfg.URL, nil
+}
+
+// SaveRedditServiceURL saves the Reddit relay service URL to Firestore.
+func (c *Client) SaveRedditServiceURL(ctx context.Context, url string) error {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	cfg := TokenServiceConfig{
+		URL:       url,
+		UpdatedAt: time.Now(),
+	}
+	_, err := c.client.Collection("bot_config").Doc("reddit_service").Set(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("failed to save reddit service URL: %w", err)
+	}
+	return nil
+}

@@ -41,6 +41,10 @@ type Config struct {
 	// See cmd/token-service/main.go for setup instructions.
 	CarfaxTokenServiceURL    string
 	CarfaxTokenServiceSecret string
+
+	// Reddit Service (optional — Reddit processors disabled if not set)
+	RedditServiceURL    string
+	RedditServiceSecret string
 }
 
 func Load() (*Config, error) {
@@ -156,5 +160,7 @@ func Load() (*Config, error) {
 		ProxyURL:                 os.Getenv("PROXY_URL"),
 		CarfaxTokenServiceURL:    os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
 		CarfaxTokenServiceSecret: os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
+		RedditServiceURL:    os.Getenv("REDDIT_SERVICE_URL"),
+		RedditServiceSecret: os.Getenv("REDDIT_SERVICE_SECRET"),
 	}, nil
 }
