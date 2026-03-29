@@ -51,6 +51,12 @@ func (c *Client) Close() error {
 	return c.client.Close()
 }
 
+// FirestoreClient returns the underlying Firestore client.
+// Used by packages that manage their own collections (e.g., hardwareswap).
+func (c *Client) FirestoreClient() *firestore.Client {
+	return c.client
+}
+
 // GetDealByID retrieves a deal by its Firestore Document ID.
 func (c *Client) GetDealByID(ctx context.Context, id string) (*models.DealInfo, error) {
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
