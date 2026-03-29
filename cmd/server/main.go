@@ -174,6 +174,31 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "url": body.URL})
 	})
+	mux.HandleFunc("POST /register-reddit-service", func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || authHeader != "Bearer "+cfg.RedditServiceSecret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var body struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.URL == "" {
+			http.Error(w, "invalid request: must provide {\"url\": \"...\"}", http.StatusBadRequest)
+			return
+		}
+
+		if err := store.SaveRedditServiceURL(r.Context(), body.URL); err != nil {
+			slog.Error("Failed to save reddit service URL", "error", err, "url", body.URL)
+			http.Error(w, "failed to save URL", http.StatusInternalServerError)
+			return
+		}
+
+		slog.Info("Reddit service URL registered", "url", body.URL)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "url": body.URL})
+	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
