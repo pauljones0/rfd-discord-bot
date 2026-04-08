@@ -13,6 +13,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
+	"github.com/pauljones0/rfd-discord-bot/internal/validator"
 )
 
 // Integration test that wires up a real scraper with a mock HTTP server,
@@ -92,7 +93,19 @@ func TestIntegration_FullPipeline(t *testing.T) {
 
 	store := newMockStore()
 	notif := newMockNotifier()
-	p := New(store, notif, s, cfg)
+
+	// mockDealAnalyzer and validator dependencies are required to build properly
+	ai := &mockDealAnalyzer{cleanTitle: "Integration Title", isHot: false}
+
+	v := validator.New()
+	p := New(Dependencies{
+		Store:     store,
+		Notifier:  notif,
+		Scraper:   s,
+		Validator: v,
+		Config:    cfg,
+		AIClient:  ai,
+	})
 
 	err := p.ProcessDeals(context.Background())
 	if err != nil {
@@ -111,15 +124,16 @@ func TestIntegration_FullPipeline(t *testing.T) {
 
 	// Verify deal data was parsed correctly
 	for _, deal := range store.deals {
-		if deal.Title == "Integration Test Deal" {
-			if deal.LikeCount != 25 {
-				t.Errorf("Deal 1 LikeCount = %d, want 25", deal.LikeCount)
+		if deal.Title == "Integration Test Deal" && len(deal.Threads) > 0 {
+			thread := deal.Threads[0]
+			if thread.LikeCount != 25 {
+				t.Errorf("Deal 1 LikeCount = %d, want 25", thread.LikeCount)
 			}
-			if deal.CommentCount != 10 {
-				t.Errorf("Deal 1 CommentCount = %d, want 10", deal.CommentCount)
+			if thread.CommentCount != 10 {
+				t.Errorf("Deal 1 CommentCount = %d, want 10", thread.CommentCount)
 			}
-			if deal.ViewCount != 500 {
-				t.Errorf("Deal 1 ViewCount = %d, want 500", deal.ViewCount)
+			if thread.ViewCount != 500 {
+				t.Errorf("Deal 1 ViewCount = %d, want 500", thread.ViewCount)
 			}
 		}
 	}
@@ -162,7 +176,7 @@ func TestIntegration_MockStoreRoundtrip(t *testing.T) {
 	deal := models.DealInfo{
 		FirestoreID: "test-id",
 		Title:       "Test Deal",
-		LikeCount:   10,
+		Threads:     []models.ThreadContext{{LikeCount: 10}},
 	}
 
 	if err := store.TryCreateDeal(ctx, deal); err != nil {

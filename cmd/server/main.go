@@ -82,7 +82,14 @@ func main() {
 		slog.Warn("Failed to initialize Gemini client (AI features disabled)", "error", err)
 	}
 
-	p := processor.New(store, n, s, v, cfg, aiClient)
+	p := processor.New(processor.Dependencies{
+		Store:     store,
+		Notifier:  n,
+		Scraper:   s,
+		Validator: v,
+		Config:    cfg,
+		AIClient:  aiClient,
+	})
 
 	// Initialize eBay client (gracefully handles missing credentials)
 	ebayClient := ebay.NewClient(cfg.EbayClientID, cfg.EbayClientSecret)
