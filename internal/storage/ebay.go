@@ -16,6 +16,7 @@ import (
 
 const (
 	ebaySellersCollection = "ebay_sellers"
+	ebayItemsCollection   = "ebay_items"
 )
 
 // --- eBay Sellers ---
@@ -124,5 +125,68 @@ func (c *Client) UpdateEbayPollState(ctx context.Context, state ebay.EbayPollSta
 	if err != nil {
 		return fmt.Errorf("failed to update ebay poll state: %w", err)
 	}
+	return nil
+}
+
+// --- eBay Tracked Items ---
+
+// GetTrackedEbayItems returns all tracked items from the ebay_items collection.
+func (c *Client) GetTrackedEbayItems(ctx context.Context) (map[string]ebay.TrackedItem, error) {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	iter := c.client.Collection(ebayItemsCollection).Documents(ctx)
+	defer iter.Stop()
+
+	items := make(map[string]ebay.TrackedItem)
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate ebay items: %w", err)
+		}
+
+		var item ebay.TrackedItem
+		if err := doc.DataTo(&item); err != nil {
+			slog.Warn("Failed to unmarshal ebay item", "processor", "ebay", "id", doc.Ref.ID, "error", err)
+			continue
+		}
+		items[doc.Ref.ID] = item
+	}
+	return items, nil
+}
+
+// UpsertTrackedEbayItem creates or updates a tracked eBay item.
+func (c *Client) UpsertTrackedEbayItem(ctx context.Context, item ebay.TrackedItem) error {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	_, err := c.client.Collection(ebayItemsCollection).Doc(item.ItemID).Set(ctx, item)
+	if err != nil {
+		return fmt.Errorf("failed to upsert ebay item %s: %w", item.ItemID, err)
+	}
+	return nil
+}
+
+// DeleteTrackedEbayItems deletes tracked items by their IDs (items no longer listed).
+func (c *Client) DeleteTrackedEbayItems(ctx context.Context, itemIDs []string) error {
+	if len(itemIDs) == 0 {
+		return nil
+	}
+
+	ctx, cancel := ensureDeadline(ctx, 60*time.Second)
+	defer cancel()
+
+	bw := c.client.BulkWriter(ctx)
+	for _, id := range itemIDs {
+		doc := c.client.Collection(ebayItemsCollection).Doc(id)
+		if _, err := bw.Delete(doc); err != nil {
+			slog.Warn("Failed to queue ebay item deletion", "processor", "ebay", "itemID", id, "error", err)
+		}
+	}
+	bw.Flush()
+	bw.End()
 	return nil
 }

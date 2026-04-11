@@ -20,20 +20,30 @@ func (s EbaySeller) MarketplaceID() string {
 	return s.Marketplace
 }
 
-// EbayItem represents an eBay listing that passed AI analysis (used for Discord notifications).
-type EbayItem struct {
-	ItemID     string
-	Title      string
-	CleanTitle string
-	Price      string
-	Currency   string
-	ItemURL    string
-	ImageURL   string
-	Seller     string
-	Condition  string
+// TrackedItem represents an eBay listing being monitored for price drops in Firestore.
+type TrackedItem struct {
+	ItemID      string    `firestore:"itemID"`
+	Title       string    `firestore:"title"`
+	Price       float64   `firestore:"price"`
+	Currency    string    `firestore:"currency"`
+	Seller      string    `firestore:"seller"`
+	Condition   string    `firestore:"condition"`
+	ItemURL     string    `firestore:"itemURL"`
+	ImageURL    string    `firestore:"imageURL"`
+	FirstSeenAt time.Time `firestore:"firstSeenAt"`
+	LastSeenAt  time.Time `firestore:"lastSeenAt"`
+}
 
-	IsWarm    bool
-	IsLavaHot bool
+// EbayItem represents an eBay listing for Discord notification (price drop).
+type EbayItem struct {
+	ItemID    string
+	Title     string
+	Price     string
+	Currency  string
+	ItemURL   string
+	ImageURL  string
+	Seller    string
+	Condition string
 }
 
 // EbayPollState tracks the state of the last eBay polling run (singleton in bot_config).
@@ -85,21 +95,6 @@ type BrowseSearchResponse struct {
 	Offset        int             `json:"offset"`
 }
 
-// EbayBatchScreenResult represents the tier-1 AI screening result for a single item.
-type EbayBatchScreenResult struct {
-	ItemID     string `json:"item_id"`
-	CleanTitle string `json:"clean_title"`
-	IsTopDeal  bool   `json:"is_top_deal"`
-	Reasoning  string `json:"reasoning"`
-}
-
-// EbayVerifyResult represents the tier-2 AI verification result for an individual item.
-type EbayVerifyResult struct {
-	CleanTitle string `json:"clean_title"`
-	IsWarm     bool   `json:"is_warm"`
-	IsLavaHot  bool   `json:"is_lava_hot"`
-}
-
 // DefaultSellers returns the hardcoded default seller list for initial Firestore seeding.
 func DefaultSellers() []EbaySeller {
 	now := time.Now()
@@ -113,16 +108,13 @@ func DefaultSellers() []EbaySeller {
 		// Canadian sellers (ebay.ca)
 		{username: "vipoutletcanada"},
 		{username: "helloworld2003"},
-		{username: "uventure"},
 		{username: "shanikuma6"},
 		{username: "originallaptoppartsandelectronics"},
 		{username: "neweggcanada"},
 		{username: "surplusbydesign"},
 		{username: "ssdwholesale"},
-		{username: "fsanchez89"},
 		{username: "qnrvr17"},
 		{username: "buythatapple"},
-		{username: "outlut"},                 // Outlut Computers & Electronics Inc.
 		{username: "montrealcomputers"},      // Montreal Computers CANADA
 	}
 
