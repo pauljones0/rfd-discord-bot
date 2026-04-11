@@ -169,16 +169,24 @@ func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealIn
 }
 
 type mockDealAnalyzer struct {
-	cleanTitle string
-	isWarm     bool
-	isHot      bool
-	err        error
-	called     bool
+	cleanTitles map[int]string
+	err         error
+	called      bool
 }
 
-func (m *mockDealAnalyzer) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error) {
+func (m *mockDealAnalyzer) CleanTitles(ctx context.Context, requests []models.TitleRequest) (map[int]string, error) {
 	m.called = true
-	return m.cleanTitle, m.isWarm, m.isHot, m.err
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.cleanTitles != nil {
+		return m.cleanTitles, nil
+	}
+	result := make(map[int]string)
+	for _, r := range requests {
+		result[r.Index] = "Clean " + r.Title
+	}
+	return result, nil
 }
 
 func (m *mockDealAnalyzer) DrainTokens() (int, int) {
@@ -192,7 +200,7 @@ func newTestProcessor(store DealStore, notifier DealNotifier, scraper DealScrape
 		AmazonAffiliateTag:    "test-tag",
 	}
 	v := validator.New()
-	ai := &mockDealAnalyzer{cleanTitle: "Clean Title", isHot: true}
+	ai := &mockDealAnalyzer{}
 	return New(store, notifier, scraper, v, cfg, ai)
 }
 

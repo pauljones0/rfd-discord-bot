@@ -30,10 +30,15 @@ type DealProcessor struct {
 	aiClient       DealAnalyzer
 	updateInterval time.Duration
 	mu             sync.Mutex // prevents overlapping ProcessDeals runs
+
+	// Title batch queue — accumulates across scrape cycles
+	titleQueue      []models.TitleRequest
+	titleQueueDeals []*models.DealInfo // parallel slice: deal pointers to write clean titles back
+	titleQueueStart time.Time          // time first item was queued
 }
 
 type DealAnalyzer interface {
-	AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error)
+	CleanTitles(ctx context.Context, requests []models.TitleRequest) (map[int]string, error)
 	DrainTokens() (int, int)
 }
 
@@ -212,19 +217,6 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 			existing.PostURL != deal.PostURL ||
 			existing.Title != deal.Title
 
-		// Re-fetch details if engagement has grown significantly (for AI re-analysis)
-		if !needsDetails && existing.AIProcessed {
-			likes, comments, _ := deal.Stats()
-			existingLikes, existingComments, _ := existing.Stats()
-			if likes >= existingLikes+10 || comments >= existingComments+10 {
-				needsDetails = true
-				logger.Info("Re-fetching details for engagement-based re-analysis",
-					"title", deal.Title,
-					"likes", likes, "prev_likes", existingLikes,
-					"comments", comments, "prev_comments", existingComments)
-			}
-		}
-
 		if needsDetails {
 			dealsToDetail = append(dealsToDetail, deal)
 		} else {
@@ -245,11 +237,69 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 	}
 }
 
-// analyzeDeals runs AI analysis on deals that haven't been processed yet.
+const (
+	titleBatchSize     = 10
+	titleBatchMaxDelay = 5 * time.Minute
+)
+
+// queueTitleCleaning adds a deal to the title batch queue.
+func (p *DealProcessor) queueTitleCleaning(deal *models.DealInfo, index int) {
+	if p.titleQueueStart.IsZero() {
+		p.titleQueueStart = time.Now()
+	}
+	p.titleQueue = append(p.titleQueue, models.TitleRequest{
+		Index:    index,
+		Title:    deal.Title,
+		Retailer: deal.Retailer,
+		Price:    deal.Price,
+	})
+	p.titleQueueDeals = append(p.titleQueueDeals, deal)
+}
+
+// flushTitleQueue sends the accumulated title queue to AI for cleaning.
+func (p *DealProcessor) flushTitleQueue(ctx context.Context, logger *slog.Logger, tracker *metrics.Tracker) {
+	if len(p.titleQueue) == 0 {
+		return
+	}
+
+	shouldFlush := len(p.titleQueue) >= titleBatchSize ||
+		(!p.titleQueueStart.IsZero() && time.Since(p.titleQueueStart) >= titleBatchMaxDelay)
+
+	if !shouldFlush {
+		logger.Info("Title queue not ready to flush", "queued", len(p.titleQueue),
+			"age", time.Since(p.titleQueueStart).Round(time.Second))
+		return
+	}
+
+	logger.Info("Flushing title queue", "count", len(p.titleQueue))
+
+	results, err := p.aiClient.CleanTitles(ctx, p.titleQueue)
+	inTok, outTok := p.aiClient.DrainTokens()
+	tracker.TrackGeminiCall(inTok, outTok)
+
+	if err != nil {
+		logger.Warn("Batch title cleaning failed, deals keep raw titles", "error", err)
+	} else {
+		for i, deal := range p.titleQueueDeals {
+			if cleanTitle, ok := results[p.titleQueue[i].Index]; ok && cleanTitle != "" {
+				deal.CleanTitle = cleanTitle
+				deal.AIProcessed = true
+				tracker.TrackAdProcessed()
+			}
+		}
+	}
+
+	// Clear the queue
+	p.titleQueue = nil
+	p.titleQueueDeals = nil
+	p.titleQueueStart = time.Time{}
+}
+
+// analyzeDeals queues deals for batch title cleaning. No longer performs warm/hot AI analysis.
 func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, logger *slog.Logger, tracker *metrics.Tracker) {
 	for i := range validDeals {
 		if ctx.Err() != nil {
-			logger.Warn("Context cancelled, stopping AI analysis", "remaining", len(validDeals)-i)
+			logger.Warn("Context cancelled, stopping title queueing", "remaining", len(validDeals)-i)
 			break
 		}
 
@@ -257,65 +307,29 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 		existing := existingDeals[deal.FirestoreID]
 		isNew := existing == nil
 
-		// We analyze if:
-		// 1. It's a new deal.
-		// 2. Or existing deal hasn't been processed.
-		// 3. Or significant fields changed (Title/URL) which invalidates previous AI analysis.
-		shouldAnalyze := isNew || !existing.AIProcessed
-
-		if !shouldAnalyze && existing != nil {
-			if deal.Title != existing.Title || deal.PostURL != existing.PostURL {
-				shouldAnalyze = true
-				logger.Info("Re-analyzing deal due to content change", "title", deal.Title)
+		// Queue for title cleaning if:
+		// 1. New deal without a clean title
+		// 2. Existing deal that hasn't been processed
+		// 3. Title changed (invalidates previous clean title)
+		needsTitle := isNew || !existing.AIProcessed
+		if !needsTitle && existing != nil {
+			if deal.Title != existing.Title {
+				needsTitle = true
+				logger.Info("Re-queuing title due to content change", "title", deal.Title)
 			}
 		}
 
-		// Re-analyze if engagement has grown significantly since last analysis
-		if !shouldAnalyze && existing != nil && existing.AIProcessed {
-			likes, comments, _ := deal.Stats()
-			existingLikes, existingComments, _ := existing.Stats()
-			if likes >= existingLikes+10 || comments >= existingComments+10 {
-				shouldAnalyze = true
-				logger.Info("Re-analyzing deal due to engagement growth",
-					"title", deal.Title,
-					"likes", likes, "prev_likes", existingLikes,
-					"comments", comments, "prev_comments", existingComments)
-			}
-		}
-
-		if shouldAnalyze {
-			// Double check if we already have a clean title from somewhere else (unlikely with current flow)
-			// But if we are re-analyzing, we ignore the existing clean title.
-			if !isNew && deal.CleanTitle != "" && deal.AIProcessed {
-				// This case shouldn't really happen with current flow unless we set it manually before here
-				continue
-			}
-
-			// Call AI
-			// Note: This is done sequentially here. For high volume, we might want concurrency,
-			// but for a few deals every 10 mins, sequential is fine and safer for rate limits.
-			cleanedTitle, isWarm, isHot, err := p.aiClient.AnalyzeDeal(ctx, deal)
-			inTok, outTok := p.aiClient.DrainTokens()
-			tracker.TrackGeminiCall(inTok, outTok)
-
-			if err != nil {
-				// Log error but continue. Deal stays "unprocessed" effectively.
-				logger.Warn("AI analysis failed", "deal_id", deal.FirestoreID, "title", deal.Title, "error", err)
-			} else {
-				deal.CleanTitle = cleanedTitle
-				deal.IsWarm = isWarm
-				deal.IsLavaHot = isHot
-				deal.AIProcessed = true
-				tracker.TrackAdProcessed()
-			}
+		if needsTitle {
+			p.queueTitleCleaning(deal, i)
 		} else if existing != nil {
-			// Carry over existing AI data
+			// Carry over existing clean title
 			deal.CleanTitle = existing.CleanTitle
-			deal.IsWarm = existing.IsWarm
-			deal.IsLavaHot = existing.IsLavaHot
 			deal.AIProcessed = existing.AIProcessed
 		}
 	}
+
+	// Try to flush the title queue
+	p.flushTitleQueue(ctx, logger, tracker)
 }
 
 // processNotificationsAndPrepareUpdates sends/updates Discord notifications and prepares lists for DB persistence.
@@ -422,8 +436,6 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		// AI fields
 		if scrapedBase.AIProcessed {
 			existing.CleanTitle = scrapedBase.CleanTitle
-			existing.IsWarm = scrapedBase.IsWarm
-			existing.IsLavaHot = scrapedBase.IsLavaHot
 			existing.AIProcessed = scrapedBase.AIProcessed
 		}
 	}
@@ -475,9 +487,12 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 	}
 
 	// 2. Update existing channels
-	// To avoid Discord rate limits ("Maximum number of edits to messages older than 1 hour reached"),
-	// stop updating Discord messages for deals published more than an hour ago.
-	if len(existing.DiscordMessageIDs) > 0 && time.Since(existing.DiscordLastUpdatedTime) >= p.updateInterval && time.Since(existing.PublishedTimestamp) < time.Hour {
+	// Discord error 30046: "Maximum number of edits to messages older than 1 hour reached."
+	// The exact threshold is undocumented, but one developer hit it after ~3,600 edits
+	// over 10 hours on a single message (editing every 10 seconds).
+	// At our edit frequency (~1 per minute per deal), 2 hours is well within safe limits.
+	// See: https://github.com/discord/discord-api-docs/issues/4413
+	if len(existing.DiscordMessageIDs) > 0 && time.Since(existing.DiscordLastUpdatedTime) >= p.updateInterval && time.Since(existing.PublishedTimestamp) < 2*time.Hour {
 		if err := p.notifier.Update(ctx, *existing); err == nil {
 			existing.DiscordLastUpdatedTime = time.Now()
 		} else {
