@@ -92,7 +92,7 @@ func main() {
 	ebayClient := ebay.NewClient(cfg.EbayClientID, cfg.EbayClientSecret)
 	var ebayProc *ebay.Processor
 	if ebayClient != nil {
-		ebayProc = ebay.NewProcessor(store, ebayClient, aiClient, n)
+		ebayProc = ebay.NewProcessor(store, ebayClient, n)
 		slog.Info("eBay deal processor initialized")
 	} else {
 		slog.Info("eBay features disabled (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set)")
@@ -352,9 +352,6 @@ func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		slog.Info("Starting eBay deal processing", "processor", "ebay")
-		if s.aiClient != nil {
-			s.aiClient.LogCurrentState()
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 		start := time.Now()
