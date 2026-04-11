@@ -27,6 +27,9 @@ const (
 	colorWarmDeal = 16098851 // #F5A623 (amber)            — getting traction
 	colorHotDeal  = 16723320 // #FF2D78 (magenta-pink)     — blowing up, act fast
 
+	heatScoreThresholdWarm = 0.05
+	heatScoreThresholdHot  = 0.20
+
 	maxRetries = 3
 
 	discordAPIBase = "https://discord.com/api/v10"
@@ -154,11 +157,20 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	}
 
 	// 3. Append Sentiment Emoji
-	if deal.AIProcessed && deal.IsLavaHot {
+	if deal.HasBeenHot {
 		title += " 🔥"
 	}
 
+	// 5. Heat Color
 	likes, comments, views := deal.Stats()
+	heatScore := CalculateHeatScore(likes, comments, views)
+	embedColor := colorColdDeal
+
+	if deal.HasBeenHot || (likes >= 2 && heatScore > heatScoreThresholdHot) {
+		embedColor = colorHotDeal
+	} else if deal.HasBeenWarm || (likes >= 2 && heatScore > heatScoreThresholdWarm) {
+		embedColor = colorWarmDeal
+	}
 
 	// Construct Description
 	var descriptionBuilder strings.Builder
@@ -170,15 +182,6 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 		descriptionBuilder.WriteString(fmt.Sprintf("[RFD](%s) ", thread.PostURL))
 	}
 	descriptionBuilder.WriteString("\n\n")
-
-	// 5. Heat Color
-	embedColor := colorColdDeal
-
-	if deal.HasBeenHot || deal.IsLavaHot {
-		embedColor = colorHotDeal
-	} else if deal.HasBeenWarm || deal.IsWarm {
-		embedColor = colorWarmDeal
-	}
 
 	// 6. Thumbnail
 	var thumbnail discordEmbedThumbnail
@@ -306,14 +309,28 @@ func retryBackoff(resp *http.Response, attempt int) time.Duration {
 	return 0
 }
 
-// IsWarm determines if a deal is considered warm.
-func (c *Client) IsWarm(deal models.DealInfo) bool {
-	return deal.IsWarm
+// CalculateHeatScore determines the heat of a deal based on engagement.
+// Comments are weighted 2x since they represent deeper engagement.
+func CalculateHeatScore(likes, comments, views int) float64 {
+	if views == 0 {
+		return 0.0
+	}
+	effectiveLikes := max(likes, 0)
+	effectiveComments := max(comments, 0)
+	engagement := float64(effectiveLikes) + 2.0*float64(effectiveComments)
+	return engagement / float64(views)
 }
 
-// IsHot determines if a deal is considered hot.
+// IsWarm determines if a deal is considered warm based on community engagement.
+func (c *Client) IsWarm(deal models.DealInfo) bool {
+	likes, comments, views := deal.Stats()
+	return likes >= 2 && CalculateHeatScore(likes, comments, views) > heatScoreThresholdWarm
+}
+
+// IsHot determines if a deal is considered hot based on community engagement.
 func (c *Client) IsHot(deal models.DealInfo) bool {
-	return deal.IsLavaHot
+	likes, comments, views := deal.Stats()
+	return likes >= 2 && CalculateHeatScore(likes, comments, views) > heatScoreThresholdHot
 }
 
 // --- Facebook Deal Notifications ---

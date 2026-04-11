@@ -23,8 +23,7 @@ func TestFormatDealToEmbed(t *testing.T) {
 		ActualDealURL:      "https://amazon.ca/item",
 		ThreadImageURL:     "https://example.com/image.jpg",
 		PublishedTimestamp: time.Unix(1770954490, 0), // Stable timestamp for testing
-		AIProcessed:        true,
-		IsLavaHot:          true,
+		HasBeenHot:         true,
 		Threads: []models.ThreadContext{
 			{
 				PostURL:      "https://forums.redflagdeals.com/deal-1",
@@ -115,34 +114,45 @@ func TestFormatDealToEmbed_Footer(t *testing.T) {
 
 func TestFormatDealToEmbed_Colors(t *testing.T) {
 	tests := []struct {
-		name      string
-		isWarm    bool
-		isLavaHot bool
-		wantColor int
+		name        string
+		hasBeenWarm bool
+		hasBeenHot  bool
+		likes       int
+		comments    int
+		views       int
+		wantColor   int
 	}{
 		{
-			name:      "cold deal",
-			isWarm:    false,
-			isLavaHot: false,
+			name:      "cold deal - low engagement",
+			likes:     1, comments: 0, views: 100,
 			wantColor: colorColdDeal,
 		},
 		{
-			name:      "warm deal gets warm color",
-			isWarm:    true,
-			isLavaHot: false,
+			name:        "warm deal via HasBeenWarm flag",
+			hasBeenWarm: true,
+			likes:       0, comments: 0, views: 100,
+			wantColor:   colorWarmDeal,
+		},
+		{
+			name:      "warm deal via live score",
+			likes:     10, comments: 5, views: 100,
 			wantColor: colorWarmDeal,
 		},
 		{
-			name:      "hot deal gets hot color",
-			isWarm:    false,
-			isLavaHot: true,
+			name:       "hot deal via HasBeenHot flag",
+			hasBeenHot: true,
+			likes:      0, comments: 0, views: 100,
+			wantColor:  colorHotDeal,
+		},
+		{
+			name:      "hot deal via live score",
+			likes:     50, comments: 100, views: 500,
 			wantColor: colorHotDeal,
 		},
 		{
-			name:      "hot deal overrides warm",
-			isWarm:    true,
-			isLavaHot: true,
-			wantColor: colorHotDeal,
+			name:        "hot overrides warm",
+			hasBeenWarm: true, hasBeenHot: true,
+			wantColor:   colorHotDeal,
 		},
 	}
 
@@ -151,13 +161,18 @@ func TestFormatDealToEmbed_Colors(t *testing.T) {
 			deal := models.DealInfo{
 				Title:       "Test Deal",
 				PostURL:     "https://forums.redflagdeals.com/test",
-				AIProcessed: true,
-				IsWarm:      tt.isWarm,
-				IsLavaHot:   tt.isLavaHot,
+				HasBeenWarm: tt.hasBeenWarm,
+				HasBeenHot:  tt.hasBeenHot,
+				Threads: []models.ThreadContext{
+					{
+						PostURL:      "https://forums.redflagdeals.com/test",
+						LikeCount:    tt.likes,
+						CommentCount: tt.comments,
+						ViewCount:    tt.views,
+					},
+				},
 			}
-
 			embed := formatDealToEmbed(deal)
-
 			if embed.Color != tt.wantColor {
 				t.Errorf("Color = %d, want %d", embed.Color, tt.wantColor)
 			}
@@ -165,25 +180,84 @@ func TestFormatDealToEmbed_Colors(t *testing.T) {
 	}
 }
 
-func TestClient_IsHot(t *testing.T) {
-	c := New("token")
-
-	dealLavaHot := models.DealInfo{
-		IsLavaHot: true,
+func TestCalculateHeatScore(t *testing.T) {
+	tests := []struct {
+		name     string
+		likes    int
+		comments int
+		views    int
+		want     float64
+	}{
+		{"zero views returns 0", 10, 5, 0, 0.0},
+		{"basic engagement", 10, 5, 100, 0.20},
+		{"high engagement", 50, 100, 500, 0.50},
+		{"low engagement", 2, 1, 1000, 0.004},
+		{"negative likes clamped", -10, 5, 100, 0.10},
+		{"negative comments clamped", 10, -5, 100, 0.10},
 	}
-	if !c.IsHot(dealLavaHot) {
-		t.Error("IsHot should be true when AI thinks it's Lava Hot")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CalculateHeatScore(tt.likes, tt.comments, tt.views)
+			if got != tt.want {
+				t.Errorf("CalculateHeatScore(%d, %d, %d) = %f, want %f",
+					tt.likes, tt.comments, tt.views, got, tt.want)
+			}
+		})
 	}
 }
 
 func TestClient_IsWarm(t *testing.T) {
 	c := New("token")
-
-	dealWarm := models.DealInfo{
-		IsWarm: true,
+	tests := []struct {
+		name     string
+		likes    int
+		comments int
+		views    int
+		want     bool
+	}{
+		{"warm: likes>=2 and score>0.05", 10, 5, 100, true},
+		{"cold: likes<2", 1, 100, 100, false},
+		{"cold: score<=0.05", 2, 0, 1000, false},
+		{"warm: exactly at floor", 2, 2, 50, true},
 	}
-	if !c.IsWarm(dealWarm) {
-		t.Error("IsWarm should be true when AI thinks it's warm")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deal := models.DealInfo{
+				Threads: []models.ThreadContext{
+					{LikeCount: tt.likes, CommentCount: tt.comments, ViewCount: tt.views},
+				},
+			}
+			if got := c.IsWarm(deal); got != tt.want {
+				t.Errorf("IsWarm() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClient_IsHot(t *testing.T) {
+	c := New("token")
+	tests := []struct {
+		name     string
+		likes    int
+		comments int
+		views    int
+		want     bool
+	}{
+		{"hot: score>0.20", 50, 100, 500, true},
+		{"not hot: score<=0.20", 10, 5, 100, false},
+		{"not hot: likes<2", 1, 500, 100, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deal := models.DealInfo{
+				Threads: []models.ThreadContext{
+					{LikeCount: tt.likes, CommentCount: tt.comments, ViewCount: tt.views},
+				},
+			}
+			if got := c.IsHot(deal); got != tt.want {
+				t.Errorf("IsHot() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
