@@ -450,36 +450,18 @@ func createEbayPayload(item ebay.EbayItem) discordWebhookPayload {
 }
 
 func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
-	// Title
 	title := item.Title
-	if item.CleanTitle != "" {
-		title = item.CleanTitle
-	}
 
-	if item.IsLavaHot {
-		title += " 🔥"
-	}
-
-	// Color
-	embedColor := colorWarmDeal // Only warm/hot items get stored, so minimum is warm
-	if item.IsLavaHot {
-		embedColor = colorHotDeal
-	}
-
-	// Description
 	var descBuilder strings.Builder
 
-	// Seller info
 	if item.Seller != "" {
 		descBuilder.WriteString(fmt.Sprintf("**Seller:** [%s](https://www.ebay.ca/usr/%s)\n", item.Seller, item.Seller))
 	}
 
-	// Condition
 	if item.Condition != "" {
 		descBuilder.WriteString(fmt.Sprintf("**Condition:** %s\n", item.Condition))
 	}
 
-	// Price
 	if item.Price != "" {
 		currency := item.Currency
 		if currency == "" {
@@ -488,7 +470,6 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		descBuilder.WriteString(fmt.Sprintf("\n💰 **%s %s**", currency, item.Price))
 	}
 
-	// Thumbnail
 	var thumbnail discordEmbedThumbnail
 	if item.ImageURL != "" {
 		thumbnail.URL = item.ImageURL
@@ -498,10 +479,10 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		Title:       title,
 		URL:         item.ItemURL,
 		Description: descBuilder.String(),
-		Color:       embedColor,
+		Color:       colorWarmDeal,
 		Thumbnail:   thumbnail,
 		Footer: discordEmbedFooter{
-			Text: "🛒 eBay Canada",
+			Text: "🛒 eBay Canada — Price Drop",
 		},
 	}
 }
