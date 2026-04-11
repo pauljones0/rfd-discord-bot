@@ -427,7 +427,7 @@ func (h *Handler) handleSetupEbay(w http.ResponseWriter, req interactionRequest,
 	}
 
 	validFilters := map[string]bool{
-		"ebay_warm_hot": true, "ebay_hot": true,
+		"ebay_price_drop": true,
 	}
 	if !validFilters[filter] {
 		h.respondPrivateMessage(w, "Invalid eBay filter type.")
@@ -1056,7 +1056,7 @@ func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest
 		"rfd_warm_hot": true, "rfd_warm_hot_tech": true,
 		"rfd_hot": true, "rfd_hot_tech": true,
 		// eBay types
-		"ebay_warm_hot": true, "ebay_hot": true,
+		"ebay_price_drop": true,
 		// Cross-source types
 		"warm_hot_all": true, "hot_all": true,
 	}

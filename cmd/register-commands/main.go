@@ -82,8 +82,7 @@ func main() {
 							"type":        3, // STRING
 							"required":    true,
 							"choices": []map[string]interface{}{
-								{"name": "Warm + Hot deals", "value": "ebay_warm_hot"},
-								{"name": "Hot deals only", "value": "ebay_hot"},
+								{"name": "Price drop alerts", "value": "ebay_price_drop"},
 							},
 						},
 					},
