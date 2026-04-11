@@ -146,8 +146,6 @@ func buildDealUpdates(deal models.DealInfo) []firestore.Update {
 		{Path: "discordLastUpdatedTime", Value: deal.DiscordLastUpdatedTime},
 		{Path: "publishedTimestamp", Value: deal.PublishedTimestamp},
 		{Path: "cleanTitle", Value: deal.CleanTitle},
-		{Path: "isWarm", Value: deal.IsWarm},
-		{Path: "isLavaHot", Value: deal.IsLavaHot},
 		{Path: "hasBeenWarm", Value: deal.HasBeenWarm},
 		{Path: "hasBeenHot", Value: deal.HasBeenHot},
 		{Path: "aiProcessed", Value: deal.AIProcessed},
