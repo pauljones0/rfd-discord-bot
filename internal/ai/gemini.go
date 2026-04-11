@@ -896,3 +896,30 @@ Respond with exactly this JSON format:
 
 	return cleanTitle, warm, hot, nil
 }
+
+// checkResponseBlocked inspects a Gemini response for safety blocks or content filters.
+// Returns a human-readable reason if the response was blocked, or empty string if not blocked.
+func checkResponseBlocked(resp *genai.GenerateContentResponse) string {
+	if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" {
+		msg := string(resp.PromptFeedback.BlockReason)
+		if resp.PromptFeedback.BlockReasonMessage != "" {
+			msg += ": " + resp.PromptFeedback.BlockReasonMessage
+		}
+		return "prompt blocked — " + msg
+	}
+	if len(resp.Candidates) > 0 {
+		c := resp.Candidates[0]
+		switch c.FinishReason {
+		case genai.FinishReasonSafety, genai.FinishReasonBlocklist,
+			genai.FinishReasonProhibitedContent, genai.FinishReasonSPII:
+			reason := string(c.FinishReason)
+			for _, sr := range c.SafetyRatings {
+				if sr.Blocked {
+					reason += fmt.Sprintf(" [%s=%s]", sr.Category, sr.Probability)
+				}
+			}
+			return "finish_reason=" + reason
+		}
+	}
+	return ""
+}
