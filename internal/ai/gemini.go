@@ -49,10 +49,10 @@ type Client struct {
 	pendingOutputTokens atomic.Int64
 }
 
-type AnalysisResult struct {
+// CleanTitleResult is the response format for batch title cleaning.
+type CleanTitleResult struct {
+	Index      int    `json:"index"`
 	CleanTitle string `json:"clean_title"`
-	IsWarm     bool   `json:"is_warm"`
-	IsLavaHot  bool   `json:"is_lava_hot"`
 }
 
 func NewClient(ctx context.Context, projectID string, locations []string, apiKeys []string, fallbackModels []string, store QuotaStore) (*Client, error) {
@@ -697,81 +697,50 @@ func (c *Client) AllTiersExhausted() bool {
 	return true
 }
 
-func (c *Client) AnalyzeDeal(ctx context.Context, deal *models.DealInfo) (string, bool, bool, error) {
+// CleanTitles sends a batch of deal titles to Gemini for cleaning.
+// Returns a map of request index -> clean title.
+func (c *Client) CleanTitles(ctx context.Context, requests []models.TitleRequest) (map[int]string, error) {
 	if c == nil || len(c.clients) == 0 {
-		slog.Warn("AI client not initialized, skipping deal analysis")
-		return "", false, false, nil
+		slog.Warn("AI client not initialized, skipping title cleaning")
+		return nil, nil
 	}
 
 	if ctx.Err() != nil {
-		return "", false, false, ctx.Err()
+		return nil, ctx.Err()
+	}
+
+	if len(requests) == 0 {
+		return nil, nil
 	}
 
 	startTime := time.Now()
 
-	// Always ensure we are using the correct model for the current day.
-	// Lock protects mutable quota/model state; released before the API call.
 	c.mu.Lock()
 	activeModel := c.checkDayRollover(ctx)
 	c.mu.Unlock()
 
-	link := deal.ActualDealURL
-	if link == "" {
-		link = deal.PostURL // Fallback to thread URL if deal URL is not available
+	var sb strings.Builder
+	sb.WriteString("Clean these deal titles. For each, create a concise title (5-15 words). ")
+	sb.WriteString("Remove fluff (\"Lava Hot\", \"Price Error\", \"YMMV\", emojis), store names if redundant, ")
+	sb.WriteString("and focus on the product and price/discount.\n\n")
+
+	for _, r := range requests {
+		sb.WriteString(fmt.Sprintf("%d. Title: \"%s\"", r.Index, r.Title))
+		if r.Retailer != "" {
+			sb.WriteString(fmt.Sprintf(" | Retailer: \"%s\"", r.Retailer))
+		}
+		if r.Price != "" {
+			sb.WriteString(fmt.Sprintf(" | Price: \"%s\"", r.Price))
+		}
+		sb.WriteString("\n")
 	}
 
-	var optionalFields string
-	if deal.OriginalPrice != "" {
-		optionalFields += fmt.Sprintf("Original Price: \"%s\"\n", deal.OriginalPrice)
-	}
-	if deal.Savings != "" {
-		optionalFields += fmt.Sprintf("Savings: \"%s\"\n", deal.Savings)
-	}
-	if deal.Category != "" {
-		optionalFields += fmt.Sprintf("Category: \"%s\"\n", deal.Category)
-	}
+	sb.WriteString("\nRespond with a JSON array: [{\"index\": 0, \"clean_title\": \"...\"}, ...]")
 
-	likes, comments, views := deal.Stats()
+	prompt := sb.String()
 
-	prompt := fmt.Sprintf(`
-Analyze this deal:
-Title: "%s"
-Description: "%s"
-User Comments Summary: "%s"
-RFD Summary: "%s"
-Deal Link: "%s"
-Price: "%s"
-%sRetailer: "%s"
-Community Engagement: %d upvotes, %d comments, %d views
-
-Task:
-1. Create a clean, concise title (5-15 words). Remove fluff ("Lava Hot", "Price Error"), store names if redundant, and focus on the product and price/discount.
-2. Determine if this is a "warm" deal (is_warm). A warm deal is a high-quality find that should appeal to a value-conscious shopper, not just a standard weekly sale. Be selective.
-   Signals of a Warm deal:
-   - The price is a significant discount (e.g., 25%%+ off for standard items, or a clear "All-Time Low" (ATL) for high-demand tech).
-   - User comments are strongly positive (e.g., "Incredible price", "Best deal I've seen in months", "Glad I waited for this").
-   - Community engagement is strong (high upvotes relative to views, many comments).
-   - It's a highly desirable product with broad appeal.
-   Standard sales, generic clearance items, and deals with lukewarm/indifferent comments should be False.
-3. Determine if this is "Lava Hot". Be extremely strict: only flag as True if you would genuinely FOMO or lose sleep over missing this deal. Regular sales should be False.
-
-Respond with exactly this JSON format:
-{"clean_title": "your clean title here", "is_warm": true/false, "is_lava_hot": true/false}
-
-`, deal.Title, deal.Description, deal.Comments, deal.Summary, link, deal.Price, optionalFields, deal.Retailer, likes, comments, views)
-
-	slog.Info("Starting AI deal analysis",
-		"deal_id", deal.FirestoreID,
-		"deal_title", deal.Title,
-		"has_description", deal.Description != "",
-		"has_comments", deal.Comments != "",
-		"has_summary", deal.Summary != "",
-		"price", deal.Price,
-		"retailer", deal.Retailer,
-		"category", deal.Category,
-		"likes", likes,
-		"comments", comments,
-		"views", views,
+	slog.Info("Starting batch title cleaning",
+		"count", len(requests),
 		"model", activeModel,
 		"location", c.currentLocation,
 		"prompt_len", len(prompt),
@@ -782,12 +751,9 @@ Respond with exactly this JSON format:
 		ResponseMIMEType: "application/json",
 	}
 
-	var cleanTitle string
-	var hot bool
-	var warm bool
+	results := make(map[int]string)
 
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
-		// Snapshot the active client and model under the lock.
 		c.mu.Lock()
 		client := c.activeClient()
 		model := activeModel
@@ -798,7 +764,7 @@ Respond with exactly this JSON format:
 		resp, genErr := client.Models.GenerateContent(callCtx, model, genai.Text(prompt), config)
 		if genErr != nil {
 			c.mu.Lock()
-			retErr, backoff := c.handleGenerationError(ctx, genErr, &activeModel, attempt, "deal analysis")
+			retErr, backoff := c.handleGenerationError(ctx, genErr, &activeModel, attempt, "batch_title_cleaning")
 			c.mu.Unlock()
 			if backoff > 0 {
 				select {
@@ -818,36 +784,34 @@ Respond with exactly this JSON format:
 			slog.Info("Gemini retry succeeded",
 				"model", model,
 				"location", loc,
-				"context", "deal_analysis",
+				"context", "batch_title_cleaning",
 				"attempt", attempt,
 			)
 		}
 
-		c.logTokenUsage(resp, "deal_analysis", model, loc)
+		c.logTokenUsage(resp, "batch_title_cleaning", model, loc)
 
-		// Parse the response inside the retry loop so malformed responses
-		// (e.g. Gemini returning prose instead of JSON) are retried.
 		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
-			slog.Warn("Gemini returned empty response during deal analysis, retrying",
-				"model", activeModel, "deal_id", deal.FirestoreID, "attempt", attempt)
-			return fmt.Errorf("no response content from gemini for deal analysis")
+			slog.Warn("Gemini returned empty response during batch title cleaning, retrying",
+				"model", activeModel, "attempt", attempt)
+			return fmt.Errorf("no response content from gemini for batch title cleaning")
 		}
 
 		candidate := resp.Candidates[0]
-		// With ResponseMIMEType: "application/json", the model outputs a JSON string in the text part.
 		for _, part := range candidate.Content.Parts {
 			if part.Text != "" {
 				rawResponse := part.Text
 				jsonStr := stripCodeBlock(rawResponse)
 
-				var extracted AnalysisResult
+				var extracted []CleanTitleResult
 				if err := json.Unmarshal([]byte(jsonStr), &extracted); err == nil {
-					cleanTitle = extracted.CleanTitle
-					warm = extracted.IsWarm
-					hot = extracted.IsLavaHot
-
-					slog.Info("AI raw response",
-						"deal_id", deal.FirestoreID,
+					for _, r := range extracted {
+						if r.CleanTitle != "" {
+							results[r.Index] = r.CleanTitle
+						}
+					}
+					slog.Info("Batch title cleaning raw response",
+						"count", len(extracted),
 						"raw_response", rawResponse,
 					)
 					return nil
@@ -855,7 +819,6 @@ Respond with exactly this JSON format:
 			}
 		}
 
-		// Collect raw text for the warning log
 		var rawParts strings.Builder
 		for _, part := range candidate.Content.Parts {
 			if part.Text != "" {
@@ -866,8 +829,8 @@ Respond with exactly this JSON format:
 		if len(raw) > 500 {
 			raw = raw[:500]
 		}
-		slog.Warn("Gemini returned unparseable response during deal analysis, retrying",
-			"model", activeModel, "deal_id", deal.FirestoreID, "attempt", attempt,
+		slog.Warn("Gemini returned unparseable response during batch title cleaning, retrying",
+			"model", activeModel, "attempt", attempt,
 			"finish_reason", candidate.FinishReason, "parts", len(candidate.Content.Parts),
 			"raw_truncated", raw)
 		return fmt.Errorf("no valid JSON response from gemini (finish_reason=%s, parts=%d)",
@@ -875,26 +838,21 @@ Respond with exactly this JSON format:
 	})
 
 	if err != nil {
-		return "", false, false, err
+		return nil, err
 	}
-
-	duration := time.Since(startTime)
 
 	c.mu.Lock()
 	loc := c.currentLocation
 	c.mu.Unlock()
-	slog.Info("AI deal analysis complete",
-		"deal_id", deal.FirestoreID,
-		"original_title", deal.Title,
-		"clean_title", cleanTitle,
-		"is_warm", warm,
-		"is_lava_hot", hot,
+	slog.Info("Batch title cleaning complete",
+		"titles_cleaned", len(results),
+		"titles_requested", len(requests),
 		"model", activeModel,
 		"location", loc,
-		"duration_ms", duration.Milliseconds(),
+		"duration_ms", time.Since(startTime).Milliseconds(),
 	)
 
-	return cleanTitle, warm, hot, nil
+	return results, nil
 }
 
 // checkResponseBlocked inspects a Gemini response for safety blocks or content filters.
