@@ -52,26 +52,17 @@ type ThreadContext struct {
 	ViewCount    int    `firestore:"viewCount" validate:"gte=0"`
 }
 
-// Stats returns the aggregated metrics for the deal across all threads.
+// Stats returns the engagement metrics from the primary (most popular) thread.
+// Threads are sorted by LikeCount desc by processor.sortThreads(), so Threads[0]
+// is the most engaged thread. Using the primary thread avoids integer-division
+// averaging that can round likes down to 0 when duplicate threads are merged
+// (e.g., 2 total likes across 3 threads → 2/3 = 0).
 func (d *DealInfo) Stats() (likes, comments, views int) {
 	if len(d.Threads) == 0 {
 		return 0, 0, 0
 	}
-	var totalLikes, totalComments, totalViews int
-	for _, t := range d.Threads {
-		totalLikes += t.LikeCount
-		totalComments += t.CommentCount
-		totalViews += t.ViewCount
-	}
-	// We want integer division matching the mathematical average.
-	// For negative numbers (likes), standard Go division rounds towards zero.
-	// E.g., -5 / 2 = -2
-	count := len(d.Threads)
-	likes = totalLikes / count
-	comments = totalComments / count
-	views = totalViews / count
-
-	return likes, comments, views
+	primary := d.Threads[0]
+	return primary.LikeCount, primary.CommentCount, primary.ViewCount
 }
 
 // PrimaryPostURL returns the primary (most popular) thread URL.
