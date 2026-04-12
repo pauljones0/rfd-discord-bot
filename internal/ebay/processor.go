@@ -143,6 +143,9 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 
 		newPrice := parsePrice(apiItem.Price)
 		if newPrice <= 0 {
+			if apiItem.Price != nil && apiItem.Price.Value != "" {
+				logger.Warn("Failed to parse eBay item price, skipping", "itemID", itemID, "price_value", apiItem.Price.Value)
+			}
 			continue
 		}
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -247,6 +248,8 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(5) // Limit concurrency
 
+	var failed atomic.Int32
+
 	for i := range deals {
 		deal := deals[i] // explicit local copy for clarity in the closure
 		if deal.PrimaryPostURL() == "" {
@@ -256,6 +259,7 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 		g.Go(func() error {
 			detail, err := c.scrapeDealDetailPage(ctx, deal.PrimaryPostURL())
 			if err != nil {
+				failed.Add(1)
 				if strings.Contains(err.Error(), "status code 404") {
 					slog.Info("Failed to fetch detail page (404)", "processor", "rfd", "url", deal.PrimaryPostURL())
 				} else {
@@ -293,8 +297,10 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 		})
 	}
 
-	if err := g.Wait(); err != nil {
-		slog.Error("FetchDealDetails: errgroup error", "processor", "rfd", "error", err)
+	g.Wait()
+
+	if f := failed.Load(); f > 0 {
+		slog.Warn("FetchDealDetails summary", "processor", "rfd", "total", len(deals), "failed", f)
 	}
 }
 
