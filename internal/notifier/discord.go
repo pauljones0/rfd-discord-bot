@@ -484,7 +484,14 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		if currency == "" {
 			currency = "CAD"
 		}
-		descBuilder.WriteString(fmt.Sprintf("\n💰 **%s %s**", currency, item.Price))
+		if item.OldPrice != "" {
+			descBuilder.WriteString(fmt.Sprintf("\n💰 ~~%s %s~~ → **%s %s**", currency, item.OldPrice, currency, item.Price))
+			if item.DropPercent != "" && item.DropDollars != "" {
+				descBuilder.WriteString(fmt.Sprintf("\n📉 **-%s%%** (-%s $%s)", item.DropPercent, currency, item.DropDollars))
+			}
+		} else {
+			descBuilder.WriteString(fmt.Sprintf("\n💰 **%s %s**", currency, item.Price))
+		}
 	}
 
 	var thumbnail discordEmbedThumbnail

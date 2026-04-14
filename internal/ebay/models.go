@@ -22,28 +22,32 @@ func (s EbaySeller) MarketplaceID() string {
 
 // TrackedItem represents an eBay listing being monitored for price drops in Firestore.
 type TrackedItem struct {
-	ItemID      string    `firestore:"itemID"`
-	Title       string    `firestore:"title"`
-	Price       float64   `firestore:"price"`
-	Currency    string    `firestore:"currency"`
-	Seller      string    `firestore:"seller"`
-	Condition   string    `firestore:"condition"`
-	ItemURL     string    `firestore:"itemURL"`
-	ImageURL    string    `firestore:"imageURL"`
-	FirstSeenAt time.Time `firestore:"firstSeenAt"`
-	LastSeenAt  time.Time `firestore:"lastSeenAt"`
+	ItemID        string    `firestore:"itemID"`
+	Title         string    `firestore:"title"`
+	Price         float64   `firestore:"price"`
+	OriginalPrice float64   `firestore:"originalPrice"`
+	Currency      string    `firestore:"currency"`
+	Seller        string    `firestore:"seller"`
+	Condition     string    `firestore:"condition"`
+	ItemURL       string    `firestore:"itemURL"`
+	ImageURL      string    `firestore:"imageURL"`
+	FirstSeenAt   time.Time `firestore:"firstSeenAt"`
+	LastSeenAt    time.Time `firestore:"lastSeenAt"`
 }
 
 // EbayItem represents an eBay listing for Discord notification (price drop).
 type EbayItem struct {
-	ItemID    string
-	Title     string
-	Price     string
-	Currency  string
-	ItemURL   string
-	ImageURL  string
-	Seller    string
-	Condition string
+	ItemID      string
+	Title       string
+	Price       string
+	OldPrice    string
+	DropPercent string // e.g. "25.3"
+	DropDollars string // e.g. "150.00"
+	Currency    string
+	ItemURL     string
+	ImageURL    string
+	Seller      string
+	Condition   string
 }
 
 // EbayPollState tracks the state of the last eBay polling run (singleton in bot_config).

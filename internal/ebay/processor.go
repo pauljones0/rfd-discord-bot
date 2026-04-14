@@ -158,53 +158,70 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			// New item — queue for batch write, no notification
 			stats.newItems++
 			itemsToWrite = append(itemsToWrite, TrackedItem{
-				ItemID:      itemID,
-				Title:       apiItem.Title,
-				Price:       newPrice,
-				Currency:    currencyOrDefault(apiItem.Price),
-				Seller:      sellerUsername(apiItem.Seller),
-				Condition:   apiItem.Condition,
-				ItemURL:     apiItem.ItemWebURL,
-				ImageURL:    imageURL(apiItem.Image),
-				FirstSeenAt: now,
-				LastSeenAt:  now,
+				ItemID:        itemID,
+				Title:         apiItem.Title,
+				Price:         newPrice,
+				OriginalPrice: newPrice,
+				Currency:      currencyOrDefault(apiItem.Price),
+				Seller:        sellerUsername(apiItem.Seller),
+				Condition:     apiItem.Condition,
+				ItemURL:       apiItem.ItemWebURL,
+				ImageURL:      imageURL(apiItem.Image),
+				FirstSeenAt:   now,
+				LastSeenAt:    now,
 			})
 			continue
 		}
 
-		// Existing item — check for price drop
-		oldPrice := existing.Price
-		dollarDrop := oldPrice - newPrice
-		percentDrop := (dollarDrop / oldPrice) * 100
+		// Existing item — check for price drop against original price.
+		// Only notify when the price actually decreased since the last poll to avoid
+		// re-notifying every cycle for the same price.
+		// Fall back to current stored price for items that predate the originalPrice field.
+		origPrice := existing.OriginalPrice
+		if origPrice <= 0 {
+			origPrice = existing.Price
+		}
+		dollarDrop := origPrice - newPrice
+		percentDrop := (dollarDrop / origPrice) * 100
+		priceDecreased := newPrice < existing.Price
 
-		if dollarDrop >= priceDropMinDollars && percentDrop >= priceDropMinPercent {
+		if priceDecreased && dollarDrop >= priceDropMinDollars && percentDrop >= priceDropMinPercent {
 			stats.priceDrops++
 			logger.Info("Price drop detected",
 				"itemID", itemID,
 				"title", apiItem.Title,
-				"old_price", oldPrice,
+				"original_price", origPrice,
 				"new_price", newPrice,
 				"drop_pct", fmt.Sprintf("%.1f%%", percentDrop),
 				"drop_dollars", fmt.Sprintf("$%.2f", dollarDrop),
 			)
 			priceDropItems = append(priceDropItems, EbayItem{
-				ItemID:    itemID,
-				Title:     apiItem.Title,
-				Price:     fmt.Sprintf("%.2f", newPrice),
-				Currency:  currencyOrDefault(apiItem.Price),
-				ItemURL:   apiItem.ItemWebURL,
-				ImageURL:  imageURL(apiItem.Image),
-				Seller:    sellerUsername(apiItem.Seller),
-				Condition: apiItem.Condition,
+				ItemID:      itemID,
+				Title:       apiItem.Title,
+				Price:       fmt.Sprintf("%.2f", newPrice),
+				OldPrice:    fmt.Sprintf("%.2f", origPrice),
+				DropPercent: fmt.Sprintf("%.1f", percentDrop),
+				DropDollars: fmt.Sprintf("%.2f", dollarDrop),
+				Currency:    currencyOrDefault(apiItem.Price),
+				ItemURL:     apiItem.ItemWebURL,
+				ImageURL:    imageURL(apiItem.Image),
+				Seller:      sellerUsername(apiItem.Seller),
+				Condition:   apiItem.Condition,
 			})
 		}
+
+		// Backfill originalPrice for items that predate the field
+		needsOrigBackfill := existing.OriginalPrice <= 0
 
 		// Only write back if something actually changed
 		newImgURL := imageURL(apiItem.Image)
 		if existing.Price != newPrice || existing.Title != apiItem.Title ||
 			existing.Condition != apiItem.Condition || existing.ItemURL != apiItem.ItemWebURL ||
-			existing.ImageURL != newImgURL {
+			existing.ImageURL != newImgURL || needsOrigBackfill {
 			stats.updated++
+			if needsOrigBackfill {
+				existing.OriginalPrice = existing.Price
+			}
 			existing.Price = newPrice
 			existing.LastSeenAt = now
 			existing.Title = apiItem.Title
