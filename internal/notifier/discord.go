@@ -468,23 +468,38 @@ func createEbayPayload(item ebay.EbayItem) discordWebhookPayload {
 
 func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 	title := item.Title
+	currency := item.Currency
+	if currency == "" {
+		currency = "CAD"
+	}
 
 	var descBuilder strings.Builder
 
-	if item.Seller != "" {
-		descBuilder.WriteString(fmt.Sprintf("**Seller:** [%s](https://www.ebay.ca/usr/%s)\n", item.Seller, item.Seller))
-	}
-
-	if item.Condition != "" {
-		descBuilder.WriteString(fmt.Sprintf("**Condition:** %s\n", item.Condition))
-	}
-
-	if item.Price != "" {
-		currency := item.Currency
-		if currency == "" {
-			currency = "CAD"
+	// Price line: ~~CAD $299.99~~ → **CAD $199.99** (33% off)
+	if item.Price != "" && item.OldPrice != "" {
+		descBuilder.WriteString(fmt.Sprintf("~~%s $%s~~ → **%s $%s**", currency, item.OldPrice, currency, item.Price))
+		if item.DropPercent != "" {
+			descBuilder.WriteString(fmt.Sprintf(" (%s%% off)", item.DropPercent))
 		}
-		descBuilder.WriteString(fmt.Sprintf("\n💰 **%s %s**", currency, item.Price))
+	} else if item.Price != "" {
+		descBuilder.WriteString(fmt.Sprintf("💰 **%s $%s**", currency, item.Price))
+	}
+
+	// Metadata line: seller (99.8%) • Refurbished
+	var meta []string
+	if item.Seller != "" {
+		sellerStr := fmt.Sprintf("[%s](https://www.ebay.ca/usr/%s)", item.Seller, item.Seller)
+		if item.FeedbackPct != "" {
+			sellerStr += fmt.Sprintf(" (%s%%)", item.FeedbackPct)
+		}
+		meta = append(meta, sellerStr)
+	}
+	if item.Condition != "" {
+		meta = append(meta, item.Condition)
+	}
+	if len(meta) > 0 {
+		descBuilder.WriteString("\n")
+		descBuilder.WriteString(strings.Join(meta, "  •  "))
 	}
 
 	var thumbnail discordEmbedThumbnail
@@ -499,7 +514,7 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		Color:       colorWarmDeal,
 		Thumbnail:   thumbnail,
 		Footer: discordEmbedFooter{
-			Text: "🛒 eBay Canada — Price Drop",
+			Text: "🛒 eBay — Price Drop",
 		},
 	}
 }

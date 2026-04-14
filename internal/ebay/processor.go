@@ -188,14 +188,17 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				"drop_dollars", fmt.Sprintf("$%.2f", dollarDrop),
 			)
 			priceDropItems = append(priceDropItems, EbayItem{
-				ItemID:    itemID,
-				Title:     apiItem.Title,
-				Price:     fmt.Sprintf("%.2f", newPrice),
-				Currency:  currencyOrDefault(apiItem.Price),
-				ItemURL:   apiItem.ItemWebURL,
-				ImageURL:  imageURL(apiItem.Image),
-				Seller:    sellerUsername(apiItem.Seller),
-				Condition: apiItem.Condition,
+				ItemID:      itemID,
+				Title:       apiItem.Title,
+				Price:       fmt.Sprintf("%.2f", newPrice),
+				OldPrice:    fmt.Sprintf("%.2f", oldPrice),
+				DropPercent: fmt.Sprintf("%.0f", percentDrop),
+				Currency:    currencyOrDefault(apiItem.Price),
+				ItemURL:     apiItem.ItemWebURL,
+				ImageURL:    imageURL(apiItem.Image),
+				Seller:      sellerUsername(apiItem.Seller),
+				FeedbackPct: sellerFeedbackPct(apiItem.Seller),
+				Condition:   apiItem.Condition,
 			})
 		}
 
@@ -313,6 +316,14 @@ func sellerUsername(s *SellerInfo) string {
 		return "Unknown"
 	}
 	return s.Username
+}
+
+// sellerFeedbackPct extracts the feedback percentage from a SellerInfo, or returns "".
+func sellerFeedbackPct(s *SellerInfo) string {
+	if s == nil {
+		return ""
+	}
+	return s.FeedbackPercentage
 }
 
 // imageURL extracts the image URL from an Image, or returns empty string.

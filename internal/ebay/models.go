@@ -36,14 +36,17 @@ type TrackedItem struct {
 
 // EbayItem represents an eBay listing for Discord notification (price drop).
 type EbayItem struct {
-	ItemID    string
-	Title     string
-	Price     string
-	Currency  string
-	ItemURL   string
-	ImageURL  string
-	Seller    string
-	Condition string
+	ItemID      string
+	Title       string
+	Price       string
+	OldPrice    string
+	DropPercent string // e.g. "33.2"
+	Currency    string
+	ItemURL     string
+	ImageURL    string
+	Seller      string
+	FeedbackPct string // e.g. "99.8"
+	Condition   string
 }
 
 // EbayPollState tracks the state of the last eBay polling run (singleton in bot_config).
