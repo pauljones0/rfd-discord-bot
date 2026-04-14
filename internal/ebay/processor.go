@@ -25,7 +25,7 @@ type EbayStore interface {
 	UpdateEbayPollState(ctx context.Context, state EbayPollState) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
 	GetTrackedEbayItems(ctx context.Context) (map[string]TrackedItem, error)
-	UpsertTrackedEbayItem(ctx context.Context, item TrackedItem) error
+	BulkUpsertTrackedEbayItems(ctx context.Context, items []TrackedItem) error
 	DeleteTrackedEbayItems(ctx context.Context, itemIDs []string) error
 }
 
@@ -72,6 +72,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		sellers    int
 		fetched    int
 		newItems   int
+		updated    int
 		priceDrops int
 		removed    int
 		exitReason string
@@ -83,6 +84,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			"sellers", stats.sellers,
 			"fetched", stats.fetched,
 			"new_items", stats.newItems,
+			"updated", stats.updated,
 			"price_drops", stats.priceDrops,
 			"removed", stats.removed,
 			"exit_reason", stats.exitReason,
@@ -132,10 +134,12 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		return fmt.Errorf("failed to load tracked eBay items: %w", err)
 	}
 
-	// 5. Process each fetched item — detect price drops or add new items
+	// 5. Process each fetched item — detect price drops or add new items.
+	// Only write to Firestore when fields actually changed to avoid redundant writes.
 	now := time.Now()
 	currentIDs := make(map[string]bool, len(apiItems))
 	var priceDropItems []EbayItem
+	var itemsToWrite []TrackedItem
 
 	for _, apiItem := range apiItems {
 		itemID := ExtractItemID(apiItem.ItemID)
@@ -151,9 +155,9 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 
 		existing, exists := tracked[itemID]
 		if !exists {
-			// New item — track it, no notification
+			// New item — queue for batch write, no notification
 			stats.newItems++
-			item := TrackedItem{
+			itemsToWrite = append(itemsToWrite, TrackedItem{
 				ItemID:      itemID,
 				Title:       apiItem.Title,
 				Price:       newPrice,
@@ -164,10 +168,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				ImageURL:    imageURL(apiItem.Image),
 				FirstSeenAt: now,
 				LastSeenAt:  now,
-			}
-			if err := p.store.UpsertTrackedEbayItem(ctx, item); err != nil {
-				logger.Warn("Failed to track new eBay item", "itemID", itemID, "error", err)
-			}
+			})
 			continue
 		}
 
@@ -198,15 +199,27 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			})
 		}
 
-		// Update tracked price and lastSeenAt
-		existing.Price = newPrice
-		existing.LastSeenAt = now
-		existing.Title = apiItem.Title
-		existing.ItemURL = apiItem.ItemWebURL
-		existing.ImageURL = imageURL(apiItem.Image)
-		existing.Condition = apiItem.Condition
-		if err := p.store.UpsertTrackedEbayItem(ctx, existing); err != nil {
-			logger.Warn("Failed to update tracked eBay item", "itemID", itemID, "error", err)
+		// Only write back if something actually changed
+		newImgURL := imageURL(apiItem.Image)
+		if existing.Price != newPrice || existing.Title != apiItem.Title ||
+			existing.Condition != apiItem.Condition || existing.ItemURL != apiItem.ItemWebURL ||
+			existing.ImageURL != newImgURL {
+			stats.updated++
+			existing.Price = newPrice
+			existing.LastSeenAt = now
+			existing.Title = apiItem.Title
+			existing.ItemURL = apiItem.ItemWebURL
+			existing.ImageURL = newImgURL
+			existing.Condition = apiItem.Condition
+			itemsToWrite = append(itemsToWrite, existing)
+		}
+	}
+
+	// Bulk write all new and changed items
+	if len(itemsToWrite) > 0 {
+		logger.Info("Writing eBay item changes to Firestore", "count", len(itemsToWrite))
+		if err := p.store.BulkUpsertTrackedEbayItems(ctx, itemsToWrite); err != nil {
+			logger.Error("Failed to bulk upsert eBay items", "error", err)
 		}
 	}
 
@@ -226,29 +239,27 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	}
 
 	// 7. Notify Discord for price drops
-	if len(priceDropItems) > 0 {
+	if len(priceDropItems) > 0 && p.notifier != nil {
 		subs, err := p.store.GetAllSubscriptions(ctx)
 		if err != nil {
 			logger.Error("Failed to get subscriptions for eBay notifications", "error", err)
 		}
 
-		for i := range priceDropItems {
-			if ctx.Err() != nil {
-				logger.Warn("Context cancelled, stopping Discord notifications")
-				break
+		var eligibleSubs []models.Subscription
+		for _, sub := range subs {
+			if isEbayEligible(sub) {
+				eligibleSubs = append(eligibleSubs, sub)
 			}
+		}
 
-			item := &priceDropItems[i]
-			var eligibleSubs []models.Subscription
-			for _, sub := range subs {
-				if isEbayEligible(sub) {
-					eligibleSubs = append(eligibleSubs, sub)
+		if len(eligibleSubs) > 0 {
+			for i := range priceDropItems {
+				if ctx.Err() != nil {
+					logger.Warn("Context cancelled, stopping Discord notifications")
+					break
 				}
-			}
-
-			if len(eligibleSubs) > 0 && p.notifier != nil {
-				if _, err := p.notifier.SendEbayDeal(ctx, *item, eligibleSubs); err != nil {
-					logger.Error("Failed to send eBay price drop to Discord", "item", item.Title, "error", err)
+				if _, err := p.notifier.SendEbayDeal(ctx, priceDropItems[i], eligibleSubs); err != nil {
+					logger.Error("Failed to send eBay price drop to Discord", "item", priceDropItems[i].Title, "error", err)
 				}
 			}
 		}

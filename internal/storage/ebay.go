@@ -158,15 +158,24 @@ func (c *Client) GetTrackedEbayItems(ctx context.Context) (map[string]ebay.Track
 	return items, nil
 }
 
-// UpsertTrackedEbayItem creates or updates a tracked eBay item.
-func (c *Client) UpsertTrackedEbayItem(ctx context.Context, item ebay.TrackedItem) error {
-	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+// BulkUpsertTrackedEbayItems creates or updates tracked eBay items in a single batch.
+func (c *Client) BulkUpsertTrackedEbayItems(ctx context.Context, items []ebay.TrackedItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	ctx, cancel := ensureDeadline(ctx, 60*time.Second)
 	defer cancel()
 
-	_, err := c.client.Collection(ebayItemsCollection).Doc(item.ItemID).Set(ctx, item)
-	if err != nil {
-		return fmt.Errorf("failed to upsert ebay item %s: %w", item.ItemID, err)
+	bw := c.client.BulkWriter(ctx)
+	for _, item := range items {
+		doc := c.client.Collection(ebayItemsCollection).Doc(item.ItemID)
+		if _, err := bw.Set(doc, item); err != nil {
+			slog.Warn("Failed to queue ebay item upsert", "processor", "ebay", "itemID", item.ItemID, "error", err)
+		}
 	}
+	bw.Flush()
+	bw.End()
 	return nil
 }
 

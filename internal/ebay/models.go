@@ -108,14 +108,15 @@ func DefaultSellers() []EbaySeller {
 		// Canadian sellers (ebay.ca)
 		{username: "vipoutletcanada"},
 		{username: "helloworld2003"},
-		{username: "shanikuma6"},
 		{username: "originallaptoppartsandelectronics"},
 		{username: "neweggcanada"},
 		{username: "surplusbydesign"},
 		{username: "ssdwholesale"},
-		{username: "qnrvr17"},
 		{username: "buythatapple"},
-		{username: "montrealcomputers"},      // Montreal Computers CANADA
+		{username: "montrealcomputers"},
+
+		// American sellers (ebay.com)
+		{username: "vipoutlet", marketplace: "EBAY_US"},
 	}
 
 	sellers := make([]EbaySeller, len(entries))
