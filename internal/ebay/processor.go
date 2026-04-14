@@ -12,7 +12,7 @@ import (
 
 const (
 	// priceDropMinPercent is the minimum percentage drop to trigger a notification.
-	priceDropMinPercent = 20.0
+	priceDropMinPercent = 10.0
 	// priceDropMinDollars is the minimum dollar drop to trigger a notification.
 	priceDropMinDollars = 50.0
 )
