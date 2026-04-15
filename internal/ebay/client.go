@@ -340,6 +340,9 @@ func (c *Client) fetchPage(ctx context.Context, sellerFilter, marketplace string
 	if err := json.Unmarshal(body, &searchResp); err != nil {
 		return nil, false, fmt.Errorf("failed to parse search response: %w", err)
 	}
+	for i := range searchResp.ItemSummaries {
+		searchResp.ItemSummaries[i].Marketplace = marketplace
+	}
 
 	slog.Info("eBay Browse API page fetched",
 		"processor", "ebay",

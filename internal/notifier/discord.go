@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -468,28 +469,53 @@ func createEbayPayload(item ebay.EbayItem) discordWebhookPayload {
 
 func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 	title := item.Title
-
 	var descBuilder strings.Builder
 
+	if item.PreviousPrice > 0 && item.CurrentPrice > 0 && item.PriceDrop > 0 {
+		descBuilder.WriteString(fmt.Sprintf(
+			"~~%s~~ -> **%s**  (-%s, -%.0f%%)",
+			formatEbayMoney(item.PreviousPrice, item.Currency),
+			formatEbayMoney(item.CurrentPrice, item.Currency),
+			formatEbayMoney(item.PriceDrop, item.Currency),
+			item.PercentDrop,
+		))
+	} else if item.CurrentPrice > 0 {
+		descBuilder.WriteString(fmt.Sprintf("**%s**", formatEbayMoney(item.CurrentPrice, item.Currency)))
+	}
+
+	var meta []string
 	if item.Seller != "" {
-		descBuilder.WriteString(fmt.Sprintf("**Seller:** [%s](https://www.ebay.ca/usr/%s)\n", item.Seller, item.Seller))
-	}
-
-	if item.Condition != "" {
-		descBuilder.WriteString(fmt.Sprintf("**Condition:** %s\n", item.Condition))
-	}
-
-	if item.Price != "" {
-		currency := item.Currency
-		if currency == "" {
-			currency = "CAD"
+		sellerValue := item.Seller
+		if sellerURL := ebaySellerProfileURL(item); sellerURL != "" {
+			sellerValue = fmt.Sprintf("[%s](%s)", item.Seller, sellerURL)
 		}
-		descBuilder.WriteString(fmt.Sprintf("\n💰 **%s %s**", currency, item.Price))
+		if item.SellerFeedbackPercentage != "" && item.SellerFeedbackScore > 0 {
+			sellerValue += fmt.Sprintf(" %s/%s", item.SellerFeedbackPercentage, formatCountCompact(item.SellerFeedbackScore))
+		} else if item.SellerFeedbackPercentage != "" {
+			sellerValue += " " + item.SellerFeedbackPercentage
+		} else if item.SellerFeedbackScore > 0 {
+			sellerValue += " " + formatCountCompact(item.SellerFeedbackScore)
+		}
+		meta = append(meta, sellerValue)
+	}
+	if item.Condition != "" {
+		meta = append(meta, item.Condition)
+	}
+	if len(meta) > 0 {
+		if descBuilder.Len() > 0 {
+			descBuilder.WriteString("\n")
+		}
+		descBuilder.WriteString(strings.Join(meta, "  •  "))
 	}
 
 	var thumbnail discordEmbedThumbnail
 	if item.ImageURL != "" {
 		thumbnail.URL = item.ImageURL
+	}
+
+	var timestamp string
+	if !item.ListedAt.IsZero() {
+		timestamp = item.ListedAt.Format(time.RFC3339)
 	}
 
 	return discordEmbed{
@@ -498,10 +524,83 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		Description: descBuilder.String(),
 		Color:       colorWarmDeal,
 		Thumbnail:   thumbnail,
+		Timestamp:   timestamp,
 		Footer: discordEmbedFooter{
-			Text: "🛒 eBay Canada — Price Drop",
+			Text: ebayMarketplaceLabel(item) + " Price Drop",
 		},
 	}
+}
+
+func formatEbayMoney(amount float64, currency string) string {
+	switch strings.ToUpper(currency) {
+	case "", "CAD":
+		return fmt.Sprintf("C$%.2f", amount)
+	case "USD":
+		return fmt.Sprintf("US$%.2f", amount)
+	default:
+		return fmt.Sprintf("%s %.2f", strings.ToUpper(currency), amount)
+	}
+}
+
+func formatCountCompact(n int) string {
+	if n >= 1000 {
+		value := float64(n) / 1000
+		if n%1000 == 0 {
+			return fmt.Sprintf("%.0fk", value)
+		}
+		return fmt.Sprintf("%.1fk", value)
+	}
+	return strconv.Itoa(n)
+}
+
+func ebayMarketplaceLabel(item ebay.EbayItem) string {
+	switch item.Marketplace {
+	case "EBAY_CA":
+		return "eBay Canada"
+	case "EBAY_US":
+		return "eBay US"
+	}
+
+	if host := ebayItemHost(item.ItemURL); host != "" {
+		switch {
+		case strings.Contains(host, "ebay.ca"):
+			return "eBay Canada"
+		case strings.Contains(host, "ebay.com"):
+			return "eBay US"
+		}
+	}
+
+	return "eBay"
+}
+
+func ebaySellerProfileURL(item ebay.EbayItem) string {
+	if item.Seller == "" {
+		return ""
+	}
+
+	host := ebayItemHost(item.ItemURL)
+	switch item.Marketplace {
+	case "EBAY_CA":
+		host = "www.ebay.ca"
+	case "EBAY_US":
+		host = "www.ebay.com"
+	}
+	if host == "" {
+		host = "www.ebay.ca"
+	}
+
+	return fmt.Sprintf("https://%s/usr/%s", host, item.Seller)
+}
+
+func ebayItemHost(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return parsed.Host
 }
 
 // SendMemExpressDeal sends a Memory Express clearance deal to subscribed Discord channels.

@@ -22,28 +22,37 @@ func (s EbaySeller) MarketplaceID() string {
 
 // TrackedItem represents an eBay listing being monitored for price drops in Firestore.
 type TrackedItem struct {
-	ItemID      string    `firestore:"itemID"`
-	Title       string    `firestore:"title"`
-	Price       float64   `firestore:"price"`
-	Currency    string    `firestore:"currency"`
-	Seller      string    `firestore:"seller"`
-	Condition   string    `firestore:"condition"`
-	ItemURL     string    `firestore:"itemURL"`
-	ImageURL    string    `firestore:"imageURL"`
-	FirstSeenAt time.Time `firestore:"firstSeenAt"`
-	LastSeenAt  time.Time `firestore:"lastSeenAt"`
+	ItemID            string    `firestore:"itemID"`
+	Title             string    `firestore:"title"`
+	Price             float64   `firestore:"price"`
+	OriginalPrice     float64   `firestore:"originalPrice,omitempty"`
+	LastNotifiedPrice float64   `firestore:"lastNotifiedPrice,omitempty"`
+	Currency          string    `firestore:"currency"`
+	Seller            string    `firestore:"seller"`
+	Condition         string    `firestore:"condition"`
+	ItemURL           string    `firestore:"itemURL"`
+	ImageURL          string    `firestore:"imageURL"`
+	FirstSeenAt       time.Time `firestore:"firstSeenAt"`
+	LastSeenAt        time.Time `firestore:"lastSeenAt"`
 }
 
 // EbayItem represents an eBay listing for Discord notification (price drop).
 type EbayItem struct {
-	ItemID    string
-	Title     string
-	Price     string
-	Currency  string
-	ItemURL   string
-	ImageURL  string
-	Seller    string
-	Condition string
+	ItemID                   string
+	Title                    string
+	CurrentPrice             float64
+	PreviousPrice            float64
+	PriceDrop                float64
+	PercentDrop              float64
+	Currency                 string
+	ItemURL                  string
+	ImageURL                 string
+	Seller                   string
+	SellerFeedbackScore      int
+	SellerFeedbackPercentage string
+	Condition                string
+	Marketplace              string
+	ListedAt                 time.Time
 }
 
 // EbayPollState tracks the state of the last eBay polling run (singleton in bot_config).
@@ -66,6 +75,7 @@ type BrowseAPIItem struct {
 	CategoryID       string      `json:"categoryId"`
 	BuyingOptions    []string    `json:"buyingOptions"`
 	ItemCreationDate string      `json:"itemCreationDate"` // ISO8601
+	Marketplace      string      `json:"-"`
 }
 
 // Price represents the eBay API price object.

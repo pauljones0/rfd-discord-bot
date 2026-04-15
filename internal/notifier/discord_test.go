@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
@@ -123,36 +124,36 @@ func TestFormatDealToEmbed_Colors(t *testing.T) {
 		wantColor   int
 	}{
 		{
-			name:      "cold deal - low engagement",
-			likes:     1, comments: 0, views: 100,
+			name:  "cold deal - low engagement",
+			likes: 1, comments: 0, views: 100,
 			wantColor: colorColdDeal,
 		},
 		{
 			name:        "warm deal via HasBeenWarm flag",
 			hasBeenWarm: true,
 			likes:       0, comments: 0, views: 100,
-			wantColor:   colorWarmDeal,
+			wantColor: colorWarmDeal,
 		},
 		{
-			name:      "warm deal via live score",
-			likes:     10, comments: 5, views: 100,
+			name:  "warm deal via live score",
+			likes: 10, comments: 5, views: 100,
 			wantColor: colorWarmDeal,
 		},
 		{
 			name:       "hot deal via HasBeenHot flag",
 			hasBeenHot: true,
 			likes:      0, comments: 0, views: 100,
-			wantColor:  colorHotDeal,
+			wantColor: colorHotDeal,
 		},
 		{
-			name:      "hot deal via live score",
-			likes:     50, comments: 100, views: 500,
+			name:  "hot deal via live score",
+			likes: 50, comments: 100, views: 500,
 			wantColor: colorHotDeal,
 		},
 		{
 			name:        "hot overrides warm",
 			hasBeenWarm: true, hasBeenHot: true,
-			wantColor:   colorHotDeal,
+			wantColor: colorHotDeal,
 		},
 	}
 
@@ -506,5 +507,60 @@ func TestClient_Send_EmptyToken(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Errorf("Send() with empty token should return empty map, got %v", ids)
+	}
+}
+
+func TestFormatEbayEmbed_CompactMobile(t *testing.T) {
+	listedAt := time.Date(2026, time.April, 14, 12, 30, 0, 0, time.UTC)
+	item := ebay.EbayItem{
+		ItemID:                   "123456789012",
+		Title:                    "Lenovo ThinkPad T14 Gen 3",
+		CurrentPrice:             349.99,
+		PreviousPrice:            499.99,
+		PriceDrop:                150.00,
+		PercentDrop:              30.0,
+		Currency:                 "CAD",
+		ItemURL:                  "https://www.ebay.ca/itm/123456789012",
+		ImageURL:                 "https://example.com/item.jpg",
+		Seller:                   "vipoutletcanada",
+		SellerFeedbackScore:      12345,
+		SellerFeedbackPercentage: "99.4%",
+		Condition:                "Certified Refurbished",
+		Marketplace:              "EBAY_CA",
+		ListedAt:                 listedAt,
+	}
+
+	embed := formatEbayEmbed(item)
+
+	wantDesc := "~~C$499.99~~ -> **C$349.99**  (-C$150.00, -30%)\n[vipoutletcanada](https://www.ebay.ca/usr/vipoutletcanada) 99.4%/12.3k  •  Certified Refurbished"
+	if embed.Description != wantDesc {
+		t.Fatalf("Description mismatch.\nGot:  %q\nWant: %q", embed.Description, wantDesc)
+	}
+	if embed.Footer.Text != "eBay Canada Price Drop" {
+		t.Fatalf("Footer.Text = %q, want %q", embed.Footer.Text, "eBay Canada Price Drop")
+	}
+	if embed.Timestamp != listedAt.Format(time.RFC3339) {
+		t.Fatalf("Timestamp = %q, want %q", embed.Timestamp, listedAt.Format(time.RFC3339))
+	}
+	if embed.Thumbnail.URL != item.ImageURL {
+		t.Fatalf("Thumbnail.URL = %q, want %q", embed.Thumbnail.URL, item.ImageURL)
+	}
+}
+
+func TestFormatEbayEmbed_MarketplaceFallbackFromItemURL(t *testing.T) {
+	item := ebay.EbayItem{
+		Title:     "Steam Deck OLED",
+		ItemURL:   "https://www.ebay.com/itm/555555555555",
+		Seller:    "vipoutlet",
+		Condition: "Open box",
+	}
+
+	embed := formatEbayEmbed(item)
+
+	if embed.Footer.Text != "eBay US Price Drop" {
+		t.Fatalf("Footer.Text = %q, want %q", embed.Footer.Text, "eBay US Price Drop")
+	}
+	if !strings.Contains(embed.Description, "https://www.ebay.com/usr/vipoutlet") {
+		t.Fatalf("Description = %q, expected seller link to use ebay.com", embed.Description)
 	}
 }

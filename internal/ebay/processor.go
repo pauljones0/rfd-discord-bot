@@ -158,56 +158,77 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			// New item — queue for batch write, no notification
 			stats.newItems++
 			itemsToWrite = append(itemsToWrite, TrackedItem{
-				ItemID:      itemID,
-				Title:       apiItem.Title,
-				Price:       newPrice,
-				Currency:    currencyOrDefault(apiItem.Price),
-				Seller:      sellerUsername(apiItem.Seller),
-				Condition:   apiItem.Condition,
-				ItemURL:     apiItem.ItemWebURL,
-				ImageURL:    imageURL(apiItem.Image),
-				FirstSeenAt: now,
-				LastSeenAt:  now,
+				ItemID:        itemID,
+				Title:         apiItem.Title,
+				Price:         newPrice,
+				OriginalPrice: newPrice,
+				Currency:      currencyOrDefault(apiItem.Price),
+				Seller:        sellerUsername(apiItem.Seller),
+				Condition:     apiItem.Condition,
+				ItemURL:       apiItem.ItemWebURL,
+				ImageURL:      imageURL(apiItem.Image),
+				FirstSeenAt:   now,
+				LastSeenAt:    now,
 			})
 			continue
 		}
 
-		// Existing item — check for price drop
-		oldPrice := existing.Price
-		dollarDrop := oldPrice - newPrice
-		percentDrop := (dollarDrop / oldPrice) * 100
+		// Backfill original price for legacy tracked items that predate this field.
+		backfilledOriginalPrice := false
+		if existing.OriginalPrice <= 0 {
+			existing.OriginalPrice = existing.Price
+			backfilledOriginalPrice = true
+		}
 
-		if dollarDrop >= priceDropMinDollars && percentDrop >= priceDropMinPercent {
+		// Existing item — notify on the first qualifying drop from original price,
+		// then only on materially deeper drops than the last alerted price.
+		baselinePrice, dollarDrop, percentDrop, shouldNotify := shouldNotifyPriceDrop(existing, newPrice)
+
+		if shouldNotify {
 			stats.priceDrops++
 			logger.Info("Price drop detected",
 				"itemID", itemID,
 				"title", apiItem.Title,
-				"old_price", oldPrice,
+				"baseline_price", baselinePrice,
+				"last_seen_price", existing.Price,
 				"new_price", newPrice,
 				"drop_pct", fmt.Sprintf("%.1f%%", percentDrop),
 				"drop_dollars", fmt.Sprintf("$%.2f", dollarDrop),
 			)
 			priceDropItems = append(priceDropItems, EbayItem{
-				ItemID:    itemID,
-				Title:     apiItem.Title,
-				Price:     fmt.Sprintf("%.2f", newPrice),
-				Currency:  currencyOrDefault(apiItem.Price),
-				ItemURL:   apiItem.ItemWebURL,
-				ImageURL:  imageURL(apiItem.Image),
-				Seller:    sellerUsername(apiItem.Seller),
-				Condition: apiItem.Condition,
+				ItemID:                   itemID,
+				Title:                    apiItem.Title,
+				CurrentPrice:             newPrice,
+				PreviousPrice:            baselinePrice,
+				PriceDrop:                dollarDrop,
+				PercentDrop:              percentDrop,
+				Currency:                 currencyOrDefault(apiItem.Price),
+				ItemURL:                  apiItem.ItemWebURL,
+				ImageURL:                 imageURL(apiItem.Image),
+				Seller:                   sellerUsername(apiItem.Seller),
+				SellerFeedbackScore:      sellerFeedbackScore(apiItem.Seller),
+				SellerFeedbackPercentage: sellerFeedbackPercentage(apiItem.Seller),
+				Condition:                apiItem.Condition,
+				Marketplace:              apiItem.Marketplace,
+				ListedAt:                 parseItemCreationDate(apiItem.ItemCreationDate),
 			})
+			existing.LastNotifiedPrice = newPrice
 		}
 
 		// Only write back if something actually changed
 		newImgURL := imageURL(apiItem.Image)
+		newCurrency := currencyOrDefault(apiItem.Price)
+		newSeller := sellerUsername(apiItem.Seller)
 		if existing.Price != newPrice || existing.Title != apiItem.Title ||
 			existing.Condition != apiItem.Condition || existing.ItemURL != apiItem.ItemWebURL ||
-			existing.ImageURL != newImgURL {
+			existing.ImageURL != newImgURL || existing.Currency != newCurrency ||
+			existing.Seller != newSeller || backfilledOriginalPrice || shouldNotify {
 			stats.updated++
 			existing.Price = newPrice
 			existing.LastSeenAt = now
 			existing.Title = apiItem.Title
+			existing.Currency = newCurrency
+			existing.Seller = newSeller
 			existing.ItemURL = apiItem.ItemWebURL
 			existing.ImageURL = newImgURL
 			existing.Condition = apiItem.Condition
@@ -299,6 +320,41 @@ func parsePrice(p *Price) float64 {
 	return f
 }
 
+func shouldNotifyPriceDrop(existing TrackedItem, newPrice float64) (baselinePrice, dollarDrop, percentDrop float64, ok bool) {
+	if newPrice <= 0 {
+		return 0, 0, 0, false
+	}
+
+	baselinePrice = existing.OriginalPrice
+	if existing.LastNotifiedPrice > 0 {
+		baselinePrice = existing.LastNotifiedPrice
+	} else if baselinePrice <= 0 {
+		baselinePrice = existing.Price
+	}
+
+	if baselinePrice <= 0 {
+		return 0, 0, 0, false
+	}
+
+	// Once a price has already been alerted, suppress duplicate or worse prices
+	// until the listing reaches a new lower notification level.
+	if existing.LastNotifiedPrice > 0 && newPrice >= existing.LastNotifiedPrice {
+		return baselinePrice, 0, 0, false
+	}
+
+	dollarDrop = baselinePrice - newPrice
+	if dollarDrop <= 0 {
+		return baselinePrice, 0, 0, false
+	}
+
+	percentDrop = (dollarDrop / baselinePrice) * 100
+	if dollarDrop < priceDropMinDollars || percentDrop < priceDropMinPercent {
+		return baselinePrice, dollarDrop, percentDrop, false
+	}
+
+	return baselinePrice, dollarDrop, percentDrop, true
+}
+
 // currencyOrDefault returns the currency from a Price, defaulting to "CAD".
 func currencyOrDefault(p *Price) string {
 	if p == nil || p.Currency == "" {
@@ -315,10 +371,35 @@ func sellerUsername(s *SellerInfo) string {
 	return s.Username
 }
 
+func sellerFeedbackScore(s *SellerInfo) int {
+	if s == nil {
+		return 0
+	}
+	return s.FeedbackScore
+}
+
+func sellerFeedbackPercentage(s *SellerInfo) string {
+	if s == nil {
+		return ""
+	}
+	return s.FeedbackPercentage
+}
+
 // imageURL extracts the image URL from an Image, or returns empty string.
 func imageURL(img *Image) string {
 	if img == nil {
 		return ""
 	}
 	return img.ImageURL
+}
+
+func parseItemCreationDate(raw string) time.Time {
+	if raw == "" {
+		return time.Time{}
+	}
+	createdAt, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return createdAt
 }
