@@ -4,53 +4,83 @@ package processor
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
+	"github.com/pauljones0/rfd-discord-bot/internal/validator"
 )
 
 // Integration test that wires up a real scraper with a mock HTTP server,
 // a mock store, and a mock notifier to test the full pipeline.
 
 func TestIntegration_FullPipeline(t *testing.T) {
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	defer func() {
+		if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+		http.DefaultTransport = originalTransport
+	}()
+
 	// Serve a canned HTML page that mimics the RFD hot deals page
 	hotDealsHTML := `<!DOCTYPE html>
 <html>
 <body>
-<ul>
-	<li class="topic">
-		<a class="thread_title_link" href="/integration-deal-001">Integration Test Deal</a>
+	<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/integration-deal-001">
+			<div class="thread_main">
+				<div class="thread_info">
+					<div class="thread_info_block">
+						<h3 class="thread_title">Integration Test Deal</h3>
+						<div class="thread_footer">
+							<time class="topic_time" datetime="2025-06-01T12:00:00Z">Jun 1, 2025</time>
+						</div>
+					</div>
+				</div>
+			</div>
+		</a>
 		<div class="thread_image"><img src="https://example.com/thumb.jpg" /></div>
-		<div class="thread_inner_footer">
-			<span class="author_info">
-				<time datetime="2025-06-01T12:00:00Z">Jun 1, 2025</time>
-			</span>
+		<div class="thread_extra_info">
 			<span class="votes">+25</span>
 			<span class="posts">10</span>
 			<span class="views">500</span>
 		</div>
 	</li>
-	<li class="topic sticky">
-		<a class="thread_title_link" href="/sticky-deal">Sticky Deal (should be ignored)</a>
+	<li class="topic-card topic sticky">
+		<a class="topic-card-info thread_info" href="/sticky-deal">
+			<h3 class="thread_title">Sticky Deal (should be ignored)</h3>
+		</a>
 	</li>
-	<li class="topic">
-		<a class="thread_title_link" href="/integration-deal-002">Second Deal</a>
-		<div class="thread_inner_footer">
-			<span class="author_info">
-				<time datetime="2025-06-02T14:00:00Z">Jun 2, 2025</time>
-			</span>
+	<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/integration-deal-002">
+			<div class="thread_main">
+				<div class="thread_info">
+					<div class="thread_info_block">
+						<h3 class="thread_title">Second Deal</h3>
+						<div class="thread_footer">
+							<time class="topic_time" datetime="2025-06-02T14:00:00Z">Jun 2, 2025</time>
+						</div>
+					</div>
+				</div>
+			</div>
+		</a>
+		<div class="thread_extra_info">
 			<span class="votes">-3</span>
 			<span class="posts">2</span>
 			<span class="views">100</span>
 		</div>
 	</li>
-</ul>
 </body>
 </html>`
 
@@ -66,7 +96,7 @@ func TestIntegration_FullPipeline(t *testing.T) {
 	<p>This deal has no external link.</p>
 </body></html>`
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/hot-deals":
 			fmt.Fprint(w, hotDealsHTML)
@@ -80,11 +110,17 @@ func TestIntegration_FullPipeline(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	parsedURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to parse server URL: %v", err)
+	}
+
 	cfg := &config.Config{
 		DiscordUpdateInterval: 10 * time.Minute,
 		MaxStoredDeals:        500,
 		AmazonAffiliateTag:    "test-affiliate-20",
-		AllowedDomains:        []string{"127.0.0.1"},
+		AllowedDomains:        []string{parsedURL.Hostname()},
+		RFDBaseURL:            srv.URL,
 	}
 
 	// Create a real scraper pointed at our test server
@@ -92,9 +128,9 @@ func TestIntegration_FullPipeline(t *testing.T) {
 
 	store := newMockStore()
 	notif := newMockNotifier()
-	p := New(store, notif, s, cfg)
+	p := New(store, notif, s, validator.New(), cfg, &mockDealAnalyzer{})
 
-	err := p.ProcessDeals(context.Background())
+	err = p.ProcessDeals(context.Background())
 	if err != nil {
 		t.Fatalf("ProcessDeals() error = %v", err)
 	}
@@ -112,14 +148,17 @@ func TestIntegration_FullPipeline(t *testing.T) {
 	// Verify deal data was parsed correctly
 	for _, deal := range store.deals {
 		if deal.Title == "Integration Test Deal" {
-			if deal.LikeCount != 25 {
-				t.Errorf("Deal 1 LikeCount = %d, want 25", deal.LikeCount)
+			if len(deal.Threads) != 1 {
+				t.Fatalf("expected 1 thread for Integration Test Deal, got %d", len(deal.Threads))
 			}
-			if deal.CommentCount != 10 {
-				t.Errorf("Deal 1 CommentCount = %d, want 10", deal.CommentCount)
+			if deal.Threads[0].LikeCount != 25 {
+				t.Errorf("Deal 1 LikeCount = %d, want 25", deal.Threads[0].LikeCount)
 			}
-			if deal.ViewCount != 500 {
-				t.Errorf("Deal 1 ViewCount = %d, want 500", deal.ViewCount)
+			if deal.Threads[0].CommentCount != 10 {
+				t.Errorf("Deal 1 CommentCount = %d, want 10", deal.Threads[0].CommentCount)
+			}
+			if deal.Threads[0].ViewCount != 500 {
+				t.Errorf("Deal 1 ViewCount = %d, want 500", deal.Threads[0].ViewCount)
 			}
 		}
 	}
@@ -162,7 +201,9 @@ func TestIntegration_MockStoreRoundtrip(t *testing.T) {
 	deal := models.DealInfo{
 		FirestoreID: "test-id",
 		Title:       "Test Deal",
-		LikeCount:   10,
+		Threads: []models.ThreadContext{
+			{LikeCount: 10},
+		},
 	}
 
 	if err := store.TryCreateDeal(ctx, deal); err != nil {

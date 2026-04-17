@@ -152,10 +152,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	}
 
 	// 2. Determine Title URL (Product Link vs Thread Link)
-	titleURL := deal.PostURL
-	if deal.ActualDealURL != "" {
-		titleURL = deal.ActualDealURL
-	}
+	titleURL := preferredDealURL(deal)
 
 	// 3. Append Sentiment Emoji
 	if deal.HasBeenHot {
@@ -224,6 +221,30 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	}
 
 	return embed
+}
+
+func preferredDealURL(deal models.DealInfo) string {
+	if isDiscordEmbedURL(deal.ActualDealURL) {
+		return deal.ActualDealURL
+	}
+	if isDiscordEmbedURL(deal.PostURL) {
+		return deal.PostURL
+	}
+	return ""
+}
+
+func isDiscordEmbedURL(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if parsed.Host == "" {
+		return false
+	}
+	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }
 
 // doRequest handles the shared retry/rate-limit/backoff loop for Discord API calls.

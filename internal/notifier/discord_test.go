@@ -66,6 +66,27 @@ func TestFormatDealToEmbed(t *testing.T) {
 	}
 }
 
+func TestFormatDealToEmbed_FallsBackToPostURLWhenActualDealURLInvalid(t *testing.T) {
+	deal := models.DealInfo{
+		Title:         "Great Deal",
+		PostURL:       "https://forums.redflagdeals.com/deal-1",
+		ActualDealURL: "javascript:void(0)",
+		Threads: []models.ThreadContext{
+			{
+				PostURL:      "https://forums.redflagdeals.com/deal-1",
+				LikeCount:    10,
+				CommentCount: 5,
+				ViewCount:    100,
+			},
+		},
+	}
+
+	embed := formatDealToEmbed(deal)
+	if embed.URL != deal.PostURL {
+		t.Fatalf("URL incorrect. Got: %s, Want fallback: %s", embed.URL, deal.PostURL)
+	}
+}
+
 func TestFormatDealToEmbed_Footer(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -307,6 +328,47 @@ func TestClient_Send(t *testing.T) {
 
 	subs := []models.Subscription{{ChannelID: "67890"}}
 	ids, err := client.Send(ctx, deal, subs)
+	if err != nil {
+		t.Fatalf("Send() returned error: %v", err)
+	}
+	if ids["67890"] != "12345" {
+		t.Errorf("Expected ID 12345, got %s", ids["67890"])
+	}
+}
+
+func TestClient_Send_UsesPostURLFallbackWhenActualDealURLInvalid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload discordWebhookPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Failed to decode request body: %v", err)
+		}
+		if len(payload.Embeds) != 1 {
+			t.Fatalf("Expected 1 embed, got %d", len(payload.Embeds))
+		}
+		if payload.Embeds[0].URL != "https://forums.redflagdeals.com/deal-1" {
+			t.Fatalf("Embed URL = %q, want fallback thread URL", payload.Embeds[0].URL)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id": "12345", "channel_id": "67890"}`))
+	}))
+	defer server.Close()
+
+	client := New("token")
+	client.rateLimiter = rate.NewLimiter(rate.Inf, 1)
+	client.client.Transport = &rewriteTransport{target: server.URL}
+
+	deal := models.DealInfo{
+		Title:         "Test Deal",
+		PostURL:       "https://forums.redflagdeals.com/deal-1",
+		ActualDealURL: "javascript:void(0)",
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/deal-1", LikeCount: 1},
+		},
+	}
+
+	ids, err := client.Send(context.Background(), deal, []models.Subscription{{ChannelID: "67890"}})
 	if err != nil {
 		t.Fatalf("Send() returned error: %v", err)
 	}

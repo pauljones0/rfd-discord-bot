@@ -304,6 +304,26 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 	}
 }
 
+func isExternalDealLink(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return false
+	}
+	if parsed.Hostname() == "" {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+
+	return !strings.Contains(strings.ToLower(parsed.Hostname()), "redflagdeals.com")
+}
+
 // dealDetailResult holds the fields scraped from an RFD deal detail page.
 type dealDetailResult struct {
 	DealLink      string
@@ -330,7 +350,10 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (deal
 	// Try primary link first
 	if btn := doc.Find(ds.PrimaryLink); btn.Length() > 0 {
 		if href, found := btn.Attr("href"); found && strings.TrimSpace(href) != "" {
-			dealLink = strings.TrimSpace(href)
+			trimmed := strings.TrimSpace(href)
+			if isExternalDealLink(trimmed) {
+				dealLink = trimmed
+			}
 		}
 	}
 
@@ -339,8 +362,7 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (deal
 		if link := doc.Find(ds.FallbackLink); link.Length() > 0 {
 			if href, found := link.Attr("href"); found {
 				trimmed := strings.TrimSpace(href)
-				if (strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://")) &&
-					!strings.Contains(trimmed, "redflagdeals.com") {
+				if isExternalDealLink(trimmed) {
 					dealLink = trimmed
 				}
 			}

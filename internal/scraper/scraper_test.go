@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
 func getMockSnippet(t *testing.T, id string) *goquery.Selection {
@@ -309,6 +311,28 @@ func TestScrapeDealDetailPage_NoLink(t *testing.T) {
 	}
 }
 
+func TestScrapeDealDetailPage_InvalidPrimaryLinkIgnored(t *testing.T) {
+	html := `<div class="deal_link"><a href="javascript:void(0)">Get Deal</a></div>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if detail.DealLink != "" {
+		t.Errorf("Expected empty deal link for invalid primary href, got %q", detail.DealLink)
+	}
+}
+
 func TestScrapeDealDetailPage_PriceExtraction(t *testing.T) {
 	html := getMockSnippetHTML(t, "price-extraction")
 
@@ -502,5 +526,80 @@ func TestFetchHTMLContent_DomainAllowlist(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not in allowlist") {
 		t.Errorf("Expected allowlist error, got: %v", err)
+	}
+}
+
+func TestScrapeDealListAndFetchDealDetails_InvalidPrimaryLinkStaysEmpty(t *testing.T) {
+	hotDealsHTML := `<!DOCTYPE html>
+<html><body>
+	<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal-1">
+			<div class="thread_main">
+				<div class="thread_info">
+					<div class="thread_info_block">
+						<h3 class="thread_title">Integration Deal</h3>
+						<div class="thread_footer">
+							<time class="topic_time" datetime="2026-04-16T18:00:00Z">Apr 16</time>
+						</div>
+					</div>
+				</div>
+			</div>
+		</a>
+		<div class="thread_extra_info">
+			<span class="votes">+5</span>
+			<span class="posts">2</span>
+			<span class="views">100</span>
+		</div>
+	</li>
+</body></html>`
+
+	detailHTML := `<!DOCTYPE html><html><body>
+		<div class="deal_link"><a href="javascript:void(0)">Get Deal</a></div>
+		<div class="thread_category">Computers & Electronics</div>
+	</body></html>`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hot-deals":
+			fmt.Fprint(w, hotDealsHTML)
+		case "/deal-1":
+			fmt.Fprint(w, detailHTML)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	parsedURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to parse server URL: %v", err)
+	}
+
+	cfg := &config.Config{
+		AllowedDomains: []string{parsedURL.Hostname()},
+		RFDBaseURL:     srv.URL,
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+	c.httpClient = srv.Client()
+
+	deals, err := c.ScrapeDealList(context.Background())
+	if err != nil {
+		t.Fatalf("ScrapeDealList() error = %v", err)
+	}
+	if len(deals) != 1 {
+		t.Fatalf("expected 1 deal, got %d", len(deals))
+	}
+	if deals[0].PostURL != srv.URL+"/deal-1" {
+		t.Fatalf("PostURL = %q, want %q", deals[0].PostURL, srv.URL+"/deal-1")
+	}
+
+	ptrs := []*models.DealInfo{&deals[0]}
+	c.FetchDealDetails(context.Background(), ptrs)
+
+	if deals[0].ActualDealURL != "" {
+		t.Fatalf("ActualDealURL = %q, want empty string", deals[0].ActualDealURL)
+	}
+	if deals[0].Category != "Computers & Electronics" {
+		t.Fatalf("Category = %q, want %q", deals[0].Category, "Computers & Electronics")
 	}
 }

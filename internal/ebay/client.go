@@ -27,6 +27,13 @@ const (
 	browseMaxPages = 50 // 50 × 200 = 10,000 items per marketplace group
 )
 
+var browseTechCategoryIDs = []string{
+	"58058", // Computers/Tablets & Networking
+	"293",   // Consumer Electronics
+	"15032", // Cell Phones & Accessories
+	"1249",  // Video Games & Consoles
+}
+
 // Client handles eBay OAuth and Browse API interactions.
 type Client struct {
 	clientID     string
@@ -177,12 +184,39 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller,
 // fetchMarketplaceListings fetches all BIN listings for a group of sellers in the
 // same marketplace using a single combined query with pagination.
 func (c *Client) fetchMarketplaceListings(ctx context.Context, usernames []string, marketplace string, sinceTime time.Time) ([]BrowseAPIItem, error) {
+	seen := make(map[string]struct{})
+	var allItems []BrowseAPIItem
+
+	for _, categoryID := range browseTechCategoryIDs {
+		items, err := c.fetchCategoryListings(ctx, usernames, marketplace, categoryID, sinceTime)
+		if err != nil {
+			slog.Warn("Failed to fetch eBay tech category listings",
+				"marketplace", marketplace,
+				"category_id", categoryID,
+				"sellers", len(usernames),
+				"error", err,
+			)
+			continue
+		}
+		allItems = appendUniqueBrowseItems(allItems, items, seen)
+	}
+
+	slog.Info("Fetched eBay marketplace listings",
+		"marketplace", marketplace,
+		"sellers", len(usernames),
+		"categories", len(browseTechCategoryIDs),
+		"total_items", len(allItems),
+	)
+	return allItems, nil
+}
+
+func (c *Client) fetchCategoryListings(ctx context.Context, usernames []string, marketplace, categoryID string, sinceTime time.Time) ([]BrowseAPIItem, error) {
 	var allItems []BrowseAPIItem
 	offset := 0
 	sellerFilter := strings.Join(usernames, "|")
 
 	for page := 0; page < browseMaxPages; page++ {
-		items, hasMore, err := c.fetchPage(ctx, sellerFilter, marketplace, offset, sinceTime)
+		items, hasMore, err := c.fetchPage(ctx, sellerFilter, marketplace, categoryID, offset, sinceTime)
 		if err != nil {
 			return allItems, err
 		}
@@ -196,15 +230,17 @@ func (c *Client) fetchMarketplaceListings(ctx context.Context, usernames []strin
 	if offset >= browseMaxPages*browsePageLimit {
 		slog.Warn("eBay marketplace hit pagination cap — some items may be missing",
 			"marketplace", marketplace,
+			"category_id", categoryID,
 			"sellers", len(usernames),
 			"pages_fetched", browseMaxPages,
 		)
 	}
 
-	slog.Info("Fetched eBay marketplace listings",
+	slog.Info("Fetched eBay tech category listings",
 		"marketplace", marketplace,
+		"category_id", categoryID,
 		"sellers", len(usernames),
-		"total_items", len(allItems),
+		"items", len(allItems),
 	)
 	return allItems, nil
 }
@@ -218,25 +254,39 @@ func setBrowseHeaders(req *http.Request, token, marketplace string) {
 
 // fetchPage fetches one page of BIN listings from the Browse API.
 // sellerFilter is a pipe-separated list of seller usernames (e.g. "seller1|seller2").
-func (c *Client) fetchPage(ctx context.Context, sellerFilter, marketplace string, offset int, sinceTime time.Time) ([]BrowseAPIItem, bool, error) {
+func buildBrowseQueryParams(categoryID, sellerFilter string, offset int, sinceTime time.Time) url.Values {
+	filterParts := fmt.Sprintf("sellers:{%s},buyingOptions:{FIXED_PRICE}", sellerFilter)
+	if !sinceTime.IsZero() {
+		filterParts += fmt.Sprintf(",itemStartDate:[%s..]", sinceTime.UTC().Format(time.RFC3339))
+	}
+
+	return url.Values{
+		"category_ids": {categoryID},
+		"filter":       {filterParts},
+		"limit":        {fmt.Sprintf("%d", browsePageLimit)},
+		"offset":       {fmt.Sprintf("%d", offset)},
+	}
+}
+
+func appendUniqueBrowseItems(dst, items []BrowseAPIItem, seen map[string]struct{}) []BrowseAPIItem {
+	for _, item := range items {
+		if _, exists := seen[item.ItemID]; exists {
+			continue
+		}
+		seen[item.ItemID] = struct{}{}
+		dst = append(dst, item)
+	}
+	return dst
+}
+
+func (c *Client) fetchPage(ctx context.Context, sellerFilter, marketplace, categoryID string, offset int, sinceTime time.Time) ([]BrowseAPIItem, bool, error) {
 	start := time.Now()
 	token, err := c.getToken(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to get eBay token: %w", err)
 	}
 
-	filterParts := fmt.Sprintf("sellers:{%s},buyingOptions:{FIXED_PRICE}", sellerFilter)
-	if !sinceTime.IsZero() {
-		filterParts += fmt.Sprintf(",itemStartDate:[%s..]", sinceTime.UTC().Format(time.RFC3339))
-	}
-
-	params := url.Values{
-		"category_ids": {"0"},
-		"filter":       {filterParts},
-		"limit":        {fmt.Sprintf("%d", browsePageLimit)},
-		"offset":       {fmt.Sprintf("%d", offset)},
-	}
-
+	params := buildBrowseQueryParams(categoryID, sellerFilter, offset, sinceTime)
 	reqURL := ebayBrowseURL + "?" + params.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
@@ -296,6 +346,7 @@ func (c *Client) fetchPage(ctx context.Context, sellerFilter, marketplace string
 		}
 		slog.Warn("eBay Browse API rate limited (429), retrying after backoff",
 			"marketplace", marketplace,
+			"category_id", categoryID,
 			"retry_after", retryAfter,
 		)
 		select {
@@ -331,6 +382,7 @@ func (c *Client) fetchPage(ctx context.Context, sellerFilter, marketplace string
 			"status", resp.StatusCode,
 			"body", string(body),
 			"marketplace", marketplace,
+			"category_id", categoryID,
 			"offset", offset,
 		)
 		return nil, false, fmt.Errorf("eBay Browse API error: HTTP %d", resp.StatusCode)
@@ -347,6 +399,7 @@ func (c *Client) fetchPage(ctx context.Context, sellerFilter, marketplace string
 	slog.Info("eBay Browse API page fetched",
 		"processor", "ebay",
 		"marketplace", marketplace,
+		"category_id", categoryID,
 		"items_returned", len(searchResp.ItemSummaries),
 		"total", searchResp.Total,
 		"offset", offset,
