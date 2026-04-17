@@ -15,7 +15,7 @@
             "like_count": ".thread_extra_info .votes",
             "comment_count": ".thread_extra_info .posts",
             "comment_count_fallback": ".posts_count",
-            "view_count": ".thread_extra_info .views"
+            "view_count": ""
         }
     },
     "deal_details": {

@@ -220,9 +220,12 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 	}
 
 	// View Count
-	viewCountSelection := s.Find(elems.ViewCount)
-	if viewCountSelection.Length() > 0 {
-		thread.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.First().Text()))
+	if elems.ViewCount != "" {
+		viewCountSelection := s.Find(elems.ViewCount)
+		if viewCountSelection.Length() > 0 {
+			thread.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.First().Text()))
+			thread.ViewCountAvailable = true
+		}
 	}
 
 	// List price/savings fallback (if available on card)

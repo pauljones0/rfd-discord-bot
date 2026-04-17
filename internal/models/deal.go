@@ -45,11 +45,12 @@ type DealInfo struct {
 
 // ThreadContext represents an individual RedFlagDeals thread that is part of a DealIdea.
 type ThreadContext struct {
-	FirestoreID  string `firestore:"firestoreID"`
-	PostURL      string `firestore:"postURL" validate:"required,url"`
-	LikeCount    int    `firestore:"likeCount"`
-	CommentCount int    `firestore:"commentCount" validate:"gte=0"`
-	ViewCount    int    `firestore:"viewCount" validate:"gte=0"`
+	FirestoreID        string `firestore:"firestoreID"`
+	PostURL            string `firestore:"postURL" validate:"required,url"`
+	LikeCount          int    `firestore:"likeCount"`
+	CommentCount       int    `firestore:"commentCount" validate:"gte=0"`
+	ViewCount          int    `firestore:"viewCount" validate:"gte=0"`
+	ViewCountAvailable bool   `firestore:"viewCountAvailable,omitempty"`
 }
 
 // Stats returns the engagement metrics from the primary (most popular) thread.
@@ -63,6 +64,16 @@ func (d *DealInfo) Stats() (likes, comments, views int) {
 	}
 	primary := d.Threads[0]
 	return primary.LikeCount, primary.CommentCount, primary.ViewCount
+}
+
+// EngagementStats returns the primary thread's engagement metrics and whether
+// the current scrape actually exposed a view count on the RFD card.
+func (d *DealInfo) EngagementStats() (likes, comments, views int, hasViews bool) {
+	if len(d.Threads) == 0 {
+		return 0, 0, 0, false
+	}
+	primary := d.Threads[0]
+	return primary.LikeCount, primary.CommentCount, primary.ViewCount, primary.ViewCountAvailable
 }
 
 // PrimaryPostURL returns the primary (most popular) thread URL.

@@ -101,7 +101,7 @@ func DefaultSelectors() SelectorConfig {
 				LikeCount:            ".thread_extra_info .votes",
 				CommentCount:         ".thread_extra_info .posts",
 				CommentCountFallback: ".posts_count",
-				ViewCount:            ".thread_extra_info .views",
+				ViewCount:            "",
 			},
 		},
 		DealDetails: DetailSelectors{

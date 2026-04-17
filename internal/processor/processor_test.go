@@ -773,6 +773,39 @@ func TestMergeThread_DifferentThreadIDs(t *testing.T) {
 	}
 }
 
+func TestMergeThread_ClearsStaleViewCountWhenNewScrapeHasNoViews(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{
+				PostURL:            "https://forums.redflagdeals.com/deal-a-111111",
+				LikeCount:          10,
+				CommentCount:       5,
+				ViewCount:          1234,
+				ViewCountAvailable: true,
+			},
+		},
+	}
+
+	newThread := models.ThreadContext{
+		PostURL:      "https://forums.redflagdeals.com/deal-a-111111",
+		LikeCount:    12,
+		CommentCount: 6,
+	}
+
+	changed := p.mergeThread(deal, newThread)
+	if !changed {
+		t.Error("Expected mergeThread to report changed")
+	}
+	if deal.Threads[0].ViewCount != 0 {
+		t.Errorf("Expected ViewCount to be cleared, got %d", deal.Threads[0].ViewCount)
+	}
+	if deal.Threads[0].ViewCountAvailable {
+		t.Error("Expected ViewCountAvailable to be false after a scrape with no views")
+	}
+}
+
 func TestDeduplicateThreadsByKey(t *testing.T) {
 	// Simulates the Firehouse Subs case: 3 threads, all same thread ID 2806520
 	deal := &models.DealInfo{

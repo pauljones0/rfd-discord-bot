@@ -517,14 +517,29 @@ func (p *DealProcessor) mergeThread(deal *models.DealInfo, newThread models.Thre
 	newKey := threadKey(newThread.PostURL)
 	for i := range deal.Threads {
 		if threadKey(deal.Threads[i].PostURL) == newKey {
+			viewChanged := false
+			if newThread.ViewCountAvailable {
+				viewChanged = deal.Threads[i].ViewCount != newThread.ViewCount ||
+					!deal.Threads[i].ViewCountAvailable
+			} else {
+				viewChanged = deal.Threads[i].ViewCount != 0 ||
+					deal.Threads[i].ViewCountAvailable
+			}
+
 			changed := deal.Threads[i].LikeCount != newThread.LikeCount ||
 				deal.Threads[i].CommentCount != newThread.CommentCount ||
-				deal.Threads[i].ViewCount != newThread.ViewCount ||
+				viewChanged ||
 				deal.Threads[i].PostURL != newThread.PostURL
 
 			deal.Threads[i].LikeCount = newThread.LikeCount
 			deal.Threads[i].CommentCount = newThread.CommentCount
-			deal.Threads[i].ViewCount = newThread.ViewCount
+			if newThread.ViewCountAvailable {
+				deal.Threads[i].ViewCount = newThread.ViewCount
+				deal.Threads[i].ViewCountAvailable = true
+			} else {
+				deal.Threads[i].ViewCount = 0
+				deal.Threads[i].ViewCountAvailable = false
+			}
 			deal.Threads[i].PostURL = newThread.PostURL // keep latest URL slug
 			return changed
 		}

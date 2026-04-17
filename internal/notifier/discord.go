@@ -31,6 +31,9 @@ const (
 	heatScoreThresholdWarm = 0.05
 	heatScoreThresholdHot  = 0.20
 
+	noViewsEngagementThresholdWarm = 15
+	noViewsEngagementThresholdHot  = 40
+
 	maxRetries = 3
 
 	discordAPIBase = "https://discord.com/api/v10"
@@ -160,13 +163,14 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	}
 
 	// 5. Heat Color
-	likes, comments, views := deal.Stats()
-	heatScore := CalculateHeatScore(likes, comments, views)
+	likes, comments, views, hasViews := deal.EngagementStats()
+	liveWarm := isWarmByEngagement(likes, comments, views, hasViews)
+	liveHot := isHotByEngagement(likes, comments, views, hasViews)
 	embedColor := colorColdDeal
 
-	if deal.HasBeenHot || (likes >= 2 && heatScore > heatScoreThresholdHot) {
+	if deal.HasBeenHot || liveHot {
 		embedColor = colorHotDeal
-	} else if deal.HasBeenWarm || (likes >= 2 && heatScore > heatScoreThresholdWarm) {
+	} else if deal.HasBeenWarm || liveWarm {
 		embedColor = colorWarmDeal
 	}
 
@@ -201,7 +205,7 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 	if likes < 0 {
 		likeIcon = "👎"
 	}
-	descriptionBuilder.WriteString(fmt.Sprintf("%s %d  💬 %d  👀 %d", likeIcon, likes, comments, views))
+	descriptionBuilder.WriteString(formatEngagementLine(likeIcon, likes, comments, views, hasViews))
 
 	var timestampStr string
 	if !deal.PublishedTimestamp.IsZero() {
@@ -343,16 +347,47 @@ func CalculateHeatScore(likes, comments, views int) float64 {
 	return engagement / float64(views)
 }
 
+func calculateNoViewsEngagement(likes, comments int) int {
+	return max(likes, 0) + 2*max(comments, 0)
+}
+
+func isWarmByEngagement(likes, comments, views int, hasViews bool) bool {
+	if likes < 2 {
+		return false
+	}
+	if hasViews {
+		return CalculateHeatScore(likes, comments, views) > heatScoreThresholdWarm
+	}
+	return calculateNoViewsEngagement(likes, comments) >= noViewsEngagementThresholdWarm
+}
+
+func isHotByEngagement(likes, comments, views int, hasViews bool) bool {
+	if likes < 2 {
+		return false
+	}
+	if hasViews {
+		return CalculateHeatScore(likes, comments, views) > heatScoreThresholdHot
+	}
+	return calculateNoViewsEngagement(likes, comments) >= noViewsEngagementThresholdHot
+}
+
+func formatEngagementLine(likeIcon string, likes, comments, views int, hasViews bool) string {
+	if hasViews {
+		return fmt.Sprintf("%s %d  💬 %d  👀 %d", likeIcon, likes, comments, views)
+	}
+	return fmt.Sprintf("%s %d  💬 %d", likeIcon, likes, comments)
+}
+
 // IsWarm determines if a deal is considered warm based on community engagement.
 func (c *Client) IsWarm(deal models.DealInfo) bool {
-	likes, comments, views := deal.Stats()
-	return likes >= 2 && CalculateHeatScore(likes, comments, views) > heatScoreThresholdWarm
+	likes, comments, views, hasViews := deal.EngagementStats()
+	return isWarmByEngagement(likes, comments, views, hasViews)
 }
 
 // IsHot determines if a deal is considered hot based on community engagement.
 func (c *Client) IsHot(deal models.DealInfo) bool {
-	likes, comments, views := deal.Stats()
-	return likes >= 2 && CalculateHeatScore(likes, comments, views) > heatScoreThresholdHot
+	likes, comments, views, hasViews := deal.EngagementStats()
+	return isHotByEngagement(likes, comments, views, hasViews)
 }
 
 // --- Facebook Deal Notifications ---

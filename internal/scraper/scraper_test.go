@@ -47,6 +47,7 @@ func getMockSnippetHTML(t *testing.T, id string) string {
 
 func TestParseDealFromSelection_FullDeal(t *testing.T) {
 	defaults := DefaultSelectors()
+	defaults.HotDealsList.Elements.ViewCount = ".views"
 	c := &Client{selectors: defaults, config: &config.Config{
 		AllowedDomains: []string{"forums.redflagdeals.com"},
 		RFDBaseURL:     "https://forums.redflagdeals.com",
@@ -71,6 +72,9 @@ func TestParseDealFromSelection_FullDeal(t *testing.T) {
 	}
 	if deal.Threads[0].ViewCount != 1234 {
 		t.Errorf("ViewCount = %d, want 1234", deal.Threads[0].ViewCount)
+	}
+	if !deal.Threads[0].ViewCountAvailable {
+		t.Error("ViewCountAvailable should be true when a view count is present")
 	}
 	if deal.PublishedTimestamp.IsZero() {
 		t.Error("PublishedTimestamp should be parsed, but was zero")
@@ -97,6 +101,53 @@ func TestParseDealFromSelection_MinimalDeal(t *testing.T) {
 	}
 	if deal.Threads[0].ViewCount != 0 {
 		t.Errorf("ViewCount = %d, want 0", deal.Threads[0].ViewCount)
+	}
+	if deal.Threads[0].ViewCountAvailable {
+		t.Error("ViewCountAvailable should be false when the card has no view count")
+	}
+}
+
+func TestParseDealFromSelection_CurrentCardWithoutViewsStillParsesLikesAndComments(t *testing.T) {
+	html := `<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal-123">
+			<h3 class="thread_title">Current Layout Deal</h3>
+			<time class="topic_time" datetime="2026-04-16T18:00:00Z">Apr 16</time>
+		</a>
+		<div class="thread_extra_info">
+			<span class="votes thread_stat">
+				<svg></svg>
+				13
+			</span>
+			<span class="posts thread_stat">
+				<svg></svg>
+				10
+			</span>
+		</div>
+	</li>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("failed to parse HTML: %v", err)
+	}
+
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
+	deal := c.parseDealFromSelection(doc.Find("li.topic-card.topic").First(), defaults.HotDealsList.Elements)
+
+	if deal.Threads[0].LikeCount != 13 {
+		t.Errorf("LikeCount = %d, want 13", deal.Threads[0].LikeCount)
+	}
+	if deal.Threads[0].CommentCount != 10 {
+		t.Errorf("CommentCount = %d, want 10", deal.Threads[0].CommentCount)
+	}
+	if deal.Threads[0].ViewCount != 0 {
+		t.Errorf("ViewCount = %d, want 0", deal.Threads[0].ViewCount)
+	}
+	if deal.Threads[0].ViewCountAvailable {
+		t.Error("ViewCountAvailable should be false when no view node exists")
 	}
 }
 
@@ -239,6 +290,9 @@ func TestDefaultSelectors(t *testing.T) {
 	sel := DefaultSelectors()
 	if sel.HotDealsList.Container.Item != "li.topic-card.topic" {
 		t.Errorf("Default Container.Item = %q, want %q", sel.HotDealsList.Container.Item, "li.topic-card.topic")
+	}
+	if sel.HotDealsList.Elements.ViewCount != "" {
+		t.Errorf("Default ViewCount = %q, want empty string", sel.HotDealsList.Elements.ViewCount)
 	}
 	if sel.DealDetails.PrimaryLink != ".deal_link a" {
 		t.Errorf("Default PrimaryLink = %q, want %q", sel.DealDetails.PrimaryLink, ".deal_link a")

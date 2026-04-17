@@ -27,10 +27,11 @@ func TestFormatDealToEmbed(t *testing.T) {
 		HasBeenHot:         true,
 		Threads: []models.ThreadContext{
 			{
-				PostURL:      "https://forums.redflagdeals.com/deal-1",
-				LikeCount:    10,
-				CommentCount: 5,
-				ViewCount:    100,
+				PostURL:            "https://forums.redflagdeals.com/deal-1",
+				LikeCount:          10,
+				CommentCount:       5,
+				ViewCount:          100,
+				ViewCountAvailable: true,
 			},
 		},
 	}
@@ -73,10 +74,11 @@ func TestFormatDealToEmbed_FallsBackToPostURLWhenActualDealURLInvalid(t *testing
 		ActualDealURL: "javascript:void(0)",
 		Threads: []models.ThreadContext{
 			{
-				PostURL:      "https://forums.redflagdeals.com/deal-1",
-				LikeCount:    10,
-				CommentCount: 5,
-				ViewCount:    100,
+				PostURL:            "https://forums.redflagdeals.com/deal-1",
+				LikeCount:          10,
+				CommentCount:       5,
+				ViewCount:          100,
+				ViewCountAvailable: true,
 			},
 		},
 	}
@@ -84,6 +86,26 @@ func TestFormatDealToEmbed_FallsBackToPostURLWhenActualDealURLInvalid(t *testing
 	embed := formatDealToEmbed(deal)
 	if embed.URL != deal.PostURL {
 		t.Fatalf("URL incorrect. Got: %s, Want fallback: %s", embed.URL, deal.PostURL)
+	}
+}
+
+func TestFormatDealToEmbed_OmitsViewsWhenUnavailable(t *testing.T) {
+	deal := models.DealInfo{
+		Title:   "Great Deal",
+		PostURL: "https://forums.redflagdeals.com/deal-1",
+		Threads: []models.ThreadContext{
+			{
+				PostURL:      "https://forums.redflagdeals.com/deal-1",
+				LikeCount:    13,
+				CommentCount: 10,
+			},
+		},
+	}
+
+	embed := formatDealToEmbed(deal)
+	expectedDesc := "[RFD](https://forums.redflagdeals.com/deal-1) \n\n👍 13  💬 10"
+	if embed.Description != expectedDesc {
+		t.Fatalf("Description incorrect.\nGot:  %q\nWant: %q", embed.Description, expectedDesc)
 	}
 }
 
@@ -142,33 +164,44 @@ func TestFormatDealToEmbed_Colors(t *testing.T) {
 		likes       int
 		comments    int
 		views       int
+		hasViews    bool
 		wantColor   int
 	}{
 		{
 			name:  "cold deal - low engagement",
-			likes: 1, comments: 0, views: 100,
+			likes: 1, comments: 0, views: 100, hasViews: true,
 			wantColor: colorColdDeal,
 		},
 		{
 			name:        "warm deal via HasBeenWarm flag",
 			hasBeenWarm: true,
-			likes:       0, comments: 0, views: 100,
+			likes:       0, comments: 0, views: 100, hasViews: true,
 			wantColor: colorWarmDeal,
 		},
 		{
 			name:  "warm deal via live score",
-			likes: 10, comments: 5, views: 100,
+			likes: 10, comments: 5, views: 100, hasViews: true,
+			wantColor: colorWarmDeal,
+		},
+		{
+			name:  "warm deal via no-views fallback",
+			likes: 20, comments: 4,
 			wantColor: colorWarmDeal,
 		},
 		{
 			name:       "hot deal via HasBeenHot flag",
 			hasBeenHot: true,
-			likes:      0, comments: 0, views: 100,
+			likes:      0, comments: 0, views: 100, hasViews: true,
 			wantColor: colorHotDeal,
 		},
 		{
 			name:  "hot deal via live score",
-			likes: 50, comments: 100, views: 500,
+			likes: 50, comments: 100, views: 500, hasViews: true,
+			wantColor: colorHotDeal,
+		},
+		{
+			name:  "hot deal via no-views fallback",
+			likes: 40, comments: 0,
 			wantColor: colorHotDeal,
 		},
 		{
@@ -187,10 +220,11 @@ func TestFormatDealToEmbed_Colors(t *testing.T) {
 				HasBeenHot:  tt.hasBeenHot,
 				Threads: []models.ThreadContext{
 					{
-						PostURL:      "https://forums.redflagdeals.com/test",
-						LikeCount:    tt.likes,
-						CommentCount: tt.comments,
-						ViewCount:    tt.views,
+						PostURL:            "https://forums.redflagdeals.com/test",
+						LikeCount:          tt.likes,
+						CommentCount:       tt.comments,
+						ViewCount:          tt.views,
+						ViewCountAvailable: tt.hasViews,
 					},
 				},
 			}
@@ -235,18 +269,21 @@ func TestClient_IsWarm(t *testing.T) {
 		likes    int
 		comments int
 		views    int
+		hasViews bool
 		want     bool
 	}{
-		{"warm: likes>=2 and score>0.05", 10, 5, 100, true},
-		{"cold: likes<2", 1, 100, 100, false},
-		{"cold: score<=0.05", 2, 0, 1000, false},
-		{"warm: exactly at floor", 2, 2, 50, true},
+		{"warm: likes>=2 and score>0.05", 10, 5, 100, true, true},
+		{"cold: likes<2", 1, 100, 100, true, false},
+		{"cold: score<=0.05", 2, 0, 1000, true, false},
+		{"warm: exactly at floor", 2, 2, 50, true, true},
+		{"warm: no views fallback", 20, 4, 0, false, true},
+		{"cold: no views fallback below threshold", 3, 4, 0, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deal := models.DealInfo{
 				Threads: []models.ThreadContext{
-					{LikeCount: tt.likes, CommentCount: tt.comments, ViewCount: tt.views},
+					{LikeCount: tt.likes, CommentCount: tt.comments, ViewCount: tt.views, ViewCountAvailable: tt.hasViews},
 				},
 			}
 			if got := c.IsWarm(deal); got != tt.want {
@@ -263,17 +300,20 @@ func TestClient_IsHot(t *testing.T) {
 		likes    int
 		comments int
 		views    int
+		hasViews bool
 		want     bool
 	}{
-		{"hot: score>0.20", 50, 100, 500, true},
-		{"not hot: score<=0.20", 10, 5, 100, false},
-		{"not hot: likes<2", 1, 500, 100, false},
+		{"hot: score>0.20", 50, 100, 500, true, true},
+		{"not hot: score<=0.20", 10, 5, 100, true, false},
+		{"not hot: likes<2", 1, 500, 100, true, false},
+		{"hot: no views fallback", 40, 0, 0, false, true},
+		{"not hot: no views fallback below threshold", 20, 4, 0, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deal := models.DealInfo{
 				Threads: []models.ThreadContext{
-					{LikeCount: tt.likes, CommentCount: tt.comments, ViewCount: tt.views},
+					{LikeCount: tt.likes, CommentCount: tt.comments, ViewCount: tt.views, ViewCountAvailable: tt.hasViews},
 				},
 			}
 			if got := c.IsHot(deal); got != tt.want {

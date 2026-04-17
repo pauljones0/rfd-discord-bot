@@ -123,8 +123,11 @@ func TestIntegration_FullPipeline(t *testing.T) {
 		RFDBaseURL:            srv.URL,
 	}
 
-	// Create a real scraper pointed at our test server
-	s := scraper.NewWithBaseURL(cfg, scraper.DefaultSelectors(), srv.URL)
+	// Create a real scraper pointed at our test server.
+	// The canned fixture still includes the historical list-page view count node.
+	selectors := scraper.DefaultSelectors()
+	selectors.HotDealsList.Elements.ViewCount = ".thread_extra_info .views"
+	s := scraper.NewWithBaseURL(cfg, selectors, srv.URL)
 
 	store := newMockStore()
 	notif := newMockNotifier()
