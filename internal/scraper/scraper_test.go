@@ -151,6 +151,31 @@ func TestParseDealFromSelection_CurrentCardWithoutViewsStillParsesLikesAndCommen
 	}
 }
 
+func TestParseDealFromSelection_CurrentCardRetailerFromDataDealerName(t *testing.T) {
+	html := `<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal-123" data-dealer-name="home depot">
+			<h3 class="thread_title">Current Layout Deal</h3>
+			<time class="topic_time" datetime="2026-04-16T18:00:00Z">Apr 16</time>
+		</a>
+	</li>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("failed to parse HTML: %v", err)
+	}
+
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
+	deal := c.parseDealFromSelection(doc.Find("li.topic-card.topic").First(), defaults.HotDealsList.Elements)
+
+	if deal.Retailer != "home depot" {
+		t.Errorf("Retailer = %q, want %q", deal.Retailer, "home depot")
+	}
+}
+
 func TestParseDealFromSelection_NegativeLikes(t *testing.T) {
 	defaults := DefaultSelectors()
 	c := &Client{selectors: defaults, config: &config.Config{

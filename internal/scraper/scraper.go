@@ -191,6 +191,16 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 		retailer = strings.TrimPrefix(retailer, "at ")
 		deal.Retailer = strings.TrimSpace(retailer)
 	}
+	if deal.Retailer == "" {
+		if retailerAttr, exists := s.Attr("data-dealer-name"); exists {
+			deal.Retailer = strings.TrimSpace(retailerAttr)
+		}
+	}
+	if deal.Retailer == "" {
+		if retailerAttr, exists := s.Find("[data-dealer-name]").First().Attr("data-dealer-name"); exists {
+			deal.Retailer = strings.TrimSpace(retailerAttr)
+		}
+	}
 
 	// Thread Image — only accept http/https URLs
 	imgSelection := s.Find(elems.ThreadImage)
