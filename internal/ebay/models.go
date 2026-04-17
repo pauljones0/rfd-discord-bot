@@ -7,6 +7,7 @@ type EbaySeller struct {
 	Username    string    `firestore:"username"`
 	DisplayName string    `firestore:"displayName,omitempty"`
 	Marketplace string    `firestore:"marketplace,omitempty"` // "EBAY_CA" or "EBAY_US"; defaults to EBAY_CA
+	CategoryIDs []string  `firestore:"categoryIDs,omitempty"`
 	IsActive    bool      `firestore:"isActive"`
 	AddedAt     time.Time `firestore:"addedAt"`
 }
@@ -18,6 +19,31 @@ func (s EbaySeller) MarketplaceID() string {
 		return "EBAY_CA"
 	}
 	return s.Marketplace
+}
+
+// EffectiveCategoryIDs returns the seller-specific Browse category scope.
+// Falls back to the default tech categories when no explicit scope is configured.
+func (s EbaySeller) EffectiveCategoryIDs() []string {
+	if len(s.CategoryIDs) == 0 {
+		return append([]string(nil), browseTechCategoryIDs...)
+	}
+
+	seen := make(map[string]struct{}, len(s.CategoryIDs))
+	ids := make([]string, 0, len(s.CategoryIDs))
+	for _, id := range s.CategoryIDs {
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return append([]string(nil), browseTechCategoryIDs...)
+	}
+	return ids
 }
 
 // TrackedItem represents an eBay listing being monitored for price drops in Firestore.
@@ -112,21 +138,19 @@ func DefaultSellers() []EbaySeller {
 	type entry struct {
 		username    string
 		marketplace string // empty = EBAY_CA (default)
+		categoryIDs []string
 	}
 
 	entries := []entry{
 		// Canadian sellers (ebay.ca)
-		{username: "vipoutletcanada"},
-		{username: "helloworld2003"},
-		{username: "originallaptoppartsandelectronics"},
-		{username: "neweggcanada"},
-		{username: "surplusbydesign"},
-		{username: "ssdwholesale"},
-		{username: "buythatapple"},
-		{username: "montrealcomputers"},
+		{username: "vipoutletcanada", categoryIDs: []string{"58058", "293", "15032", "1249"}},
+		{username: "neweggcanada", categoryIDs: []string{"58058", "293", "15032", "1249"}},
+		{username: "surplusbydesign", categoryIDs: []string{"58058", "293", "15032", "1249"}},
+		{username: "ssdwholesale", categoryIDs: []string{"58058"}},
+		{username: "montrealcomputers", categoryIDs: []string{"58058", "293", "15032"}},
 
 		// American sellers (ebay.com)
-		{username: "vipoutlet", marketplace: "EBAY_US"},
+		{username: "vipoutlet", marketplace: "EBAY_US", categoryIDs: []string{"58058", "293", "15032", "1249"}},
 	}
 
 	sellers := make([]EbaySeller, len(entries))
@@ -134,6 +158,7 @@ func DefaultSellers() []EbaySeller {
 		sellers[i] = EbaySeller{
 			Username:    e.username,
 			Marketplace: e.marketplace,
+			CategoryIDs: append([]string(nil), e.categoryIDs...),
 			IsActive:    true,
 			AddedAt:     now,
 		}

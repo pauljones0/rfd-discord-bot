@@ -1,6 +1,7 @@
 package ebay
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -51,5 +52,47 @@ func TestAppendUniqueBrowseItems_DeduplicatesAcrossCategories(t *testing.T) {
 	}
 	if result[1].ItemID != "v1|222|0" {
 		t.Fatalf("second item = %q, want %q", result[1].ItemID, "v1|222|0")
+	}
+}
+
+func TestEbaySellerEffectiveCategoryIDs(t *testing.T) {
+	seller := EbaySeller{}
+
+	if got := seller.EffectiveCategoryIDs(); !reflect.DeepEqual(got, browseTechCategoryIDs) {
+		t.Fatalf("default category ids = %v, want %v", got, browseTechCategoryIDs)
+	}
+
+	seller.CategoryIDs = []string{"58058", "", "293", "58058"}
+	if got := seller.EffectiveCategoryIDs(); !reflect.DeepEqual(got, []string{"58058", "293"}) {
+		t.Fatalf("custom category ids = %v, want %v", got, []string{"58058", "293"})
+	}
+}
+
+func TestBuildMarketplaceCategoryGroups_UsesSellerCategoryScopes(t *testing.T) {
+	groups := buildMarketplaceCategoryGroups([]EbaySeller{
+		{Username: "seller-ca-a", CategoryIDs: []string{"58058", "293"}},
+		{Username: "seller-ca-b", CategoryIDs: []string{"293"}},
+		{Username: "seller-us", Marketplace: "EBAY_US", CategoryIDs: []string{"1249"}},
+	})
+
+	if len(groups) != 2 {
+		t.Fatalf("len(groups) = %d, want 2", len(groups))
+	}
+
+	if groups[0].marketplace != "EBAY_CA" {
+		t.Fatalf("groups[0].marketplace = %q, want %q", groups[0].marketplace, "EBAY_CA")
+	}
+	if got := groups[0].categorySellers["58058"]; !reflect.DeepEqual(got, []string{"seller-ca-a"}) {
+		t.Fatalf("EBAY_CA 58058 sellers = %v, want %v", got, []string{"seller-ca-a"})
+	}
+	if got := groups[0].categorySellers["293"]; !reflect.DeepEqual(got, []string{"seller-ca-a", "seller-ca-b"}) {
+		t.Fatalf("EBAY_CA 293 sellers = %v, want %v", got, []string{"seller-ca-a", "seller-ca-b"})
+	}
+
+	if groups[1].marketplace != "EBAY_US" {
+		t.Fatalf("groups[1].marketplace = %q, want %q", groups[1].marketplace, "EBAY_US")
+	}
+	if got := groups[1].categorySellers["1249"]; !reflect.DeepEqual(got, []string{"seller-us"}) {
+		t.Fatalf("EBAY_US 1249 sellers = %v, want %v", got, []string{"seller-us"})
 	}
 }

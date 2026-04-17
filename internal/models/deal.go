@@ -8,6 +8,8 @@ import (
 // ErrDealExists is returned when attempting to create a deal that already exists.
 var ErrDealExists = errors.New("deal already exists")
 
+const dealRetention = 30 * 24 * time.Hour
+
 // DealInfo represents the structured information for a deal.
 type DealInfo struct {
 	Title                  string            `firestore:"title" validate:"required"`
@@ -20,6 +22,7 @@ type DealInfo struct {
 	LastUpdated            time.Time         `firestore:"lastUpdated"`
 	PublishedTimestamp     time.Time         `firestore:"publishedTimestamp" validate:"required"` // Parsed from PostedTime
 	DiscordLastUpdatedTime time.Time         `firestore:"discordLastUpdatedTime,omitempty"`
+	ExpiresAt              time.Time         `firestore:"expiresAt,omitempty"`
 
 	Threads      []ThreadContext `firestore:"threads"`
 	SearchTokens []string        `firestore:"searchTokens,omitempty"`
@@ -82,4 +85,15 @@ func (d *DealInfo) PrimaryPostURL() string {
 		return d.PostURL // Fallback to legacy field just in case
 	}
 	return d.Threads[0].PostURL
+}
+
+// ExpiryTime returns the retention cutoff for the deal.
+func (d DealInfo) ExpiryTime() time.Time {
+	if !d.ExpiresAt.IsZero() {
+		return d.ExpiresAt
+	}
+	if d.PublishedTimestamp.IsZero() {
+		return time.Time{}
+	}
+	return d.PublishedTimestamp.Add(dealRetention)
 }

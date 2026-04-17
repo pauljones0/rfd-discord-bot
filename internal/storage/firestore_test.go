@@ -2,6 +2,7 @@ package storage
 
 import (
 	"testing"
+	"time"
 
 	"cloud.google.com/go/firestore/apiv1/firestorepb"
 
@@ -71,5 +72,31 @@ func TestErrDealExists(t *testing.T) {
 	}
 	if models.ErrDealExists.Error() != "deal already exists" {
 		t.Errorf("ErrDealExists message = %q, want %q", models.ErrDealExists.Error(), "deal already exists")
+	}
+}
+
+func TestPrepareDealForStorage_SetsExpiresAtFromPublishedTimestamp(t *testing.T) {
+	published := time.Date(2026, time.April, 17, 12, 0, 0, 0, time.UTC)
+	deal := models.DealInfo{PublishedTimestamp: published}
+
+	prepared := prepareDealForStorage(deal)
+
+	want := published.Add(30 * 24 * time.Hour)
+	if !prepared.ExpiresAt.Equal(want) {
+		t.Fatalf("ExpiresAt = %v, want %v", prepared.ExpiresAt, want)
+	}
+}
+
+func TestPrepareDealForStorage_PreservesExplicitExpiresAt(t *testing.T) {
+	expiresAt := time.Date(2026, time.May, 1, 12, 0, 0, 0, time.UTC)
+	deal := models.DealInfo{
+		PublishedTimestamp: time.Date(2026, time.April, 17, 12, 0, 0, 0, time.UTC),
+		ExpiresAt:          expiresAt,
+	}
+
+	prepared := prepareDealForStorage(deal)
+
+	if !prepared.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("ExpiresAt = %v, want %v", prepared.ExpiresAt, expiresAt)
 	}
 }

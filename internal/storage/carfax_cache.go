@@ -14,11 +14,9 @@ import (
 
 const carfaxCacheCollection = "carfax_cache"
 const carfaxOptionsCollection = "carfax_options"
+const carfaxCacheRetention = 90 * 24 * time.Hour
 
 // CarfaxCacheEntry stores a cached Carfax valuation result.
-// These persist forever — a 2018 Honda Civic Sedan EX in Saskatchewan will always
-// be worth roughly the same (modulo market shifts), and the exact Carfax strings
-// (Make, Model, Trim, etc.) never change.
 type CarfaxCacheEntry struct {
 	Year         int       `firestore:"year"`
 	Make         string    `firestore:"make"`
@@ -29,6 +27,7 @@ type CarfaxCacheEntry struct {
 	HighValue    float64   `firestore:"high_value"`
 	MidValue     float64   `firestore:"mid_value"`
 	CachedAt     time.Time `firestore:"cached_at"`
+	ExpiresAt    time.Time `firestore:"expiresAt,omitempty"`
 }
 
 // CarfaxOptionsEntry stores the valid dropdown options returned by Carfax's cascade API.
@@ -78,8 +77,17 @@ func carfaxOptionsKey(property, normalizedParams string) string {
 	return CarfaxNormalize(property) + "_" + normalizedParams
 }
 
+func (e CarfaxCacheEntry) ExpiryTime() time.Time {
+	if !e.ExpiresAt.IsZero() {
+		return e.ExpiresAt
+	}
+	if e.CachedAt.IsZero() {
+		return time.Time{}
+	}
+	return e.CachedAt.Add(carfaxCacheRetention)
+}
+
 // GetCarfaxCache retrieves a cached Carfax valuation. Returns nil if not found.
-// Valuations persist forever — no TTL expiry.
 func (c *Client) GetCarfaxCache(ctx context.Context, year int, make, model, trim, postalPrefix string) (*CarfaxCacheEntry, error) {
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
@@ -97,11 +105,15 @@ func (c *Client) GetCarfaxCache(ctx context.Context, year int, make, model, trim
 	if err := doc.DataTo(&entry); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal carfax cache entry: %w", err)
 	}
+	entry.ExpiresAt = entry.ExpiryTime()
+	if !entry.ExpiresAt.IsZero() && time.Now().After(entry.ExpiresAt) {
+		return nil, nil
+	}
 
 	return &entry, nil
 }
 
-// SaveCarfaxCache stores a Carfax valuation result in the cache (persists forever).
+// SaveCarfaxCache stores a Carfax valuation result in the cache.
 func (c *Client) SaveCarfaxCache(ctx context.Context, entry *CarfaxCacheEntry) error {
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
@@ -113,6 +125,7 @@ func (c *Client) SaveCarfaxCache(ctx context.Context, entry *CarfaxCacheEntry) e
 
 	docID := carfaxCacheKey(entry.Year, entry.Make, entry.Model, entry.Trim, postalPrefix)
 	entry.CachedAt = time.Now()
+	entry.ExpiresAt = entry.CachedAt.Add(carfaxCacheRetention)
 
 	_, err := c.client.Collection(carfaxCacheCollection).Doc(docID).Set(ctx, entry)
 	if err != nil {

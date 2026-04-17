@@ -21,7 +21,7 @@ func (p *testProcessor) ProcessDeals(ctx context.Context) error {
 	return nil
 }
 
-func TestProcessDealsHandler_StartsProcessingAndReturnsAccepted(t *testing.T) {
+func TestProcessDealsHandler_RunsInlineAndReturnsOK(t *testing.T) {
 	p := &testProcessor{called: make(chan struct{}, 1)}
 	srv := &Server{
 		processor: p,
@@ -32,10 +32,9 @@ func TestProcessDealsHandler_StartsProcessingAndReturnsAccepted(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	srv.ProcessDealsHandler(rec, req)
-	srv.wg.Wait()
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
 	select {
@@ -66,5 +65,24 @@ func TestProcessDealsHandler_ReturnsBusyWhenSemaphoreFull(t *testing.T) {
 	}
 	if body["status"] != "busy" {
 		t.Fatalf("status body = %q, want %q", body["status"], "busy")
+	}
+}
+
+func TestRootHandler_ReturnsOK(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	rootHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response body: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Fatalf("status body = %q, want %q", body["status"], "ok")
 	}
 }

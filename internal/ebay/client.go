@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,11 @@ type Client struct {
 	mu          sync.Mutex
 	accessToken string
 	tokenExpiry time.Time
+}
+
+type marketplaceCategoryGroup struct {
+	marketplace     string
+	categorySellers map[string][]string
 }
 
 // NewClient creates a new eBay API client.
@@ -140,22 +146,7 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller,
 		return nil, nil
 	}
 
-	// Group sellers by marketplace for combined API queries.
-	type mktGroup struct {
-		marketplace string
-		usernames   []string
-	}
-	seen := make(map[string]int) // marketplace -> index in groups
-	var groups []mktGroup
-	for _, s := range sellers {
-		mkt := s.MarketplaceID()
-		if idx, ok := seen[mkt]; ok {
-			groups[idx].usernames = append(groups[idx].usernames, s.Username)
-		} else {
-			seen[mkt] = len(groups)
-			groups = append(groups, mktGroup{marketplace: mkt, usernames: []string{s.Username}})
-		}
-	}
+	groups := buildMarketplaceCategoryGroups(sellers)
 
 	var allItems []BrowseAPIItem
 	for i, g := range groups {
@@ -166,11 +157,11 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller,
 			case <-time.After(1 * time.Second):
 			}
 		}
-		items, err := c.fetchMarketplaceListings(ctx, g.usernames, g.marketplace, sinceTime)
+		items, err := c.fetchMarketplaceListings(ctx, g.marketplace, g.categorySellers, sinceTime)
 		if err != nil {
 			slog.Warn("Failed to fetch eBay marketplace listings",
 				"marketplace", g.marketplace,
-				"sellers", len(g.usernames),
+				"sellers", countDistinctSellers(g.categorySellers),
 				"error", err,
 			)
 			continue
@@ -181,13 +172,73 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller,
 	return allItems, nil
 }
 
+func buildMarketplaceCategoryGroups(sellers []EbaySeller) []marketplaceCategoryGroup {
+	seen := make(map[string]int)
+	var groups []marketplaceCategoryGroup
+	for _, s := range sellers {
+		marketplace := s.MarketplaceID()
+		idx, ok := seen[marketplace]
+		if !ok {
+			idx = len(groups)
+			seen[marketplace] = idx
+			groups = append(groups, marketplaceCategoryGroup{
+				marketplace:     marketplace,
+				categorySellers: make(map[string][]string),
+			})
+		}
+		for _, categoryID := range s.EffectiveCategoryIDs() {
+			groups[idx].categorySellers[categoryID] = append(groups[idx].categorySellers[categoryID], s.Username)
+		}
+	}
+
+	for i := range groups {
+		for categoryID, usernames := range groups[i].categorySellers {
+			sort.Strings(usernames)
+			groups[i].categorySellers[categoryID] = usernames
+		}
+	}
+
+	return groups
+}
+
+func orderedCategoryIDs(categorySellers map[string][]string) []string {
+	seen := make(map[string]struct{}, len(categorySellers))
+	ordered := make([]string, 0, len(categorySellers))
+	for _, id := range browseTechCategoryIDs {
+		if _, ok := categorySellers[id]; ok {
+			seen[id] = struct{}{}
+			ordered = append(ordered, id)
+		}
+	}
+	var extras []string
+	for id := range categorySellers {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		extras = append(extras, id)
+	}
+	sort.Strings(extras)
+	return append(ordered, extras...)
+}
+
+func countDistinctSellers(categorySellers map[string][]string) int {
+	seen := make(map[string]struct{})
+	for _, usernames := range categorySellers {
+		for _, username := range usernames {
+			seen[username] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
 // fetchMarketplaceListings fetches all BIN listings for a group of sellers in the
 // same marketplace using a single combined query with pagination.
-func (c *Client) fetchMarketplaceListings(ctx context.Context, usernames []string, marketplace string, sinceTime time.Time) ([]BrowseAPIItem, error) {
+func (c *Client) fetchMarketplaceListings(ctx context.Context, marketplace string, categorySellers map[string][]string, sinceTime time.Time) ([]BrowseAPIItem, error) {
 	seen := make(map[string]struct{})
 	var allItems []BrowseAPIItem
 
-	for _, categoryID := range browseTechCategoryIDs {
+	for _, categoryID := range orderedCategoryIDs(categorySellers) {
+		usernames := categorySellers[categoryID]
 		items, err := c.fetchCategoryListings(ctx, usernames, marketplace, categoryID, sinceTime)
 		if err != nil {
 			slog.Warn("Failed to fetch eBay tech category listings",
@@ -203,8 +254,8 @@ func (c *Client) fetchMarketplaceListings(ctx context.Context, usernames []strin
 
 	slog.Info("Fetched eBay marketplace listings",
 		"marketplace", marketplace,
-		"sellers", len(usernames),
-		"categories", len(browseTechCategoryIDs),
+		"sellers", countDistinctSellers(categorySellers),
+		"categories", len(categorySellers),
 		"total_items", len(allItems),
 	)
 	return allItems, nil

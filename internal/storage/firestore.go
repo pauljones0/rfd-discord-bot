@@ -27,6 +27,11 @@ type Client struct {
 	client *firestore.Client
 }
 
+func prepareDealForStorage(deal models.DealInfo) models.DealInfo {
+	deal.ExpiresAt = deal.ExpiryTime()
+	return deal
+}
+
 // ensureDeadline returns a context with a deadline if one isn't already set.
 // The caller must defer the returned cancel function.
 func ensureDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -121,6 +126,7 @@ func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error 
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
+	deal = prepareDealForStorage(deal)
 	collectionRef := c.client.Collection(firestoreCollection)
 	docRef := collectionRef.Doc(deal.FirestoreID)
 	// Create fails if the document already exists.
@@ -137,6 +143,7 @@ func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error 
 // buildDealUpdates constructs the Firestore update fields for a deal.
 // This is shared between UpdateDeal and BatchWrite to keep field lists in sync.
 func buildDealUpdates(deal models.DealInfo) []firestore.Update {
+	deal = prepareDealForStorage(deal)
 	updates := []firestore.Update{
 		{Path: "title", Value: deal.Title},
 		{Path: "threadImageURL", Value: deal.ThreadImageURL},
@@ -156,6 +163,7 @@ func buildDealUpdates(deal models.DealInfo) []firestore.Update {
 		{Path: "price", Value: deal.Price},
 		{Path: "originalPrice", Value: deal.OriginalPrice},
 		{Path: "savings", Value: deal.Savings},
+		{Path: "expiresAt", Value: deal.ExpiresAt},
 	}
 
 	// Handle optional fields that should be deleted if empty to save space
@@ -281,6 +289,7 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 
 	var errs []error
 	for _, d := range creates {
+		d = prepareDealForStorage(d)
 		doc := col.Doc(d.FirestoreID)
 		if _, err := bw.Create(doc, d); err != nil {
 			slog.Error("BatchWrite: Failed to queue create", "id", d.FirestoreID, "error", err)
@@ -289,6 +298,7 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 	}
 
 	for _, d := range updates {
+		d = prepareDealForStorage(d)
 		doc := col.Doc(d.FirestoreID)
 		if _, err := bw.Update(doc, buildDealUpdates(d)); err != nil {
 			slog.Error("BatchWrite: Failed to queue update", "id", d.FirestoreID, "error", err)
