@@ -67,6 +67,24 @@ func TestCleanReferralLink(t *testing.T) {
 			changed:  true,
 		},
 		{
+			name:     "eBay US direct link gets affiliate params",
+			input:    "https://www.ebay.com/itm/Apple-MacBook-Pro-16-inch-M3-Pro/123456789012?amdata=enc%3A123",
+			expected: "https://www.ebay.com/itm/123456789012?mkcid=1&mkrid=711-53200-19255-0&siteid=0&campid=5339131483&customid=&toolid=10001&mkevt=1",
+			changed:  true,
+		},
+		{
+			name:     "eBay CA direct link gets affiliate params",
+			input:    "https://www.ebay.ca/itm/134954474751?_skw=laptop&_trkparms=ispr%3D1&hash=item1f6bf870ff:g:abc",
+			expected: "https://www.ebay.ca/itm/134954474751?mkcid=1&mkrid=706-53473-19255-0&siteid=2&campid=5339131483&customid=&toolid=10001&mkevt=1",
+			changed:  true,
+		},
+		{
+			name:     "Redirectingat eBay link gets unwrapped and affiliate params",
+			input:    "https://go.redirectingat.com/?url=https%3A%2F%2Fwww.ebay.ca%2Fitm%2F134954474751%3F_trkparms%3Dispr%253D1",
+			expected: "https://www.ebay.ca/itm/134954474751?mkcid=1&mkrid=706-53473-19255-0&siteid=2&campid=5339131483&customid=&toolid=10001&mkevt=1",
+			changed:  true,
+		},
+		{
 			name:     "Redirectingat with non-HTTP URL rejected",
 			input:    "https://go.redirectingat.com/?url=ftp%3A%2F%2Fexample.com%2Ffile",
 			expected: "https://go.redirectingat.com/?url=ftp%3A%2F%2Fexample.com%2Ffile",
@@ -111,6 +129,28 @@ func TestIsHTTPURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isHTTPURL(tt.input); got != tt.want {
 				t.Errorf("isHTTPURL(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsEbayItemID(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"Valid 12 digit ID", "123456789012", true},
+		{"Valid 10 digit ID", "1234567890", true},
+		{"Too short", "123456789", false},
+		{"Too long", "12345678901234", false},
+		{"Contains letters", "12345abc9012", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isEbayItemID(tt.input); got != tt.want {
+				t.Errorf("isEbayItemID(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}

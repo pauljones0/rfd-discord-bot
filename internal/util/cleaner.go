@@ -53,16 +53,15 @@ func CleanProductURL(rawURL string) string {
 		cleanQueryParams("th", "psc", "smid")
 		return parsedURL.String()
 
-	case strings.Contains(host, "ebay.com") || strings.Contains(host, "ebay.ca"):
-		// Check for /p/ first, then /itm/
-		pMatches := ebayProductRegex.FindStringSubmatch(parsedURL.Path)
-		if len(pMatches) > 1 {
+	case isEbayHost(parsedURL.Hostname()):
+		// Prefer a specific item listing when present, including /p/ URLs with iid.
+		iMatches := ebayItemRegex.FindStringSubmatch(parsedURL.Path)
+		if len(iMatches) > 1 {
+			parsedURL.Path = "/itm/" + iMatches[1]
+		} else if iid := parsedURL.Query().Get("iid"); isEbayItemID(iid) {
+			parsedURL.Path = "/itm/" + iid
+		} else if pMatches := ebayProductRegex.FindStringSubmatch(parsedURL.Path); len(pMatches) > 1 {
 			parsedURL.Path = "/p/" + pMatches[1]
-		} else {
-			iMatches := ebayItemRegex.FindStringSubmatch(parsedURL.Path)
-			if len(iMatches) > 1 {
-				parsedURL.Path = "/itm/" + iMatches[1]
-			}
 		}
 
 		// Strip all query params

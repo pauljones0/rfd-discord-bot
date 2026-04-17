@@ -526,6 +526,14 @@ func createEbayPayload(item ebay.EbayItem) discordWebhookPayload {
 func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 	title := item.Title
 	var descBuilder strings.Builder
+	itemURL := item.ItemURL
+
+	if itemURL != "" {
+		itemURL = util.CleanProductURL(itemURL)
+		if cleanedURL, changed := util.CleanReferralLink(itemURL, "", ""); changed {
+			itemURL = cleanedURL
+		}
+	}
 
 	if item.PreviousPrice > 0 && item.CurrentPrice > 0 && item.PriceDrop > 0 {
 		descBuilder.WriteString(fmt.Sprintf(
@@ -576,7 +584,7 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 
 	return discordEmbed{
 		Title:       title,
-		URL:         item.ItemURL,
+		URL:         itemURL,
 		Description: descBuilder.String(),
 		Color:       colorWarmDeal,
 		Thumbnail:   thumbnail,

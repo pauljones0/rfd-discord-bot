@@ -638,6 +638,9 @@ func TestFormatEbayEmbed_CompactMobile(t *testing.T) {
 	if embed.Description != wantDesc {
 		t.Fatalf("Description mismatch.\nGot:  %q\nWant: %q", embed.Description, wantDesc)
 	}
+	if embed.URL != "https://www.ebay.ca/itm/123456789012?mkcid=1&mkrid=706-53473-19255-0&siteid=2&campid=5339131483&customid=&toolid=10001&mkevt=1" {
+		t.Fatalf("URL = %q, want affiliate-formatted eBay CA URL", embed.URL)
+	}
 	if embed.Footer.Text != "eBay Canada Price Drop" {
 		t.Fatalf("Footer.Text = %q, want %q", embed.Footer.Text, "eBay Canada Price Drop")
 	}
@@ -652,13 +655,16 @@ func TestFormatEbayEmbed_CompactMobile(t *testing.T) {
 func TestFormatEbayEmbed_MarketplaceFallbackFromItemURL(t *testing.T) {
 	item := ebay.EbayItem{
 		Title:     "Steam Deck OLED",
-		ItemURL:   "https://www.ebay.com/itm/555555555555",
+		ItemURL:   "https://www.ebay.com/itm/Valve-Steam-Deck-OLED/555555555555?hash=item",
 		Seller:    "vipoutlet",
 		Condition: "Open box",
 	}
 
 	embed := formatEbayEmbed(item)
 
+	if embed.URL != "https://www.ebay.com/itm/555555555555?mkcid=1&mkrid=711-53200-19255-0&siteid=0&campid=5339131483&customid=&toolid=10001&mkevt=1" {
+		t.Fatalf("URL = %q, want affiliate-formatted eBay US URL", embed.URL)
+	}
 	if embed.Footer.Text != "eBay US Price Drop" {
 		t.Fatalf("Footer.Text = %q, want %q", embed.Footer.Text, "eBay US Price Drop")
 	}

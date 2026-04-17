@@ -46,6 +46,11 @@ func TestCleanProductURL(t *testing.T) {
 		{
 			name:     "eBay with Product ID p/",
 			input:    "https://www.ebay.com/p/12345?iid=134954474751&thm=1000",
+			expected: "https://www.ebay.com/itm/134954474751",
+		},
+		{
+			name:     "eBay with Product ID p/ and no item ID",
+			input:    "https://www.ebay.com/p/12345?thm=1000",
 			expected: "https://www.ebay.com/p/12345",
 		},
 
