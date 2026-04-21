@@ -38,10 +38,7 @@ func (c *Client) ScreenMemExpressBatch(ctx context.Context, products []memoryexp
 		return nil, fmt.Errorf("all model tiers exhausted for the day, skipping batch screening")
 	}
 
-	topN := len(products) * 30 / 100
-	if topN < 1 {
-		topN = 1
-	}
+	topN := memoryexpress.Tier1SelectionLimit(len(products))
 
 	var itemList strings.Builder
 	for i, p := range products {
@@ -70,6 +67,7 @@ LOW-VALUE categories (require extreme discounts 70%%+ to be noteworthy):
 - Phone cases, screen protectors, low-value peripherals
 
 Review these %d clearance items. Be very selective — only mark items as top deals if a typical tech enthusiast would genuinely care. A GPU at 40%% off matters far more than an arcane adapter at 80%% off.
+Select at most %d items as top deals.
 
 Items:
 %s
@@ -78,7 +76,7 @@ Mark items that are NOT good deals with is_top_deal: false.
 
 Return a JSON array with ALL items, marking the top deals:
 [{"sku": "...", "clean_title": "...", "is_top_deal": true/false, "reasoning": "brief reason"}]
-`, len(products), itemList.String())
+`, len(products), topN, itemList.String())
 
 	slog.Debug("Memory Express batch screening prompt",
 		"processor", "memoryexpress",
@@ -162,6 +160,140 @@ Return a JSON array with ALL items, marking the top deals:
 		"batch_size", len(products),
 		"target_top", topN,
 		"actual_top", topCount,
+		"model", activeModel,
+		"location", loc,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+
+	return results, nil
+}
+
+// AnalyzeMemExpressBatch uses Gemini to verify a batch of tier-1 candidates in one call.
+func (c *Client) AnalyzeMemExpressBatch(ctx context.Context, products []memoryexpress.Product) ([]memoryexpress.BatchAnalyzeResult, error) {
+	if c == nil || len(c.clients) == 0 {
+		slog.Warn("AI client not initialized, skipping Memory Express batch analysis")
+		return nil, nil
+	}
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	if len(products) == 0 {
+		return nil, nil
+	}
+
+	c.mu.Lock()
+	activeModel := c.checkDayRollover(ctx)
+	exhausted := c.allExhausted && (c.exhaustedAt.IsZero() || time.Since(c.exhaustedAt) < exhaustionCooldown)
+	c.mu.Unlock()
+
+	if exhausted {
+		return nil, fmt.Errorf("all model tiers exhausted for the day, skipping Memory Express batch analysis")
+	}
+
+	var itemList strings.Builder
+	for i, product := range products {
+		finalPrice := product.SalePrice
+		if finalPrice == 0 {
+			finalPrice = product.ClearancePrice
+		}
+		itemList.WriteString(fmt.Sprintf("%d. [SKU: %s] \"%s\" — Category: %s — Regular: $%.2f CAD — Sale: $%.2f CAD — Discount: %.0f%% off — Store: %s\n",
+			i+1, product.SKU, product.Title, product.Category, product.RegularPrice, finalPrice, product.DiscountPct, product.StoreName))
+	}
+
+	prompt := fmt.Sprintf(`You are a ruthlessly selective Canadian tech deal analyst. Most Memory Express clearance items are arcane junk nobody wants — your job is to separate the rare gems from the noise.
+
+Review these %d tier-1 candidates. For each item:
+1. Clean up the title to be concise (5-15 words, product name and key specs only, no marketing fluff).
+2. Write a one-line summary of why this is or isn't a good deal (max 100 chars).
+3. Determine if this is a "warm" deal.
+   - GPUs, CPUs, RAM, SSDs, desktops, laptops, monitors at 40%%+ off are usually warm.
+   - Obscure cables, adapters, enterprise-only parts, niche accessories are not warm even at deep discounts.
+   - The product must have broad consumer appeal and a meaningful discount.
+4. Determine if this is "Lava Hot".
+   - Only use lava hot for genuinely exceptional tech deals, usually 50%%+ off on popular hardware or obvious pricing errors.
+
+Items:
+%s
+
+Return JSON only, and include ALL items:
+[{"sku": "...", "clean_title": "...", "is_warm": true/false, "is_lava_hot": true/false, "summary": "..."}]
+`, len(products), itemList.String())
+
+	slog.Debug("Memory Express batch tier-2 analysis prompt",
+		"processor", "memoryexpress",
+		"batch_size", len(products),
+		"prompt_length", len(prompt),
+	)
+
+	config := &genai.GenerateContentConfig{
+		Temperature:      genai.Ptr[float32](0.1),
+		ResponseMIMEType: "application/json",
+	}
+
+	var results []memoryexpress.BatchAnalyzeResult
+	start := time.Now()
+
+	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+		c.mu.Lock()
+		client := c.activeClient()
+		model := activeModel
+		c.mu.Unlock()
+
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		resp, genErr := client.Models.GenerateContent(callCtx, model, genai.Text(prompt), config)
+		if genErr != nil {
+			c.mu.Lock()
+			retErr, backoff := c.handleGenerationError(ctx, genErr, &activeModel, attempt, "Memory Express batch analysis")
+			c.mu.Unlock()
+			if backoff > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
+			return retErr
+		}
+		c.mu.Lock()
+		c.resetConsecutiveErrors()
+		loc := c.currentLocation
+		c.mu.Unlock()
+
+		c.logTokenUsage(resp, "memexpress_analysis_batch", model, loc)
+
+		parsed, parseErr := parseMemExpressAnalyzeBatchResponse(resp)
+		if parseErr != nil {
+			if strings.Contains(parseErr.Error(), "gemini blocked") {
+				slog.Warn("Gemini blocked Memory Express batch analysis",
+					"processor", "memoryexpress",
+					"model", activeModel, "attempt", attempt, "error", parseErr)
+				return util.PermanentError(parseErr)
+			}
+			if strings.Contains(parseErr.Error(), "no text response") || strings.Contains(parseErr.Error(), "no response candidates") {
+				slog.Warn("Gemini returned empty response during Memory Express batch analysis, retrying",
+					"processor", "memoryexpress",
+					"model", activeModel, "attempt", attempt, "error", parseErr)
+				return parseErr
+			}
+			return fmt.Errorf("failed to parse Memory Express batch analysis response: %w", parseErr)
+		}
+		results = parsed
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	loc := c.currentLocation
+	c.mu.Unlock()
+	slog.Info("Memory Express batch tier-2 analysis complete",
+		"processor", "memoryexpress",
+		"batch_size", len(products),
 		"model", activeModel,
 		"location", loc,
 		"duration_ms", time.Since(start).Milliseconds(),
@@ -360,5 +492,28 @@ func parseMemExpressResponse(resp *genai.GenerateContentResponse) (*memoryexpres
 	}
 
 	return nil, fmt.Errorf("no text response from gemini for Memory Express analysis (finish_reason=%s, parts=%d)",
+		resp.Candidates[0].FinishReason, len(resp.Candidates[0].Content.Parts))
+}
+
+func parseMemExpressAnalyzeBatchResponse(resp *genai.GenerateContentResponse) ([]memoryexpress.BatchAnalyzeResult, error) {
+	if reason := checkResponseBlocked(resp); reason != "" {
+		return nil, fmt.Errorf("gemini blocked Memory Express batch analysis response: %s", reason)
+	}
+	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+		return nil, fmt.Errorf("no response candidates from gemini")
+	}
+
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if part.Text != "" {
+			jsonStr := stripCodeBlock(part.Text)
+
+			var results []memoryexpress.BatchAnalyzeResult
+			if err := json.Unmarshal([]byte(jsonStr), &results); err == nil {
+				return results, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("no text response from gemini for Memory Express batch analysis (finish_reason=%s, parts=%d)",
 		resp.Candidates[0].FinishReason, len(resp.Candidates[0].Content.Parts))
 }

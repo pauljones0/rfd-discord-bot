@@ -18,15 +18,16 @@ const (
 
 // Store abstracts Firestore operations for the Memory Express processor.
 type Store interface {
-	MemExpressProductExists(ctx context.Context, sku, storeCode string) (bool, error)
+	GetExistingMemExpressProductIDs(ctx context.Context, products []Product) (map[string]struct{}, error)
 	SaveMemExpressProduct(ctx context.Context, product AnalyzedProduct) error
 	PruneMemExpressProducts(ctx context.Context, maxAgeDays, maxRecords int) error
-	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
+	GetMemExpressSubscriptions(ctx context.Context) ([]models.Subscription, error)
 }
 
 // Analyzer abstracts Gemini AI analysis for clearance products.
 type Analyzer interface {
 	ScreenMemExpressBatch(ctx context.Context, products []Product) ([]BatchScreenResult, error)
+	AnalyzeMemExpressBatch(ctx context.Context, products []Product) ([]BatchAnalyzeResult, error)
 	AnalyzeMemExpressProduct(ctx context.Context, product Product) (*AnalyzeResult, error)
 }
 
@@ -40,6 +41,7 @@ type Processor struct {
 	store    Store
 	analyzer Analyzer
 	notifier Notifier
+	scrape   func(context.Context, string) ([]Product, error)
 	mu       sync.Mutex
 }
 
@@ -49,6 +51,7 @@ func NewProcessor(store Store, analyzer Analyzer, notifier Notifier) *Processor 
 		store:    store,
 		analyzer: analyzer,
 		notifier: notifier,
+		scrape:   Scrape,
 	}
 }
 
@@ -91,18 +94,11 @@ func (p *Processor) ProcessMemExpressDeals(ctx context.Context) error {
 		)
 	}()
 
-	// 1. Get all subscriptions and filter for memoryexpress
-	allSubs, err := p.store.GetAllSubscriptions(ctx)
+	// 1. Load only Memory Express subscriptions
+	meSubs, err := p.store.GetMemExpressSubscriptions(ctx)
 	if err != nil {
 		stats.exitReason = "subscription_load_error"
 		return fmt.Errorf("failed to get subscriptions: %w", err)
-	}
-
-	var meSubs []models.Subscription
-	for _, sub := range allSubs {
-		if sub.IsMemoryExpress() {
-			meSubs = append(meSubs, sub)
-		}
 	}
 
 	if len(meSubs) == 0 {
@@ -129,7 +125,7 @@ func (p *Processor) ProcessMemExpressDeals(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		products, err := Scrape(ctx, storeCode)
+		products, err := p.scrape(ctx, storeCode)
 		if err != nil {
 			logger.Error("Failed to scrape clearance page",
 				"store", storeCode,
@@ -150,6 +146,15 @@ func (p *Processor) ProcessMemExpressDeals(ctx context.Context) error {
 		}
 
 		// 4. Dedup — collect new products
+		existing, err := p.store.GetExistingMemExpressProductIDs(ctx, products)
+		if err != nil {
+			logger.Warn("Failed to batch check product existence",
+				"store", storeCode,
+				"error", err,
+			)
+			existing = nil
+		}
+
 		var newProducts []Product
 		for _, product := range products {
 			if ctx.Err() != nil {
@@ -157,16 +162,7 @@ func (p *Processor) ProcessMemExpressDeals(ctx context.Context) error {
 				return ctx.Err()
 			}
 
-			exists, err := p.store.MemExpressProductExists(ctx, product.SKU, product.StoreCode)
-			if err != nil {
-				logger.Warn("Failed to check product existence",
-					"sku", product.SKU,
-					"store", product.StoreCode,
-					"error", err,
-				)
-				continue
-			}
-			if exists {
+			if _, exists := existing[DocID(product.SKU, product.StoreCode)]; exists {
 				continue
 			}
 			newProducts = append(newProducts, product)
@@ -356,26 +352,72 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *s
 		tier1Passed = append(tier1Passed, tier1Candidate{product, screen})
 	}
 
+	maxTier1 := Tier1SelectionLimit(len(batch))
+	if len(tier1Passed) > maxTier1 {
+		overflow := tier1Passed[maxTier1:]
+		tier1Passed = tier1Passed[:maxTier1]
+		logger.Info("Tier-1 candidate cap applied",
+			"batch_size", len(batch),
+			"candidate_limit", maxTier1,
+			"candidates_selected", len(tier1Passed),
+			"candidates_dropped", len(overflow),
+		)
+		for _, candidate := range overflow {
+			analyzed := AnalyzedProduct{
+				Product:     candidate.product,
+				CleanTitle:  candidate.screenResult.CleanTitle,
+				ProcessedAt: time.Now(),
+				LastSeen:    time.Now(),
+			}
+			if saveErr := p.store.SaveMemExpressProduct(ctx, analyzed); saveErr != nil {
+				logger.Error("Failed to save capped tier-1 product", "sku", candidate.product.SKU, "error", saveErr)
+			}
+		}
+	}
+
 	logger.Info("Tier-1 screening results",
 		"batch_size", len(batch),
 		"passed_tier1", len(tier1Passed),
+		"tier1_limit", maxTier1,
 	)
 
-	// Tier 2: Individual verification for tier-1 candidates
+	if len(tier1Passed) == 0 {
+		return results, 0, nil
+	}
+
+	tier1Products := make([]Product, 0, len(tier1Passed))
+	for _, candidate := range tier1Passed {
+		tier1Products = append(tier1Products, candidate.product)
+	}
+
+	batchResults, batchErr := p.analyzer.AnalyzeMemExpressBatch(ctx, tier1Products)
+	batchFailedExhausted := false
+	batchResultMap := make(map[string]BatchAnalyzeResult, len(batchResults))
+	if batchErr != nil {
+		if strings.Contains(batchErr.Error(), "all model tiers exhausted") {
+			logger.Warn("Tier-2 batch verification skipped, AI quota exhausted", "candidate_count", len(tier1Passed))
+			batchFailedExhausted = true
+		} else {
+			logger.Warn("Tier-2 batch verification failed, falling back to individual verification",
+				"candidate_count", len(tier1Passed),
+				"error", batchErr,
+			)
+		}
+	} else {
+		for _, result := range batchResults {
+			batchResultMap[result.SKU] = result
+		}
+	}
+
+	// Tier 2: Prefer batched verification, then fall back to individual verification as needed.
 	for _, candidate := range tier1Passed {
 		if ctx.Err() != nil {
 			logger.Warn("Context cancelled, stopping tier-2 verification")
 			break
 		}
 
-		analyzeResult, err := p.analyzer.AnalyzeMemExpressProduct(ctx, candidate.product)
-		if err != nil {
-			logger.Warn("Tier-2 verification failed",
-				"sku", candidate.product.SKU,
-				"title", candidate.product.Title,
-				"error", err,
-			)
-			// Save with tier-1 title
+		var analyzeResult *AnalyzeResult
+		if batchFailedExhausted {
 			analyzed := AnalyzedProduct{
 				Product:     candidate.product,
 				CleanTitle:  candidate.screenResult.CleanTitle,
@@ -386,6 +428,42 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *s
 				logger.Error("Failed to save product", "sku", candidate.product.SKU, "error", saveErr)
 			}
 			continue
+		}
+
+		if batchResult, ok := batchResultMap[candidate.product.SKU]; ok {
+			analyzeResult = &AnalyzeResult{
+				CleanTitle: batchResult.CleanTitle,
+				IsWarm:     batchResult.IsWarm,
+				IsLavaHot:  batchResult.IsLavaHot,
+				Summary:    batchResult.Summary,
+			}
+		} else {
+			if batchErr == nil {
+				logger.Warn("Tier-2 batch verification missing product, falling back to individual verification",
+					"sku", candidate.product.SKU,
+					"title", candidate.product.Title,
+				)
+			}
+			var err error
+			analyzeResult, err = p.analyzer.AnalyzeMemExpressProduct(ctx, candidate.product)
+			if err != nil {
+				logger.Warn("Tier-2 verification failed",
+					"sku", candidate.product.SKU,
+					"title", candidate.product.Title,
+					"error", err,
+				)
+				// Save with tier-1 title
+				analyzed := AnalyzedProduct{
+					Product:     candidate.product,
+					CleanTitle:  candidate.screenResult.CleanTitle,
+					ProcessedAt: time.Now(),
+					LastSeen:    time.Now(),
+				}
+				if saveErr := p.store.SaveMemExpressProduct(ctx, analyzed); saveErr != nil {
+					logger.Error("Failed to save product", "sku", candidate.product.SKU, "error", saveErr)
+				}
+				continue
+			}
 		}
 
 		if analyzeResult == nil {
