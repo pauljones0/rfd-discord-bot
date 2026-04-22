@@ -8,7 +8,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/server
 
-# Stage 2: Runtime with Playwright + Firefox
+# Stage 2: Runtime with Playwright browsers
 FROM mcr.microsoft.com/playwright:v1.52.0-noble
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -17,8 +17,8 @@ WORKDIR /root/
 COPY --from=builder /app/server .
 COPY --from=builder /app/internal/scraper/selectors.json ./internal/scraper/selectors.json
 
-# Pre-install Firefox browser for Playwright during build to avoid startup latency.
-RUN npx playwright install firefox
+# Pre-install Chromium and Firefox during build to avoid startup latency.
+RUN npx playwright install chromium firefox
 
 EXPOSE 8080
 
