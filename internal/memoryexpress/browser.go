@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +14,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"net/url"
 
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/chromedp"
