@@ -4,18 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
 
 const (
-	baseURL   = "https://www.memoryexpress.com/Clearance/Store/"
-	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+	baseURL = "https://www.memoryexpress.com/Clearance/Store/"
 )
 
 var priceRe = regexp.MustCompile(`\$([0-9,]+\.\d{2})`)
@@ -27,26 +24,12 @@ func Scrape(ctx context.Context, storeCode string) ([]Product, error) {
 	}
 
 	url := baseURL + storeCode
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("Accept-Language", "en-CA,en;q=0.9")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	html, err := fetchClearanceHTMLWithBrowser(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch clearance page for %s: %w", storeCode, err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d for store %s", resp.StatusCode, storeCode)
-	}
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse HTML for store %s: %w", storeCode, err)
 	}
@@ -79,6 +62,14 @@ func Scrape(ctx context.Context, storeCode string) ([]Product, error) {
 	)
 
 	return products, nil
+}
+
+func hasCloudflareChallenge(body string) bool {
+	lowerBody := strings.ToLower(body)
+	return strings.Contains(lowerBody, "just a moment") ||
+		strings.Contains(lowerBody, "enable javascript and cookies to continue") ||
+		strings.Contains(lowerBody, "/cdn-cgi/challenge-platform/") ||
+		strings.Contains(lowerBody, "__cf_chl_")
 }
 
 func parseProduct(item *goquery.Selection, storeCode, storeName, category string) (Product, error) {

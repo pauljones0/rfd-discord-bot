@@ -621,6 +621,7 @@ func TestFormatEbayEmbed_CompactMobile(t *testing.T) {
 		PreviousPrice:            499.99,
 		PriceDrop:                150.00,
 		PercentDrop:              30.0,
+		DropCount:                2,
 		Currency:                 "CAD",
 		ItemURL:                  "https://www.ebay.ca/itm/123456789012",
 		ImageURL:                 "https://example.com/item.jpg",
@@ -634,7 +635,7 @@ func TestFormatEbayEmbed_CompactMobile(t *testing.T) {
 
 	embed := formatEbayEmbed(item)
 
-	wantDesc := "~~C$499.99~~ -> **C$349.99**  (-C$150.00, -30%)\n[vipoutletcanada](https://www.ebay.ca/usr/vipoutletcanada) 99.4%/12.3k  •  Certified Refurbished"
+	wantDesc := "~~C$499.99~~ -> **C$349.99**  (-C$150.00, -30%)  •  2nd drop\n[vipoutletcanada](https://www.ebay.ca/usr/vipoutletcanada) 99.4%/12.3k  •  Certified Refurbished"
 	if embed.Description != wantDesc {
 		t.Fatalf("Description mismatch.\nGot:  %q\nWant: %q", embed.Description, wantDesc)
 	}
@@ -670,5 +671,26 @@ func TestFormatEbayEmbed_MarketplaceFallbackFromItemURL(t *testing.T) {
 	}
 	if !strings.Contains(embed.Description, "https://www.ebay.com/usr/vipoutlet") {
 		t.Fatalf("Description = %q, expected seller link to use ebay.com", embed.Description)
+	}
+}
+
+func TestOrdinal(t *testing.T) {
+	tests := map[int]string{
+		1:  "1st",
+		2:  "2nd",
+		3:  "3rd",
+		4:  "4th",
+		11: "11th",
+		12: "12th",
+		13: "13th",
+		21: "21st",
+		22: "22nd",
+		23: "23rd",
+	}
+
+	for input, want := range tests {
+		if got := ordinal(input); got != want {
+			t.Fatalf("ordinal(%d) = %q, want %q", input, got, want)
+		}
 	}
 }

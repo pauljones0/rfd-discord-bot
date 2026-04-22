@@ -107,3 +107,40 @@ func TestShouldNotifyPriceDrop(t *testing.T) {
 		})
 	}
 }
+
+func TestPriorDropCount(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing TrackedItem
+		want     int
+	}{
+		{
+			name: "uses stored count when present",
+			existing: TrackedItem{
+				DropCount:         3,
+				LastNotifiedPrice: 250,
+			},
+			want: 3,
+		},
+		{
+			name: "legacy alerted item counts as at least one prior drop",
+			existing: TrackedItem{
+				LastNotifiedPrice: 250,
+			},
+			want: 1,
+		},
+		{
+			name:     "never-alerted item starts at zero",
+			existing: TrackedItem{},
+			want:     0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := priorDropCount(tt.existing); got != tt.want {
+				t.Fatalf("priorDropCount() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

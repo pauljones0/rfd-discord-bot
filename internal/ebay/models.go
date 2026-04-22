@@ -53,6 +53,7 @@ type TrackedItem struct {
 	Price             float64   `firestore:"price"`
 	OriginalPrice     float64   `firestore:"originalPrice,omitempty"`
 	LastNotifiedPrice float64   `firestore:"lastNotifiedPrice,omitempty"`
+	DropCount         int       `firestore:"dropCount,omitempty"`
 	Currency          string    `firestore:"currency"`
 	Seller            string    `firestore:"seller"`
 	Condition         string    `firestore:"condition"`
@@ -70,6 +71,7 @@ type EbayItem struct {
 	PreviousPrice            float64
 	PriceDrop                float64
 	PercentDrop              float64
+	DropCount                int
 	Currency                 string
 	ItemURL                  string
 	ImageURL                 string

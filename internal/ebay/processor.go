@@ -179,6 +179,11 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			existing.OriginalPrice = existing.Price
 			backfilledOriginalPrice = true
 		}
+		backfilledDropCount := false
+		if existing.DropCount <= 0 && existing.LastNotifiedPrice > 0 {
+			existing.DropCount = 1
+			backfilledDropCount = true
+		}
 
 		// Existing item — notify on the first qualifying drop from original price,
 		// then only on materially deeper drops than the last alerted price.
@@ -186,6 +191,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 
 		if shouldNotify {
 			stats.priceDrops++
+			existing.DropCount = priorDropCount(existing) + 1
 			logger.Info("Price drop detected",
 				"itemID", itemID,
 				"title", apiItem.Title,
@@ -194,6 +200,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				"new_price", newPrice,
 				"drop_pct", fmt.Sprintf("%.1f%%", percentDrop),
 				"drop_dollars", fmt.Sprintf("$%.2f", dollarDrop),
+				"drop_count", existing.DropCount,
 			)
 			priceDropItems = append(priceDropItems, EbayItem{
 				ItemID:                   itemID,
@@ -202,6 +209,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				PreviousPrice:            baselinePrice,
 				PriceDrop:                dollarDrop,
 				PercentDrop:              percentDrop,
+				DropCount:                existing.DropCount,
 				Currency:                 currencyOrDefault(apiItem.Price),
 				ItemURL:                  apiItem.ItemWebURL,
 				ImageURL:                 imageURL(apiItem.Image),
@@ -222,7 +230,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		if existing.Price != newPrice || existing.Title != apiItem.Title ||
 			existing.Condition != apiItem.Condition || existing.ItemURL != apiItem.ItemWebURL ||
 			existing.ImageURL != newImgURL || existing.Currency != newCurrency ||
-			existing.Seller != newSeller || backfilledOriginalPrice || shouldNotify {
+			existing.Seller != newSeller || backfilledOriginalPrice || backfilledDropCount || shouldNotify {
 			stats.updated++
 			existing.Price = newPrice
 			existing.LastSeenAt = now
@@ -353,6 +361,16 @@ func shouldNotifyPriceDrop(existing TrackedItem, newPrice float64) (baselinePric
 	}
 
 	return baselinePrice, dollarDrop, percentDrop, true
+}
+
+func priorDropCount(existing TrackedItem) int {
+	if existing.DropCount > 0 {
+		return existing.DropCount
+	}
+	if existing.LastNotifiedPrice > 0 {
+		return 1
+	}
+	return 0
 }
 
 // currencyOrDefault returns the currency from a Price, defaulting to "CAD".

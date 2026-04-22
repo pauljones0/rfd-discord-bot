@@ -70,6 +70,7 @@ func (p *Processor) ProcessMemExpressDeals(ctx context.Context) error {
 	var stats struct {
 		stores       int
 		scraped      int
+		scrapeErrors int
 		newItems     int
 		tier1Passed  int
 		tier2Passed  int
@@ -84,6 +85,7 @@ func (p *Processor) ProcessMemExpressDeals(ctx context.Context) error {
 			"duration", time.Since(start).Round(time.Millisecond).String(),
 			"stores", stats.stores,
 			"scraped", stats.scraped,
+			"scrape_errors", stats.scrapeErrors,
 			"new_items", stats.newItems,
 			"tier1_passed", stats.tier1Passed,
 			"tier2_passed", stats.tier2Passed,
@@ -127,6 +129,7 @@ func (p *Processor) ProcessMemExpressDeals(ctx context.Context) error {
 
 		products, err := p.scrape(ctx, storeCode)
 		if err != nil {
+			stats.scrapeErrors++
 			logger.Error("Failed to scrape clearance page",
 				"store", storeCode,
 				"error", err,
@@ -200,6 +203,11 @@ func (p *Processor) ProcessMemExpressDeals(ctx context.Context) error {
 				}
 			}
 		}
+	}
+
+	if stats.scrapeErrors == len(storeSubsMap) {
+		stats.exitReason = "all_store_scrapes_failed"
+		return fmt.Errorf("failed to scrape all subscribed Memory Express stores")
 	}
 
 	// 7. Prune old records

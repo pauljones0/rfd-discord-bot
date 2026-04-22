@@ -546,6 +546,12 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 	} else if item.CurrentPrice > 0 {
 		descBuilder.WriteString(fmt.Sprintf("**%s**", formatEbayMoney(item.CurrentPrice, item.Currency)))
 	}
+	if item.DropCount > 0 {
+		if descBuilder.Len() > 0 {
+			descBuilder.WriteString("  •  ")
+		}
+		descBuilder.WriteString(fmt.Sprintf("%s drop", ordinal(item.DropCount)))
+	}
 
 	var meta []string
 	if item.Seller != "" {
@@ -615,6 +621,25 @@ func formatCountCompact(n int) string {
 		return fmt.Sprintf("%.1fk", value)
 	}
 	return strconv.Itoa(n)
+}
+
+func ordinal(n int) string {
+	if n <= 0 {
+		return strconv.Itoa(n)
+	}
+	if n%100 >= 11 && n%100 <= 13 {
+		return fmt.Sprintf("%dth", n)
+	}
+	switch n % 10 {
+	case 1:
+		return fmt.Sprintf("%dst", n)
+	case 2:
+		return fmt.Sprintf("%dnd", n)
+	case 3:
+		return fmt.Sprintf("%drd", n)
+	default:
+		return fmt.Sprintf("%dth", n)
+	}
 }
 
 func ebayMarketplaceLabel(item ebay.EbayItem) string {

@@ -125,6 +125,27 @@ func TestProcessMemExpressDeals_SkipsWithoutSubscriptions(t *testing.T) {
 	}
 }
 
+func TestProcessMemExpressDeals_ReturnsErrorWhenAllStoreScrapesFail(t *testing.T) {
+	store := &testStore{
+		subs: []models.Subscription{
+			{SubscriptionType: "memoryexpress", StoreCode: "SKST", DealType: "me_warm_hot"},
+		},
+	}
+
+	p := NewProcessor(store, nil, nil)
+	p.scrape = func(context.Context, string) ([]Product, error) {
+		return nil, errors.New("blocked by cloudflare")
+	}
+
+	err := p.ProcessMemExpressDeals(context.Background())
+	if err == nil {
+		t.Fatal("ProcessMemExpressDeals() error = nil, want scrape failure")
+	}
+	if got, want := err.Error(), "failed to scrape all subscribed Memory Express stores"; got != want {
+		t.Fatalf("ProcessMemExpressDeals() error = %q, want %q", got, want)
+	}
+}
+
 func TestProcessBatch_CapsTier1CandidatesAndBatchesTier2(t *testing.T) {
 	store := &testStore{}
 	analyzer := &testAnalyzer{
