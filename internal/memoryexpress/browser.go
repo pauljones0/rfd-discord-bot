@@ -23,15 +23,28 @@ func fetchClearanceHTMLWithBrowser(ctx context.Context, pageURL string) (string,
 		return "", err
 	}
 
+	profileDir, err := os.MkdirTemp("", "memoryexpress-chrome-*")
+	if err != nil {
+		return "", fmt.Errorf("create browser profile dir: %w", err)
+	}
+	defer os.RemoveAll(profileDir)
+
 	allocCtx, allocCancel := chromedp.NewExecAllocator(
 		ctx,
 		append(chromedp.DefaultExecAllocatorOptions[:],
 			chromedp.ExecPath(browserPath),
-			chromedp.Flag("headless", true),
+			chromedp.UserDataDir(profileDir),
 			chromedp.Flag("no-sandbox", true),
 			chromedp.Flag("disable-dev-shm-usage", true),
 			chromedp.Flag("disable-gpu", true),
 			chromedp.Flag("disable-blink-features", "AutomationControlled"),
+			chromedp.Flag("no-first-run", true),
+			chromedp.Flag("no-default-browser-check", true),
+			chromedp.Flag("disable-background-timer-throttling", true),
+			chromedp.Flag("disable-backgrounding-occluded-windows", true),
+			chromedp.Flag("disable-renderer-backgrounding", true),
+			chromedp.Flag("disable-hang-monitor", true),
+			chromedp.WindowSize(1920, 1080),
 		)...,
 	)
 	defer allocCancel()
