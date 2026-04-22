@@ -1,8 +1,10 @@
 package memoryexpress
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -23,16 +25,28 @@ func fetchClearanceHTMLWithBrowser(ctx context.Context, pageURL string) (string,
 		return "", err
 	}
 
+	display, stopDisplay, err := startVirtualDisplayIfNeeded(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer stopDisplay()
+
 	profileDir, err := os.MkdirTemp("", "memoryexpress-chrome-*")
 	if err != nil {
 		return "", fmt.Errorf("create browser profile dir: %w", err)
 	}
 	defer os.RemoveAll(profileDir)
 
+	env := os.Environ()
+	if display != "" {
+		env = append(env, "DISPLAY="+display)
+	}
+
 	allocCtx, allocCancel := chromedp.NewExecAllocator(
 		ctx,
 		append(chromedp.DefaultExecAllocatorOptions[:],
 			chromedp.ExecPath(browserPath),
+			chromedp.Env(env...),
 			chromedp.UserDataDir(profileDir),
 			chromedp.Flag("no-sandbox", true),
 			chromedp.Flag("disable-dev-shm-usage", true),
@@ -82,6 +96,69 @@ func fetchClearanceHTMLWithBrowser(ctx context.Context, pageURL string) (string,
 		case <-ticker.C:
 		}
 	}
+}
+
+func startVirtualDisplayIfNeeded(ctx context.Context) (string, func(), error) {
+	if runtime.GOOS != "linux" {
+		return "", func() {}, nil
+	}
+
+	if display := os.Getenv("DISPLAY"); display != "" {
+		return display, func() {}, nil
+	}
+
+	xvfbPath, err := exec.LookPath("Xvfb")
+	if err != nil {
+		return "", nil, fmt.Errorf("find Xvfb: %w", err)
+	}
+
+	const display = ":99"
+	cmd := exec.CommandContext(ctx, xvfbPath, display, "-screen", "0", "1920x1080x24", "-nolisten", "tcp", "-ac")
+	cmd.Stdout = io.Discard
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return "", nil, fmt.Errorf("start Xvfb: %w", err)
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	cleanup := func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		select {
+		case <-waitCh:
+		case <-time.After(2 * time.Second):
+		}
+	}
+
+	socketPath := "/tmp/.X11-unix/X99"
+	for i := 0; i < 50; i++ {
+		if _, err := os.Stat(socketPath); err == nil {
+			return display, cleanup, nil
+		}
+
+		select {
+		case err := <-waitCh:
+			if err == nil {
+				err = fmt.Errorf("Xvfb exited before opening display %s", display)
+			}
+			return "", nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+		case <-ctx.Done():
+			cleanup()
+			return "", nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	cleanup()
+	return "", nil, fmt.Errorf("Xvfb did not open display %s within 5s: %s", display, strings.TrimSpace(stderr.String()))
 }
 
 func findBrowserExecutable() (string, error) {

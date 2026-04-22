@@ -22,4 +22,4 @@ RUN npx playwright install chromium firefox
 
 EXPOSE 8080
 
-CMD ["xvfb-run", "-a", "./server"]
+CMD ["./server"]
