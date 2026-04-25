@@ -10,12 +10,17 @@ func TestHasCloudflareChallenge(t *testing.T) {
 	}{
 		{
 			name: "cloudflare challenge body is detected",
-			body: "Just a moment... Enable JavaScript and cookies to continue /cdn-cgi/challenge-platform/",
+			body: "Just a moment... Enable JavaScript and cookies to continue /cdn-cgi/challenge-platform/ challenge-form",
 			want: true,
 		},
 		{
 			name: "normal html is not flagged",
 			body: `<html><body><div class="c-clli-group"></div></body></html>`,
+			want: false,
+		},
+		{
+			name: "cloudflare script on loaded clearance page is not flagged",
+			body: `<html><body><script src="/cdn-cgi/challenge-platform/h/g/scripts/jsd/main.js"></script><div class="c-clli-group"><div class="c-clli-item"></div></div></body></html>`,
 			want: false,
 		},
 	}

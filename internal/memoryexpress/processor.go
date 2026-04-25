@@ -45,14 +45,32 @@ type Processor struct {
 	mu       sync.Mutex
 }
 
+// ProcessorOption customizes a Memory Express processor.
+type ProcessorOption func(*Processor)
+
+// WithScrapeFunc replaces the default scrape implementation.
+func WithScrapeFunc(scrape func(context.Context, string) ([]Product, error)) ProcessorOption {
+	return func(p *Processor) {
+		if scrape != nil {
+			p.scrape = scrape
+		}
+	}
+}
+
 // NewProcessor creates a new Memory Express clearance processor.
-func NewProcessor(store Store, analyzer Analyzer, notifier Notifier) *Processor {
-	return &Processor{
+func NewProcessor(store Store, analyzer Analyzer, notifier Notifier, opts ...ProcessorOption) *Processor {
+	p := &Processor{
 		store:    store,
 		analyzer: analyzer,
 		notifier: notifier,
 		scrape:   Scrape,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(p)
+		}
+	}
+	return p
 }
 
 // ProcessMemExpressDeals runs the full clearance processing pipeline.

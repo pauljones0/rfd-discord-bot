@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,8 +21,8 @@ type Config struct {
 	MaxStoredDeals         int
 	AllowedDomains         []string
 	RFDBaseURL             string
-	GeminiAPIKeys        []string
-	GeminiLocations      []string
+	GeminiAPIKeys          []string
+	GeminiLocations        []string
 	GeminiFallbackModels   []string
 
 	// Discord App Auth
@@ -36,6 +37,11 @@ type Config struct {
 	// Proxy (optional — Facebook/Carfax scraping runs without proxy if not set)
 	ProxyURL string
 
+	// Memory Express local runner configuration.
+	MemoryExpressPollInterval  time.Duration
+	MemoryExpressChromePath    string
+	MemoryExpressChromeProfile string
+
 	// Carfax Token Service (optional — if not set, Carfax falls back to Playwright UI automation)
 	// The token service runs a real headed Chrome that generates high-scoring reCAPTCHA v3 tokens.
 	// See cmd/token-service/main.go for setup instructions.
@@ -48,8 +54,14 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
-	// Try loading from .env file (ignore error if it doesn't exist)
-	_ = godotenv.Load()
+	// Try loading from .env file. Some local .env files include multiline JSON blobs
+	// that godotenv can't parse, so fall back to a loose loader that still picks up
+	// normal KEY=value lines around those blocks.
+	if err := godotenv.Load(); err != nil {
+		if fallbackErr := loadLooseDotEnv(".env"); fallbackErr == nil {
+			slog.Warn("Loaded .env with loose parser after standard parser failed")
+		}
+	}
 
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if projectID == "" {
@@ -95,6 +107,15 @@ func Load() (*Config, error) {
 	discordBotToken := os.Getenv("DISCORD_BOT_TOKEN")
 	if discordBotToken == "" {
 		slog.Warn("DISCORD_BOT_TOKEN not set, Discord application features may be disabled")
+	}
+
+	memexpressPollIntervalStr := os.Getenv("MEMEXPRESS_POLL_INTERVAL")
+	if memexpressPollIntervalStr == "" {
+		memexpressPollIntervalStr = "30m"
+	}
+	memexpressPollInterval, err := time.ParseDuration(memexpressPollIntervalStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid MEMEXPRESS_POLL_INTERVAL %q: %w", memexpressPollIntervalStr, err)
 	}
 
 	geminiLocation := os.Getenv("GEMINI_LOCATION")
@@ -145,22 +166,103 @@ func Load() (*Config, error) {
 		MaxStoredDeals:         maxStoredDeals,
 		AllowedDomains:         []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com", "bestbuy.ca"},
 		RFDBaseURL:             "https://forums.redflagdeals.com",
-		GeminiAPIKeys:   geminiAPIKeys,
-		GeminiLocations: geminiLocations,
+		GeminiAPIKeys:          geminiAPIKeys,
+		GeminiLocations:        geminiLocations,
 		GeminiFallbackModels: []string{
 			"gemini-2.5-flash-lite",
 			"gemini-2.5-flash",
 			"gemini-2.5-pro",
 		},
-		DiscordAppID:     os.Getenv("DISCORD_APP_ID"),
-		DiscordPublicKey: discordPublicKey,
-		DiscordBotToken:  discordBotToken,
-		EbayClientID:             os.Getenv("EBAY_CLIENT_ID"),
-		EbayClientSecret:         os.Getenv("EBAY_CLIENT_SECRET"),
-		ProxyURL:                 os.Getenv("PROXY_URL"),
-		CarfaxTokenServiceURL:    os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
-		CarfaxTokenServiceSecret: os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
-		RedditServiceURL:    os.Getenv("REDDIT_SERVICE_URL"),
-		RedditServiceSecret: os.Getenv("REDDIT_SERVICE_SECRET"),
+		DiscordAppID:               os.Getenv("DISCORD_APP_ID"),
+		DiscordPublicKey:           discordPublicKey,
+		DiscordBotToken:            discordBotToken,
+		EbayClientID:               os.Getenv("EBAY_CLIENT_ID"),
+		EbayClientSecret:           os.Getenv("EBAY_CLIENT_SECRET"),
+		ProxyURL:                   os.Getenv("PROXY_URL"),
+		MemoryExpressPollInterval:  memexpressPollInterval,
+		MemoryExpressChromePath:    firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
+		MemoryExpressChromeProfile: os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
+		CarfaxTokenServiceURL:      os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
+		CarfaxTokenServiceSecret:   os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
+		RedditServiceURL:           os.Getenv("REDDIT_SERVICE_URL"),
+		RedditServiceSecret:        os.Getenv("REDDIT_SERVICE_SECRET"),
 	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func loadLooseDotEnv(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	skippingBlock := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if skippingBlock {
+			if line == "}" {
+				skippingBlock = false
+			}
+			continue
+		}
+
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 {
+			continue
+		}
+
+		key := strings.TrimSpace(line[:eq])
+		if !isEnvKey(key) {
+			continue
+		}
+
+		value := strings.TrimSpace(line[eq+1:])
+		if strings.HasPrefix(value, "{") && !strings.HasSuffix(value, "}") {
+			skippingBlock = true
+			continue
+		}
+
+		if os.Getenv(key) != "" {
+			continue
+		}
+
+		if err := os.Setenv(key, strings.Trim(value, `"'`)); err != nil {
+			return err
+		}
+	}
+
+	return scanner.Err()
+}
+
+func isEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r == '_' && i >= 0:
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }

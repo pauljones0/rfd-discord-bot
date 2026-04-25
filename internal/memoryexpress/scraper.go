@@ -17,16 +17,34 @@ const (
 
 var priceRe = regexp.MustCompile(`\$([0-9,]+\.\d{2})`)
 
-// Scrape fetches and parses clearance products for a given Memory Express store.
-func Scrape(ctx context.Context, storeCode string) ([]Product, error) {
+// ClearanceURL returns the Memory Express clearance URL for a store.
+func ClearanceURL(storeCode string) (string, error) {
 	if !ValidStoreCode(storeCode) {
-		return nil, fmt.Errorf("invalid store code: %s", storeCode)
+		return "", fmt.Errorf("invalid store code: %s", storeCode)
 	}
 
-	url := baseURL + storeCode
+	return baseURL + storeCode, nil
+}
+
+// Scrape fetches and parses clearance products for a given Memory Express store.
+func Scrape(ctx context.Context, storeCode string) ([]Product, error) {
+	url, err := ClearanceURL(storeCode)
+	if err != nil {
+		return nil, err
+	}
+
 	html, err := fetchClearanceHTMLWithBrowser(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch clearance page for %s: %w", storeCode, err)
+	}
+
+	return ParseClearanceHTML(storeCode, html)
+}
+
+// ParseClearanceHTML parses browser-rendered Memory Express clearance HTML for a store.
+func ParseClearanceHTML(storeCode, html string) ([]Product, error) {
+	if !ValidStoreCode(storeCode) {
+		return nil, fmt.Errorf("invalid store code: %s", storeCode)
 	}
 
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
@@ -66,10 +84,22 @@ func Scrape(ctx context.Context, storeCode string) ([]Product, error) {
 
 func hasCloudflareChallenge(body string) bool {
 	lowerBody := strings.ToLower(body)
-	return strings.Contains(lowerBody, "just a moment") ||
-		strings.Contains(lowerBody, "enable javascript and cookies to continue") ||
-		strings.Contains(lowerBody, "/cdn-cgi/challenge-platform/") ||
-		strings.Contains(lowerBody, "__cf_chl_")
+
+	// A fully loaded clearance page can still include Cloudflare script markers.
+	// If the real clearance content is already present, treat it as ready.
+	if strings.Contains(lowerBody, "c-clli-group") || strings.Contains(lowerBody, "c-clli-item") {
+		return false
+	}
+
+	hasInterstitialText := strings.Contains(lowerBody, "just a moment") ||
+		strings.Contains(lowerBody, "enable javascript and cookies to continue")
+
+	hasChallengeMarker := strings.Contains(lowerBody, "/cdn-cgi/challenge-platform/") ||
+		strings.Contains(lowerBody, "__cf_chl_") ||
+		strings.Contains(lowerBody, "cf-turnstile") ||
+		strings.Contains(lowerBody, "challenge-form")
+
+	return hasInterstitialText && hasChallengeMarker
 }
 
 func parseProduct(item *goquery.Selection, storeCode, storeName, category string) (Product, error) {

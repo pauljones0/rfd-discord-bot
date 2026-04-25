@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -110,5 +112,38 @@ func TestLoad_CustomBestBuyPrefix(t *testing.T) {
 
 	if cfg.BestBuyAffiliatePrefix != "https://custom.prefix/c/1/2/3?u=" {
 		t.Errorf("Expected custom prefix, got %q", cfg.BestBuyAffiliatePrefix)
+	}
+}
+
+func TestLoadLooseDotEnv_IgnoresMultilineJSONBlock(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+	t.Setenv("DISCORD_BOT_TOKEN", "")
+	t.Setenv("FIREBASE_SERVICE_ACCOUNT", "")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := "GOOGLE_CLOUD_PROJECT=test-project\n" +
+		"FIREBASE_SERVICE_ACCOUNT={\n" +
+		"  \"type\": \"service_account\",\n" +
+		"  \"project_id\": \"test-project\"\n" +
+		"}\n" +
+		"DISCORD_BOT_TOKEN=test-token\n"
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() returned unexpected error: %v", err)
+	}
+
+	if err := loadLooseDotEnv(path); err != nil {
+		t.Fatalf("loadLooseDotEnv() returned unexpected error: %v", err)
+	}
+
+	if got := os.Getenv("GOOGLE_CLOUD_PROJECT"); got != "test-project" {
+		t.Fatalf("Expected GOOGLE_CLOUD_PROJECT to be loaded, got %q", got)
+	}
+	if got := os.Getenv("DISCORD_BOT_TOKEN"); got != "test-token" {
+		t.Fatalf("Expected DISCORD_BOT_TOKEN to be loaded, got %q", got)
+	}
+	if got := os.Getenv("FIREBASE_SERVICE_ACCOUNT"); got != "" {
+		t.Fatalf("Expected multiline FIREBASE_SERVICE_ACCOUNT block to be skipped, got %q", got)
 	}
 }
