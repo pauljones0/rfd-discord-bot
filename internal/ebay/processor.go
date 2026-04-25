@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -298,7 +299,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 
 		var eligibleSubs []models.Subscription
 		for _, sub := range subs {
-			if isEbayEligible(sub) {
+			if isEbayDealType(sub.DealType) {
 				eligibleSubs = append(eligibleSubs, sub)
 			}
 		}
@@ -309,7 +310,11 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 					logger.Warn("Context cancelled, stopping Discord notifications")
 					break
 				}
-				if _, err := p.notifier.SendEbayDeal(ctx, priceDropItems[i], eligibleSubs); err != nil {
+				itemSubs := eligibleEbaySubscriptions(priceDropItems[i], eligibleSubs)
+				if len(itemSubs) == 0 {
+					continue
+				}
+				if _, err := p.notifier.SendEbayDeal(ctx, priceDropItems[i], itemSubs); err != nil {
 					logger.Error("Failed to send eBay price drop to Discord", "item", priceDropItems[i].Title, "error", err)
 				}
 			}
@@ -329,13 +334,50 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 }
 
 // isEbayEligible checks whether a price drop should be sent to a given subscription.
-func isEbayEligible(sub models.Subscription) bool {
+func isEbayEligible(item EbayItem, sub models.Subscription) bool {
 	switch sub.DealType {
+	case "ebay_ca_price_drop":
+		return ebayItemMarketplace(item) == "EBAY_CA"
+	case "ebay_us_price_drop":
+		return ebayItemMarketplace(item) == "EBAY_US"
 	case "ebay_price_drop", "ebay_warm_hot", "ebay_hot", "warm_hot_all", "hot_all":
 		return true
 	default:
 		return false
 	}
+}
+
+func isEbayDealType(dealType string) bool {
+	switch dealType {
+	case "ebay_ca_price_drop", "ebay_us_price_drop", "ebay_price_drop", "ebay_warm_hot", "ebay_hot", "warm_hot_all", "hot_all":
+		return true
+	default:
+		return false
+	}
+}
+
+func eligibleEbaySubscriptions(item EbayItem, subs []models.Subscription) []models.Subscription {
+	var eligible []models.Subscription
+	for _, sub := range subs {
+		if isEbayEligible(item, sub) {
+			eligible = append(eligible, sub)
+		}
+	}
+	return eligible
+}
+
+func ebayItemMarketplace(item EbayItem) string {
+	switch item.Marketplace {
+	case "EBAY_CA", "EBAY_US":
+		return item.Marketplace
+	}
+	if strings.Contains(item.ItemURL, "ebay.com") {
+		return "EBAY_US"
+	}
+	if strings.Contains(item.ItemURL, "ebay.ca") {
+		return "EBAY_CA"
+	}
+	return ""
 }
 
 // parsePrice extracts a float64 price from a Browse API Price object.

@@ -141,7 +141,7 @@ type autocompleteChoice struct {
 // Store abstracts the database operations needed by the API.
 type Store interface {
 	SaveSubscription(ctx context.Context, sub models.Subscription) error
-	RemoveSubscription(ctx context.Context, guildID, channelID string) error
+	RemoveSubscription(ctx context.Context, guildID, channelID, dealType string) error
 	GetSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
 	GetSubscription(ctx context.Context, guildID, channelID string) (*models.Subscription, error)
 	SaveFacebookSubscription(ctx context.Context, sub models.Subscription) error
@@ -427,7 +427,9 @@ func (h *Handler) handleSetupEbay(w http.ResponseWriter, req interactionRequest,
 	}
 
 	validFilters := map[string]bool{
-		"ebay_price_drop": true,
+		"ebay_ca_price_drop": true,
+		"ebay_us_price_drop": true,
+		"ebay_price_drop":    true,
 	}
 	if !validFilters[filter] {
 		h.respondPrivateMessage(w, "Invalid eBay filter type.")
@@ -441,43 +443,6 @@ func (h *Handler) handleSetupEbay(w http.ResponseWriter, req interactionRequest,
 func (h *Handler) saveRFDEbaySubscription(w http.ResponseWriter, req interactionRequest, channelID, channelName, dealType, subscriptionType string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-
-	// Check if a subscription already exists for this channel
-	existing, err := h.store.GetSubscription(ctx, req.GuildID, channelID)
-	if err != nil {
-		slog.Error("Failed to check for existing subscription", "guild", req.GuildID, "channel", channelID, "error", err)
-	}
-
-	if existing != nil && existing.DealType != dealType {
-		res := interactionResponse{
-			Type: InteractionResponseTypeChannelMessageWithSource,
-			Data: &interactionResponseData{
-				Content: fmt.Sprintf("⚠️ <#%s> is already set up to receive **%s** deals. Do you want to overwrite it with **%s** deals?", channelID, existing.DealType, dealType),
-				Flags:   MessageFlagEphemeral,
-				Components: &[]discordComponent{
-					{
-						Type: ComponentTypeActionRow,
-						Components: []discordComponent{
-							{
-								Type:     ComponentTypeButton,
-								Style:    ButtonStylePrimary,
-								Label:    "Confirm Update",
-								CustomID: fmt.Sprintf("confirm_update::%s::%s::%s", channelID, dealType, channelName),
-							},
-							{
-								Type:     ComponentTypeButton,
-								Style:    ButtonStyleSecondary,
-								Label:    "Cancel",
-								CustomID: "confirm_cancel",
-							},
-						},
-					},
-				},
-			},
-		}
-		writeJSON(w, res)
-		return
-	}
 
 	username := "Unknown"
 	if req.Member != nil {
@@ -501,7 +466,7 @@ func (h *Handler) saveRFDEbaySubscription(w http.ResponseWriter, req interaction
 	}
 
 	label := strings.ToUpper(subscriptionType)
-	h.respondPrivateMessage(w, fmt.Sprintf("✅ %s deal notifications have been set up in <#%s> with filter **%s**!", label, channelID, dealType))
+	h.respondPrivateMessage(w, fmt.Sprintf("✅ %s deal notifications have been set up in <#%s> with filter **%s**!", label, channelID, dealTypeLabel(dealType)))
 }
 
 // handleSetupFacebook handles /deals setup-facebook channel:<#channel> city:<city> [radius:<km>] [brands:<brands>]
@@ -907,7 +872,7 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 	if len(rfdSubs) > 0 {
 		msg.WriteString("**RFD:**\n")
 		for _, sub := range rfdSubs {
-			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, sub.DealType))
+			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
 		}
 		msg.WriteString("\n")
 	}
@@ -915,7 +880,7 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 	if len(ebaySubs) > 0 {
 		msg.WriteString("**eBay:**\n")
 		for _, sub := range ebaySubs {
-			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, sub.DealType))
+			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
 		}
 		msg.WriteString("\n")
 	}
@@ -1336,7 +1301,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	if err := h.store.RemoveSubscription(ctx, req.GuildID, channelID); err != nil {
+	if err := h.store.RemoveSubscription(ctx, req.GuildID, channelID, dealType); err != nil {
 		slog.Error("Failed to remove subscription", "guild", req.GuildID, "channel", channelID, "error", err)
 		h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
 		return
@@ -1350,7 +1315,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		res := interactionResponse{
 			Type: InteractionResponseTypeUpdateMessage,
 			Data: &interactionResponseData{
-				Content:    fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>.", dealType, channelID),
+				Content:    fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>.", dealTypeLabel(dealType), channelID),
 				Components: &[]discordComponent{}, // Clear the buttons
 			},
 		}
@@ -1375,7 +1340,7 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 	res := interactionResponse{
 		Type: InteractionResponseTypeUpdateMessage,
 		Data: &interactionResponseData{
-			Content:    fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>. Here are the remaining active deal channels:", dealType, channelID),
+			Content:    fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>. Here are the remaining active deal channels:", dealTypeLabel(dealType), channelID),
 			Components: &components,
 		},
 	}
@@ -1397,21 +1362,11 @@ func (h *Handler) respondError(w http.ResponseWriter, msg string) {
 	h.respondPrivateMessage(w, "❌ Error: "+msg)
 }
 
-// buildRemoveButtons deduplicates subscriptions by channel and returns
-// a slice of Discord action-row components with a danger button for each.
+// buildRemoveButtons returns a danger button for each subscription.
 func buildRemoveButtons(subs []models.Subscription) []discordComponent {
-	seenChannels := make(map[string]bool)
 	var components []discordComponent
 	for _, sub := range subs {
-		if seenChannels[sub.ChannelID] {
-			continue
-		}
-		seenChannels[sub.ChannelID] = true
-
-		typeLabel := sub.DealType
-		if typeLabel == "" {
-			typeLabel = "all"
-		}
+		typeLabel := dealTypeLabel(sub.DealType)
 
 		label := fmt.Sprintf("Delete Channel (%s)", typeLabel)
 		if sub.ChannelName != "" {
@@ -1425,12 +1380,27 @@ func buildRemoveButtons(subs []models.Subscription) []discordComponent {
 					Type:     ComponentTypeButton,
 					Style:    ButtonStyleDanger,
 					Label:    label,
-					CustomID: fmt.Sprintf("remove_sub::%s::%s", sub.ChannelID, typeLabel),
+					CustomID: fmt.Sprintf("remove_sub::%s::%s", sub.ChannelID, sub.DealType),
 				},
 			},
 		})
 	}
 	return components
+}
+
+func dealTypeLabel(dealType string) string {
+	switch dealType {
+	case "":
+		return "all"
+	case "ebay_ca_price_drop":
+		return "eBay Canada price drops"
+	case "ebay_us_price_drop":
+		return "eBay US price drops"
+	case "ebay_price_drop":
+		return "all eBay price drops"
+	default:
+		return dealType
+	}
 }
 
 // buildFacebookRemoveButtons creates remove buttons for Facebook subscriptions.

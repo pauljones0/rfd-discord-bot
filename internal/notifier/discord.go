@@ -495,8 +495,14 @@ func (c *Client) SendEbayDeal(ctx context.Context, item ebay.EbayItem, subs []mo
 
 	payload := createEbayPayload(item)
 	results := make(map[string]string)
+	sentChannels := make(map[string]bool)
 
 	for _, sub := range subs {
+		if sentChannels[sub.ChannelID] {
+			continue
+		}
+		sentChannels[sub.ChannelID] = true
+
 		urlStr := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, sub.ChannelID)
 		body, err := c.doRequest(ctx, "POST", urlStr, payload)
 		if err != nil {
@@ -580,6 +586,9 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 	if item.Condition != "" {
 		meta = append(meta, item.Condition)
 	}
+	if !item.ListedAt.IsZero() {
+		meta = append(meta, fmt.Sprintf("Listed <t:%d:f>", item.ListedAt.Unix()))
+	}
 	if len(meta) > 0 {
 		if descBuilder.Len() > 0 {
 			descBuilder.WriteString("\n")
@@ -592,20 +601,14 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		thumbnail.URL = item.ImageURL
 	}
 
-	var timestamp string
-	if !item.ListedAt.IsZero() {
-		timestamp = item.ListedAt.Format(time.RFC3339)
-	}
-
 	return discordEmbed{
 		Title:       title,
 		URL:         itemURL,
 		Description: descBuilder.String(),
 		Color:       colorWarmDeal,
 		Thumbnail:   thumbnail,
-		Timestamp:   timestamp,
 		Footer: discordEmbedFooter{
-			Text: ebayMarketplaceLabel(item) + " Price Drop",
+			Text: ebayMarketplaceLabel(item) + " • Price Drop Alert",
 		},
 	}
 }

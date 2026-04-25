@@ -635,18 +635,18 @@ func TestFormatEbayEmbed_CompactMobile(t *testing.T) {
 
 	embed := formatEbayEmbed(item)
 
-	wantDesc := "~~C$499.99~~ -> **C$349.99**  (-C$150.00, -30%)  •  2nd drop\n[vipoutletcanada](https://www.ebay.ca/usr/vipoutletcanada) 99.4%/12.3k  •  Certified Refurbished"
+	wantDesc := fmt.Sprintf("~~C$499.99~~ -> **C$349.99**  (-C$150.00, -30%%)  •  2nd drop\n[vipoutletcanada](https://www.ebay.ca/usr/vipoutletcanada) 99.4%%/12.3k  •  Certified Refurbished  •  Listed <t:%d:f>", listedAt.Unix())
 	if embed.Description != wantDesc {
 		t.Fatalf("Description mismatch.\nGot:  %q\nWant: %q", embed.Description, wantDesc)
 	}
 	if embed.URL != "https://www.ebay.ca/itm/123456789012?mkcid=1&mkrid=706-53473-19255-0&siteid=2&campid=5339131483&customid=&toolid=10001&mkevt=1" {
 		t.Fatalf("URL = %q, want affiliate-formatted eBay CA URL", embed.URL)
 	}
-	if embed.Footer.Text != "eBay Canada Price Drop" {
-		t.Fatalf("Footer.Text = %q, want %q", embed.Footer.Text, "eBay Canada Price Drop")
+	if embed.Footer.Text != "eBay Canada • Price Drop Alert" {
+		t.Fatalf("Footer.Text = %q, want %q", embed.Footer.Text, "eBay Canada • Price Drop Alert")
 	}
-	if embed.Timestamp != listedAt.Format(time.RFC3339) {
-		t.Fatalf("Timestamp = %q, want %q", embed.Timestamp, listedAt.Format(time.RFC3339))
+	if embed.Timestamp != "" {
+		t.Fatalf("Timestamp = %q, want empty unlabeled timestamp", embed.Timestamp)
 	}
 	if embed.Thumbnail.URL != item.ImageURL {
 		t.Fatalf("Thumbnail.URL = %q, want %q", embed.Thumbnail.URL, item.ImageURL)
@@ -666,8 +666,8 @@ func TestFormatEbayEmbed_MarketplaceFallbackFromItemURL(t *testing.T) {
 	if embed.URL != "https://www.ebay.com/itm/555555555555?mkcid=1&mkrid=711-53200-19255-0&siteid=0&campid=5339131483&customid=&toolid=10001&mkevt=1" {
 		t.Fatalf("URL = %q, want affiliate-formatted eBay US URL", embed.URL)
 	}
-	if embed.Footer.Text != "eBay US Price Drop" {
-		t.Fatalf("Footer.Text = %q, want %q", embed.Footer.Text, "eBay US Price Drop")
+	if embed.Footer.Text != "eBay US • Price Drop Alert" {
+		t.Fatalf("Footer.Text = %q, want %q", embed.Footer.Text, "eBay US • Price Drop Alert")
 	}
 	if !strings.Contains(embed.Description, "https://www.ebay.com/usr/vipoutlet") {
 		t.Fatalf("Description = %q, expected seller link to use ebay.com", embed.Description)

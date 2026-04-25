@@ -3,9 +3,8 @@ package storage
 import (
 	"context"
 	"fmt"
+
 	"google.golang.org/api/iterator"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -17,7 +16,15 @@ func (c *Client) SaveSubscription(ctx context.Context, sub models.Subscription) 
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
-	docID := fmt.Sprintf("%s_%s", sub.GuildID, sub.ChannelID)
+	subscriptionType := sub.SubscriptionType
+	if subscriptionType == "" {
+		subscriptionType = "rfd"
+	}
+	dealType := sub.DealType
+	if dealType == "" {
+		dealType = "all"
+	}
+	docID := fmt.Sprintf("%s_%s_%s_%s", sub.GuildID, sub.ChannelID, subscriptionType, dealType)
 	docRef := c.client.Collection(subscriptionsCollection).Doc(docID)
 	_, err := docRef.Set(ctx, sub)
 	if err != nil {
@@ -28,7 +35,7 @@ func (c *Client) SaveSubscription(ctx context.Context, sub models.Subscription) 
 }
 
 // RemoveSubscription removes a specific channel's subscription from Firestore.
-func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID string) error {
+func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID, dealType string) error {
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -40,6 +47,7 @@ func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID stri
 
 	// Keep track of any errors encountered during deletion, but try to delete all
 	var lastErr error
+	sawChannelDoc := false
 	count := 0
 	for {
 		doc, err := iter.Next()
@@ -48,6 +56,16 @@ func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID stri
 		}
 		if err != nil {
 			return fmt.Errorf("failed to iterate subscriptions for deletion: %w", err)
+		}
+		sawChannelDoc = true
+
+		var sub models.Subscription
+		if err := doc.DataTo(&sub); err != nil {
+			lastErr = fmt.Errorf("failed to unmarshal subscription doc %s: %w", doc.Ref.ID, err)
+			continue
+		}
+		if dealType != "" && sub.DealType != dealType {
+			continue
 		}
 
 		_, err = doc.Ref.Delete(ctx)
@@ -62,7 +80,7 @@ func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID stri
 		return lastErr
 	}
 
-	if count == 0 {
+	if count == 0 && !sawChannelDoc && dealType == "" {
 		// If we didn't find any documents by querying, fallback to the expected ID just in case
 		docID := fmt.Sprintf("%s_%s", guildID, channelID)
 		docRef := c.client.Collection(subscriptionsCollection).Doc(docID)
@@ -136,13 +154,19 @@ func (c *Client) GetSubscription(ctx context.Context, guildID, channelID string)
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
-	docID := fmt.Sprintf("%s_%s", guildID, channelID)
-	doc, err := c.client.Collection(subscriptionsCollection).Doc(docID).Get(ctx)
+	iter := c.client.Collection(subscriptionsCollection).
+		Where("guildID", "==", guildID).
+		Where("channelID", "==", channelID).
+		Limit(1).
+		Documents(ctx)
+	defer iter.Stop()
+
+	doc, err := iter.Next()
+	if err == iterator.Done {
+		return nil, nil
+	}
 	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get subscription %s: %w", docID, err)
+		return nil, fmt.Errorf("failed to get subscription for channel %s: %w", channelID, err)
 	}
 
 	var sub models.Subscription

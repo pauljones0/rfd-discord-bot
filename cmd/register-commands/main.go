@@ -82,7 +82,8 @@ func main() {
 							"type":        3, // STRING
 							"required":    true,
 							"choices": []map[string]interface{}{
-								{"name": "Price drop alerts", "value": "ebay_price_drop"},
+								{"name": "Canada price drops", "value": "ebay_ca_price_drop"},
+								{"name": "US price drops", "value": "ebay_us_price_drop"},
 							},
 						},
 					},

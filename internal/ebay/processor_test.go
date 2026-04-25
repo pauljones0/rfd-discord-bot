@@ -1,6 +1,10 @@
 package ebay
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
+)
 
 func TestShouldNotifyPriceDrop(t *testing.T) {
 	tests := []struct {
@@ -177,6 +181,57 @@ func TestPriorDropCount(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := priorDropCount(tt.existing); got != tt.want {
 				t.Fatalf("priorDropCount() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsEbayEligible_MarketplaceFilters(t *testing.T) {
+	caItem := EbayItem{Marketplace: "EBAY_CA"}
+	usItem := EbayItem{Marketplace: "EBAY_US"}
+
+	tests := []struct {
+		name string
+		item EbayItem
+		sub  models.Subscription
+		want bool
+	}{
+		{
+			name: "canadian filter accepts canadian item",
+			item: caItem,
+			sub:  models.Subscription{DealType: "ebay_ca_price_drop"},
+			want: true,
+		},
+		{
+			name: "canadian filter rejects us item",
+			item: usItem,
+			sub:  models.Subscription{DealType: "ebay_ca_price_drop"},
+			want: false,
+		},
+		{
+			name: "us filter accepts us item",
+			item: usItem,
+			sub:  models.Subscription{DealType: "ebay_us_price_drop"},
+			want: true,
+		},
+		{
+			name: "legacy all ebay filter accepts canadian item",
+			item: caItem,
+			sub:  models.Subscription{DealType: "ebay_price_drop"},
+			want: true,
+		},
+		{
+			name: "marketplace falls back to item url",
+			item: EbayItem{ItemURL: "https://www.ebay.com/itm/123"},
+			sub:  models.Subscription{DealType: "ebay_us_price_drop"},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isEbayEligible(tt.item, tt.sub); got != tt.want {
+				t.Fatalf("isEbayEligible() = %v, want %v", got, tt.want)
 			}
 		})
 	}

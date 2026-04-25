@@ -26,14 +26,14 @@ func (m *mockStore) SaveSubscription(ctx context.Context, sub models.Subscriptio
 	return nil
 }
 
-func (m *mockStore) RemoveSubscription(ctx context.Context, guildID, channelID string) error {
+func (m *mockStore) RemoveSubscription(ctx context.Context, guildID, channelID, dealType string) error {
 	if m.removeErr != nil {
 		return m.removeErr
 	}
 
 	var remaining []models.Subscription
 	for _, sub := range m.subscriptions {
-		if sub.GuildID == guildID && sub.ChannelID == channelID {
+		if sub.GuildID == guildID && sub.ChannelID == channelID && (dealType == "" || sub.DealType == dealType) {
 			continue
 		}
 		remaining = append(remaining, sub)
@@ -280,6 +280,66 @@ func TestHandleComponent_AllRemoved(t *testing.T) {
 			compLen = len(*res.Data.Components)
 		}
 		t.Errorf("expected 0 components (cleared buttons), got %d", compLen)
+	}
+}
+
+func TestBuildRemoveButtons_AllowsSameChannelDifferentFeeds(t *testing.T) {
+	subs := []models.Subscription{
+		{ChannelID: "chan1", ChannelName: "deals", DealType: "rfd_warm_hot", SubscriptionType: "rfd"},
+		{ChannelID: "chan1", ChannelName: "deals", DealType: "ebay_ca_price_drop", SubscriptionType: "ebay"},
+	}
+
+	components := buildRemoveButtons(subs)
+	if len(components) != 2 {
+		t.Fatalf("expected 2 buttons for same channel with different feeds, got %d", len(components))
+	}
+	if components[1].Components[0].Label != "Delete eBay Canada price drops from #deals" {
+		t.Fatalf("unexpected eBay button label: %q", components[1].Components[0].Label)
+	}
+	if components[1].Components[0].CustomID != "remove_sub::chan1::ebay_ca_price_drop" {
+		t.Fatalf("unexpected eBay button custom id: %q", components[1].Components[0].CustomID)
+	}
+}
+
+func TestHandleSetupEbay_AllowsCanadaAndUSSameChannel(t *testing.T) {
+	store := &mockStore{}
+	handler := &Handler{store: store}
+
+	reqPayload := interactionRequest{
+		GuildID: "guild1",
+		Data: &interactionData{
+			Resolved: &interactionResolved{
+				Channels: map[string]struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+					Type int    `json:"type"`
+				}{
+					"chan1": {ID: "chan1", Name: "deals"},
+				},
+			},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	handler.handleSetupEbay(w, reqPayload, []interactionOption{
+		{Name: "channel", Value: "chan1"},
+		{Name: "filter", Value: "ebay_ca_price_drop"},
+	})
+	if !strings.Contains(w.Body.String(), "eBay Canada price drops") {
+		t.Fatalf("expected Canada setup response, got %q", w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	handler.handleSetupEbay(w, reqPayload, []interactionOption{
+		{Name: "channel", Value: "chan1"},
+		{Name: "filter", Value: "ebay_us_price_drop"},
+	})
+	if !strings.Contains(w.Body.String(), "eBay US price drops") {
+		t.Fatalf("expected US setup response, got %q", w.Body.String())
+	}
+
+	if len(store.subscriptions) != 2 {
+		t.Fatalf("expected 2 eBay subscriptions in the same channel, got %d", len(store.subscriptions))
 	}
 }
 
