@@ -1,6 +1,7 @@
 package ebay
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -52,6 +53,57 @@ func TestAppendUniqueBrowseItems_DeduplicatesAcrossCategories(t *testing.T) {
 	}
 	if result[1].ItemID != "v1|222|0" {
 		t.Fatalf("second item = %q, want %q", result[1].ItemID, "v1|222|0")
+	}
+}
+
+func TestBrowseSearchResponse_UnmarshalsCouponFlag(t *testing.T) {
+	var resp BrowseSearchResponse
+	raw := []byte(`{"itemSummaries":[{"itemId":"v1|111|0","availableCoupons":true,"itemHref":"https://api.ebay.com/buy/browse/v1/item/v1%7C111%7C0"}]}`)
+
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(resp.ItemSummaries) != 1 {
+		t.Fatalf("len(itemSummaries) = %d, want 1", len(resp.ItemSummaries))
+	}
+	if !resp.ItemSummaries[0].AvailableCoupons {
+		t.Fatalf("availableCoupons = false, want true")
+	}
+	if resp.ItemSummaries[0].ItemHref == "" {
+		t.Fatalf("itemHref = empty, want populated")
+	}
+}
+
+func TestBestCouponSnapshot_UsesLargestCoupon(t *testing.T) {
+	coupon := bestCouponSnapshot([]AvailableCoupon{
+		{
+			DiscountAmount: &Price{Value: "15.00", Currency: "CAD"},
+			RedemptionCode: "SAVE15",
+			Message:        "Save $15",
+		},
+		{
+			DiscountAmount: &Price{Value: "40.00", Currency: "CAD"},
+			RedemptionCode: "SAVE40",
+			Message:        "Save $40",
+		},
+	})
+
+	if coupon.DiscountAmount != 40 {
+		t.Fatalf("discount = %v, want 40", coupon.DiscountAmount)
+	}
+	if coupon.Code != "SAVE40" {
+		t.Fatalf("code = %q, want SAVE40", coupon.Code)
+	}
+	if coupon.Message != "Save $40" {
+		t.Fatalf("message = %q, want Save $40", coupon.Message)
+	}
+}
+
+func TestBrowseItemDetailURL_FallsBackToEncodedItemID(t *testing.T) {
+	got := browseItemDetailURL(BrowseAPIItem{ItemID: "v1|111|0"})
+	want := ebayBrowseItemURL + "/v1%7C111%7C0"
+	if got != want {
+		t.Fatalf("browseItemDetailURL() = %q, want %q", got, want)
 	}
 }
 

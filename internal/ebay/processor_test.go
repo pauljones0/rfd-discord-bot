@@ -108,6 +108,43 @@ func TestShouldNotifyPriceDrop(t *testing.T) {
 	}
 }
 
+func TestCouponAdjustedPriceCountsAsPriceDrop(t *testing.T) {
+	newPrice := effectiveItemPrice(500, 120)
+	if newPrice != 380 {
+		t.Fatalf("effective price = %v, want 380", newPrice)
+	}
+
+	baseline, drop, percent, notify := shouldNotifyPriceDrop(TrackedItem{
+		Price:         500,
+		OriginalPrice: 500,
+	}, newPrice)
+	if !notify {
+		t.Fatalf("notify = false, want true")
+	}
+	if baseline != 500 || drop != 120 || percent != 24 {
+		t.Fatalf("baseline/drop/percent = %v/%v/%v, want 500/120/24", baseline, drop, percent)
+	}
+}
+
+func TestCouponIncreaseCountsAsDeeperPriceDrop(t *testing.T) {
+	newPrice := effectiveItemPrice(500, 180)
+	if newPrice != 320 {
+		t.Fatalf("effective price = %v, want 320", newPrice)
+	}
+
+	baseline, drop, percent, notify := shouldNotifyPriceDrop(TrackedItem{
+		Price:             380,
+		OriginalPrice:     500,
+		LastNotifiedPrice: 400,
+	}, newPrice)
+	if !notify {
+		t.Fatalf("notify = false, want true")
+	}
+	if baseline != 400 || drop != 80 || percent != 20 {
+		t.Fatalf("baseline/drop/percent = %v/%v/%v, want 400/80/20", baseline, drop, percent)
+	}
+}
+
 func TestPriorDropCount(t *testing.T) {
 	tests := []struct {
 		name     string

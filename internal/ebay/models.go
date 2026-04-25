@@ -50,7 +50,11 @@ func (s EbaySeller) EffectiveCategoryIDs() []string {
 type TrackedItem struct {
 	ItemID            string    `firestore:"itemID"`
 	Title             string    `firestore:"title"`
-	Price             float64   `firestore:"price"`
+	Price             float64   `firestore:"price"` // Effective price after item-level coupons when available.
+	BasePrice         float64   `firestore:"basePrice,omitempty"`
+	CouponDiscount    float64   `firestore:"couponDiscount,omitempty"`
+	CouponCode        string    `firestore:"couponCode,omitempty"`
+	CouponMessage     string    `firestore:"couponMessage,omitempty"`
 	OriginalPrice     float64   `firestore:"originalPrice,omitempty"`
 	LastNotifiedPrice float64   `firestore:"lastNotifiedPrice,omitempty"`
 	DropCount         int       `firestore:"dropCount,omitempty"`
@@ -69,6 +73,10 @@ type EbayItem struct {
 	Title                    string
 	CurrentPrice             float64
 	PreviousPrice            float64
+	BasePrice                float64
+	CouponDiscount           float64
+	CouponCode               string
+	CouponMessage            string
 	PriceDrop                float64
 	PercentDrop              float64
 	DropCount                int
@@ -96,12 +104,17 @@ type BrowseAPIItem struct {
 	ItemID           string      `json:"itemId"`
 	Title            string      `json:"title"`
 	Price            *Price      `json:"price"`
+	ItemHref         string      `json:"itemHref"`
 	ItemWebURL       string      `json:"itemWebUrl"`
 	Image            *Image      `json:"image"`
 	Seller           *SellerInfo `json:"seller"`
 	Condition        string      `json:"condition"`
 	CategoryID       string      `json:"categoryId"`
 	BuyingOptions    []string    `json:"buyingOptions"`
+	AvailableCoupons bool        `json:"availableCoupons"`
+	CouponDiscount   float64     `json:"-"`
+	CouponCode       string      `json:"-"`
+	CouponMessage    string      `json:"-"`
 	ItemCreationDate string      `json:"itemCreationDate"` // ISO8601
 	Marketplace      string      `json:"-"`
 }
@@ -110,6 +123,20 @@ type BrowseAPIItem struct {
 type Price struct {
 	Value    string `json:"value"`
 	Currency string `json:"currency"`
+}
+
+// BrowseAPIItemDetail represents fields fetched from the Browse getItem endpoint.
+type BrowseAPIItemDetail struct {
+	ItemID           string            `json:"itemId"`
+	AvailableCoupons []AvailableCoupon `json:"availableCoupons"`
+}
+
+// AvailableCoupon represents an item-level coupon returned by the Browse API.
+type AvailableCoupon struct {
+	DiscountAmount *Price `json:"discountAmount"`
+	Message        string `json:"message"`
+	RedemptionCode string `json:"redemptionCode"`
+	TermsWebURL    string `json:"termsWebUrl"`
 }
 
 // Image represents the eBay API image object.

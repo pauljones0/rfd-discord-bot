@@ -552,6 +552,15 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		}
 		descBuilder.WriteString(fmt.Sprintf("%s drop", ordinal(item.DropCount)))
 	}
+	if item.CouponDiscount > 0 {
+		if descBuilder.Len() > 0 {
+			descBuilder.WriteString("  •  ")
+		}
+		descBuilder.WriteString(fmt.Sprintf("after %s coupon", formatEbayMoney(item.CouponDiscount, item.Currency)))
+		if item.CouponCode != "" {
+			descBuilder.WriteString(fmt.Sprintf(" `%s`", item.CouponCode))
+		}
+	}
 
 	var meta []string
 	if item.Seller != "" {

@@ -145,7 +145,8 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		itemID := ExtractItemID(apiItem.ItemID)
 		currentIDs[itemID] = true
 
-		newPrice := parsePrice(apiItem.Price)
+		basePrice := parsePrice(apiItem.Price)
+		newPrice := effectiveItemPrice(basePrice, apiItem.CouponDiscount)
 		if newPrice <= 0 {
 			if apiItem.Price != nil && apiItem.Price.Value != "" {
 				logger.Warn("Failed to parse eBay item price, skipping", "itemID", itemID, "price_value", apiItem.Price.Value)
@@ -158,17 +159,21 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			// New item — queue for batch write, no notification
 			stats.newItems++
 			itemsToWrite = append(itemsToWrite, TrackedItem{
-				ItemID:        itemID,
-				Title:         apiItem.Title,
-				Price:         newPrice,
-				OriginalPrice: newPrice,
-				Currency:      currencyOrDefault(apiItem.Price),
-				Seller:        sellerUsername(apiItem.Seller),
-				Condition:     apiItem.Condition,
-				ItemURL:       apiItem.ItemWebURL,
-				ImageURL:      imageURL(apiItem.Image),
-				FirstSeenAt:   now,
-				LastSeenAt:    now,
+				ItemID:         itemID,
+				Title:          apiItem.Title,
+				Price:          newPrice,
+				BasePrice:      basePrice,
+				CouponDiscount: apiItem.CouponDiscount,
+				CouponCode:     apiItem.CouponCode,
+				CouponMessage:  apiItem.CouponMessage,
+				OriginalPrice:  newPrice,
+				Currency:       currencyOrDefault(apiItem.Price),
+				Seller:         sellerUsername(apiItem.Seller),
+				Condition:      apiItem.Condition,
+				ItemURL:        apiItem.ItemWebURL,
+				ImageURL:       imageURL(apiItem.Image),
+				FirstSeenAt:    now,
+				LastSeenAt:     now,
 			})
 			continue
 		}
@@ -197,6 +202,8 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				"title", apiItem.Title,
 				"baseline_price", baselinePrice,
 				"last_seen_price", existing.Price,
+				"base_price", basePrice,
+				"coupon_discount", apiItem.CouponDiscount,
 				"new_price", newPrice,
 				"drop_pct", fmt.Sprintf("%.1f%%", percentDrop),
 				"drop_dollars", fmt.Sprintf("$%.2f", dollarDrop),
@@ -207,6 +214,10 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				Title:                    apiItem.Title,
 				CurrentPrice:             newPrice,
 				PreviousPrice:            baselinePrice,
+				BasePrice:                basePrice,
+				CouponDiscount:           apiItem.CouponDiscount,
+				CouponCode:               apiItem.CouponCode,
+				CouponMessage:            apiItem.CouponMessage,
 				PriceDrop:                dollarDrop,
 				PercentDrop:              percentDrop,
 				DropCount:                existing.DropCount,
@@ -227,12 +238,23 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		newImgURL := imageURL(apiItem.Image)
 		newCurrency := currencyOrDefault(apiItem.Price)
 		newSeller := sellerUsername(apiItem.Seller)
+		newBasePrice := basePrice
+		newCouponDiscount := apiItem.CouponDiscount
+		newCouponCode := apiItem.CouponCode
+		newCouponMessage := apiItem.CouponMessage
 		if existing.Price != newPrice || existing.Title != apiItem.Title ||
 			existing.Condition != apiItem.Condition || existing.ItemURL != apiItem.ItemWebURL ||
 			existing.ImageURL != newImgURL || existing.Currency != newCurrency ||
-			existing.Seller != newSeller || backfilledOriginalPrice || backfilledDropCount || shouldNotify {
+			existing.Seller != newSeller || existing.BasePrice != newBasePrice ||
+			existing.CouponDiscount != newCouponDiscount || existing.CouponCode != newCouponCode ||
+			existing.CouponMessage != newCouponMessage ||
+			backfilledOriginalPrice || backfilledDropCount || shouldNotify {
 			stats.updated++
 			existing.Price = newPrice
+			existing.BasePrice = newBasePrice
+			existing.CouponDiscount = newCouponDiscount
+			existing.CouponCode = newCouponCode
+			existing.CouponMessage = newCouponMessage
 			existing.LastSeenAt = now
 			existing.Title = apiItem.Title
 			existing.Currency = newCurrency
@@ -326,6 +348,20 @@ func parsePrice(p *Price) float64 {
 		return 0
 	}
 	return f
+}
+
+func effectiveItemPrice(basePrice, couponDiscount float64) float64 {
+	if basePrice <= 0 {
+		return 0
+	}
+	if couponDiscount <= 0 {
+		return basePrice
+	}
+	effectivePrice := basePrice - couponDiscount
+	if effectivePrice < 0 {
+		return 0
+	}
+	return effectivePrice
 }
 
 func shouldNotifyPriceDrop(existing TrackedItem, newPrice float64) (baselinePrice, dollarDrop, percentDrop float64, ok bool) {

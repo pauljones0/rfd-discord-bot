@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	ebayAPIBase   = "https://api.ebay.com"
-	ebayTokenURL  = ebayAPIBase + "/identity/v1/oauth2/token"
-	ebayBrowseURL = ebayAPIBase + "/buy/browse/v1/item_summary/search"
-	ebayScope     = "https://api.ebay.com/oauth/api_scope"
+	ebayAPIBase       = "https://api.ebay.com"
+	ebayTokenURL      = ebayAPIBase + "/identity/v1/oauth2/token"
+	ebayBrowseURL     = ebayAPIBase + "/buy/browse/v1/item_summary/search"
+	ebayBrowseItemURL = ebayAPIBase + "/buy/browse/v1/item"
+	ebayScope         = "https://api.ebay.com/oauth/api_scope"
 
 	// browsePageLimit is the maximum items per page from the Browse API.
 	browsePageLimit = 200
@@ -167,6 +168,10 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller,
 			continue
 		}
 		allItems = append(allItems, items...)
+	}
+
+	if err := c.populateCouponDetails(ctx, allItems); err != nil {
+		slog.Warn("Failed to fetch some eBay coupon details", "processor", "ebay", "error", err)
 	}
 
 	return allItems, nil
@@ -328,6 +333,143 @@ func appendUniqueBrowseItems(dst, items []BrowseAPIItem, seen map[string]struct{
 		dst = append(dst, item)
 	}
 	return dst
+}
+
+type couponSnapshot struct {
+	DiscountAmount float64
+	Code           string
+	Message        string
+}
+
+func (c *Client) populateCouponDetails(ctx context.Context, items []BrowseAPIItem) error {
+	failures := 0
+	enriched := 0
+
+	for i := range items {
+		if !items[i].AvailableCoupons {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		coupon, err := c.fetchItemCouponSnapshot(ctx, items[i])
+		if err != nil {
+			failures++
+			slog.Warn("Failed to fetch eBay item coupon details",
+				"processor", "ebay",
+				"itemID", items[i].ItemID,
+				"error", err,
+			)
+			continue
+		}
+		if coupon.DiscountAmount <= 0 {
+			continue
+		}
+
+		items[i].CouponDiscount = coupon.DiscountAmount
+		items[i].CouponCode = coupon.Code
+		items[i].CouponMessage = coupon.Message
+		enriched++
+	}
+
+	if enriched > 0 {
+		slog.Info("Fetched eBay coupon details", "processor", "ebay", "items", enriched)
+	}
+	if failures > 0 {
+		return fmt.Errorf("coupon detail fetch failed for %d item(s)", failures)
+	}
+	return nil
+}
+
+func (c *Client) fetchItemCouponSnapshot(ctx context.Context, item BrowseAPIItem) (couponSnapshot, error) {
+	body, err := c.fetchBrowseItemBody(ctx, browseItemDetailURL(item), item.Marketplace)
+	if err != nil {
+		return couponSnapshot{}, err
+	}
+
+	var detail BrowseAPIItemDetail
+	if err := json.Unmarshal(body, &detail); err != nil {
+		return couponSnapshot{}, fmt.Errorf("failed to parse item detail response: %w", err)
+	}
+	return bestCouponSnapshot(detail.AvailableCoupons), nil
+}
+
+func browseItemDetailURL(item BrowseAPIItem) string {
+	if item.ItemHref != "" {
+		return item.ItemHref
+	}
+	return ebayBrowseItemURL + "/" + url.PathEscape(item.ItemID)
+}
+
+func (c *Client) fetchBrowseItemBody(ctx context.Context, reqURL, marketplace string) ([]byte, error) {
+	token, err := c.getToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get eBay token: %w", err)
+	}
+
+	body, statusCode, err := c.doBrowseItemRequest(ctx, reqURL, token, marketplace)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode == http.StatusUnauthorized {
+		slog.Warn("eBay item API returned 401, refreshing token and retrying")
+		c.invalidateToken()
+
+		token, err = c.getToken(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to refresh eBay token: %w", err)
+		}
+		body, statusCode, err = c.doBrowseItemRequest(ctx, reqURL, token, marketplace)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("eBay Browse item API error: HTTP %d, body: %s", statusCode, string(body))
+	}
+
+	return body, nil
+}
+
+func (c *Client) doBrowseItemRequest(ctx context.Context, reqURL, token, marketplace string) ([]byte, int, error) {
+	if marketplace == "" {
+		marketplace = "EBAY_CA"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to create item detail request: %w", err)
+	}
+	setBrowseHeaders(req, token, marketplace)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("item detail request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("failed to read item detail response: %w", err)
+	}
+	return body, resp.StatusCode, nil
+}
+
+func bestCouponSnapshot(coupons []AvailableCoupon) couponSnapshot {
+	var best couponSnapshot
+	for _, coupon := range coupons {
+		discount := parsePrice(coupon.DiscountAmount)
+		if discount <= best.DiscountAmount {
+			continue
+		}
+		best = couponSnapshot{
+			DiscountAmount: discount,
+			Code:           coupon.RedemptionCode,
+			Message:        coupon.Message,
+		}
+	}
+	return best
 }
 
 func (c *Client) fetchPage(ctx context.Context, sellerFilter, marketplace, categoryID string, offset int, sinceTime time.Time) ([]BrowseAPIItem, bool, error) {
