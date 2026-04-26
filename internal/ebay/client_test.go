@@ -1,12 +1,21 @@
 package ebay
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestBuildBrowseQueryParams_UsesTechCategoryAndSinceTime(t *testing.T) {
 	since := time.Date(2026, time.April, 16, 12, 34, 56, 0, time.UTC)
@@ -104,6 +113,26 @@ func TestBrowseItemDetailURL_FallsBackToEncodedItemID(t *testing.T) {
 	want := ebayBrowseItemURL + "/v1%7C111%7C0"
 	if got != want {
 		t.Fatalf("browseItemDetailURL() = %q, want %q", got, want)
+	}
+}
+
+func TestSearchSellerListings_ReturnsErrorWhenCategoryFetchFails(t *testing.T) {
+	client := &Client{
+		clientID:     "id",
+		clientSecret: "secret",
+		httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("dns lookup failed")
+		})},
+	}
+
+	_, err := client.SearchSellerListings(context.Background(), []EbaySeller{
+		{Username: "seller", CategoryIDs: []string{"58058"}},
+	}, time.Time{})
+	if err == nil {
+		t.Fatalf("SearchSellerListings() error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "failed to fetch") || !strings.Contains(err.Error(), "dns lookup failed") {
+		t.Fatalf("SearchSellerListings() error = %q, want fetch failure with original cause", err)
 	}
 }
 

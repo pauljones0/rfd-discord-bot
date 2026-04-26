@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -150,6 +151,7 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller,
 	groups := buildMarketplaceCategoryGroups(sellers)
 
 	var allItems []BrowseAPIItem
+	var groupErrs []error
 	for i, g := range groups {
 		if i > 0 {
 			select {
@@ -160,6 +162,7 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller,
 		}
 		items, err := c.fetchMarketplaceListings(ctx, g.marketplace, g.categorySellers, sinceTime)
 		if err != nil {
+			groupErrs = append(groupErrs, err)
 			slog.Warn("Failed to fetch eBay marketplace listings",
 				"marketplace", g.marketplace,
 				"sellers", countDistinctSellers(g.categorySellers),
@@ -174,6 +177,9 @@ func (c *Client) SearchSellerListings(ctx context.Context, sellers []EbaySeller,
 		slog.Warn("Failed to fetch some eBay coupon details", "processor", "ebay", "error", err)
 	}
 
+	if len(groupErrs) > 0 {
+		return allItems, fmt.Errorf("failed to fetch %d eBay marketplace group(s): %w", len(groupErrs), errors.Join(groupErrs...))
+	}
 	return allItems, nil
 }
 
@@ -241,11 +247,13 @@ func countDistinctSellers(categorySellers map[string][]string) int {
 func (c *Client) fetchMarketplaceListings(ctx context.Context, marketplace string, categorySellers map[string][]string, sinceTime time.Time) ([]BrowseAPIItem, error) {
 	seen := make(map[string]struct{})
 	var allItems []BrowseAPIItem
+	var categoryErrs []error
 
 	for _, categoryID := range orderedCategoryIDs(categorySellers) {
 		usernames := categorySellers[categoryID]
 		items, err := c.fetchCategoryListings(ctx, usernames, marketplace, categoryID, sinceTime)
 		if err != nil {
+			categoryErrs = append(categoryErrs, fmt.Errorf("category %s: %w", categoryID, err))
 			slog.Warn("Failed to fetch eBay tech category listings",
 				"marketplace", marketplace,
 				"category_id", categoryID,
@@ -257,13 +265,30 @@ func (c *Client) fetchMarketplaceListings(ctx context.Context, marketplace strin
 		allItems = appendUniqueBrowseItems(allItems, items, seen)
 	}
 
+	var err error
+	if len(categoryErrs) > 0 {
+		err = fmt.Errorf("failed to fetch %d eBay categor%s for %s: %w",
+			len(categoryErrs),
+			pluralSuffix(len(categoryErrs), "y", "ies"),
+			marketplace,
+			errors.Join(categoryErrs...),
+		)
+	}
+
 	slog.Info("Fetched eBay marketplace listings",
 		"marketplace", marketplace,
 		"sellers", countDistinctSellers(categorySellers),
 		"categories", len(categorySellers),
 		"total_items", len(allItems),
 	)
-	return allItems, nil
+	return allItems, err
+}
+
+func pluralSuffix(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }
 
 func (c *Client) fetchCategoryListings(ctx context.Context, usernames []string, marketplace, categoryID string, sinceTime time.Time) ([]BrowseAPIItem, error) {
