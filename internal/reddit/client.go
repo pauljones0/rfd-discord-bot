@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// RedditServiceStore defines the Firestore operations needed to resolve the relay URL.
+// RedditServiceStore defines the storage operations needed to resolve the relay URL.
 type RedditServiceStore interface {
 	GetRedditServiceURL(ctx context.Context) (string, error)
 }
@@ -79,14 +79,14 @@ func (c *Client) FetchPosts(ctx context.Context, subreddit string) ([]Post, erro
 	return posts, nil
 }
 
-// resolveURL tries Firestore first, falls back to static env var.
+// resolveURL tries storage first, then falls back to the static env var.
 func (c *Client) resolveURL(ctx context.Context) string {
 	if c.store != nil {
 		if dynamicURL, err := c.store.GetRedditServiceURL(ctx); err != nil {
 			slog.Warn("Failed to fetch dynamic reddit service URL, using static config",
 				"processor", "reddit", "error", err, "static_url", c.staticURL)
 		} else if dynamicURL != "" {
-			slog.Info("Using dynamic reddit service URL from Firestore",
+			slog.Info("Using dynamic reddit service URL from storage",
 				"processor", "reddit", "url", dynamicURL)
 			return dynamicURL
 		}

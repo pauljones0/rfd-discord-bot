@@ -7,17 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"cloud.google.com/go/firestore"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
-	"google.golang.org/api/iterator"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const facebookAdsCollection = "car_deals"
 const priceHistoryCollection = "price_history"
 
-// sanitizeFacebookDocID replaces characters that are invalid in Firestore document IDs.
+// sanitizeFacebookDocID replaces characters that are invalid in document IDs.
 func sanitizeFacebookDocID(s string) string {
 	s = strings.ReplaceAll(s, "/", "_")
 	s = strings.ReplaceAll(s, ".", "_")
@@ -27,203 +23,76 @@ func sanitizeFacebookDocID(s string) string {
 	return s
 }
 
-// FacebookAdExists checks whether a Facebook ad with the given listing ID already exists in Firestore.
+// FacebookAdExists checks whether a Facebook ad with the given listing ID already exists.
 // This enables early dedup checks before expensive Gemini normalization calls.
 func (c *Client) FacebookAdExists(ctx context.Context, listingID string) (bool, error) {
 	if listingID == "" {
 		return false, nil
 	}
-	if c.usesPostgres() {
-		_, ok, err := c.GetRawDocument(ctx, facebookAdsCollection, fmt.Sprintf("fb-%s", listingID))
-		return ok, err
-	}
-
-	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
-	defer cancel()
-
-	docID := fmt.Sprintf("fb-%s", listingID)
-	_, err := c.client.Collection(facebookAdsCollection).Doc(docID).Get(ctx)
-	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			return false, nil
-		}
-		return false, fmt.Errorf("failed to check facebook ad existence: %v", err)
-	}
-	return true, nil
+	_, ok, err := c.GetRawDocument(ctx, facebookAdsCollection, fmt.Sprintf("fb-%s", listingID))
+	return ok, err
 }
 
 // SaveFacebookAd saves or updates a Facebook ad record, returning true if it's a new record.
 // Uses the Facebook listing ID as the primary dedup key when available, falling back
 // to model-price-year composite key for backwards compatibility.
 func (c *Client) SaveFacebookAd(ctx context.Context, ad *models.FacebookAdRecord) (bool, error) {
-	if c.usesPostgres() {
-		var docID string
-		if ad.ID != "" {
-			docID = fmt.Sprintf("fb-%s", ad.ID)
-		} else {
-			docID = fmt.Sprintf("%s-%s-%d", sanitizeFacebookDocID(ad.Model), sanitizeFacebookDocID(ad.Price), ad.Year)
-		}
-		_, exists, err := c.GetRawDocument(ctx, facebookAdsCollection, docID)
-		if err != nil {
-			return false, err
-		}
-		ad.LastSeen = time.Now()
-		if !exists {
-			ad.ProcessedAt = time.Now()
-		}
-		if err := c.SetDocument(ctx, facebookAdsCollection, docID, ad); err != nil {
-			return false, err
-		}
-		return !exists, nil
-	}
-
-	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
-	defer cancel()
-
-	// Prefer the Facebook listing ID (stable across scrapes) over a composite key
-	// derived from Gemini normalization (which can vary between runs).
 	var docID string
 	if ad.ID != "" {
 		docID = fmt.Sprintf("fb-%s", ad.ID)
 	} else {
 		docID = fmt.Sprintf("%s-%s-%d", sanitizeFacebookDocID(ad.Model), sanitizeFacebookDocID(ad.Price), ad.Year)
 	}
-	docRef := c.client.Collection(facebookAdsCollection).Doc(docID)
-
-	_, err := docRef.Get(ctx)
-	isNew := false
+	_, exists, err := c.GetRawDocument(ctx, facebookAdsCollection, docID)
 	if err != nil {
-		if status.Code(err) == codes.NotFound {
-			isNew = true
-		} else {
-			return false, fmt.Errorf("failed to check existing facebook ad: %v", err)
-		}
+		return false, err
 	}
-
 	ad.LastSeen = time.Now()
-	if isNew {
+	if !exists {
 		ad.ProcessedAt = time.Now()
 	}
-
-	_, err = docRef.Set(ctx, ad)
-	if err != nil {
-		return false, fmt.Errorf("failed to save facebook ad: %v", err)
+	if err := c.SetDocument(ctx, facebookAdsCollection, docID, ad); err != nil {
+		return false, err
 	}
-
-	return isNew, nil
+	return !exists, nil
 }
 
 // PruneFacebookAds deletes Facebook ads older than maxAgeMonths or exceeding maxRecords.
 func (c *Client) PruneFacebookAds(ctx context.Context, maxAgeMonths int, maxRecords int) error {
-	if c.usesPostgres() {
-		rows, err := c.ListDocuments(ctx, facebookAdsCollection)
-		if err != nil {
-			return err
-		}
-		cutoff := time.Now().AddDate(0, -maxAgeMonths, 0)
-		for _, row := range rows {
-			if !documentTime(row.Data, "last_seen").IsZero() && documentTime(row.Data, "last_seen").Before(cutoff) {
-				if err := c.DeleteDocument(ctx, facebookAdsCollection, row.ID); err != nil {
-					slog.Warn("Failed to delete old facebook ad", "processor", "facebook", "id", row.ID, "error", err)
-				}
-			}
-		}
-		rows, err = c.ListDocuments(ctx, facebookAdsCollection)
-		if err != nil {
-			return err
-		}
-		if len(rows) > maxRecords {
-			sortDocumentsByTime(rows, "last_seen", true)
-			for _, row := range rows[:len(rows)-maxRecords] {
-				if err := c.DeleteDocument(ctx, facebookAdsCollection, row.ID); err != nil {
-					slog.Warn("Failed to delete excess facebook record", "processor", "facebook", "id", row.ID, "error", err)
-				}
-			}
-		}
-		return nil
+	rows, err := c.ListDocuments(ctx, facebookAdsCollection)
+	if err != nil {
+		return err
 	}
-
-	ctx, cancel := ensureDeadline(ctx, 2*time.Minute)
-	defer cancel()
-
-	// Delete by age
 	cutoff := time.Now().AddDate(0, -maxAgeMonths, 0)
-	iter := c.client.Collection(facebookAdsCollection).Where("last_seen", "<", cutoff).Documents(ctx)
-	for {
-		doc, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		if _, err := doc.Ref.Delete(ctx); err != nil {
-			slog.Warn("Failed to delete old facebook ad", "processor", "facebook", "id", doc.Ref.ID, "error", err)
-		}
-	}
-
-	// Delete oldest if exceeding maxRecords
-	allIter := c.client.Collection(facebookAdsCollection).Documents(ctx)
-	totalCount := 0
-	for {
-		_, err := allIter.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("failed to count facebook ad records: %v", err)
-		}
-		totalCount++
-	}
-
-	if totalCount > maxRecords {
-		excess := totalCount - maxRecords
-		deleteIter := c.client.Collection(facebookAdsCollection).OrderBy("last_seen", firestore.Asc).Limit(excess).Documents(ctx)
-		for {
-			doc, err := deleteIter.Next()
-			if err == iterator.Done {
-				break
-			}
-			if err != nil {
-				return fmt.Errorf("failed to iterate excess facebook records: %v", err)
-			}
-			if _, err := doc.Ref.Delete(ctx); err != nil {
-				slog.Warn("Failed to delete excess facebook record", "processor", "facebook", "id", doc.Ref.ID, "error", err)
+	for _, row := range rows {
+		if !documentTime(row.Data, "last_seen").IsZero() && documentTime(row.Data, "last_seen").Before(cutoff) {
+			if err := c.DeleteDocument(ctx, facebookAdsCollection, row.ID); err != nil {
+				slog.Warn("Failed to delete old facebook ad", "processor", "facebook", "id", row.ID, "error", err)
 			}
 		}
 	}
-
+	rows, err = c.ListDocuments(ctx, facebookAdsCollection)
+	if err != nil {
+		return err
+	}
+	if len(rows) > maxRecords {
+		sortDocumentsByTime(rows, "last_seen", true)
+		for _, row := range rows[:len(rows)-maxRecords] {
+			if err := c.DeleteDocument(ctx, facebookAdsCollection, row.ID); err != nil {
+				slog.Warn("Failed to delete excess facebook record", "processor", "facebook", "id", row.ID, "error", err)
+			}
+		}
+	}
 	return nil
 }
 
 // SavePriceHistory stores a daily price snapshot for a vehicle model.
 func (c *Client) SavePriceHistory(ctx context.Context, model string, value float64) error {
-	if c.usesPostgres() {
-		today := time.Now().Format("2006-01-02")
-		docID := fmt.Sprintf("%s-%s", model, today)
-		return c.SetDocument(ctx, priceHistoryCollection, docID, models.PriceHistory{
-			Model: model,
-			Date:  today,
-			Value: value,
-		})
-	}
-
-	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
-	defer cancel()
-
 	today := time.Now().Format("2006-01-02")
 	docID := fmt.Sprintf("%s-%s", model, today)
-
-	history := models.PriceHistory{
+	return c.SetDocument(ctx, priceHistoryCollection, docID, models.PriceHistory{
 		Model: model,
 		Date:  today,
 		Value: value,
-	}
-
-	_, err := c.client.Collection(priceHistoryCollection).Doc(docID).Set(ctx, history)
-	if err != nil {
-		return fmt.Errorf("failed to save price history: %v", err)
-	}
-
-	return nil
+	})
 }

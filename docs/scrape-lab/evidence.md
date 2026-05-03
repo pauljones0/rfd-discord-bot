@@ -6,27 +6,27 @@ This is the living ROI table for the low-rate scraper experiments. A backend is 
 
 | Site | Backend / Setup | Result | Evidence | Current Read |
 | --- | --- | --- | --- | --- |
-| eBay | `http` | Blocked by Akamai on tracked item pages | `.codex-remote/scrape-lab-firestore-browser-smoke` | Not enough for coupon discovery pages from this environment. |
-| eBay | `chromedp-cloudrun` | Blocked by Akamai on tracked item pages | `.codex-remote/scrape-lab-firestore-browser-smoke` | Does not improve on plain HTTP here. |
+| eBay | `http` | Blocked by Akamai on tracked item pages | `.codex-remote/scrape-lab-store-browser-smoke` | Not enough for coupon discovery pages from this environment. |
+| eBay | `chromedp-cloudrun` | Blocked by Akamai on tracked item pages | `.codex-remote/scrape-lab-store-browser-smoke` | Does not improve on plain HTTP here. |
 | eBay | `chromedp-persistent` | Blocked by Akamai on tracked item pages | `.codex-remote/scrape-lab-persistent-abs-smoke` | Persistent Chrome alone was not enough locally. |
 | eBay | `playwright` | Blocked by Akamai on tracked item pages | `.codex-remote/scrape-lab-playwright-smoke` | Not a good eBay coupon-page fallback by itself. |
 | eBay | `external-stealth` with nodriver | Loaded a real item page; no coupon found on that sample | `.codex-remote/scrape-lab-nodriver-validated` | Viable free coupon-page fallback. Needs repeated runs. |
 | eBay | `external-stealth` with Camoufox | Loaded a real item page and detected `5% off` coupon text | `.codex-remote/scrape-lab-camoufox-validated` | Strong free candidate when coupon text is missing from cheaper paths. |
-| eBay | `http` on Stormtrooper | HTTP 403 Akamai access denied on sampled Firestore item pages | `/data/scrape-lab-stormtrooper-ebay-http` | Not usable for page coupon discovery from Stormtrooper. |
-| eBay | `chromedp-persistent` on Stormtrooper | Akamai access denied on sampled Firestore item pages | `/data/scrape-lab-stormtrooper-ebay-chromedp` | Not enough for page coupon discovery from Stormtrooper. |
-| eBay | `external-stealth` with nodriver on Stormtrooper | Akamai access denied on sampled Firestore item pages | `/data/scrape-lab-stormtrooper-ebay-2` | Browser launches after container fixes, but eBay still blocks; needs Camoufox, a different host/IP, or paid browser trial. |
-| eBay | `external-stealth` with Camoufox on Stormtrooper | Akamai access denied on 3 sampled Firestore item pages | `/data/scrape-lab-stormtrooper-ebay-camoufox-20260503-023152` | Camoufox installs and runs, but Stormtrooper/IP is still blocked for eBay pages. |
+| eBay | `http` on Stormtrooper | HTTP 403 Akamai access denied on sampled tracked item pages | `/data/scrape-lab-stormtrooper-ebay-http` | Not usable for page coupon discovery from Stormtrooper. |
+| eBay | `chromedp-persistent` on Stormtrooper | Akamai access denied on sampled tracked item pages | `/data/scrape-lab-stormtrooper-ebay-chromedp` | Not enough for page coupon discovery from Stormtrooper. |
+| eBay | `external-stealth` with nodriver on Stormtrooper | Akamai access denied on sampled tracked item pages | `/data/scrape-lab-stormtrooper-ebay-2` | Browser launches after container fixes, but eBay still blocks; needs Camoufox, a different host/IP, or paid browser trial. |
+| eBay | `external-stealth` with Camoufox on Stormtrooper | Akamai access denied on 3 sampled tracked item pages | `/data/scrape-lab-stormtrooper-ebay-camoufox-20260503-023152` | Camoufox installs and runs, but Stormtrooper/IP is still blocked for eBay pages. |
 | eBay | `paid-trial` with Browserless on Stormtrooper | Passed on 3 sampled item pages; parsed coupons on 2 samples (`$10`, `$30` with `SCANNER`) | `/data/scrape-lab-stormtrooper-ebay-browserless-20260503-023754` | Proven final eBay-only fallback for post-drop coupon math. |
 | Memory Express | `http` | Cloudflare managed challenge | `.codex-remote/scrape-lab-memoryexpress-baseline` | Not reliable from this environment. |
-| Memory Express | `chromedp-cloudrun` | Cloudflare managed challenge | `.codex-remote/scrape-lab-memoryexpress-baseline` | Cloud Run browser path does not solve the current challenge. |
+| Memory Express | `chromedp-cloudrun` | Cloudflare managed challenge | `.codex-remote/scrape-lab-memoryexpress-baseline` | Legacy container browser path does not solve the current challenge. |
 | Memory Express | `chromedp-persistent` | Cloudflare managed challenge in the local trial | `.codex-remote/scrape-lab-persistent-abs-smoke` | Persistent Chrome may still be worth retesting on GCE, but local run did not pass. |
 | Memory Express | `external-stealth` with nodriver | Passed and parsed 24 SKST clearance items | `.codex-remote/scrape-lab-nodriver-validated` | Best free candidate so far. Needs repeated low-rate confirmation. |
 | Memory Express | `external-stealth` with Camoufox | Passed and parsed 24 SKST clearance items | `.codex-remote/scrape-lab-camoufox-validated` | Also viable; slower than nodriver in this run. |
 | Memory Express | `external-stealth` with nodriver on Stormtrooper | Blocked by Cloudflare Turnstile | `/data/scrape-lab-stormtrooper-memoryexpress-2` | Not first choice on Stormtrooper. Keep as fallback evidence only. |
 | Memory Express | `chromedp-persistent` on Stormtrooper | Passed and parsed 24 SKST clearance items | `/data/scrape-lab-stormtrooper-memoryexpress-fallbacks-2` | Best free Stormtrooper candidate so far; now first in default `MEMEXPRESS_BACKENDS`. |
 | Memory Express | `http` on Stormtrooper | HTTP 403 Cloudflare managed challenge | `/data/scrape-lab-stormtrooper-memoryexpress-fallbacks-2` | Keep only as final cheap probe/fallback evidence. |
-| Best Buy | `http` | Akamai access denied on seller pages/API | `.codex-remote/scrape-lab-firestore-browser-smoke` | Avoid as the primary production path. |
-| Best Buy | `chromedp-cloudrun` | Akamai access denied on seller pages | `.codex-remote/scrape-lab-firestore-browser-smoke` | Does not improve on HTTP here. |
+| Best Buy | `http` | Akamai access denied on seller pages/API | `.codex-remote/scrape-lab-store-browser-smoke` | Avoid as the primary production path. |
+| Best Buy | `chromedp-cloudrun` | Akamai access denied on seller pages | `.codex-remote/scrape-lab-store-browser-smoke` | Does not improve on HTTP here. |
 | Best Buy | `chromedp-persistent` | Akamai access denied on seller pages | `.codex-remote/scrape-lab-persistent-abs-smoke` | Persistent Chrome alone did not pass. |
 | Best Buy | `playwright` | Akamai access denied on seller pages | `.codex-remote/scrape-lab-playwright-smoke` | Not useful by itself for these seller pages. |
 | Best Buy | `external-stealth` with nodriver | Loaded the app shell but extracted 0 seller products | `.codex-remote/scrape-lab-nodriver-bestbuy-validated` | Not enough for production listing notifications. |

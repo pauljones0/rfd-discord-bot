@@ -44,7 +44,7 @@ func TestScrapeWithBackends_FallsBackAfterCloudflareChallenge(t *testing.T) {
 	defer func() { fetchBackendHTML = original }()
 
 	var attempted []string
-	fetchBackendHTML = func(_ context.Context, backend, _, _ string) scrapebackend.FetchResult {
+	fetchBackendHTML = func(_ context.Context, backend, _, _ string, _ bool) scrapebackend.FetchResult {
 		attempted = append(attempted, backend)
 		if backend == "http" {
 			return scrapebackend.FetchResult{

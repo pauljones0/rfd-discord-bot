@@ -178,7 +178,7 @@ func (p *DealProcessor) scrapeAndValidate(ctx context.Context, logger *slog.Logg
 	return validDeals, nil
 }
 
-// loadExistingDeals fetches existing deals from Firestore corresponding to the valid scraped deals.
+// loadExistingDeals fetches existing deals from storage corresponding to the valid scraped deals.
 func (p *DealProcessor) loadExistingDeals(ctx context.Context, validDeals []models.DealInfo, logger *slog.Logger) (map[string]*models.DealInfo, error) {
 	var idsToLookup []string
 	for _, deal := range validDeals {
@@ -338,14 +338,14 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 	var updatedDeals []models.DealInfo
 	var errorMessages []string
 
-	// We need to group validDeals by FirestoreID because deduplication might map multiple
+	// We need to group validDeals by document ID because deduplication might map multiple
 	// scraped deals to the same ID.
 	groupedDeals := make(map[string][]models.DealInfo)
 	for _, deal := range validDeals {
 		groupedDeals[deal.FirestoreID] = append(groupedDeals[deal.FirestoreID], deal)
 	}
 
-	for firestoreID, dealsGroup := range groupedDeals {
+	for documentID, dealsGroup := range groupedDeals {
 		if ctx.Err() != nil {
 			slog.Warn("Context cancelled, stopping notification processing", "processor", "rfd")
 			break
@@ -353,7 +353,7 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 
 		// Use the first deal in the group as the base
 		baseDeal := &dealsGroup[0]
-		existing := existingDeals[firestoreID]
+		existing := existingDeals[documentID]
 
 		if existing == nil {
 			if err := p.processNewDeal(ctx, baseDeal, dealsGroup, &newDeals, subs, tracker); err != nil {

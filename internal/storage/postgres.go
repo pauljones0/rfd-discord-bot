@@ -79,7 +79,7 @@ ON CONFLICT DO NOTHING`, collection, docID, payload)
 	return nil
 }
 
-// SetRawDocument upserts one already-shaped Firestore-style document map.
+// SetRawDocument upserts one already-shaped JSON document map.
 func (c *Client) SetRawDocument(ctx context.Context, collection, docID string, data map[string]any) error {
 	if collection == "" || docID == "" {
 		return fmt.Errorf("collection and docID are required")
@@ -201,7 +201,7 @@ func encodeStruct(rv reflect.Value) any {
 			continue
 		}
 		fv := rv.Field(i)
-		name, omitEmpty, skip := firestoreFieldName(field)
+		name, omitEmpty, skip := documentFieldName(field)
 		if skip {
 			continue
 		}
@@ -254,7 +254,7 @@ func encodeValue(v reflect.Value) any {
 	}
 }
 
-func firestoreFieldName(field reflect.StructField) (name string, omitEmpty bool, skip bool) {
+func documentFieldName(field reflect.StructField) (name string, omitEmpty bool, skip bool) {
 	tag := field.Tag.Get("firestore")
 	if tag == "-" {
 		return "", false, true

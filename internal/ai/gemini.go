@@ -32,9 +32,9 @@ type QuotaStore interface {
 
 type Client struct {
 	mu              sync.Mutex               // protects mutable state below
-	clients         map[string]*genai.Client  // region -> genai client (Vertex AI) or "" -> single client (Gemini API)
-	locations       []string                  // ordered region list for failover
-	currentLocation string                    // active region
+	clients         map[string]*genai.Client // region -> genai client (Vertex AI) or "" -> single client (Gemini API)
+	locations       []string                 // ordered region list for failover
+	currentLocation string                   // active region
 	store           QuotaStore
 	fallbackModels  []string
 	currentModel    string
@@ -211,7 +211,7 @@ func (c *Client) checkDayRollover(ctx context.Context) string {
 		c.allExhausted = false
 		c.exhaustedAt = time.Time{}
 		slog.Info("Day rolled over or restarted, resetting to lowest tier model", "model", c.currentModel, "location", c.currentLocation)
-		c.updateFirestoreQuota(ctx)
+		c.updateStoredQuota(ctx)
 	} else {
 		c.currentDay = quota.CurrentDay
 		c.currentModel = quota.CurrentModel
@@ -223,12 +223,12 @@ func (c *Client) checkDayRollover(ctx context.Context) string {
 	}
 
 	// Validate the loaded model exists in the current fallback list.
-	// A stale Firestore record from a previous deployment may reference
+	// A stale storage record from a previous deployment may reference
 	// a model that no longer exists in the configured tiers.
 	if !c.isKnownModel(c.currentModel) {
 		slog.Warn("Loaded model not in fallback list, resetting to default", "stale_model", c.currentModel, "default", c.fallbackModels[0])
 		c.currentModel = c.fallbackModels[0]
-		c.updateFirestoreQuota(ctx)
+		c.updateStoredQuota(ctx)
 	}
 
 	return c.currentModel
@@ -243,7 +243,7 @@ func (c *Client) resetToDefaults(ctx context.Context, today string) {
 	c.exhaustedAt = time.Time{}
 	c.consecutive429s = 0
 	c.consecutive504s = 0
-	c.updateFirestoreQuota(ctx)
+	c.updateStoredQuota(ctx)
 }
 
 func (c *Client) isKnownModel(model string) bool {
@@ -264,7 +264,7 @@ func (c *Client) isKnownLocation(location string) bool {
 	return false
 }
 
-func (c *Client) updateFirestoreQuota(ctx context.Context) {
+func (c *Client) updateStoredQuota(ctx context.Context) {
 	if c.store == nil {
 		return
 	}
@@ -276,7 +276,7 @@ func (c *Client) updateFirestoreQuota(ctx context.Context) {
 		CurrentLocation: c.currentLocation,
 	})
 	if err != nil {
-		slog.Error("Failed to update gemini quota status in firestore", "error", err)
+		slog.Error("Failed to update gemini quota status in storage", "error", err)
 	}
 }
 
@@ -300,7 +300,7 @@ func (c *Client) switchRegion(ctx context.Context) bool {
 					"to", c.currentLocation,
 					"model", c.currentModel,
 				)
-				c.updateFirestoreQuota(ctx)
+				c.updateStoredQuota(ctx)
 				return true
 			}
 			break
@@ -314,7 +314,7 @@ func (c *Client) upgradeModelTier(ctx context.Context) error {
 	if !c.isKnownModel(c.currentModel) {
 		slog.Warn("Current model not in fallback list during upgrade, resetting", "stale_model", c.currentModel, "default", c.fallbackModels[0])
 		c.currentModel = c.fallbackModels[0]
-		c.updateFirestoreQuota(ctx)
+		c.updateStoredQuota(ctx)
 		return nil
 	}
 
@@ -323,7 +323,7 @@ func (c *Client) upgradeModelTier(ctx context.Context) error {
 			if i+1 < len(c.fallbackModels) {
 				c.currentModel = c.fallbackModels[i+1]
 				slog.Info("Quota exhausted, upgrading model tier", "new_model", c.currentModel)
-				c.updateFirestoreQuota(ctx)
+				c.updateStoredQuota(ctx)
 				return nil
 			}
 			break
@@ -342,7 +342,7 @@ func (c *Client) upgradeModelTier(ctx context.Context) error {
 	// No more regions available
 	c.allExhausted = true
 	c.exhaustedAt = time.Now()
-	c.updateFirestoreQuota(ctx)
+	c.updateStoredQuota(ctx)
 	slog.Warn("All Gemini model tiers and regions exhausted, will retry after cooldown",
 		"cooldown", exhaustionCooldown,
 	)

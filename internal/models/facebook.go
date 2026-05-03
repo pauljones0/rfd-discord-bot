@@ -52,7 +52,7 @@ type ScrapedAd struct {
 	CarData     *CarData // Pre-filled from structured detail page data; nil = use Gemini
 }
 
-// FacebookAdRecord represents a processed Facebook ad stored in Firestore.
+// FacebookAdRecord represents a processed Facebook ad stored in the document store.
 type FacebookAdRecord struct {
 	ID           string    `firestore:"id"`
 	Title        string    `firestore:"title"`

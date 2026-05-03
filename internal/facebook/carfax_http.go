@@ -322,7 +322,7 @@ func (c *CarfaxHTTPClient) cascadeFuzzy(ctx context.Context, property, target st
 	return matched, nil
 }
 
-// optionsCacheKey builds the normalized params fragment used as a Firestore doc ID
+// optionsCacheKey builds the normalized params fragment used as a document ID.
 // for cached dropdown options. Excludes the "property" param since that's part of the key prefix.
 func optionsCacheKey(params url.Values) string {
 	// Build a deterministic key from the cascade parent params (year, make, model, trim, etc.)
@@ -335,7 +335,7 @@ func optionsCacheKey(params url.Values) string {
 	return strings.Join(parts, "_")
 }
 
-// cascadeOptions fetches dropdown options, checking the Firestore options cache first.
+// cascadeOptions fetches dropdown options, checking the options cache first.
 // On cache miss, calls the Carfax API and saves the results for future lookups.
 func (c *CarfaxHTTPClient) cascadeOptions(ctx context.Context, property string, params url.Values) ([]string, error) {
 	cacheKey := optionsCacheKey(params)

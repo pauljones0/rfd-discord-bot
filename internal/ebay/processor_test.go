@@ -1,6 +1,8 @@
 package ebay
 
 import (
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -250,6 +252,149 @@ func TestBestCachedCouponAppliesInferredPercentCap(t *testing.T) {
 	}
 	if got := bestCachedCoupon([]StoreCoupon{coupon}, 800); got.DiscountAmount != 100 {
 		t.Fatalf("discount = %v, want 100", got.DiscountAmount)
+	}
+}
+
+func TestStoreCouponReadyRequiresHighConfidenceAndLowError(t *testing.T) {
+	now := time.Now()
+	coupon := StoreCoupon{
+		Active:                 true,
+		Scope:                  "store",
+		Confidence:             0.89,
+		FormulaType:            "flat",
+		DiscountType:           "fixed",
+		DiscountValue:          30,
+		InferenceMaxErrorCents: 0,
+	}
+	if storeCouponReadyForStoreWideUse(coupon, now) {
+		t.Fatalf("coupon should not be store-wide ready below confidence threshold")
+	}
+	coupon.Confidence = 0.9
+	coupon.InferenceMaxErrorCents = 3
+	if storeCouponReadyForStoreWideUse(coupon, now) {
+		t.Fatalf("coupon should not be store-wide ready above max error threshold")
+	}
+	coupon.InferenceMaxErrorCents = 2
+	if !storeCouponReadyForStoreWideUse(coupon, now) {
+		t.Fatalf("coupon should be store-wide ready at confidence/error thresholds")
+	}
+}
+
+func TestStoreCouponFromObservationPromotesOnlyAfterEnoughEvidence(t *testing.T) {
+	now := time.Now()
+	p := NewProcessor(nil, nil, nil)
+	pageCoupon := PageCoupon{
+		DiscountAmount: 30,
+		DiscountType:   "fixed",
+		DiscountValue:  30,
+		Message:        "Save C$30.00 with coupon",
+		EvidenceText:   "Save C$30.00 with coupon",
+		Scope:          "unknown",
+		Signature:      "fixed|30.00",
+		Confidence:     0.7,
+	}
+
+	one := []CouponObservation{{
+		Marketplace:    "EBAY_CA",
+		Seller:         "seller",
+		Signature:      pageCoupon.Signature,
+		ItemID:         "item-1",
+		BasePrice:      100,
+		DiscountAmount: 30,
+		EvidenceText:   pageCoupon.EvidenceText,
+		ObservedAt:     now,
+	}}
+	coupon := p.storeCouponFromObservation("EBAY_CA", "seller", pageCoupon, one, nil, now)
+	if coupon.Active || coupon.Scope != "item" {
+		t.Fatalf("one non-store observation active/scope = %v/%q, want inactive item", coupon.Active, coupon.Scope)
+	}
+
+	two := append(one, CouponObservation{
+		Marketplace:    "EBAY_CA",
+		Seller:         "seller",
+		Signature:      pageCoupon.Signature,
+		ItemID:         "item-2",
+		BasePrice:      200,
+		DiscountAmount: 30,
+		EvidenceText:   pageCoupon.EvidenceText,
+		ObservedAt:     now,
+	})
+	coupon = p.storeCouponFromObservation("EBAY_CA", "seller", pageCoupon, two, nil, now)
+	if !coupon.Active || coupon.Scope != "store" {
+		t.Fatalf("two matching observations active/scope = %v/%q, want active store", coupon.Active, coupon.Scope)
+	}
+	if coupon.FormulaType != "flat" || coupon.DiscountValue != 30 {
+		t.Fatalf("formula/value = %q/%v, want flat/30", coupon.FormulaType, coupon.DiscountValue)
+	}
+}
+
+func TestNegativeCouponCheckThrottlesFutureChecks(t *testing.T) {
+	now := time.Now()
+	coupon := negativeCouponCheck("EBAY_CA", "seller", nil, now, 6*time.Hour)
+	if coupon.Signature != "none" || coupon.Active {
+		t.Fatalf("negative coupon signature/active = %q/%v, want none/false", coupon.Signature, coupon.Active)
+	}
+	if !coupon.NextCheckAt.Equal(now.Add(6 * time.Hour)) {
+		t.Fatalf("NextCheckAt = %s, want %s", coupon.NextCheckAt, now.Add(6*time.Hour))
+	}
+}
+
+func TestRetroactiveCouponAlertsSendOncePerCouponSignature(t *testing.T) {
+	now := time.Now()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	p := NewProcessor(nil, nil, nil)
+	apiItems := []BrowseAPIItem{{
+		ItemID:      "v1|123|0",
+		Title:       "Retro item",
+		Price:       &Price{Value: "500.00", Currency: "CAD"},
+		ItemWebURL:  "https://www.ebay.ca/itm/123",
+		Seller:      &SellerInfo{Username: "seller"},
+		Condition:   "Used",
+		Marketplace: "EBAY_CA",
+	}}
+	tracked := map[string]TrackedItem{
+		"123": {
+			ItemID:        "123",
+			Title:         "Retro item",
+			Price:         500,
+			OriginalPrice: 500,
+			BasePrice:     500,
+			Seller:        "seller",
+			Currency:      "CAD",
+			ItemURL:       "https://www.ebay.ca/itm/123",
+			FirstSeenAt:   now.Add(-time.Hour),
+			LastSeenAt:    now.Add(-time.Hour),
+		},
+	}
+	coupon := StoreCoupon{
+		Marketplace:            "EBAY_CA",
+		Seller:                 "seller",
+		Signature:              "flat|120.00|SAVE120",
+		Active:                 true,
+		Scope:                  "store",
+		Confidence:             0.95,
+		FormulaType:            "flat",
+		DiscountType:           "fixed",
+		DiscountValue:          120,
+		Code:                   "SAVE120",
+		RawText:                "Save C$120.00 with coupon",
+		InferenceMaxErrorCents: 0,
+	}
+	alerts, writes := p.retroactiveCouponAlerts(apiItems, tracked, map[string]StoreCoupon{
+		sellerCouponKey("EBAY_CA", "seller"): coupon,
+	}, map[string]bool{}, now, logger)
+	if len(alerts) != 1 || len(writes) != 1 {
+		t.Fatalf("alerts/writes = %d/%d, want 1/1", len(alerts), len(writes))
+	}
+	if writes[0].LastCouponAlertSignature != coupon.Signature {
+		t.Fatalf("LastCouponAlertSignature = %q, want %q", writes[0].LastCouponAlertSignature, coupon.Signature)
+	}
+
+	alerts, writes = p.retroactiveCouponAlerts(apiItems, tracked, map[string]StoreCoupon{
+		sellerCouponKey("EBAY_CA", "seller"): coupon,
+	}, map[string]bool{}, now, logger)
+	if len(alerts) != 0 || len(writes) != 0 {
+		t.Fatalf("second retro alerts/writes = %d/%d, want 0/0", len(alerts), len(writes))
 	}
 }
 

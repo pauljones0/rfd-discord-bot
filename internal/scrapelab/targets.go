@@ -13,21 +13,21 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
-// FirestoreTargetStore is the read-only Firestore surface scrape-lab needs.
-type FirestoreTargetStore interface {
+// TargetStore is the read-only storage surface scrape-lab needs.
+type TargetStore interface {
 	GetTrackedEbayItems(ctx context.Context) (map[string]ebay.TrackedItem, error)
 	GetMemExpressSubscriptions(ctx context.Context) ([]models.Subscription, error)
 	GetActiveBestBuySellers(ctx context.Context) ([]bestbuy.Seller, error)
 }
 
-// DiscoveryOptions controls Firestore-backed target discovery.
+// DiscoveryOptions controls store-backed target discovery.
 type DiscoveryOptions struct {
 	Sites     []string
 	EbayLimit int
 }
 
-// DiscoverFirestoreTargets builds scrape-lab targets from Firestore state.
-func DiscoverFirestoreTargets(ctx context.Context, store FirestoreTargetStore, opts DiscoveryOptions) ([]Target, error) {
+// DiscoverStoreTargets builds scrape-lab targets from stored bot state.
+func DiscoverStoreTargets(ctx context.Context, store TargetStore, opts DiscoveryOptions) ([]Target, error) {
 	sites := discoverySiteSet(opts.Sites)
 	var targets []Target
 

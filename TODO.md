@@ -7,10 +7,8 @@ This file tracks only near-term cleanup and follow-up work.
 
 - Watch one full local scheduler cycle after each deploy and confirm RFD, eBay,
   Memory Express, and Best Buy remain healthy.
-- Keep Firestore as migration/rollback only until Postgres has been stable long
-  enough to intentionally remove Firestore support.
-- Continue scrape-lab evidence collection for eBay coupon pages before enabling
-  any paid Browserless production fallback.
+- Continue scrape-lab evidence collection for eBay coupon pages and keep
+  Browserless as the final fallback only.
 - Re-register Discord commands after any `/deals` option or label change.
 
 ## Later

@@ -80,7 +80,7 @@ func Setup() {
 	}
 
 	var handler slog.Handler
-	// Use JSONHandler when running on Cloud Run for legacy compatibility.
+	// Keep JSON logs when legacy container metadata asks for it.
 	if os.Getenv("K_SERVICE") != "" {
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	} else {

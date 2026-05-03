@@ -19,8 +19,9 @@ const (
 	// priceDropMinDollars is the minimum dollar drop to trigger a notification.
 	priceDropMinDollars            = 50.0
 	defaultCouponDiscoveryInterval = 6 * time.Hour
-	defaultCouponSampleSize        = 3
 	defaultCouponDiscoveryBudget   = 75 * time.Second
+	storeCouponConfidenceThreshold = 0.90
+	storeCouponMaxErrorCents       = 2
 )
 
 // EbayStore abstracts the storage operations for the eBay processor.
@@ -35,6 +36,8 @@ type EbayStore interface {
 	DeleteTrackedEbayItems(ctx context.Context, itemIDs []string) error
 	GetEbayStoreCoupons(ctx context.Context, marketplace, seller string) ([]StoreCoupon, error)
 	SaveEbayStoreCoupon(ctx context.Context, coupon StoreCoupon) error
+	GetEbayCouponObservations(ctx context.Context, marketplace, seller, signature string) ([]CouponObservation, error)
+	SaveEbayCouponObservation(ctx context.Context, observation CouponObservation) error
 }
 
 // EbayNotifier abstracts the Discord notification layer for eBay deals.
@@ -49,7 +52,6 @@ type Processor struct {
 	notifier                EbayNotifier
 	mu                      sync.Mutex
 	couponDiscoveryInterval time.Duration
-	couponSampleSize        int
 	couponDiscoveryBudget   time.Duration
 }
 
@@ -60,17 +62,13 @@ func NewProcessor(store EbayStore, client *Client, notifier EbayNotifier) *Proce
 		client:                  client,
 		notifier:                notifier,
 		couponDiscoveryInterval: defaultCouponDiscoveryInterval,
-		couponSampleSize:        defaultCouponSampleSize,
 		couponDiscoveryBudget:   defaultCouponDiscoveryBudget,
 	}
 }
 
-func (p *Processor) SetCouponDiscoveryConfig(interval time.Duration, sampleSize int) {
+func (p *Processor) SetCouponDiscoveryInterval(interval time.Duration) {
 	if interval > 0 {
 		p.couponDiscoveryInterval = interval
-	}
-	if sampleSize > 0 {
-		p.couponSampleSize = sampleSize
 	}
 }
 
@@ -150,10 +148,6 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	stats.fetched = len(apiItems)
 	logger.Info("Fetched eBay listings", "total_items", len(apiItems))
 
-	couponCtx, cancelCouponDiscovery := context.WithTimeout(ctx, p.couponDiscoveryBudgetOrDefault())
-	couponCache := p.refreshSellerCouponCaches(couponCtx, apiItems, logger)
-	cancelCouponDiscovery()
-
 	// 4. Load existing tracked items from storage
 	tracked, err := p.store.GetTrackedEbayItems(ctx)
 	if err != nil {
@@ -165,6 +159,9 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	// Only write to storage when fields actually changed to avoid redundant writes.
 	now := time.Now()
 	currentIDs := make(map[string]bool, len(apiItems))
+	couponCache := make(map[string][]StoreCoupon)
+	activatedCoupons := make(map[string]StoreCoupon)
+	notifiedIDs := make(map[string]bool)
 	var priceDropItems []EbayItem
 	var itemsToWrite []TrackedItem
 
@@ -186,63 +183,25 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			// New item — queue for batch write, no notification
 			stats.newItems++
 			itemsToWrite = append(itemsToWrite, TrackedItem{
-				ItemID:         itemID,
-				Title:          apiItem.Title,
-				Price:          newPrice,
-				BasePrice:      basePrice,
-				CouponDiscount: apiItem.CouponDiscount,
-				CouponCode:     apiItem.CouponCode,
-				CouponMessage:  apiItem.CouponMessage,
-				CouponSource:   apiItem.CouponSource,
-				OriginalPrice:  newPrice,
-				Currency:       currencyOrDefault(apiItem.Price),
-				Seller:         sellerUsername(apiItem.Seller),
-				Condition:      apiItem.Condition,
-				ItemURL:        apiItem.ItemWebURL,
-				ImageURL:       imageURL(apiItem.Image),
-				FirstSeenAt:    now,
-				LastSeenAt:     now,
+				ItemID:          itemID,
+				Title:           apiItem.Title,
+				Price:           newPrice,
+				BasePrice:       basePrice,
+				CouponDiscount:  apiItem.CouponDiscount,
+				CouponCode:      apiItem.CouponCode,
+				CouponMessage:   apiItem.CouponMessage,
+				CouponSource:    apiItem.CouponSource,
+				CouponSignature: apiItem.CouponSignature,
+				OriginalPrice:   newPrice,
+				Currency:        currencyOrDefault(apiItem.Price),
+				Seller:          sellerUsername(apiItem.Seller),
+				Condition:       apiItem.Condition,
+				ItemURL:         apiItem.ItemWebURL,
+				ImageURL:        imageURL(apiItem.Image),
+				FirstSeenAt:     now,
+				LastSeenAt:      now,
 			})
 			continue
-		}
-
-		if shouldFetchPageCoupon(existing, basePrice, apiItem.CouponDiscount) {
-			if cachedCoupon := bestCachedCoupon(couponCache[sellerCouponKey(apiItem.Marketplace, sellerUsername(apiItem.Seller))], basePrice); cachedCoupon.DiscountAmount > apiItem.CouponDiscount {
-				apiItem.CouponDiscount = cachedCoupon.DiscountAmount
-				apiItem.CouponCode = cachedCoupon.Code
-				apiItem.CouponMessage = cachedCoupon.Message
-				apiItem.CouponSource = "seller-coupon-cache"
-				newPrice = effectiveItemPrice(basePrice, apiItem.CouponDiscount)
-				logger.Info("Applied cached eBay seller coupon to effective price",
-					"itemID", itemID,
-					"base_price", basePrice,
-					"coupon_discount", apiItem.CouponDiscount,
-					"coupon_source", apiItem.CouponSource,
-					"effective_price", newPrice,
-				)
-			} else {
-				pageCoupon, err := p.client.FetchPageCouponSnapshot(ctx, apiItem, basePrice)
-				if err != nil {
-					logger.Warn("Failed to fetch eBay page coupon",
-						"itemID", itemID,
-						"backend_order", p.client.couponBackends,
-						"error", err,
-					)
-				} else if pageCoupon.DiscountAmount > apiItem.CouponDiscount {
-					apiItem.CouponDiscount = pageCoupon.DiscountAmount
-					apiItem.CouponCode = pageCoupon.Code
-					apiItem.CouponMessage = pageCoupon.Message
-					apiItem.CouponSource = pageCoupon.Source
-					newPrice = effectiveItemPrice(basePrice, apiItem.CouponDiscount)
-					logger.Info("Applied eBay page coupon to effective price",
-						"itemID", itemID,
-						"base_price", basePrice,
-						"coupon_discount", apiItem.CouponDiscount,
-						"coupon_source", apiItem.CouponSource,
-						"effective_price", newPrice,
-					)
-				}
-			}
 		}
 
 		// Backfill original price for legacy tracked items that predate this field.
@@ -257,6 +216,15 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			backfilledDropCount = true
 		}
 
+		_, _, _, browseDropCandidate := shouldNotifyPriceDrop(existing, newPrice)
+		if browseDropCandidate && shouldFetchPageCoupon(existing, basePrice, apiItem.CouponDiscount) {
+			var activated *StoreCoupon
+			apiItem, newPrice, activated = p.applyCouponForPriceDrop(ctx, apiItem, existing, basePrice, newPrice, couponCache, now, logger)
+			if activated != nil {
+				activatedCoupons[sellerCouponKey(activated.Marketplace, activated.Seller)] = *activated
+			}
+		}
+
 		// Existing item — notify on the first qualifying drop from original price,
 		// then only on materially deeper drops than the last alerted price.
 		baselinePrice, dollarDrop, percentDrop, shouldNotify := shouldNotifyPriceDrop(existing, newPrice)
@@ -264,6 +232,11 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		if shouldNotify {
 			stats.priceDrops++
 			existing.DropCount = priorDropCount(existing) + 1
+			if apiItem.CouponSignature != "" {
+				existing.LastCouponAlertSignature = apiItem.CouponSignature
+				existing.LastCouponAlertAt = now
+			}
+			notifiedIDs[itemID] = true
 			logger.Info("Price drop detected",
 				"itemID", itemID,
 				"title", apiItem.Title,
@@ -311,12 +284,14 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		newCouponCode := apiItem.CouponCode
 		newCouponMessage := apiItem.CouponMessage
 		newCouponSource := apiItem.CouponSource
+		newCouponSignature := apiItem.CouponSignature
 		if existing.Price != newPrice || existing.Title != apiItem.Title ||
 			existing.Condition != apiItem.Condition || existing.ItemURL != apiItem.ItemWebURL ||
 			existing.ImageURL != newImgURL || existing.Currency != newCurrency ||
 			existing.Seller != newSeller || existing.BasePrice != newBasePrice ||
 			existing.CouponDiscount != newCouponDiscount || existing.CouponCode != newCouponCode ||
 			existing.CouponMessage != newCouponMessage || existing.CouponSource != newCouponSource ||
+			existing.CouponSignature != newCouponSignature ||
 			backfilledOriginalPrice || backfilledDropCount || shouldNotify {
 			stats.updated++
 			existing.Price = newPrice
@@ -325,6 +300,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			existing.CouponCode = newCouponCode
 			existing.CouponMessage = newCouponMessage
 			existing.CouponSource = newCouponSource
+			existing.CouponSignature = newCouponSignature
 			existing.LastSeenAt = now
 			existing.Title = apiItem.Title
 			existing.Currency = newCurrency
@@ -333,6 +309,17 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			existing.ImageURL = newImgURL
 			existing.Condition = apiItem.Condition
 			itemsToWrite = append(itemsToWrite, existing)
+			tracked[itemID] = existing
+		}
+	}
+
+	if len(activatedCoupons) > 0 {
+		retroItems, retroWrites := p.retroactiveCouponAlerts(apiItems, tracked, activatedCoupons, notifiedIDs, now, logger)
+		if len(retroItems) > 0 {
+			stats.priceDrops += len(retroItems)
+			stats.updated += len(retroWrites)
+			priceDropItems = append(priceDropItems, retroItems...)
+			itemsToWrite = append(itemsToWrite, retroWrites...)
 		}
 	}
 
@@ -541,171 +528,200 @@ func priorDropCount(existing TrackedItem) int {
 	return 0
 }
 
-func (p *Processor) refreshSellerCouponCaches(ctx context.Context, items []BrowseAPIItem, logger *slog.Logger) map[string][]StoreCoupon {
-	now := time.Now()
-	grouped := groupItemsForCouponDiscovery(items)
-	cache := make(map[string][]StoreCoupon, len(grouped))
-
-	for key, group := range grouped {
-		if ctx.Err() != nil {
-			return cache
-		}
-		marketplace, seller := splitSellerCouponKey(key)
-		existing, err := p.store.GetEbayStoreCoupons(ctx, marketplace, seller)
+func (p *Processor) applyCouponForPriceDrop(ctx context.Context, apiItem BrowseAPIItem, existing TrackedItem, basePrice, currentPrice float64, couponCache map[string][]StoreCoupon, now time.Time, logger *slog.Logger) (BrowseAPIItem, float64, *StoreCoupon) {
+	marketplace := apiItem.Marketplace
+	if marketplace == "" {
+		marketplace = "EBAY_CA"
+	}
+	seller := sellerUsername(apiItem.Seller)
+	if seller == "" || seller == "Unknown" {
+		return apiItem, currentPrice, nil
+	}
+	key := sellerCouponKey(marketplace, seller)
+	coupons, ok := couponCache[key]
+	if !ok {
+		loaded, err := p.store.GetEbayStoreCoupons(ctx, marketplace, seller)
 		if err != nil {
 			logger.Warn("Failed to load eBay seller coupon cache", "seller", seller, "marketplace", marketplace, "error", err)
-			continue
+			return apiItem, currentPrice, nil
 		}
-		cache[key] = existing
-		if couponCacheFresh(existing, now) {
-			continue
-		}
-
-		refreshed := p.discoverSellerCoupon(ctx, marketplace, seller, group, existing, now, logger)
-		if refreshed.Signature == "" {
-			continue
-		}
-		if err := p.store.SaveEbayStoreCoupon(ctx, refreshed); err != nil {
-			logger.Warn("Failed to save eBay seller coupon cache", "seller", seller, "marketplace", marketplace, "signature", refreshed.Signature, "error", err)
-			continue
-		}
-		cache[key] = appendFreshCoupon(existing, refreshed)
+		coupons = loaded
+		couponCache[key] = coupons
 	}
-	return cache
+
+	if cachedCoupon := bestCachedCoupon(coupons, basePrice); cachedCoupon.DiscountAmount > apiItem.CouponDiscount {
+		applyCouponSnapshotToItem(&apiItem, cachedCoupon)
+		currentPrice = effectiveItemPrice(basePrice, apiItem.CouponDiscount)
+		logger.Info("Applied cached eBay seller coupon to effective price",
+			"itemID", ExtractItemID(apiItem.ItemID),
+			"seller", seller,
+			"base_price", basePrice,
+			"coupon_discount", apiItem.CouponDiscount,
+			"coupon_source", apiItem.CouponSource,
+			"effective_price", currentPrice,
+		)
+		return apiItem, currentPrice, nil
+	}
+
+	if couponCacheFresh(coupons, now) {
+		return apiItem, currentPrice, nil
+	}
+
+	timeout := 30 * time.Second
+	if budget := p.couponDiscoveryBudgetOrDefault(); budget > 0 && budget < timeout {
+		timeout = budget
+	}
+	sampleCtx, cancel := context.WithTimeout(ctx, timeout)
+	pageCoupon, source, err := p.client.FetchPageCouponWithTimeout(sampleCtx, apiItem, basePrice, timeout)
+	cancel()
+	if err != nil {
+		logger.Warn("Failed to fetch eBay page coupon after API price drop",
+			"itemID", ExtractItemID(apiItem.ItemID),
+			"seller", seller,
+			"backend_order", p.client.couponBackends,
+			"error", err,
+		)
+		blocked := blockedCouponCheck(marketplace, seller, now, p.couponDiscoveryIntervalOrDefault(), err)
+		if saveErr := p.store.SaveEbayStoreCoupon(ctx, blocked); saveErr != nil {
+			logger.Warn("Failed to save eBay coupon blocked throttle", "seller", seller, "marketplace", marketplace, "error", saveErr)
+		} else {
+			couponCache[key] = appendFreshCoupon(coupons, blocked)
+		}
+		return apiItem, currentPrice, nil
+	}
+	if pageCoupon.DiscountAmount <= 0 {
+		negative := negativeCouponCheck(marketplace, seller, coupons, now, p.couponDiscoveryIntervalOrDefault())
+		if saveErr := p.store.SaveEbayStoreCoupon(ctx, negative); saveErr != nil {
+			logger.Warn("Failed to save eBay no-coupon cache", "seller", seller, "marketplace", marketplace, "error", saveErr)
+		} else {
+			couponCache[key] = appendFreshCoupon(coupons, negative)
+		}
+		return apiItem, currentPrice, nil
+	}
+
+	observation := CouponObservation{
+		Marketplace:    marketplace,
+		Seller:         seller,
+		Signature:      pageCoupon.Signature,
+		ItemID:         ExtractItemID(apiItem.ItemID),
+		ItemURL:        apiItem.ItemWebURL,
+		BasePrice:      basePrice,
+		DiscountAmount: pageCoupon.DiscountAmount,
+		Code:           pageCoupon.Code,
+		Message:        pageCoupon.Message,
+		EvidenceText:   couponEvidenceText(pageCoupon),
+		Scope:          pageCoupon.Scope,
+		Backend:        source,
+		Confidence:     pageCoupon.Confidence,
+		ObservedAt:     now,
+		ExpiresAt:      pageCoupon.ExpiresAt,
+	}
+	if err := p.store.SaveEbayCouponObservation(ctx, observation); err != nil {
+		logger.Warn("Failed to save eBay coupon observation", "seller", seller, "marketplace", marketplace, "signature", pageCoupon.Signature, "error", err)
+	}
+	observations, err := p.store.GetEbayCouponObservations(ctx, marketplace, seller, pageCoupon.Signature)
+	if err != nil {
+		logger.Warn("Failed to load eBay coupon observations", "seller", seller, "marketplace", marketplace, "signature", pageCoupon.Signature, "error", err)
+		observations = []CouponObservation{observation}
+	} else if !containsCouponObservation(observations, observation) {
+		observations = append(observations, observation)
+	}
+
+	refreshed := p.storeCouponFromObservation(marketplace, seller, pageCoupon, observations, coupons, now)
+	previouslyActive := hasActiveCoupon(coupons, refreshed.Signature, now)
+	if err := p.store.SaveEbayStoreCoupon(ctx, refreshed); err != nil {
+		logger.Warn("Failed to save eBay seller coupon cache", "seller", seller, "marketplace", marketplace, "signature", refreshed.Signature, "error", err)
+	} else {
+		couponCache[key] = appendFreshCoupon(coupons, refreshed)
+	}
+
+	if refreshed.Active {
+		if cachedCoupon := bestCachedCoupon([]StoreCoupon{refreshed}, basePrice); cachedCoupon.DiscountAmount > apiItem.CouponDiscount {
+			applyCouponSnapshotToItem(&apiItem, cachedCoupon)
+			currentPrice = effectiveItemPrice(basePrice, apiItem.CouponDiscount)
+		}
+		if !previouslyActive {
+			return apiItem, currentPrice, &refreshed
+		}
+	}
+
+	return apiItem, currentPrice, nil
 }
 
-func (p *Processor) discoverSellerCoupon(ctx context.Context, marketplace, seller string, items []BrowseAPIItem, existing []StoreCoupon, now time.Time, logger *slog.Logger) StoreCoupon {
-	sampleSize := p.couponSampleSize
-	if sampleSize <= 0 {
-		sampleSize = defaultCouponSampleSize
-	}
-	if sampleSize > len(items) {
-		sampleSize = len(items)
-	}
+func applyCouponSnapshotToItem(item *BrowseAPIItem, coupon couponSnapshot) {
+	item.CouponDiscount = coupon.DiscountAmount
+	item.CouponCode = coupon.Code
+	item.CouponMessage = coupon.Message
+	item.CouponSource = coupon.Source
+	item.CouponSignature = coupon.Signature
+}
 
-	type sample struct {
-		coupon PageCoupon
-		item   BrowseAPIItem
+func negativeCouponCheck(marketplace, seller string, existing []StoreCoupon, now time.Time, interval time.Duration) StoreCoupon {
+	negative := StoreCoupon{
+		Marketplace:         marketplace,
+		Seller:              seller,
+		Signature:           "none",
+		DiscountType:        "none",
+		Scope:               "none",
+		Confidence:          0.6,
+		LastChecked:         now,
+		LastSeen:            now,
+		NextCheckAt:         now.Add(interval),
+		Active:              false,
+		ConsecutiveNoCoupon: previousNoCouponCount(existing) + 1,
 	}
-	var samples []sample
-	var observations []couponInferenceObservation
-	for _, item := range items[:sampleSize] {
-		if ctx.Err() != nil {
-			break
-		}
-		basePrice := parsePrice(item.Price)
-		if basePrice <= 0 {
-			continue
-		}
-		sampleCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		coupon, _, err := p.client.FetchPageCouponWithTimeout(sampleCtx, item, basePrice, 8*time.Second)
-		cancel()
-		if err != nil {
-			logger.Warn("Failed eBay seller coupon discovery sample",
-				"seller", seller,
-				"marketplace", marketplace,
-				"itemID", ExtractItemID(item.ItemID),
-				"error", err,
-			)
-			continue
-		}
-		obs := couponInferenceObservation{
-			signature: coupon.Signature,
-			sample: couponinfer.Sample{
-				BaseCents:     priceToCents(basePrice),
-				DiscountCents: priceToCents(coupon.DiscountAmount),
-				Text:          couponEvidenceText(coupon),
-			},
-		}
-		observations = append(observations, obs)
-		if coupon.DiscountAmount <= 0 {
-			continue
-		}
-		samples = append(samples, sample{coupon: coupon, item: item})
+	if firstSeen := firstSeenForSignature(existing, "none"); !firstSeen.IsZero() {
+		negative.FirstSeen = firstSeen
+	} else {
+		negative.FirstSeen = now
 	}
+	return negative
+}
 
-	if len(samples) == 0 {
-		negative := StoreCoupon{
-			Marketplace:         marketplace,
-			Seller:              seller,
-			Signature:           "none",
-			DiscountType:        "none",
-			Scope:               "none",
-			Confidence:          0.6,
-			LastChecked:         now,
-			LastSeen:            now,
-			NextCheckAt:         now.Add(p.couponDiscoveryIntervalOrDefault()),
-			Active:              false,
-			ConsecutiveNoCoupon: previousNoCouponCount(existing) + 1,
-		}
-		if firstSeen := firstSeenForSignature(existing, "none"); !firstSeen.IsZero() {
-			negative.FirstSeen = firstSeen
-		} else {
-			negative.FirstSeen = now
-		}
-		return negative
+func blockedCouponCheck(marketplace, seller string, now time.Time, interval time.Duration, err error) StoreCoupon {
+	return StoreCoupon{
+		Marketplace:  marketplace,
+		Seller:       seller,
+		Signature:    "blocked",
+		DiscountType: "unknown",
+		FormulaType:  couponinfer.TypeUnknown,
+		RawText:      err.Error(),
+		Scope:        "unknown",
+		Confidence:   0,
+		FirstSeen:    now,
+		LastSeen:     now,
+		LastChecked:  now,
+		NextCheckAt:  now.Add(interval),
+		Active:       false,
 	}
+}
 
-	counts := make(map[string]int)
-	bestBySignature := make(map[string]sample)
-	for _, s := range samples {
-		sig := s.coupon.Signature
-		counts[sig]++
-		if bestBySignature[sig].coupon.DiscountAmount < s.coupon.DiscountAmount {
-			bestBySignature[sig] = s
-		}
-	}
+func (p *Processor) storeCouponFromObservation(marketplace, seller string, pageCoupon PageCoupon, observations []CouponObservation, existing []StoreCoupon, now time.Time) StoreCoupon {
+	samples := couponSamplesFromObservations(observations)
+	inference := couponinfer.Infer(samples)
 
-	var bestSig string
-	for sig, count := range counts {
-		if bestSig == "" || count > counts[bestSig] || bestBySignature[sig].coupon.DiscountAmount > bestBySignature[bestSig].coupon.DiscountAmount {
-			bestSig = sig
-		}
-	}
-	best := bestBySignature[bestSig]
-	scope := best.coupon.Scope
-	confidence := best.coupon.Confidence
-	if counts[bestSig] >= 2 {
+	scope := "item"
+	if pageCoupon.Scope == "store" || distinctPositiveObservationItems(observations) >= 2 {
 		scope = "store"
-		confidence += 0.25
-	}
-	if confidence > 0.98 {
-		confidence = 0.98
 	}
 
-	inference := couponinfer.Infer(inferenceSamplesForSignature(observations, bestSig))
 	formulaType := inference.Rule.Type
-	discountType := best.coupon.DiscountType
-	discountValue := best.coupon.DiscountValue
-	maxDiscount := best.coupon.MaxDiscount
+	discountType := pageCoupon.DiscountType
+	discountValue := pageCoupon.DiscountValue
+	maxDiscount := pageCoupon.MaxDiscount
 	thresholdAmount := 0.0
-	signature := bestSig
+	signature := pageCoupon.Signature
 	if inferredCouponRuleUsable(inference.Rule.Type) {
 		discountType, discountValue, maxDiscount, thresholdAmount = storeCouponFieldsFromRule(inference.Rule)
-		signature = inference.Rule.Signature(best.coupon.Code)
-		if inference.Confidence > confidence {
-			confidence = inference.Confidence
-		}
-	} else if inference.Rule.Type == couponinfer.TypeAmbiguous || inference.Rule.Type == couponinfer.TypeUnknown {
-		if confidence > 0.6 {
-			confidence = 0.6
-		}
+		signature = inference.Rule.Signature(pageCoupon.Code)
 	}
 
-	itemIDs := make([]string, 0, len(samples))
-	itemURLs := make([]string, 0, len(samples))
-	for _, s := range samples {
-		if s.coupon.Signature != bestSig {
-			continue
-		}
-		itemIDs = append(itemIDs, ExtractItemID(s.item.ItemID))
-		itemURLs = append(itemURLs, s.item.ItemWebURL)
-	}
-
+	itemIDs, itemURLs := sampledCouponItems(observations)
 	nextCheck := now.Add(p.couponDiscoveryIntervalOrDefault())
-	if !best.coupon.ExpiresAt.IsZero() && best.coupon.ExpiresAt.After(now) {
-		nextCheck = best.coupon.ExpiresAt.Add(15 * time.Minute)
+	if !pageCoupon.ExpiresAt.IsZero() && pageCoupon.ExpiresAt.After(now) {
+		nextCheck = pageCoupon.ExpiresAt.Add(15 * time.Minute)
 	}
+
 	coupon := StoreCoupon{
 		Marketplace:               marketplace,
 		Seller:                    seller,
@@ -715,9 +731,9 @@ func (p *Processor) discoverSellerCoupon(ctx context.Context, marketplace, selle
 		MaxDiscount:               maxDiscount,
 		FormulaType:               formulaType,
 		ThresholdAmount:           thresholdAmount,
-		Code:                      best.coupon.Code,
-		RawText:                   best.coupon.Message,
-		Confidence:                confidence,
+		Code:                      pageCoupon.Code,
+		RawText:                   pageCoupon.Message,
+		Confidence:                inference.Confidence,
 		InferenceMaxErrorCents:    int(inference.MaxErrorCents),
 		InferenceCompetingRules:   inference.CompetingRules,
 		InferenceNeedsMoreSamples: inference.NeedsMoreSamples,
@@ -728,41 +744,201 @@ func (p *Processor) discoverSellerCoupon(ctx context.Context, marketplace, selle
 		FirstSeen:                 firstSeenOrNow(existing, signature, now),
 		LastSeen:                  now,
 		LastChecked:               now,
-		ExpiresAt:                 best.coupon.ExpiresAt,
+		ExpiresAt:                 pageCoupon.ExpiresAt,
 		NextCheckAt:               nextCheck,
-		Active:                    confidence >= 0.75 && scope == "store" && inferredCouponRuleUsable(formulaType),
 	}
-	logger.Info("Refreshed eBay seller coupon cache",
-		"seller", seller,
-		"marketplace", marketplace,
-		"signature", coupon.Signature,
-		"formula_type", coupon.FormulaType,
-		"scope", coupon.Scope,
-		"confidence", coupon.Confidence,
-		"active", coupon.Active,
-		"inference_max_error_cents", coupon.InferenceMaxErrorCents,
-		"inference_competing_rules", coupon.InferenceCompetingRules,
-		"inference_needs_more_samples", coupon.InferenceNeedsMoreSamples,
-		"sample_hits", counts[bestSig],
-		"sample_size", sampleSize,
-		"next_check", coupon.NextCheckAt,
-	)
+	coupon.Active = storeCouponReadyForStoreWideUse(coupon, now)
 	return coupon
 }
 
-type couponInferenceObservation struct {
-	signature string
-	sample    couponinfer.Sample
-}
-
-func inferenceSamplesForSignature(observations []couponInferenceObservation, signature string) []couponinfer.Sample {
-	out := make([]couponinfer.Sample, 0, len(observations))
-	for _, observation := range observations {
-		if observation.signature == "" || observation.signature == signature {
-			out = append(out, observation.sample)
+func couponSamplesFromObservations(observations []CouponObservation) []couponinfer.Sample {
+	byItem := make(map[string]couponinfer.Sample)
+	for _, obs := range observations {
+		if obs.DiscountAmount <= 0 || obs.BasePrice <= 0 {
+			continue
+		}
+		text := strings.TrimSpace(obs.EvidenceText)
+		if text == "" {
+			text = obs.Message
+		}
+		key := obs.ItemID
+		if key == "" {
+			key = obs.ItemURL
+		}
+		if key == "" {
+			key = fmt.Sprintf("%f-%f", obs.BasePrice, obs.DiscountAmount)
+		}
+		byItem[key] = couponinfer.Sample{
+			BaseCents:     priceToCents(obs.BasePrice),
+			DiscountCents: priceToCents(obs.DiscountAmount),
+			Text:          text,
 		}
 	}
-	return out
+	samples := make([]couponinfer.Sample, 0, len(byItem))
+	for _, sample := range byItem {
+		samples = append(samples, sample)
+	}
+	return samples
+}
+
+func distinctPositiveObservationItems(observations []CouponObservation) int {
+	seen := make(map[string]bool)
+	for _, obs := range observations {
+		if obs.DiscountAmount <= 0 {
+			continue
+		}
+		key := obs.ItemID
+		if key == "" {
+			key = obs.ItemURL
+		}
+		if key == "" {
+			continue
+		}
+		seen[key] = true
+	}
+	return len(seen)
+}
+
+func sampledCouponItems(observations []CouponObservation) ([]string, []string) {
+	seenIDs := make(map[string]bool)
+	seenURLs := make(map[string]bool)
+	var ids []string
+	var urls []string
+	for _, obs := range observations {
+		if obs.ItemID != "" && !seenIDs[obs.ItemID] {
+			seenIDs[obs.ItemID] = true
+			ids = append(ids, obs.ItemID)
+		}
+		if obs.ItemURL != "" && !seenURLs[obs.ItemURL] {
+			seenURLs[obs.ItemURL] = true
+			urls = append(urls, obs.ItemURL)
+		}
+	}
+	return ids, urls
+}
+
+func containsCouponObservation(observations []CouponObservation, target CouponObservation) bool {
+	for _, obs := range observations {
+		if obs.ItemID == target.ItemID && obs.Signature == target.Signature && obs.ObservedAt.Equal(target.ObservedAt) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasActiveCoupon(coupons []StoreCoupon, signature string, now time.Time) bool {
+	for _, coupon := range coupons {
+		if coupon.Signature != signature || !coupon.Active {
+			continue
+		}
+		if !coupon.ExpiresAt.IsZero() && coupon.ExpiresAt.Before(now) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func storeCouponReadyForStoreWideUse(coupon StoreCoupon, now time.Time) bool {
+	if coupon.Scope != "store" || !inferredCouponRuleUsable(coupon.FormulaType) {
+		return false
+	}
+	if coupon.Confidence < storeCouponConfidenceThreshold || coupon.InferenceMaxErrorCents > storeCouponMaxErrorCents {
+		return false
+	}
+	if !coupon.ExpiresAt.IsZero() && coupon.ExpiresAt.Before(now) {
+		return false
+	}
+	return true
+}
+
+func (p *Processor) retroactiveCouponAlerts(apiItems []BrowseAPIItem, tracked map[string]TrackedItem, activated map[string]StoreCoupon, notifiedIDs map[string]bool, now time.Time, logger *slog.Logger) ([]EbayItem, []TrackedItem) {
+	var alerts []EbayItem
+	var writes []TrackedItem
+	for _, apiItem := range apiItems {
+		itemID := ExtractItemID(apiItem.ItemID)
+		if notifiedIDs[itemID] {
+			continue
+		}
+		existing, exists := tracked[itemID]
+		if !exists {
+			continue
+		}
+		marketplace := apiItem.Marketplace
+		if marketplace == "" {
+			marketplace = "EBAY_CA"
+		}
+		seller := sellerUsername(apiItem.Seller)
+		coupon, ok := activated[sellerCouponKey(marketplace, seller)]
+		if !ok || existing.LastCouponAlertSignature == coupon.Signature {
+			continue
+		}
+		basePrice := parsePrice(apiItem.Price)
+		if basePrice <= 0 {
+			continue
+		}
+		discount := storeCouponDiscount(coupon, basePrice)
+		if discount <= apiItem.CouponDiscount {
+			continue
+		}
+		effectivePrice := effectiveItemPrice(basePrice, discount)
+		baselinePrice, dollarDrop, percentDrop, shouldNotify := shouldNotifyPriceDrop(existing, effectivePrice)
+		if !shouldNotify {
+			continue
+		}
+
+		existing.DropCount = priorDropCount(existing) + 1
+		existing.Price = effectivePrice
+		existing.BasePrice = basePrice
+		existing.CouponDiscount = discount
+		existing.CouponCode = coupon.Code
+		existing.CouponMessage = coupon.RawText
+		existing.CouponSource = "seller-coupon-cache"
+		existing.CouponSignature = coupon.Signature
+		existing.LastNotifiedPrice = effectivePrice
+		existing.LastCouponAlertSignature = coupon.Signature
+		existing.LastCouponAlertAt = now
+		existing.LastSeenAt = now
+		writes = append(writes, existing)
+		tracked[itemID] = existing
+		notifiedIDs[itemID] = true
+
+		logger.Info("Retroactive eBay seller coupon drop detected",
+			"itemID", itemID,
+			"seller", seller,
+			"coupon_signature", coupon.Signature,
+			"base_price", basePrice,
+			"coupon_discount", discount,
+			"effective_price", effectivePrice,
+			"drop_pct", fmt.Sprintf("%.1f%%", percentDrop),
+			"drop_dollars", fmt.Sprintf("$%.2f", dollarDrop),
+		)
+
+		alerts = append(alerts, EbayItem{
+			ItemID:                   itemID,
+			Title:                    apiItem.Title,
+			CurrentPrice:             effectivePrice,
+			PreviousPrice:            baselinePrice,
+			BasePrice:                basePrice,
+			CouponDiscount:           discount,
+			CouponCode:               coupon.Code,
+			CouponMessage:            coupon.RawText,
+			CouponSource:             "seller-coupon-cache",
+			PriceDrop:                dollarDrop,
+			PercentDrop:              percentDrop,
+			DropCount:                existing.DropCount,
+			Currency:                 currencyOrDefault(apiItem.Price),
+			ItemURL:                  apiItem.ItemWebURL,
+			ImageURL:                 imageURL(apiItem.Image),
+			Seller:                   seller,
+			SellerFeedbackScore:      sellerFeedbackScore(apiItem.Seller),
+			SellerFeedbackPercentage: sellerFeedbackPercentage(apiItem.Seller),
+			Condition:                apiItem.Condition,
+			Marketplace:              marketplace,
+			ListedAt:                 parseItemCreationDate(apiItem.ItemCreationDate),
+		})
+	}
+	return alerts, writes
 }
 
 func couponEvidenceText(coupon PageCoupon) string {
@@ -819,32 +995,8 @@ func (p *Processor) couponDiscoveryBudgetOrDefault() time.Duration {
 	return defaultCouponDiscoveryBudget
 }
 
-func groupItemsForCouponDiscovery(items []BrowseAPIItem) map[string][]BrowseAPIItem {
-	grouped := make(map[string][]BrowseAPIItem)
-	for _, item := range items {
-		seller := sellerUsername(item.Seller)
-		if seller == "" || seller == "Unknown" {
-			continue
-		}
-		marketplace := item.Marketplace
-		if marketplace == "" {
-			marketplace = "EBAY_CA"
-		}
-		grouped[sellerCouponKey(marketplace, seller)] = append(grouped[sellerCouponKey(marketplace, seller)], item)
-	}
-	return grouped
-}
-
 func sellerCouponKey(marketplace, seller string) string {
 	return strings.ToUpper(strings.TrimSpace(marketplace)) + "|" + strings.ToLower(strings.TrimSpace(seller))
-}
-
-func splitSellerCouponKey(key string) (marketplace, seller string) {
-	parts := strings.SplitN(key, "|", 2)
-	if len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-	return "", key
 }
 
 func couponCacheFresh(coupons []StoreCoupon, now time.Time) bool {
@@ -864,10 +1016,7 @@ func bestCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot {
 		if !latestChecked.IsZero() && !coupon.LastChecked.Equal(latestChecked) {
 			continue
 		}
-		if !coupon.Active || coupon.Confidence < 0.75 || coupon.Scope != "store" {
-			continue
-		}
-		if !coupon.ExpiresAt.IsZero() && coupon.ExpiresAt.Before(now) {
+		if !storeCouponReadyForStoreWideUse(coupon, now) {
 			continue
 		}
 		discount := storeCouponDiscount(coupon, basePrice)
@@ -879,6 +1028,7 @@ func bestCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot {
 			Code:           coupon.Code,
 			Message:        coupon.RawText,
 			Source:         "seller-coupon-cache",
+			Signature:      coupon.Signature,
 		}
 	}
 	return best

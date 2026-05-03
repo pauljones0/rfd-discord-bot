@@ -23,6 +23,8 @@ const (
 	BackendChromedpPersistent = "chromedp-persistent"
 	BackendPlaywright         = "playwright"
 	BackendExternalStealth    = "external-stealth"
+	BackendCamoufox           = "camoufox"
+	BackendAICrawler          = "ai-crawler"
 	BackendPaidTrial          = "paid-trial"
 
 	DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -30,14 +32,17 @@ const (
 
 // FetchOptions describes one attempt to fetch browser-rendered or raw HTML.
 type FetchOptions struct {
-	Backend         string
-	URL             string
-	Timeout         time.Duration
-	ChromePath      string
-	ChromeProfile   string
-	UserAgent       string
-	ExternalCommand string
-	PaidCommand     string
+	Backend          string
+	URL              string
+	Timeout          time.Duration
+	ChromePath       string
+	ChromeProfile    string
+	UserAgent        string
+	ExternalCommand  string
+	CamoufoxCommand  string
+	AICrawlerCommand string
+	PaidCommand      string
+	PaidEnabled      bool
 }
 
 // FetchResult captures the observable result from one backend attempt.
@@ -84,8 +89,16 @@ func FetchHTML(ctx context.Context, opts FetchOptions) FetchResult {
 		html, finalURL, statusCode, err = fetchPlaywright(attemptCtx, opts)
 	case BackendExternalStealth:
 		html, err = fetchCommand(attemptCtx, opts.ExternalCommand, opts.URL)
+	case BackendCamoufox:
+		html, err = fetchCommand(attemptCtx, opts.CamoufoxCommand, opts.URL)
+	case BackendAICrawler:
+		html, err = fetchCommand(attemptCtx, opts.AICrawlerCommand, opts.URL)
 	case BackendPaidTrial:
-		html, err = fetchCommand(attemptCtx, opts.PaidCommand, opts.URL)
+		if !opts.PaidEnabled {
+			err = fmt.Errorf("paid browser backend is disabled")
+		} else {
+			html, err = fetchCommand(attemptCtx, opts.PaidCommand, opts.URL)
+		}
 	default:
 		err = fmt.Errorf("unknown scraper backend %q", opts.Backend)
 	}

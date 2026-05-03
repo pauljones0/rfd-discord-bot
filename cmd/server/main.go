@@ -93,16 +93,17 @@ func main() {
 	var ebayProc *ebay.Processor
 	if ebayClient != nil {
 		ebayClient.SetCouponBackends(cfg.EbayCouponBackends)
+		ebayClient.SetPaidBrowserEnabled(cfg.EbayPaidBrowserEnabled)
 		ebayProc = ebay.NewProcessor(store, ebayClient, n)
-		ebayProc.SetCouponDiscoveryConfig(cfg.EbayCouponDiscoveryInterval, cfg.EbayCouponSampleSize)
+		ebayProc.SetCouponDiscoveryInterval(cfg.EbayCouponDiscoveryInterval)
 		slog.Info("eBay deal processor initialized", "coupon_backends", cfg.EbayCouponBackends)
 	} else {
 		slog.Info("eBay features disabled (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set)")
 	}
 
-	// Initialize Facebook processor (requires AI client for analysis)
+	// Initialize Facebook processor only when explicitly enabled.
 	var fbProc *facebook.Processor
-	if aiClient != nil {
+	if cfg.FacebookEnabled && aiClient != nil {
 		fbProc = facebook.NewProcessor(store, n, aiClient, cfg.ProxyURL, cfg.CarfaxTokenServiceURL, cfg.CarfaxTokenServiceSecret)
 		if cfg.CarfaxTokenServiceURL != "" {
 			slog.Info("Facebook Marketplace deal processor initialized with Carfax token service",
@@ -112,6 +113,8 @@ func main() {
 		} else {
 			slog.Info("Facebook Marketplace deal processor initialized (no proxy, no token service)")
 		}
+	} else if !cfg.FacebookEnabled {
+		slog.Info("Facebook Marketplace features disabled (FACEBOOK_ENABLED=false)")
 	} else {
 		slog.Info("Facebook Marketplace features disabled (AI client unavailable)")
 	}
@@ -121,7 +124,7 @@ func main() {
 		store,
 		aiClient,
 		n,
-		memoryexpress.WithScrapeFunc(memoryexpress.ScrapeWithConfiguredBackends(cfg.MemoryExpressBackends, cfg.MemoryExpressChromeProfile)),
+		memoryexpress.WithScrapeFunc(memoryexpress.ScrapeWithConfiguredBackends(cfg.MemoryExpressBackends, cfg.MemoryExpressChromeProfile, cfg.MemoryExpressPaidBrowserEnabled)),
 	)
 	slog.Info("Memory Express clearance processor initialized", "backends", cfg.MemoryExpressBackends)
 
@@ -131,13 +134,15 @@ func main() {
 	bbProc := bestbuy.NewProcessor(store, bbClient, aiClient, n, cfg.BestBuyAffiliatePrefix)
 	slog.Info("Best Buy Marketplace processor initialized", "backends", cfg.BestBuyBackends)
 
-	// Initialize HardwareSwap processor (requires AI client and Reddit relay service)
+	// Initialize HardwareSwap processor only when explicitly enabled.
 	var hwProc *hardwareswap.Processor
-	if aiClient != nil {
+	if cfg.HardwareSwapEnabled && aiClient != nil {
 		hwStore := hardwareswapStore(store)
 		redditClient := reddit.NewClient(cfg.RedditServiceURL, cfg.RedditServiceSecret, store)
 		hwProc = hardwareswap.NewProcessor(hwStore, redditClient, aiClient, cfg.DiscordBotToken)
 		slog.Info("HardwareSwap processor initialized")
+	} else if !cfg.HardwareSwapEnabled {
+		slog.Info("HardwareSwap features disabled (HARDWARESWAP_ENABLED=false)")
 	} else {
 		slog.Info("HardwareSwap features disabled (AI client unavailable)")
 	}
@@ -174,13 +179,21 @@ func main() {
 	mux.HandleFunc("/", rootHandler)
 	mux.HandleFunc("/process-deals", srv.ProcessDealsHandler)
 	mux.HandleFunc("/process-ebay", srv.ProcessEbayHandler)
-	mux.HandleFunc("/process-facebook", srv.ProcessFacebookHandler)
+	if cfg.FacebookEnabled {
+		mux.HandleFunc("/process-facebook", srv.ProcessFacebookHandler)
+	}
 	mux.HandleFunc("/process-memoryexpress", srv.ProcessMemoryExpressHandler)
 	mux.HandleFunc("/process-bestbuy", srv.ProcessBestBuyHandler)
 	mux.HandleFunc("POST /prime-bestbuy-baseline", srv.PrimeBestBuyBaselineHandler)
-	mux.HandleFunc("/process-hardwareswap", srv.ProcessHardwareSwapHandler)
+	if cfg.HardwareSwapEnabled {
+		mux.HandleFunc("/process-hardwareswap", srv.ProcessHardwareSwapHandler)
+	}
 	mux.Handle("/discord/interactions", apiHandler)
 	mux.HandleFunc("POST /register-token-service", func(w http.ResponseWriter, r *http.Request) {
+		if !cfg.FacebookEnabled || cfg.CarfaxTokenServiceSecret == "" {
+			http.Error(w, "disabled", http.StatusNotFound)
+			return
+		}
 		// Authenticate with the token service secret
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || authHeader != "Bearer "+cfg.CarfaxTokenServiceSecret {
@@ -207,6 +220,10 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "url": body.URL})
 	})
 	mux.HandleFunc("POST /register-reddit-service", func(w http.ResponseWriter, r *http.Request) {
+		if !cfg.HardwareSwapEnabled || cfg.RedditServiceSecret == "" {
+			http.Error(w, "disabled", http.StatusNotFound)
+			return
+		}
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || authHeader != "Bearer "+cfg.RedditServiceSecret {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -296,9 +313,6 @@ func main() {
 func hardwareswapStore(store *storage.Client) *hardwareswap.Store {
 	if store == nil {
 		return nil
-	}
-	if fsClient := store.FirestoreClient(); fsClient != nil {
-		return hardwareswap.NewStore(fsClient)
 	}
 	return hardwareswap.NewDocumentStore(store)
 }

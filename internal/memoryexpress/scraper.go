@@ -20,14 +20,17 @@ const (
 
 var priceRe = regexp.MustCompile(`\$([0-9,]+\.\d{2})`)
 
-var fetchBackendHTML = func(ctx context.Context, backend, pageURL, chromeProfile string) scrapebackend.FetchResult {
+var fetchBackendHTML = func(ctx context.Context, backend, pageURL, chromeProfile string, paidEnabled bool) scrapebackend.FetchResult {
 	return scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
-		Backend:         backend,
-		URL:             pageURL,
-		Timeout:         60 * time.Second,
-		ChromeProfile:   chromeProfile,
-		ExternalCommand: os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
-		PaidCommand:     os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
+		Backend:          backend,
+		URL:              pageURL,
+		Timeout:          60 * time.Second,
+		ChromeProfile:    chromeProfile,
+		ExternalCommand:  firstNonEmptyEnv("MEMEXPRESS_EXTERNAL_STEALTH_COMMAND", "SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
+		CamoufoxCommand:  firstNonEmptyEnv("MEMEXPRESS_CAMOUFOX_COMMAND", "SCRAPELAB_CAMOUFOX_COMMAND"),
+		AICrawlerCommand: firstNonEmptyEnv("MEMEXPRESS_AI_CRAWLER_COMMAND", "SCRAPELAB_AI_CRAWLER_COMMAND"),
+		PaidCommand:      firstNonEmptyEnv("MEMEXPRESS_PAID_TRIAL_COMMAND", "SCRAPELAB_PAID_TRIAL_COMMAND"),
+		PaidEnabled:      paidEnabled,
 	})
 }
 
@@ -57,27 +60,29 @@ func Scrape(ctx context.Context, storeCode string) ([]Product, error) {
 
 // ScrapeWithConfiguredBackends returns a scrape function that tries each backend
 // in order and falls back when the page is blocked or still on a challenge.
-func ScrapeWithConfiguredBackends(backends []string, chromeProfile string) func(context.Context, string) ([]Product, error) {
+func ScrapeWithConfiguredBackends(backends []string, chromeProfile string, paidEnabled ...bool) func(context.Context, string) ([]Product, error) {
+	allowPaid := len(paidEnabled) > 0 && paidEnabled[0]
 	return func(ctx context.Context, storeCode string) ([]Product, error) {
-		return ScrapeWithBackends(ctx, storeCode, backends, chromeProfile)
+		return ScrapeWithBackends(ctx, storeCode, backends, chromeProfile, allowPaid)
 	}
 }
 
 // ScrapeWithBackends fetches and parses a clearance page through an ordered
 // backend list. It is intentionally site-specific so Cloudflare challenge
 // detection remains tied to Memory Express' real markup.
-func ScrapeWithBackends(ctx context.Context, storeCode string, backends []string, chromeProfile string) ([]Product, error) {
+func ScrapeWithBackends(ctx context.Context, storeCode string, backends []string, chromeProfile string, paidEnabled ...bool) ([]Product, error) {
 	url, err := ClearanceURL(storeCode)
 	if err != nil {
 		return nil, err
 	}
 	if len(backends) == 0 {
-		backends = []string{scrapebackend.BackendHTTP, scrapebackend.BackendChromedpCloudRun}
+		backends = []string{scrapebackend.BackendHTTP, scrapebackend.BackendExternalStealth, scrapebackend.BackendCamoufox, scrapebackend.BackendAICrawler, scrapebackend.BackendPaidTrial}
 	}
+	allowPaid := len(paidEnabled) > 0 && paidEnabled[0]
 
 	var failures []string
 	for _, backend := range backends {
-		result := fetchBackendHTML(ctx, backend, url, chromeProfile)
+		result := fetchBackendHTML(ctx, backend, url, chromeProfile, allowPaid)
 		if result.Error != "" {
 			failures = append(failures, fmt.Sprintf("%s: %s", backend, result.Error))
 			continue
@@ -118,6 +123,15 @@ func ScrapeWithBackends(ctx context.Context, storeCode string, backends []string
 	}
 
 	return nil, fmt.Errorf("all Memory Express backends failed for %s: %s", storeCode, strings.Join(failures, "; "))
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // ParseClearanceHTML parses browser-rendered Memory Express clearance HTML for a store.

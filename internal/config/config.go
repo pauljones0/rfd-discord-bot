@@ -40,16 +40,17 @@ type Config struct {
 	EbayCouponBackends          []string
 	EbayPollInterval            time.Duration
 	EbayCouponDiscoveryInterval time.Duration
-	EbayCouponSampleSize        int
+	EbayPaidBrowserEnabled      bool
 
 	// Proxy (optional — Facebook/Carfax scraping runs without proxy if not set)
 	ProxyURL string
 
 	// Memory Express local runner configuration.
-	MemoryExpressPollInterval  time.Duration
-	MemoryExpressChromePath    string
-	MemoryExpressChromeProfile string
-	MemoryExpressBackends      []string
+	MemoryExpressPollInterval       time.Duration
+	MemoryExpressChromePath         string
+	MemoryExpressChromeProfile      string
+	MemoryExpressBackends           []string
+	MemoryExpressPaidBrowserEnabled bool
 
 	// Best Buy scraping backend configuration.
 	BestBuyBackends     []string
@@ -64,6 +65,9 @@ type Config struct {
 	// Reddit Service (optional — Reddit processors disabled if not set)
 	RedditServiceURL    string
 	RedditServiceSecret string
+
+	FacebookEnabled     bool
+	HardwareSwapEnabled bool
 }
 
 func Load() (*Config, error) {
@@ -77,9 +81,6 @@ func Load() (*Config, error) {
 	}
 
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
-	if projectID == "" {
-		return nil, fmt.Errorf("GOOGLE_CLOUD_PROJECT environment variable is required but not set")
-	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -142,7 +143,6 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	ebayCouponSampleSize := intEnv("EBAY_COUPON_SAMPLE_SIZE", 3)
 
 	geminiLocation := os.Getenv("GEMINI_LOCATION")
 	if geminiLocation == "" {
@@ -185,7 +185,7 @@ func Load() (*Config, error) {
 
 	return &Config{
 		ProjectID:              projectID,
-		StorageBackend:         firstNonEmpty(os.Getenv("STORAGE_BACKEND"), "firestore"),
+		StorageBackend:         "postgres",
 		DatabaseURL:            os.Getenv("DATABASE_URL"),
 		Port:                   port,
 		AmazonAffiliateTag:     amazonAffiliateTag,
@@ -202,27 +202,30 @@ func Load() (*Config, error) {
 			"gemini-2.5-flash",
 			"gemini-2.5-pro",
 		},
-		DiscordAppID:                os.Getenv("DISCORD_APP_ID"),
-		DiscordPublicKey:            discordPublicKey,
-		DiscordBotToken:             discordBotToken,
-		EbayClientID:                os.Getenv("EBAY_CLIENT_ID"),
-		EbayClientSecret:            os.Getenv("EBAY_CLIENT_SECRET"),
-		EbayCouponBackends:          csvEnv("EBAY_COUPON_BACKENDS", []string{"http", "external-stealth"}),
-		EbayPollInterval:            ebayPollInterval,
-		EbayCouponDiscoveryInterval: ebayCouponDiscoveryInterval,
-		EbayCouponSampleSize:        ebayCouponSampleSize,
-		ProxyURL:                    os.Getenv("PROXY_URL"),
-		MemoryExpressPollInterval:   memexpressPollInterval,
-		MemoryExpressChromePath:     firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
-		MemoryExpressChromeProfile:  os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
-		MemoryExpressBackends:       csvEnv("MEMEXPRESS_BACKENDS", []string{"chromedp-persistent", "external-stealth", "http"}),
-		BestBuyBackends:             csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
-		BestBuyPollInterval:         bestBuyPollInterval,
-		LocalSchedulerEnabled:       boolEnv("LOCAL_SCHEDULER_ENABLED", false),
-		CarfaxTokenServiceURL:       os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
-		CarfaxTokenServiceSecret:    os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
-		RedditServiceURL:            os.Getenv("REDDIT_SERVICE_URL"),
-		RedditServiceSecret:         os.Getenv("REDDIT_SERVICE_SECRET"),
+		DiscordAppID:                    os.Getenv("DISCORD_APP_ID"),
+		DiscordPublicKey:                discordPublicKey,
+		DiscordBotToken:                 discordBotToken,
+		EbayClientID:                    os.Getenv("EBAY_CLIENT_ID"),
+		EbayClientSecret:                os.Getenv("EBAY_CLIENT_SECRET"),
+		EbayCouponBackends:              csvEnv("EBAY_COUPON_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
+		EbayPollInterval:                ebayPollInterval,
+		EbayCouponDiscoveryInterval:     ebayCouponDiscoveryInterval,
+		EbayPaidBrowserEnabled:          boolEnv("EBAY_PAID_BROWSER_ENABLED", false),
+		ProxyURL:                        os.Getenv("PROXY_URL"),
+		MemoryExpressPollInterval:       memexpressPollInterval,
+		MemoryExpressChromePath:         firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
+		MemoryExpressChromeProfile:      os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
+		MemoryExpressBackends:           csvEnv("MEMEXPRESS_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
+		MemoryExpressPaidBrowserEnabled: boolEnv("MEMEXPRESS_PAID_BROWSER_ENABLED", false),
+		BestBuyBackends:                 csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
+		BestBuyPollInterval:             bestBuyPollInterval,
+		LocalSchedulerEnabled:           boolEnv("LOCAL_SCHEDULER_ENABLED", false),
+		CarfaxTokenServiceURL:           os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
+		CarfaxTokenServiceSecret:        os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
+		RedditServiceURL:                os.Getenv("REDDIT_SERVICE_URL"),
+		RedditServiceSecret:             os.Getenv("REDDIT_SERVICE_SECRET"),
+		FacebookEnabled:                 boolEnv("FACEBOOK_ENABLED", false),
+		HardwareSwapEnabled:             boolEnv("HARDWARESWAP_ENABLED", false),
 	}, nil
 }
 

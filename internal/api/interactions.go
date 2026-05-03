@@ -158,23 +158,27 @@ type Store interface {
 
 // Handler holds the dependencies for the interaction endpoint.
 type Handler struct {
-	pubKey       ed25519.PublicKey
-	store        Store
-	hwStore      *hardwareswap.Store
-	aiClient     *ai.Client
-	discordToken string
-	discordAppID string
+	pubKey              ed25519.PublicKey
+	store               Store
+	hwStore             *hardwareswap.Store
+	aiClient            *ai.Client
+	discordToken        string
+	discordAppID        string
+	facebookEnabled     bool
+	hardwareSwapEnabled bool
 }
 
 // NewHandler creates a new API interactions handler.
 func NewHandler(cfg *config.Config, store Store, hwStore *hardwareswap.Store, aiClient *ai.Client) (*Handler, error) {
 	if cfg.DiscordPublicKey == "" {
 		return &Handler{
-			store:        store,
-			hwStore:      hwStore,
-			aiClient:     aiClient,
-			discordToken: cfg.DiscordBotToken,
-			discordAppID: cfg.DiscordAppID,
+			store:               store,
+			hwStore:             hwStore,
+			aiClient:            aiClient,
+			discordToken:        cfg.DiscordBotToken,
+			discordAppID:        cfg.DiscordAppID,
+			facebookEnabled:     cfg.FacebookEnabled,
+			hardwareSwapEnabled: cfg.HardwareSwapEnabled,
 		}, nil // Run without verifier if missing key, useful for testing or disabled state
 	}
 
@@ -187,12 +191,14 @@ func NewHandler(cfg *config.Config, store Store, hwStore *hardwareswap.Store, ai
 	}
 
 	return &Handler{
-		pubKey:       ed25519.PublicKey(keyBytes),
-		store:        store,
-		hwStore:      hwStore,
-		aiClient:     aiClient,
-		discordToken: cfg.DiscordBotToken,
-		discordAppID: cfg.DiscordAppID,
+		pubKey:              ed25519.PublicKey(keyBytes),
+		store:               store,
+		hwStore:             hwStore,
+		aiClient:            aiClient,
+		discordToken:        cfg.DiscordBotToken,
+		discordAppID:        cfg.DiscordAppID,
+		facebookEnabled:     cfg.FacebookEnabled,
+		hardwareSwapEnabled: cfg.HardwareSwapEnabled,
 	}, nil
 }
 
@@ -299,6 +305,10 @@ func (h *Handler) handleCommand(w http.ResponseWriter, req interactionRequest) {
 	case "deals":
 		h.handleDealsCommand(w, req)
 	case "hw-setup", "hw-help", "hw-alert":
+		if !h.hardwareSwapEnabled {
+			h.respondError(w, "HardwareSwap features are disabled.")
+			return
+		}
 		h.handleHWCommand(w, req)
 	default:
 		h.respondError(w, "Unknown command.")
@@ -348,6 +358,10 @@ func (h *Handler) handleDealsCommand(w http.ResponseWriter, req interactionReque
 	case "setup-ebay":
 		h.handleSetupEbay(w, req, subCommand.Options)
 	case "setup-facebook":
+		if !h.facebookEnabled {
+			h.respondPrivateMessage(w, "Facebook Marketplace features are currently disabled.")
+			return
+		}
 		h.handleSetupFacebook(w, req, subCommand.Options)
 	case "setup-memoryexpress":
 		h.handleSetupMemoryExpress(w, req, subCommand.Options)
@@ -693,6 +707,10 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 		h.respondPrivateMessage(w, "Please specify the subscription type to remove.")
 		return
 	}
+	if !dealtypes.ValidSubscriptionType(removeType, h.facebookEnabled, h.hardwareSwapEnabled) {
+		h.respondPrivateMessage(w, "Invalid or disabled subscription type.")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -733,6 +751,10 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 		writeJSON(w, res)
 
 	case "facebook":
+		if !h.facebookEnabled {
+			h.respondPrivateMessage(w, "Facebook Marketplace features are currently disabled.")
+			return
+		}
 		fbSubs, err := h.store.GetFacebookSubscriptionsByGuild(ctx, req.GuildID)
 		if err != nil {
 			slog.Error("Failed to get Facebook subscriptions", "guild", req.GuildID, "error", err)
@@ -805,7 +827,7 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 		writeJSON(w, res)
 
 	default:
-		h.respondPrivateMessage(w, "Invalid subscription type. Choose rfd, ebay, facebook, memoryexpress, or bestbuy.")
+		h.respondPrivateMessage(w, "Invalid subscription type.")
 	}
 }
 
@@ -821,9 +843,13 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 		return
 	}
 
-	fbSubs, err := h.store.GetFacebookSubscriptionsByGuild(ctx, req.GuildID)
-	if err != nil {
-		slog.Error("Failed to get Facebook subscriptions", "guild", req.GuildID, "error", err)
+	var fbSubs []models.Subscription
+	if h.facebookEnabled {
+		var err error
+		fbSubs, err = h.store.GetFacebookSubscriptionsByGuild(ctx, req.GuildID)
+		if err != nil {
+			slog.Error("Failed to get Facebook subscriptions", "guild", req.GuildID, "error", err)
+		}
 	}
 
 	meSubs, err := h.store.GetMemExpressSubscriptionsByGuild(ctx, req.GuildID)
@@ -913,7 +939,7 @@ func (h *Handler) handleAutocomplete(w http.ResponseWriter, req interactionReque
 
 	// Find the focused option within the subcommand
 	subCommand := req.Data.Options[0]
-	if subCommand.Name == "setup-facebook" {
+	if subCommand.Name == "setup-facebook" && h.facebookEnabled {
 		var query string
 		for _, opt := range subCommand.Options {
 			if opt.Name == "city" && opt.Focused {
@@ -1120,6 +1146,10 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 	channelName := ""
 
 	if strings.HasPrefix(req.Data.CustomID, "hw_") {
+		if !h.hardwareSwapEnabled {
+			h.respondError(w, "HardwareSwap features are disabled.")
+			return
+		}
 		h.handleHWComponent(w, req)
 		return
 	}
@@ -1132,6 +1162,10 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 			dealType = parts[1]
 		}
 	} else if strings.HasPrefix(req.Data.CustomID, "remove_fb::") {
+		if !h.facebookEnabled {
+			h.respondError(w, "Facebook Marketplace features are disabled.")
+			return
+		}
 		// Facebook subscription removal: remove_fb::{channelID}::{city}
 		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_fb::")
 		parts := strings.SplitN(trimmed, "::", 2)
@@ -1504,6 +1538,10 @@ func (h *Handler) handleModalSubmit(w http.ResponseWriter, req interactionReques
 	}
 
 	if strings.HasPrefix(req.Data.CustomID, "hw_modal_") {
+		if !h.hardwareSwapEnabled {
+			h.respondError(w, "HardwareSwap features are disabled.")
+			return
+		}
 		h.handleHWModalSubmit(w, req)
 		return
 	}

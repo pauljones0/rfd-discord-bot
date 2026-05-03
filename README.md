@@ -11,8 +11,8 @@ The bot watches:
 - Best Buy Marketplace seller pages
 
 Facebook Marketplace, Carfax token service, Reddit relay, and HardwareSwap code
-remain in the repo as optional features, but Facebook is not part of the active
-local schedule.
+remain in the repo as optional features. Facebook and HardwareSwap are hidden
+unless `FACEBOOK_ENABLED=true` or `HARDWARESWAP_ENABLED=true`.
 
 ## Production Runtime
 
@@ -73,22 +73,23 @@ eBay Browse API is the source of truth for seller inventory and base prices.
 Tracked items are persisted in Postgres and alerts only fire on real API/base
 price-drop signals.
 
-Page scraping is a secondary coupon path. It is used only for post-drop
-effective-price math, never to create coupon-only alerts. Seller-level coupon
-discovery is cached in `ebay_store_coupons` and refreshed on a low-rate interval
-so browser usage stays small.
+Page scraping is a secondary coupon path. It is used only after a real Browse
+API/base price-drop signal, never to create coupon-only alerts. Seller-level
+coupon evidence is stored in `ebay_coupon_observations`, inferred coupons are
+cached in `ebay_store_coupons`, and a seller gets at most one browser coupon
+attempt every six hours unless a known coupon has expired.
 
 Typical Stormtrooper backend order:
 
 ```env
-EBAY_COUPON_BACKENDS=http,external-stealth,paid-trial
+EBAY_COUPON_BACKENDS=http,external-stealth,camoufox,ai-crawler,paid-trial
 EBAY_COUPON_DISCOVERY_INTERVAL=6h
-EBAY_COUPON_SAMPLE_SIZE=3
+EBAY_PAID_BROWSER_ENABLED=true
 ```
 
-`external-stealth` currently uses Camoufox. `paid-trial` is a Browserless
-adapter and should remain disabled unless a controlled scrape-lab run proves it
-works and the budget guardrail is accepted.
+`paid-trial` is the Browserless adapter and only runs when explicitly enabled.
+It stays last in the ladder behind HTTP, nodriver/external stealth, Camoufox,
+and the local AI crawler adapter.
 
 ### Memory Express
 
@@ -133,7 +134,7 @@ Primary command:
 /deals list
 ```
 
-HardwareSwap keeps its own optional commands:
+HardwareSwap keeps its own optional commands when enabled:
 
 ```text
 /hw-setup
@@ -159,15 +160,14 @@ Run the server locally:
 go run ./cmd/server
 ```
 
-Run scrape-lab with Firestore-backed targets for experimentation:
+Run scrape-lab with Postgres-backed targets for experimentation:
 
 ```powershell
-go run ./cmd/scrape-lab -from-firestore -sites ebay,memoryexpress,bestbuy -ebay-limit 3
+go run ./cmd/scrape-lab -from-store -sites ebay,memoryexpress,bestbuy -ebay-limit 3
 ```
 
-Firestore is no longer the production runtime store. It remains supported for
-migration, rollback, and scrape-lab target discovery while the Postgres cutover
-settles.
+Postgres is the only runtime store. Manual JSON/env scrape-lab targets are still
+available for narrow repros and paid-browser trials.
 
 ## Stormtrooper Deploy
 
@@ -177,7 +177,6 @@ From Stormtrooper:
 cd ~/rfd-discord-bot
 git pull --ff-only origin main
 RFD_BOT_ENV_FILE=$HOME/.config/rfd-discord-bot/.env \
-RFD_BOT_GCP_CREDENTIALS=$HOME/.config/rfd-discord-bot/adc.json \
 RFD_BOT_DATA_DIR=$HOME/appdata/rfd-discord-bot \
 RFD_BOT_POSTGRES_DIR=$HOME/appdata/rfd-discord-bot/postgres \
 docker compose -f deploy/stormtrooper/docker-compose.yml up -d --build
@@ -194,18 +193,6 @@ docker compose -f deploy/stormtrooper/docker-compose.yml logs --tail=200 bot
 curl -s http://127.0.0.1:18080/health
 ```
 
-## Store Migration
-
-`cmd/migrate-store` migrates Firestore documents into the local Postgres
-document table while preserving collection names and document IDs:
-
-```bash
-go run ./cmd/migrate-store -target "$DATABASE_URL" -verify
-```
-
-Keep Firestore available as a rollback source until Postgres has passed enough
-full scheduler cycles to intentionally drop Firestore support.
-
 ## Repository Hygiene
 
 Do not commit:
@@ -217,5 +204,4 @@ Do not commit:
 - `.mcp.json`
 - `.codex-remote/`
 
-Cloud Run and Cloud Scheduler deployment paths have been removed from normal
-operations. The GitHub Actions Cloud Run deploy workflow is intentionally absent.
+Legacy hosted deployment paths have been removed from normal operations.

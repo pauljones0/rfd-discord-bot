@@ -78,12 +78,15 @@ func Run(ctx context.Context, targets []Target, opts Options) ([]Result, error) 
 				fetch = fetchBestBuyAlgolia(ctx, target)
 			} else {
 				fetch = scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
-					Backend:         backend,
-					URL:             target.URL,
-					Timeout:         opts.Timeout,
-					ChromeProfile:   opts.ChromeProfile,
-					ExternalCommand: os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
-					PaidCommand:     os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
+					Backend:          backend,
+					URL:              target.URL,
+					Timeout:          opts.Timeout,
+					ChromeProfile:    opts.ChromeProfile,
+					ExternalCommand:  os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
+					CamoufoxCommand:  os.Getenv("SCRAPELAB_CAMOUFOX_COMMAND"),
+					AICrawlerCommand: os.Getenv("SCRAPELAB_AI_CRAWLER_COMMAND"),
+					PaidCommand:      os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
+					PaidEnabled:      envBool("SCRAPELAB_PAID_BROWSER_ENABLED"),
 				})
 			}
 
@@ -114,6 +117,11 @@ func Run(ctx context.Context, targets []Target, opts Options) ([]Result, error) 
 		return results, err
 	}
 	return results, nil
+}
+
+func envBool(key string) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
 func fetchBestBuyAlgolia(ctx context.Context, target Target) scrapebackend.FetchResult {

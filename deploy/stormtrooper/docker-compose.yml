@@ -26,11 +26,17 @@ services:
       - ${RFD_BOT_ENV_FILE:-/opt/rfd-discord-bot/.env}
     environment:
       PORT: "8080"
-      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-sa-key.json
       MEMEXPRESS_CHROME_PROFILE_DIR: /data/memoryexpress-chrome
       SCRAPELAB_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
-      EBAY_COUPON_EXTERNAL_STEALTH_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py --wait-ms 7000
-      EBAY_COUPON_PAID_TRIAL_COMMAND: /opt/scrape-venv/bin/python /root/scripts/browserless_bql_fetch.py --wait-ms 5000
+      SCRAPELAB_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000
+      SCRAPELAB_AI_CRAWLER_COMMAND: /opt/scrape-venv/bin/python /root/scripts/crawl4ai_fetch.py "{url}" --headless --wait-ms 7000
+      EBAY_COUPON_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
+      EBAY_COUPON_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000
+      EBAY_COUPON_AI_CRAWLER_COMMAND: /opt/scrape-venv/bin/python /root/scripts/crawl4ai_fetch.py "{url}" --headless --wait-ms 7000
+      EBAY_COUPON_PAID_TRIAL_COMMAND: /opt/scrape-venv/bin/python /root/scripts/browserless_bql_fetch.py "{url}" --wait-ms 5000
+      MEMEXPRESS_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
+      MEMEXPRESS_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000
+      MEMEXPRESS_AI_CRAWLER_COMMAND: /opt/scrape-venv/bin/python /root/scripts/crawl4ai_fetch.py "{url}" --headless --wait-ms 7000
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,7 +44,6 @@ services:
       - "127.0.0.1:18080:8080"
     volumes:
       - ${RFD_BOT_DATA_DIR:-/srv/appdata/rfd-discord-bot}:/data
-      - ${RFD_BOT_GCP_CREDENTIALS:-/opt/rfd-discord-bot/gcp-sa-key.json}:/run/secrets/gcp-sa-key.json:ro
 
   cloudflared:
     image: cloudflare/cloudflared:latest

@@ -8,7 +8,6 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/server
 RUN CGO_ENABLED=0 GOOS=linux go build -o scrape-lab ./cmd/scrape-lab
-RUN CGO_ENABLED=0 GOOS=linux go build -o migrate-store ./cmd/migrate-store
 RUN CGO_ENABLED=0 GOOS=linux go build -o register-commands ./cmd/register-commands
 
 # Stage 2: Runtime with Playwright browsers
@@ -29,7 +28,7 @@ RUN apt-get update \
 
 RUN python3 -m venv /opt/scrape-venv \
     && /opt/scrape-venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/scrape-venv/bin/pip install --no-cache-dir camoufox nodriver \
+    && /opt/scrape-venv/bin/pip install --no-cache-dir camoufox nodriver crawl4ai \
     && /opt/scrape-venv/bin/python -m camoufox fetch
 
 ENV PATH="/opt/scrape-venv/bin:${PATH}"
@@ -40,7 +39,6 @@ RUN npx playwright install chromium firefox
 WORKDIR /root/
 COPY --from=builder /app/server .
 COPY --from=builder /app/scrape-lab .
-COPY --from=builder /app/migrate-store .
 COPY --from=builder /app/register-commands .
 COPY --from=builder /app/internal/scraper/selectors.json ./internal/scraper/selectors.json
 COPY --from=builder /app/scripts ./scripts

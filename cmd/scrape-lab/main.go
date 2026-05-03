@@ -25,7 +25,7 @@ func main() {
 	var environment string
 	var timeoutRaw string
 	var chromeProfile string
-	var fromFirestore bool
+	var fromStore bool
 	var sitesRaw string
 	var ebayLimit int
 
@@ -35,9 +35,9 @@ func main() {
 	flag.StringVar(&environment, "env", "local", "environment label written to the report")
 	flag.StringVar(&timeoutRaw, "timeout", "45s", "per-backend timeout")
 	flag.StringVar(&chromeProfile, "chrome-profile", os.Getenv("SCRAPELAB_CHROME_PROFILE_DIR"), "persistent Chrome profile dir")
-	flag.BoolVar(&fromFirestore, "from-firestore", false, "load targets from Firestore instead of only env/default inputs")
-	flag.StringVar(&sitesRaw, "sites", "ebay,memoryexpress,bestbuy", "comma-separated site list for Firestore target discovery")
-	flag.IntVar(&ebayLimit, "ebay-limit", 25, "maximum tracked eBay listing URLs to include from Firestore")
+	flag.BoolVar(&fromStore, "from-store", false, "load targets from Postgres instead of only env/default inputs")
+	flag.StringVar(&sitesRaw, "sites", "ebay,memoryexpress,bestbuy", "comma-separated site list for store target discovery")
+	flag.IntVar(&ebayLimit, "ebay-limit", 25, "maximum tracked eBay listing URLs to include from store")
 	flag.Parse()
 
 	timeout, err := time.ParseDuration(timeoutRaw)
@@ -47,16 +47,16 @@ func main() {
 
 	ctx := context.Background()
 	targets, err := loadTargets(ctx, targetLoadOptions{
-		TargetsPath:   targetsPath,
-		FromFirestore: fromFirestore,
-		Sites:         parseCSV(sitesRaw),
-		EbayLimit:     ebayLimit,
+		TargetsPath: targetsPath,
+		FromStore:   fromStore,
+		Sites:       parseCSV(sitesRaw),
+		EbayLimit:   ebayLimit,
 	})
 	if err != nil {
 		log.Fatalf("load targets: %v", err)
 	}
 	if len(targets) == 0 {
-		log.Fatal("no targets configured; pass -targets, set SCRAPELAB_* target env vars, or use -from-firestore")
+		log.Fatal("no targets configured; pass -targets, set SCRAPELAB_* target env vars, or use -from-store")
 	}
 
 	backends := parseCSV(backendsRaw)
@@ -67,6 +67,8 @@ func main() {
 			scrapebackend.BackendChromedpPersistent,
 			scrapebackend.BackendPlaywright,
 			scrapebackend.BackendExternalStealth,
+			scrapebackend.BackendCamoufox,
+			scrapebackend.BackendAICrawler,
 			scrapebackend.BackendPaidTrial,
 		}
 	}
@@ -86,10 +88,10 @@ func main() {
 }
 
 type targetLoadOptions struct {
-	TargetsPath   string
-	FromFirestore bool
-	Sites         []string
-	EbayLimit     int
+	TargetsPath string
+	FromStore   bool
+	Sites       []string
+	EbayLimit   int
 }
 
 func loadTargets(ctx context.Context, opts targetLoadOptions) ([]scrapelab.Target, error) {
@@ -110,7 +112,7 @@ func loadTargets(ctx context.Context, opts targetLoadOptions) ([]scrapelab.Targe
 		return targets, nil
 	}
 
-	if opts.FromFirestore {
+	if opts.FromStore {
 		cfg, err := config.Load()
 		if err != nil {
 			return nil, err
@@ -121,7 +123,7 @@ func loadTargets(ctx context.Context, opts targetLoadOptions) ([]scrapelab.Targe
 		}
 		defer store.Close()
 
-		return scrapelab.DiscoverFirestoreTargets(ctx, store, scrapelab.DiscoveryOptions{
+		return scrapelab.DiscoverStoreTargets(ctx, store, scrapelab.DiscoveryOptions{
 			Sites:     opts.Sites,
 			EbayLimit: opts.EbayLimit,
 		})

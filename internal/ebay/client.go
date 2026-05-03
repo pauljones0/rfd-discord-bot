@@ -50,7 +50,8 @@ type Client struct {
 	accessToken string
 	tokenExpiry time.Time
 
-	couponBackends []string
+	couponBackends     []string
+	paidBrowserEnabled bool
 }
 
 type marketplaceCategoryGroup struct {
@@ -82,6 +83,13 @@ func (c *Client) SetCouponBackends(backends []string) {
 		return
 	}
 	c.couponBackends = append([]string(nil), backends...)
+}
+
+func (c *Client) SetPaidBrowserEnabled(enabled bool) {
+	if c == nil {
+		return
+	}
+	c.paidBrowserEnabled = enabled
 }
 
 // tokenResponse represents the eBay OAuth token response.
@@ -380,6 +388,7 @@ type couponSnapshot struct {
 	Code           string
 	Message        string
 	Source         string
+	Signature      string
 }
 
 func (c *Client) populateCouponDetails(ctx context.Context, items []BrowseAPIItem) error {
@@ -412,6 +421,7 @@ func (c *Client) populateCouponDetails(ctx context.Context, items []BrowseAPIIte
 		items[i].CouponCode = coupon.Code
 		items[i].CouponMessage = coupon.Message
 		items[i].CouponSource = coupon.Source
+		items[i].CouponSignature = coupon.Signature
 		enriched++
 	}
 
@@ -510,6 +520,7 @@ func bestCouponSnapshot(coupons []AvailableCoupon) couponSnapshot {
 			Code:           coupon.RedemptionCode,
 			Message:        coupon.Message,
 			Source:         "api",
+			Signature:      strings.ToLower(strings.TrimSpace(fmt.Sprintf("api|%s|%.2f", coupon.RedemptionCode, discount))),
 		}
 	}
 	return best
@@ -565,11 +576,14 @@ func (c *Client) fetchPageCoupon(ctx context.Context, item BrowseAPIItem, basePr
 	var errs []error
 	for _, backend := range backends {
 		result := scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
-			Backend:         backend,
-			URL:             pageURL,
-			Timeout:         timeout,
-			ExternalCommand: ebayCouponExternalCommand(),
-			PaidCommand:     ebayCouponPaidCommand(),
+			Backend:          backend,
+			URL:              pageURL,
+			Timeout:          timeout,
+			ExternalCommand:  ebayCouponExternalCommand(),
+			CamoufoxCommand:  ebayCouponCamoufoxCommand(),
+			AICrawlerCommand: ebayCouponAICrawlerCommand(),
+			PaidCommand:      ebayCouponPaidCommand(),
+			PaidEnabled:      c.paidBrowserEnabled,
 		})
 		if result.Error != "" {
 			errs = append(errs, fmt.Errorf("%s: %s", backend, result.Error))
@@ -595,6 +609,14 @@ func (c *Client) fetchPageCoupon(ctx context.Context, item BrowseAPIItem, basePr
 
 func ebayCouponExternalCommand() string {
 	return firstNonEmptyEnv("EBAY_COUPON_EXTERNAL_STEALTH_COMMAND", "SCRAPELAB_EXTERNAL_STEALTH_COMMAND")
+}
+
+func ebayCouponCamoufoxCommand() string {
+	return firstNonEmptyEnv("EBAY_COUPON_CAMOUFOX_COMMAND", "SCRAPELAB_CAMOUFOX_COMMAND")
+}
+
+func ebayCouponAICrawlerCommand() string {
+	return firstNonEmptyEnv("EBAY_COUPON_AI_CRAWLER_COMMAND", "SCRAPELAB_AI_CRAWLER_COMMAND")
 }
 
 func ebayCouponPaidCommand() string {

@@ -38,6 +38,30 @@ var RemoveChoices = []Choice{
 	{Name: "Best Buy", Value: "bestbuy"},
 }
 
+func ActiveRemoveChoices(facebookEnabled, hardwareSwapEnabled bool) []Choice {
+	out := make([]Choice, 0, len(RemoveChoices))
+	for _, choice := range RemoveChoices {
+		if choice.Value == "facebook" && !facebookEnabled {
+			continue
+		}
+		out = append(out, choice)
+	}
+	return out
+}
+
+func ValidSubscriptionType(value string, facebookEnabled, hardwareSwapEnabled bool) bool {
+	switch value {
+	case "rfd", "ebay", "memoryexpress", "bestbuy":
+		return true
+	case "facebook":
+		return facebookEnabled
+	case "hardwareswap":
+		return hardwareSwapEnabled
+	default:
+		return false
+	}
+}
+
 func IsRFD(value string) bool {
 	return containsValue(RFDChoices, value)
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/storage"
 )
 
-// Store defines the Firestore operations needed by the Facebook processor.
+// Store defines the storage operations needed by the Facebook processor.
 type Store interface {
 	GetFacebookSubscriptions(ctx context.Context) ([]models.Subscription, error)
 	FacebookAdExists(ctx context.Context, listingID string) (bool, error)
@@ -94,7 +94,7 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 	httpScraper := NewHTTPScraper(slog.Default(), p.proxyURL)
 
 	// Initialize Carfax valuation client.
-	// Resolve the token service URL dynamically from Firestore first (updated by
+	// Resolve the token service URL dynamically from storage first (updated by
 	// the tunnel script), falling back to the static env var. This avoids stale
 	// URLs when the Cloudflare quick tunnel restarts and gets a new hostname.
 	tokenServiceURL := p.carfaxTokenServiceURL
@@ -104,7 +104,7 @@ func (p *Processor) ProcessFacebookDeals(ctx context.Context) error {
 			"error", err, "static_url", p.carfaxTokenServiceURL)
 	} else if dynamicURL != "" {
 		tokenServiceURL = dynamicURL
-		slog.Info("Using dynamic token service URL from Firestore",
+		slog.Info("Using dynamic token service URL from storage",
 			"processor", "facebook", "component", "carfax_http",
 			"url", dynamicURL)
 	}
@@ -245,7 +245,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			}
 		}
 
-		// Early dedup: check Firestore BEFORE the expensive NormalizeAd Gemini
+		// Early dedup: check storage BEFORE the expensive NormalizeAd Gemini
 		// call. If this listing ID was already processed (even if the previous
 		// AnalyzeDeal failed), skip it to save AI quota.
 		if ad.ListingID != "" {
@@ -337,7 +337,7 @@ func (p *Processor) processCity(ctx context.Context, group cityGroup, carfaxClie
 			continue
 		}
 
-		// Save to Firestore (deduplication by Facebook listing ID)
+		// Save to storage (deduplication by Facebook listing ID)
 		adRecord := &models.FacebookAdRecord{
 			ID:           ad.ListingID,
 			Title:        ad.Title,

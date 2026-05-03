@@ -17,7 +17,7 @@ type DealInfo struct {
 	Category               string            `firestore:"category,omitempty"`
 	ThreadImageURL         string            `firestore:"threadImageURL,omitempty" validate:"omitempty,url"`
 	ActualDealURL          string            `firestore:"actualDealURL,omitempty" validate:"omitempty,url"`
-	FirestoreID            string            `firestore:"-"`                           // To store the Firestore document ID, not stored in Firestore itself
+	FirestoreID            string            `firestore:"-"`                           // Legacy name for the document ID; not stored in the document itself.
 	DiscordMessageIDs      map[string]string `firestore:"discordMessageIDs,omitempty"` // Mapping of ChannelID -> MessageID
 	LastUpdated            time.Time         `firestore:"lastUpdated"`
 	PublishedTimestamp     time.Time         `firestore:"publishedTimestamp" validate:"required"` // Parsed from PostedTime

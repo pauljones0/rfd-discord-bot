@@ -46,9 +46,6 @@ func TestLoad(t *testing.T) {
 	if cfg.EbayCouponDiscoveryInterval != 6*time.Hour {
 		t.Errorf("Expected default eBay coupon discovery interval 6h, got %s", cfg.EbayCouponDiscoveryInterval)
 	}
-	if cfg.EbayCouponSampleSize != 3 {
-		t.Errorf("Expected default eBay coupon sample size 3, got %d", cfg.EbayCouponSampleSize)
-	}
 	if cfg.LocalSchedulerEnabled {
 		t.Errorf("Expected local scheduler to be disabled by default")
 	}
@@ -60,13 +57,18 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-func TestLoad_MissingProjectID(t *testing.T) {
-	// Do NOT set GOOGLE_CLOUD_PROJECT
+func TestLoad_ProjectIDOptionalForLocalPostgres(t *testing.T) {
 	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
 
-	_, err := Load()
-	if err == nil {
-		t.Error("Load() should return an error when GOOGLE_CLOUD_PROJECT is not set")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error without GOOGLE_CLOUD_PROJECT: %v", err)
+	}
+	if cfg.ProjectID != "" {
+		t.Fatalf("ProjectID = %q, want empty local default", cfg.ProjectID)
+	}
+	if cfg.StorageBackend != "postgres" {
+		t.Fatalf("StorageBackend = %q, want postgres", cfg.StorageBackend)
 	}
 }
 
@@ -202,12 +204,12 @@ func TestLoad_InvalidSchedulerInterval(t *testing.T) {
 func TestLoadLooseDotEnv_IgnoresMultilineJSONBlock(t *testing.T) {
 	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
 	t.Setenv("DISCORD_BOT_TOKEN", "")
-	t.Setenv("FIREBASE_SERVICE_ACCOUNT", "")
+	t.Setenv("MULTILINE_SECRET", "")
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
 	content := "GOOGLE_CLOUD_PROJECT=test-project\n" +
-		"FIREBASE_SERVICE_ACCOUNT={\n" +
+		"MULTILINE_SECRET={\n" +
 		"  \"type\": \"service_account\",\n" +
 		"  \"project_id\": \"test-project\"\n" +
 		"}\n" +
@@ -227,7 +229,7 @@ func TestLoadLooseDotEnv_IgnoresMultilineJSONBlock(t *testing.T) {
 	if got := os.Getenv("DISCORD_BOT_TOKEN"); got != "test-token" {
 		t.Fatalf("Expected DISCORD_BOT_TOKEN to be loaded, got %q", got)
 	}
-	if got := os.Getenv("FIREBASE_SERVICE_ACCOUNT"); got != "" {
-		t.Fatalf("Expected multiline FIREBASE_SERVICE_ACCOUNT block to be skipped, got %q", got)
+	if got := os.Getenv("MULTILINE_SECRET"); got != "" {
+		t.Fatalf("Expected multiline secret block to be skipped, got %q", got)
 	}
 }

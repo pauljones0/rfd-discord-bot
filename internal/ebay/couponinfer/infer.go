@@ -260,7 +260,7 @@ func countCompetingRules(best candidate, candidates []candidate) int {
 func confidence(best candidate, positives, observed, competitors int) float64 {
 	score := 0.62
 	if positives >= 2 {
-		score += 0.13
+		score += 0.15
 	}
 	if observed >= 3 {
 		score += 0.05

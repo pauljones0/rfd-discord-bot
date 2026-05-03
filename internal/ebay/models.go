@@ -2,7 +2,7 @@ package ebay
 
 import "time"
 
-// EbaySeller represents a tracked eBay seller stored in Firestore.
+// EbaySeller represents a tracked eBay seller stored in the document store.
 type EbaySeller struct {
 	Username    string    `firestore:"username"`
 	DisplayName string    `firestore:"displayName,omitempty"`
@@ -13,7 +13,7 @@ type EbaySeller struct {
 }
 
 // MarketplaceID returns the eBay marketplace ID for the seller.
-// Defaults to "EBAY_CA" when not set (backward-compatible with existing Firestore documents).
+// Defaults to "EBAY_CA" when not set, preserving older stored seller records.
 func (s EbaySeller) MarketplaceID() string {
 	if s.Marketplace == "" {
 		return "EBAY_CA"
@@ -46,26 +46,29 @@ func (s EbaySeller) EffectiveCategoryIDs() []string {
 	return ids
 }
 
-// TrackedItem represents an eBay listing being monitored for price drops in Firestore.
+// TrackedItem represents an eBay listing being monitored for price drops.
 type TrackedItem struct {
-	ItemID            string    `firestore:"itemID"`
-	Title             string    `firestore:"title"`
-	Price             float64   `firestore:"price"` // Effective price after item-level coupons when available.
-	BasePrice         float64   `firestore:"basePrice,omitempty"`
-	CouponDiscount    float64   `firestore:"couponDiscount,omitempty"`
-	CouponCode        string    `firestore:"couponCode,omitempty"`
-	CouponMessage     string    `firestore:"couponMessage,omitempty"`
-	CouponSource      string    `firestore:"couponSource,omitempty"`
-	OriginalPrice     float64   `firestore:"originalPrice,omitempty"`
-	LastNotifiedPrice float64   `firestore:"lastNotifiedPrice,omitempty"`
-	DropCount         int       `firestore:"dropCount,omitempty"`
-	Currency          string    `firestore:"currency"`
-	Seller            string    `firestore:"seller"`
-	Condition         string    `firestore:"condition"`
-	ItemURL           string    `firestore:"itemURL"`
-	ImageURL          string    `firestore:"imageURL"`
-	FirstSeenAt       time.Time `firestore:"firstSeenAt"`
-	LastSeenAt        time.Time `firestore:"lastSeenAt"`
+	ItemID                   string    `firestore:"itemID"`
+	Title                    string    `firestore:"title"`
+	Price                    float64   `firestore:"price"` // Effective price after item-level coupons when available.
+	BasePrice                float64   `firestore:"basePrice,omitempty"`
+	CouponDiscount           float64   `firestore:"couponDiscount,omitempty"`
+	CouponCode               string    `firestore:"couponCode,omitempty"`
+	CouponMessage            string    `firestore:"couponMessage,omitempty"`
+	CouponSource             string    `firestore:"couponSource,omitempty"`
+	CouponSignature          string    `firestore:"couponSignature,omitempty"`
+	OriginalPrice            float64   `firestore:"originalPrice,omitempty"`
+	LastNotifiedPrice        float64   `firestore:"lastNotifiedPrice,omitempty"`
+	LastCouponAlertSignature string    `firestore:"lastCouponAlertSignature,omitempty"`
+	LastCouponAlertAt        time.Time `firestore:"lastCouponAlertAt,omitempty"`
+	DropCount                int       `firestore:"dropCount,omitempty"`
+	Currency                 string    `firestore:"currency"`
+	Seller                   string    `firestore:"seller"`
+	Condition                string    `firestore:"condition"`
+	ItemURL                  string    `firestore:"itemURL"`
+	ImageURL                 string    `firestore:"imageURL"`
+	FirstSeenAt              time.Time `firestore:"firstSeenAt"`
+	LastSeenAt               time.Time `firestore:"lastSeenAt"`
 }
 
 // EbayItem represents an eBay listing for Discord notification (price drop).
@@ -132,6 +135,27 @@ type StoreCoupon struct {
 	ConsecutiveNoCoupon       int       `firestore:"consecutiveNoCoupon,omitempty"`
 }
 
+// CouponObservation is one browser-derived coupon datapoint for a seller item.
+// Observations are used to infer whether a coupon formula is safe to apply across
+// a seller store without repeatedly opening listing pages.
+type CouponObservation struct {
+	Marketplace    string    `firestore:"marketplace"`
+	Seller         string    `firestore:"seller"`
+	Signature      string    `firestore:"signature"`
+	ItemID         string    `firestore:"itemID"`
+	ItemURL        string    `firestore:"itemURL,omitempty"`
+	BasePrice      float64   `firestore:"basePrice"`
+	DiscountAmount float64   `firestore:"discountAmount"`
+	Code           string    `firestore:"code,omitempty"`
+	Message        string    `firestore:"message,omitempty"`
+	EvidenceText   string    `firestore:"evidenceText,omitempty"`
+	Scope          string    `firestore:"scope,omitempty"`
+	Backend        string    `firestore:"backend,omitempty"`
+	Confidence     float64   `firestore:"confidence,omitempty"`
+	ObservedAt     time.Time `firestore:"observedAt"`
+	ExpiresAt      time.Time `firestore:"expiresAt,omitempty"`
+}
+
 // BrowseAPIItem represents a single item from the eBay Browse API response.
 type BrowseAPIItem struct {
 	ItemID           string      `json:"itemId"`
@@ -149,6 +173,7 @@ type BrowseAPIItem struct {
 	CouponCode       string      `json:"-"`
 	CouponMessage    string      `json:"-"`
 	CouponSource     string      `json:"-"`
+	CouponSignature  string      `json:"-"`
 	ItemCreationDate string      `json:"itemCreationDate"` // ISO8601
 	Marketplace      string      `json:"-"`
 }
@@ -194,7 +219,7 @@ type BrowseSearchResponse struct {
 	Offset        int             `json:"offset"`
 }
 
-// DefaultSellers returns the hardcoded default seller list for initial Firestore seeding.
+// DefaultSellers returns the hardcoded default seller list for initial seeding.
 func DefaultSellers() []EbaySeller {
 	now := time.Now()
 

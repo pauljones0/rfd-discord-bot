@@ -30,12 +30,12 @@ func main() {
 
 	store, err := storage.New(ctx, cfg.ProjectID)
 	if err != nil {
-		slog.Error("Failed to initialize Firestore", "error", err)
+		slog.Error("Failed to initialize storage", "error", err)
 		os.Exit(1)
 	}
 	defer func() {
 		if err := store.Close(); err != nil {
-			slog.Error("Failed to close Firestore client", "error", err)
+			slog.Error("Failed to close storage client", "error", err)
 		}
 	}()
 

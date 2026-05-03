@@ -39,6 +39,7 @@ func (c PageCoupon) snapshot(source string) couponSnapshot {
 		Code:           c.Code,
 		Message:        c.Message,
 		Source:         source,
+		Signature:      c.Signature,
 	}
 }
 
