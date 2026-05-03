@@ -43,9 +43,18 @@ def default_browser_path(configured: str) -> str:
     return ""
 
 
+def remove_stale_profile_locks(profile_dir: Path) -> None:
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile"):
+        try:
+            (profile_dir / name).unlink()
+        except FileNotFoundError:
+            pass
+
+
 async def fetch(args: argparse.Namespace) -> str:
     profile_dir = Path(args.profile_dir).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
+    remove_stale_profile_locks(profile_dir)
 
     browser_args = [
         "--no-sandbox",

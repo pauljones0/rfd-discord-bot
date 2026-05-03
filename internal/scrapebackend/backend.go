@@ -190,6 +190,8 @@ func fetchChromedp(ctx context.Context, opts FetchOptions) (string, string, erro
 		defer os.RemoveAll(profileDir)
 	} else if err := os.MkdirAll(profileDir, 0o755); err != nil {
 		return "", "", fmt.Errorf("create browser profile dir: %w", err)
+	} else if err := removeStaleBrowserLocks(profileDir); err != nil {
+		return "", "", fmt.Errorf("remove stale browser profile locks: %w", err)
 	}
 
 	display := ""
@@ -385,6 +387,16 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func removeStaleBrowserLocks(profileDir string) error {
+	for _, name := range []string{"SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile"} {
+		path := filepath.Join(profileDir, name)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func startVirtualDisplayIfNeeded(ctx context.Context) (string, func(), error) {
