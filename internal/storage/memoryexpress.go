@@ -22,6 +22,11 @@ func (c *Client) MemExpressProductExists(ctx context.Context, sku, storeCode str
 	if sku == "" || storeCode == "" {
 		return false, nil
 	}
+	if c.usesPostgres() {
+		_, ok, err := c.GetRawDocument(ctx, memexpressCollection, memoryexpress.DocID(sku, storeCode))
+		return ok, err
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -40,6 +45,26 @@ func (c *Client) MemExpressProductExists(ctx context.Context, sku, storeCode str
 func (c *Client) GetExistingMemExpressProductIDs(ctx context.Context, products []memoryexpress.Product) (map[string]struct{}, error) {
 	if len(products) == 0 {
 		return make(map[string]struct{}), nil
+	}
+	if c.usesPostgres() {
+		existing := make(map[string]struct{})
+		seen := make(map[string]struct{}, len(products))
+		for _, product := range products {
+			if product.SKU == "" || product.StoreCode == "" {
+				continue
+			}
+			docID := memoryexpress.DocID(product.SKU, product.StoreCode)
+			if _, ok := seen[docID]; ok {
+				continue
+			}
+			seen[docID] = struct{}{}
+			if _, ok, err := c.GetRawDocument(ctx, memexpressCollection, docID); err != nil {
+				return nil, err
+			} else if ok {
+				existing[docID] = struct{}{}
+			}
+		}
+		return existing, nil
 	}
 
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
@@ -80,6 +105,10 @@ func (c *Client) GetExistingMemExpressProductIDs(ctx context.Context, products [
 
 // SaveMemExpressProduct saves a clearance product to Firestore.
 func (c *Client) SaveMemExpressProduct(ctx context.Context, product memoryexpress.AnalyzedProduct) error {
+	if c.usesPostgres() {
+		return c.SetDocument(ctx, memexpressCollection, memoryexpress.DocID(product.SKU, product.StoreCode), product)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -93,6 +122,34 @@ func (c *Client) SaveMemExpressProduct(ctx context.Context, product memoryexpres
 
 // PruneMemExpressProducts deletes clearance products older than maxAgeDays or exceeding maxRecords.
 func (c *Client) PruneMemExpressProducts(ctx context.Context, maxAgeDays, maxRecords int) error {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, memexpressCollection)
+		if err != nil {
+			return err
+		}
+		cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
+		for _, row := range rows {
+			if !documentTime(row.Data, "lastSeen").IsZero() && documentTime(row.Data, "lastSeen").Before(cutoff) {
+				if err := c.DeleteDocument(ctx, memexpressCollection, row.ID); err != nil {
+					slog.Warn("Failed to delete old memexpress product", "processor", "memoryexpress", "id", row.ID, "error", err)
+				}
+			}
+		}
+		rows, err = c.ListDocuments(ctx, memexpressCollection)
+		if err != nil {
+			return err
+		}
+		if len(rows) > maxRecords {
+			sortDocumentsByTime(rows, "lastSeen", true)
+			for _, row := range rows[:len(rows)-maxRecords] {
+				if err := c.DeleteDocument(ctx, memexpressCollection, row.ID); err != nil {
+					slog.Warn("Failed to delete excess memexpress record", "processor", "memoryexpress", "id", row.ID, "error", err)
+				}
+			}
+		}
+		return nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, 2*time.Minute)
 	defer cancel()
 
@@ -167,6 +224,10 @@ func memExpressSubscriptionDocID(guildID, channelID, storeCode string) string {
 
 // SaveMemExpressSubscription creates or updates a Memory Express subscription in Firestore.
 func (c *Client) SaveMemExpressSubscription(ctx context.Context, sub models.Subscription) error {
+	if c.usesPostgres() {
+		return c.SetDocument(ctx, subscriptionsCollection, memExpressSubscriptionDocID(sub.GuildID, sub.ChannelID, sub.StoreCode), sub)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -180,6 +241,10 @@ func (c *Client) SaveMemExpressSubscription(ctx context.Context, sub models.Subs
 
 // RemoveMemExpressSubscription removes a Memory Express subscription by guild, channel, and store.
 func (c *Client) RemoveMemExpressSubscription(ctx context.Context, guildID, channelID, storeCode string) error {
+	if c.usesPostgres() {
+		return c.DeleteDocument(ctx, subscriptionsCollection, memExpressSubscriptionDocID(guildID, channelID, storeCode))
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -193,6 +258,12 @@ func (c *Client) RemoveMemExpressSubscription(ctx context.Context, guildID, chan
 
 // GetMemExpressSubscriptions retrieves all active Memory Express subscriptions.
 func (c *Client) GetMemExpressSubscriptions(ctx context.Context) ([]models.Subscription, error) {
+	if c.usesPostgres() {
+		return c.subscriptionsWhere(ctx, func(row Document) bool {
+			return documentString(row.Data, "subscriptionType") == "memoryexpress"
+		})
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -221,6 +292,13 @@ func (c *Client) GetMemExpressSubscriptions(ctx context.Context) ([]models.Subsc
 
 // GetMemExpressSubscriptionsByGuild retrieves all Memory Express subscriptions for a guild.
 func (c *Client) GetMemExpressSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
+	if c.usesPostgres() {
+		return c.subscriptionsWhere(ctx, func(row Document) bool {
+			return documentString(row.Data, "guildID") == guildID &&
+				documentString(row.Data, "subscriptionType") == "memoryexpress"
+		})
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 

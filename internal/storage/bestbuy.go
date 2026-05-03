@@ -20,6 +20,26 @@ const bestbuySellersCollection = "bestbuy_sellers"
 
 // GetActiveBestBuySellers returns active Best Buy seller targets from Firestore.
 func (c *Client) GetActiveBestBuySellers(ctx context.Context) ([]bestbuy.Seller, error) {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, bestbuySellersCollection)
+		if err != nil {
+			return nil, err
+		}
+		var sellers []bestbuy.Seller
+		for _, row := range rows {
+			if !documentBool(row.Data, "isActive") {
+				continue
+			}
+			var seller bestbuy.Seller
+			if err := decodeDocument(row.Data, &seller); err != nil {
+				slog.Warn("Failed to decode bestbuy seller", "processor", "bestbuy", "id", row.ID, "error", err)
+				continue
+			}
+			sellers = append(sellers, seller)
+		}
+		return sellers, nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -49,6 +69,32 @@ func (c *Client) GetActiveBestBuySellers(ctx context.Context) ([]bestbuy.Seller,
 
 // SeedBestBuySellers populates the seller target collection if empty.
 func (c *Client) SeedBestBuySellers(ctx context.Context) (bool, error) {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, bestbuySellersCollection)
+		if err != nil {
+			return false, err
+		}
+		if len(rows) > 0 {
+			return false, nil
+		}
+		now := time.Now()
+		var errs []error
+		for _, seller := range bestbuy.DefaultSellers {
+			seller.AddedAt = now
+			if !seller.IsActive {
+				seller.IsActive = true
+			}
+			docID := seller.ID
+			if docID == "" {
+				docID = seller.Name
+			}
+			if err := c.CreateDocument(ctx, bestbuySellersCollection, docID, seller); err != nil {
+				errs = append(errs, fmt.Errorf("seed %s: %w", docID, err))
+			}
+		}
+		return true, errors.Join(errs...)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -93,6 +139,11 @@ func (c *Client) BestBuyProductExists(ctx context.Context, sku, source string) (
 	if sku == "" || source == "" {
 		return false, nil
 	}
+	if c.usesPostgres() {
+		_, ok, err := c.GetRawDocument(ctx, bestbuyCollection, bestBuyDocID(sku, source))
+		return ok, err
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -109,6 +160,10 @@ func (c *Client) BestBuyProductExists(ctx context.Context, sku, source string) (
 
 // SaveBestBuyProduct saves a product to Firestore.
 func (c *Client) SaveBestBuyProduct(ctx context.Context, product bestbuy.AnalyzedProduct) error {
+	if c.usesPostgres() {
+		return c.SetDocument(ctx, bestbuyCollection, bestBuyDocID(product.SKU, product.Source), product)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -120,8 +175,70 @@ func (c *Client) SaveBestBuyProduct(ctx context.Context, product bestbuy.Analyze
 	return nil
 }
 
+func (c *Client) RefreshBestBuyProductLastSeen(ctx context.Context, product bestbuy.Product) error {
+	docID := bestBuyDocID(product.SKU, product.Source)
+	now := time.Now()
+	if c.usesPostgres() {
+		var existing bestbuy.AnalyzedProduct
+		ok, err := c.GetDocument(ctx, bestbuyCollection, docID, &existing)
+		if err != nil || !ok {
+			return err
+		}
+		existing.Product = product
+		existing.LastSeen = now
+		if existing.DiscountPct == 0 {
+			existing.DiscountPct = bestbuyDiscount(product)
+		}
+		return c.SetDocument(ctx, bestbuyCollection, docID, existing)
+	}
+
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+	_, err := c.client.Collection(bestbuyCollection).Doc(docID).Update(ctx, []firestore.Update{
+		{Path: "lastSeen", Value: now},
+		{Path: "regularPrice", Value: product.RegularPrice},
+		{Path: "salePrice", Value: product.SalePrice},
+		{Path: "saleEndDate", Value: product.SaleEndDate},
+		{Path: "customerRating", Value: product.CustomerRating},
+		{Path: "imageURL", Value: product.ImageURL},
+		{Path: "url", Value: product.URL},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to refresh bestbuy product %s: %w", docID, err)
+	}
+	return nil
+}
+
 // PruneBestBuyProducts deletes products older than maxAgeDays or exceeding maxRecords.
 func (c *Client) PruneBestBuyProducts(ctx context.Context, maxAgeDays, maxRecords int) error {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, bestbuyCollection)
+		if err != nil {
+			return err
+		}
+		cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
+		for _, row := range rows {
+			if !documentTime(row.Data, "lastSeen").IsZero() && documentTime(row.Data, "lastSeen").Before(cutoff) {
+				if err := c.DeleteDocument(ctx, bestbuyCollection, row.ID); err != nil {
+					slog.Warn("Failed to delete old bestbuy product", "processor", "bestbuy", "id", row.ID, "error", err)
+				}
+			}
+		}
+		rows, err = c.ListDocuments(ctx, bestbuyCollection)
+		if err != nil {
+			return err
+		}
+		if len(rows) > maxRecords {
+			sortDocumentsByTime(rows, "lastSeen", true)
+			for _, row := range rows[:len(rows)-maxRecords] {
+				if err := c.DeleteDocument(ctx, bestbuyCollection, row.ID); err != nil {
+					slog.Warn("Failed to delete excess bestbuy record", "processor", "bestbuy", "id", row.ID, "error", err)
+				}
+			}
+		}
+		return nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, 2*time.Minute)
 	defer cancel()
 
@@ -182,6 +299,10 @@ func bestBuySubscriptionDocID(guildID, channelID string) string {
 
 // SaveBestBuySubscription creates or updates a Best Buy subscription in Firestore.
 func (c *Client) SaveBestBuySubscription(ctx context.Context, sub models.Subscription) error {
+	if c.usesPostgres() {
+		return c.SetDocument(ctx, subscriptionsCollection, bestBuySubscriptionDocID(sub.GuildID, sub.ChannelID), sub)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -195,6 +316,10 @@ func (c *Client) SaveBestBuySubscription(ctx context.Context, sub models.Subscri
 
 // RemoveBestBuySubscription removes a Best Buy subscription by guild and channel.
 func (c *Client) RemoveBestBuySubscription(ctx context.Context, guildID, channelID string) error {
+	if c.usesPostgres() {
+		return c.DeleteDocument(ctx, subscriptionsCollection, bestBuySubscriptionDocID(guildID, channelID))
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -208,6 +333,13 @@ func (c *Client) RemoveBestBuySubscription(ctx context.Context, guildID, channel
 
 // GetBestBuySubscriptionsByGuild retrieves all Best Buy subscriptions for a guild.
 func (c *Client) GetBestBuySubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
+	if c.usesPostgres() {
+		return c.subscriptionsWhere(ctx, func(row Document) bool {
+			return documentString(row.Data, "guildID") == guildID &&
+				documentString(row.Data, "subscriptionType") == "bestbuy"
+		})
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -233,4 +365,11 @@ func (c *Client) GetBestBuySubscriptionsByGuild(ctx context.Context, guildID str
 		subs = append(subs, sub)
 	}
 	return subs, nil
+}
+
+func bestbuyDiscount(p bestbuy.Product) float64 {
+	if p.RegularPrice > 0 && p.SalePrice > 0 && p.SalePrice < p.RegularPrice {
+		return (p.RegularPrice - p.SalePrice) / p.RegularPrice * 100
+	}
+	return 0
 }

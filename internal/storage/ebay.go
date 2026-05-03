@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"google.golang.org/api/iterator"
@@ -15,14 +16,35 @@ import (
 )
 
 const (
-	ebaySellersCollection = "ebay_sellers"
-	ebayItemsCollection   = "ebay_items"
+	ebaySellersCollection      = "ebay_sellers"
+	ebayItemsCollection        = "ebay_items"
+	ebayStoreCouponsCollection = "ebay_store_coupons"
 )
 
 // --- eBay Sellers ---
 
 // GetActiveEbaySellers returns all active sellers from Firestore.
 func (c *Client) GetActiveEbaySellers(ctx context.Context) ([]ebay.EbaySeller, error) {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, ebaySellersCollection)
+		if err != nil {
+			return nil, err
+		}
+		var sellers []ebay.EbaySeller
+		for _, row := range rows {
+			if !documentBool(row.Data, "isActive") {
+				continue
+			}
+			var seller ebay.EbaySeller
+			if err := decodeDocument(row.Data, &seller); err != nil {
+				slog.Warn("Failed to decode ebay seller", "processor", "ebay", "id", row.ID, "error", err)
+				continue
+			}
+			sellers = append(sellers, seller)
+		}
+		return sellers, nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -54,6 +76,23 @@ func (c *Client) GetActiveEbaySellers(ctx context.Context) ([]ebay.EbaySeller, e
 // SeedEbaySellers populates the ebay_sellers collection if it's empty.
 // Returns true if seeding was performed.
 func (c *Client) SeedEbaySellers(ctx context.Context) (bool, error) {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, ebaySellersCollection)
+		if err != nil {
+			return false, err
+		}
+		if len(rows) > 0 {
+			return false, nil
+		}
+		var errs []error
+		for _, seller := range ebay.DefaultSellers() {
+			if err := c.CreateDocument(ctx, ebaySellersCollection, seller.Username, seller); err != nil {
+				errs = append(errs, fmt.Errorf("seed %s: %w", seller.Username, err))
+			}
+		}
+		return true, errors.Join(errs...)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -97,6 +136,15 @@ func (c *Client) SeedEbaySellers(ctx context.Context) (bool, error) {
 
 // GetEbayPollState retrieves the eBay polling state from bot_config.
 func (c *Client) GetEbayPollState(ctx context.Context) (*ebay.EbayPollState, error) {
+	if c.usesPostgres() {
+		var state ebay.EbayPollState
+		ok, err := c.GetDocument(ctx, "bot_config", "ebay_poll_state", &state)
+		if err != nil || !ok {
+			return nil, err
+		}
+		return &state, nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -117,6 +165,11 @@ func (c *Client) GetEbayPollState(ctx context.Context) (*ebay.EbayPollState, err
 
 // UpdateEbayPollState updates the eBay polling state in bot_config.
 func (c *Client) UpdateEbayPollState(ctx context.Context, state ebay.EbayPollState) error {
+	if c.usesPostgres() {
+		state.LastUpdated = time.Now()
+		return c.SetDocument(ctx, "bot_config", "ebay_poll_state", state)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -132,6 +185,23 @@ func (c *Client) UpdateEbayPollState(ctx context.Context, state ebay.EbayPollSta
 
 // GetTrackedEbayItems returns all tracked items from the ebay_items collection.
 func (c *Client) GetTrackedEbayItems(ctx context.Context) (map[string]ebay.TrackedItem, error) {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, ebayItemsCollection)
+		if err != nil {
+			return nil, err
+		}
+		items := make(map[string]ebay.TrackedItem, len(rows))
+		for _, row := range rows {
+			var item ebay.TrackedItem
+			if err := decodeDocument(row.Data, &item); err != nil {
+				slog.Warn("Failed to decode ebay item", "processor", "ebay", "id", row.ID, "error", err)
+				continue
+			}
+			items[row.ID] = item
+		}
+		return items, nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -163,6 +233,14 @@ func (c *Client) BulkUpsertTrackedEbayItems(ctx context.Context, items []ebay.Tr
 	if len(items) == 0 {
 		return nil
 	}
+	if c.usesPostgres() {
+		for _, item := range items {
+			if err := c.SetDocument(ctx, ebayItemsCollection, item.ItemID, item); err != nil {
+				slog.Warn("Failed to upsert ebay item", "processor", "ebay", "itemID", item.ItemID, "error", err)
+			}
+		}
+		return nil
+	}
 
 	ctx, cancel := ensureDeadline(ctx, 60*time.Second)
 	defer cancel()
@@ -184,6 +262,14 @@ func (c *Client) DeleteTrackedEbayItems(ctx context.Context, itemIDs []string) e
 	if len(itemIDs) == 0 {
 		return nil
 	}
+	if c.usesPostgres() {
+		for _, id := range itemIDs {
+			if err := c.DeleteDocument(ctx, ebayItemsCollection, id); err != nil {
+				slog.Warn("Failed to delete ebay item", "processor", "ebay", "itemID", id, "error", err)
+			}
+		}
+		return nil
+	}
 
 	ctx, cancel := ensureDeadline(ctx, 60*time.Second)
 	defer cancel()
@@ -198,4 +284,82 @@ func (c *Client) DeleteTrackedEbayItems(ctx context.Context, itemIDs []string) e
 	bw.Flush()
 	bw.End()
 	return nil
+}
+
+func ebayStoreCouponDocID(marketplace, seller, signature string) string {
+	marketplace = strings.ToUpper(strings.TrimSpace(marketplace))
+	seller = strings.ToLower(strings.TrimSpace(seller))
+	signature = strings.ToLower(strings.TrimSpace(signature))
+	if signature == "" {
+		signature = "none"
+	}
+	replacer := strings.NewReplacer("/", "_", " ", "_", ":", "_", "|", "_")
+	return replacer.Replace(marketplace + "_" + seller + "_" + signature)
+}
+
+func (c *Client) GetEbayStoreCoupons(ctx context.Context, marketplace, seller string) ([]ebay.StoreCoupon, error) {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, ebayStoreCouponsCollection)
+		if err != nil {
+			return nil, err
+		}
+		var coupons []ebay.StoreCoupon
+		for _, row := range rows {
+			if !sameMarketplaceSeller(row.Data, marketplace, seller) {
+				continue
+			}
+			var coupon ebay.StoreCoupon
+			if err := decodeDocument(row.Data, &coupon); err != nil {
+				slog.Warn("Failed to decode ebay store coupon", "processor", "ebay", "id", row.ID, "error", err)
+				continue
+			}
+			coupons = append(coupons, coupon)
+		}
+		return coupons, nil
+	}
+
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+	iter := c.client.Collection(ebayStoreCouponsCollection).
+		Where("marketplace", "==", marketplace).
+		Where("seller", "==", seller).
+		Documents(ctx)
+	defer iter.Stop()
+
+	var coupons []ebay.StoreCoupon
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate ebay store coupons: %w", err)
+		}
+		var coupon ebay.StoreCoupon
+		if err := doc.DataTo(&coupon); err != nil {
+			slog.Warn("Failed to unmarshal ebay store coupon", "processor", "ebay", "id", doc.Ref.ID, "error", err)
+			continue
+		}
+		coupons = append(coupons, coupon)
+	}
+	return coupons, nil
+}
+
+func (c *Client) SaveEbayStoreCoupon(ctx context.Context, coupon ebay.StoreCoupon) error {
+	docID := ebayStoreCouponDocID(coupon.Marketplace, coupon.Seller, coupon.Signature)
+	if c.usesPostgres() {
+		return c.SetDocument(ctx, ebayStoreCouponsCollection, docID, coupon)
+	}
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+	_, err := c.client.Collection(ebayStoreCouponsCollection).Doc(docID).Set(ctx, coupon)
+	if err != nil {
+		return fmt.Errorf("failed to save ebay store coupon %s: %w", docID, err)
+	}
+	return nil
+}
+
+func sameMarketplaceSeller(data map[string]any, marketplace, seller string) bool {
+	return strings.EqualFold(documentString(data, "marketplace"), marketplace) &&
+		strings.EqualFold(documentString(data, "seller"), seller)
 }

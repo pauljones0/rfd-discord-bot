@@ -690,7 +690,7 @@ func (h *Handler) handleSetupBestBuy(w http.ResponseWriter, req interactionReque
 		return
 	}
 
-	h.respondPrivateMessage(w, fmt.Sprintf("✅ Best Buy Marketplace & Open Box deals will be posted in <#%s> with filter **%s**!", channelID, filter))
+	h.respondPrivateMessage(w, fmt.Sprintf("Best Buy AI-labeled seller alerts will be posted in <#%s> with filter **%s**.", channelID, dealTypeLabel(filter)))
 }
 
 // handleDealsRemove handles /deals remove type:<rfd|ebay|facebook>
@@ -1399,11 +1399,11 @@ func dealTypeLabel(dealType string) string {
 	case "ebay_price_drop":
 		return "all eBay price drops"
 	case "bb_new":
-		return "Best Buy new seller listings"
+		return "Best Buy all new listings + AI labels"
 	case "bb_warm_hot":
-		return "Best Buy new seller listings (legacy warm/hot filter)"
+		return "Best Buy AI warm + hot deals"
 	case "bb_hot":
-		return "Best Buy new seller listings (legacy hot filter)"
+		return "Best Buy AI hot deals only"
 	default:
 		return dealType
 	}

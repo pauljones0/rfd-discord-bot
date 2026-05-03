@@ -518,8 +518,21 @@ func bestCouponSnapshot(coupons []AvailableCoupon) couponSnapshot {
 // FetchPageCouponSnapshot attempts buyer-visible eBay listing-page coupon
 // discovery using the configured backend fallback order.
 func (c *Client) FetchPageCouponSnapshot(ctx context.Context, item BrowseAPIItem, basePrice float64) (couponSnapshot, error) {
+	coupon, source, err := c.FetchPageCoupon(ctx, item, basePrice)
+	if err != nil {
+		return couponSnapshot{}, err
+	}
+	if coupon.DiscountAmount <= 0 {
+		return couponSnapshot{}, nil
+	}
+	return coupon.snapshot(source), nil
+}
+
+// FetchPageCoupon attempts buyer-visible eBay listing-page coupon discovery and
+// returns the parsed coupon metadata plus the backend source that found it.
+func (c *Client) FetchPageCoupon(ctx context.Context, item BrowseAPIItem, basePrice float64) (PageCoupon, string, error) {
 	if c == nil {
-		return couponSnapshot{}, fmt.Errorf("eBay client not initialized")
+		return PageCoupon{}, "", fmt.Errorf("eBay client not initialized")
 	}
 	pageURL := item.ItemWebURL
 	if pageURL == "" {
@@ -530,7 +543,7 @@ func (c *Client) FetchPageCouponSnapshot(ctx context.Context, item BrowseAPIItem
 		pageURL = fmt.Sprintf("https://%s/itm/%s", marketplaceHost, ExtractItemID(item.ItemID))
 	}
 	if pageURL == "" {
-		return couponSnapshot{}, fmt.Errorf("eBay item has no web URL")
+		return PageCoupon{}, "", fmt.Errorf("eBay item has no web URL")
 	}
 
 	backends := c.couponBackends
@@ -560,13 +573,13 @@ func (c *Client) FetchPageCouponSnapshot(ctx context.Context, item BrowseAPIItem
 		if coupon.DiscountAmount <= 0 {
 			continue
 		}
-		return coupon.snapshot("page:" + backend), nil
+		return coupon, "page:" + backend, nil
 	}
 
 	if len(errs) > 0 {
-		return couponSnapshot{}, errors.Join(errs...)
+		return PageCoupon{}, "", errors.Join(errs...)
 	}
-	return couponSnapshot{}, nil
+	return PageCoupon{}, "", nil
 }
 
 func ebayCouponExternalCommand() string {

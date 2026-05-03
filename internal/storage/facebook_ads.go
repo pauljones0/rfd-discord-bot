@@ -33,6 +33,11 @@ func (c *Client) FacebookAdExists(ctx context.Context, listingID string) (bool, 
 	if listingID == "" {
 		return false, nil
 	}
+	if c.usesPostgres() {
+		_, ok, err := c.GetRawDocument(ctx, facebookAdsCollection, fmt.Sprintf("fb-%s", listingID))
+		return ok, err
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -51,6 +56,27 @@ func (c *Client) FacebookAdExists(ctx context.Context, listingID string) (bool, 
 // Uses the Facebook listing ID as the primary dedup key when available, falling back
 // to model-price-year composite key for backwards compatibility.
 func (c *Client) SaveFacebookAd(ctx context.Context, ad *models.FacebookAdRecord) (bool, error) {
+	if c.usesPostgres() {
+		var docID string
+		if ad.ID != "" {
+			docID = fmt.Sprintf("fb-%s", ad.ID)
+		} else {
+			docID = fmt.Sprintf("%s-%s-%d", sanitizeFacebookDocID(ad.Model), sanitizeFacebookDocID(ad.Price), ad.Year)
+		}
+		_, exists, err := c.GetRawDocument(ctx, facebookAdsCollection, docID)
+		if err != nil {
+			return false, err
+		}
+		ad.LastSeen = time.Now()
+		if !exists {
+			ad.ProcessedAt = time.Now()
+		}
+		if err := c.SetDocument(ctx, facebookAdsCollection, docID, ad); err != nil {
+			return false, err
+		}
+		return !exists, nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -89,6 +115,34 @@ func (c *Client) SaveFacebookAd(ctx context.Context, ad *models.FacebookAdRecord
 
 // PruneFacebookAds deletes Facebook ads older than maxAgeMonths or exceeding maxRecords.
 func (c *Client) PruneFacebookAds(ctx context.Context, maxAgeMonths int, maxRecords int) error {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, facebookAdsCollection)
+		if err != nil {
+			return err
+		}
+		cutoff := time.Now().AddDate(0, -maxAgeMonths, 0)
+		for _, row := range rows {
+			if !documentTime(row.Data, "last_seen").IsZero() && documentTime(row.Data, "last_seen").Before(cutoff) {
+				if err := c.DeleteDocument(ctx, facebookAdsCollection, row.ID); err != nil {
+					slog.Warn("Failed to delete old facebook ad", "processor", "facebook", "id", row.ID, "error", err)
+				}
+			}
+		}
+		rows, err = c.ListDocuments(ctx, facebookAdsCollection)
+		if err != nil {
+			return err
+		}
+		if len(rows) > maxRecords {
+			sortDocumentsByTime(rows, "last_seen", true)
+			for _, row := range rows[:len(rows)-maxRecords] {
+				if err := c.DeleteDocument(ctx, facebookAdsCollection, row.ID); err != nil {
+					slog.Warn("Failed to delete excess facebook record", "processor", "facebook", "id", row.ID, "error", err)
+				}
+			}
+		}
+		return nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, 2*time.Minute)
 	defer cancel()
 
@@ -144,6 +198,16 @@ func (c *Client) PruneFacebookAds(ctx context.Context, maxAgeMonths int, maxReco
 
 // SavePriceHistory stores a daily price snapshot for a vehicle model.
 func (c *Client) SavePriceHistory(ctx context.Context, model string, value float64) error {
+	if c.usesPostgres() {
+		today := time.Now().Format("2006-01-02")
+		docID := fmt.Sprintf("%s-%s", model, today)
+		return c.SetDocument(ctx, priceHistoryCollection, docID, models.PriceHistory{
+			Model: model,
+			Date:  today,
+			Value: value,
+		})
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 

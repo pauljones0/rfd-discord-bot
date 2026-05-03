@@ -157,7 +157,7 @@ func main() {
 				// setup-bestbuy subcommand
 				{
 					"name":        "setup-bestbuy",
-					"description": "Subscribe this channel to Best Buy Marketplace & Open Box deal notifications.",
+					"description": "Subscribe this channel to AI-labeled Best Buy seller listing alerts.",
 					"type":        1, // SUB_COMMAND
 					"options": []map[string]interface{}{
 						{
@@ -169,13 +169,13 @@ func main() {
 						},
 						{
 							"name":        "filter",
-							"description": "The type of Best Buy deals to publish.",
+							"description": "How strict Best Buy AI filtering should be.",
 							"type":        3, // STRING
 							"required":    true,
 							"choices": []map[string]interface{}{
-								{"name": "All new seller listings", "value": "bb_new"},
-								{"name": "Warm + Hot deals (legacy)", "value": "bb_warm_hot"},
-								{"name": "Hot deals only (legacy)", "value": "bb_hot"},
+								{"name": "All new listings + AI labels", "value": "bb_new"},
+								{"name": "AI warm + hot deals only", "value": "bb_warm_hot"},
+								{"name": "AI hot deals only", "value": "bb_hot"},
 							},
 						},
 					},

@@ -168,6 +168,116 @@ Return a JSON array with ALL items, marking the top deals:
 	return results, nil
 }
 
+// AnalyzeBestBuyBatch uses Gemini to verify a batch of tier-1 Best Buy candidates
+// in one call, reducing per-item AI overhead for seller inventory runs.
+func (c *Client) AnalyzeBestBuyBatch(ctx context.Context, products []bestbuy.Product) ([]bestbuy.BatchAnalyzeResult, error) {
+	if c == nil || len(c.clients) == 0 {
+		slog.Warn("AI client not initialized, skipping Best Buy batch analysis")
+		return nil, nil
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if len(products) == 0 {
+		return nil, nil
+	}
+
+	c.mu.Lock()
+	activeModel := c.checkDayRollover(ctx)
+	exhausted := c.allExhausted && (c.exhaustedAt.IsZero() || time.Since(c.exhaustedAt) < exhaustionCooldown)
+	c.mu.Unlock()
+	if exhausted {
+		return nil, fmt.Errorf("all model tiers exhausted for the day, skipping Best Buy batch analysis")
+	}
+
+	var itemList strings.Builder
+	for i, p := range products {
+		discountPct := 0.0
+		if p.RegularPrice > 0 && p.SalePrice > 0 && p.SalePrice < p.RegularPrice {
+			discountPct = (p.RegularPrice - p.SalePrice) / p.RegularPrice * 100
+		}
+		finalPrice := p.SalePrice
+		if finalPrice == 0 {
+			finalPrice = p.RegularPrice
+		}
+		itemList.WriteString(fmt.Sprintf("%d. [SKU: %s] \"%s\" — Category: %s — Regular: $%.2f — Current: $%.2f — %.0f%% off — Seller: %s\n",
+			i+1, p.SKU, p.Name, p.CategoryName, p.RegularPrice, finalPrice, discountPct, p.SellerName))
+	}
+
+	prompt := fmt.Sprintf(`You are a Canadian tech deal expert verifying Best Buy Canada marketplace products.
+
+For each item, determine whether the price is a genuinely good Canadian tech deal.
+Use "warm" for meaningfully below market or unusually attractive.
+Use "lava hot" only for absurdly good prices, likely pricing errors, or 50%%+ off on broadly desirable products.
+Return all items, including non-deals, with concise product-focused clean titles and one-line summaries.
+
+Items:
+%s
+Return JSON only:
+[{"sku":"...","clean_title":"...","is_warm":true/false,"is_lava_hot":true/false,"summary":"max 100 chars"}]
+`, itemList.String())
+
+	config := &genai.GenerateContentConfig{
+		Temperature:      genai.Ptr[float32](0.1),
+		ResponseMIMEType: "application/json",
+	}
+
+	var results []bestbuy.BatchAnalyzeResult
+	start := time.Now()
+	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+		c.mu.Lock()
+		client := c.activeClient()
+		model := activeModel
+		c.mu.Unlock()
+
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		resp, genErr := client.Models.GenerateContent(callCtx, model, genai.Text(prompt), config)
+		if genErr != nil {
+			c.mu.Lock()
+			retErr, backoff := c.handleGenerationError(ctx, genErr, &activeModel, attempt, "Best Buy batch analysis")
+			c.mu.Unlock()
+			if backoff > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
+			return retErr
+		}
+		c.mu.Lock()
+		c.resetConsecutiveErrors()
+		loc := c.currentLocation
+		c.mu.Unlock()
+		c.logTokenUsage(resp, "bestbuy_batch_analysis", model, loc)
+
+		parsed, parseErr := parseBestBuyAnalyzeBatchResponse(resp)
+		if parseErr != nil {
+			if strings.Contains(parseErr.Error(), "gemini blocked") {
+				return util.PermanentError(parseErr)
+			}
+			return parseErr
+		}
+		results = parsed
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	loc := c.currentLocation
+	c.mu.Unlock()
+	slog.Info("Best Buy batch analysis complete",
+		"processor", "bestbuy",
+		"batch_size", len(products),
+		"model", activeModel,
+		"location", loc,
+		"duration_ms", time.Since(start).Milliseconds())
+	return results, nil
+}
+
 // AnalyzeBestBuyProduct uses Gemini to analyze a Best Buy product
 // and determine if it's a warm or hot deal (tier-2 individual verification).
 func (c *Client) AnalyzeBestBuyProduct(ctx context.Context, product bestbuy.Product) (*bestbuy.AnalyzeResult, error) {
@@ -370,5 +480,26 @@ func parseBestBuyResponse(resp *genai.GenerateContentResponse) (*bestbuy.Analyze
 	}
 
 	return nil, fmt.Errorf("no text response from gemini for Best Buy analysis (finish_reason=%s, parts=%d)",
+		resp.Candidates[0].FinishReason, len(resp.Candidates[0].Content.Parts))
+}
+
+func parseBestBuyAnalyzeBatchResponse(resp *genai.GenerateContentResponse) ([]bestbuy.BatchAnalyzeResult, error) {
+	if reason := checkResponseBlocked(resp); reason != "" {
+		return nil, fmt.Errorf("gemini blocked Best Buy batch analysis response: %s", reason)
+	}
+	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
+		return nil, fmt.Errorf("no response candidates from gemini")
+	}
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if part.Text == "" {
+			continue
+		}
+		jsonStr := stripCodeBlock(part.Text)
+		var results []bestbuy.BatchAnalyzeResult
+		if err := json.Unmarshal([]byte(jsonStr), &results); err == nil {
+			return results, nil
+		}
+	}
+	return nil, fmt.Errorf("no text response from gemini for Best Buy batch analysis (finish_reason=%s, parts=%d)",
 		resp.Candidates[0].FinishReason, len(resp.Candidates[0].Content.Parts))
 }

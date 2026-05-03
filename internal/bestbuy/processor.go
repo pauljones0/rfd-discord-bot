@@ -24,6 +24,7 @@ type Store interface {
 	SeedBestBuySellers(ctx context.Context) (bool, error)
 	BestBuyProductExists(ctx context.Context, sku, source string) (bool, error)
 	SaveBestBuyProduct(ctx context.Context, product AnalyzedProduct) error
+	RefreshBestBuyProductLastSeen(ctx context.Context, product Product) error
 	PruneBestBuyProducts(ctx context.Context, maxAgeDays, maxRecords int) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
 }
@@ -31,6 +32,7 @@ type Store interface {
 // Analyzer abstracts Gemini AI analysis for Best Buy products.
 type Analyzer interface {
 	ScreenBestBuyBatch(ctx context.Context, products []Product) ([]BatchScreenResult, error)
+	AnalyzeBestBuyBatch(ctx context.Context, products []Product) ([]BatchAnalyzeResult, error)
 	AnalyzeBestBuyProduct(ctx context.Context, product Product) (*AnalyzeResult, error)
 }
 
@@ -326,6 +328,11 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 			return ctx.Err()
 		}
 
+		// Wrap product URL with affiliate prefix before saving or refreshing.
+		if p.affiliatePrefix != "" && product.URL != "" {
+			product.URL = p.affiliatePrefix + url.QueryEscape(product.URL)
+		}
+
 		exists, err := p.store.BestBuyProductExists(ctx, product.SKU, product.Source)
 		if err != nil {
 			logger.Warn("Failed to check product existence",
@@ -336,12 +343,14 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 			continue
 		}
 		if exists {
+			if err := p.store.RefreshBestBuyProductLastSeen(ctx, product); err != nil {
+				logger.Warn("Failed to refresh existing Best Buy listing",
+					"sku", product.SKU,
+					"source", product.Source,
+					"error", err,
+				)
+			}
 			continue
-		}
-
-		// Wrap product URL with affiliate prefix before any processing
-		if p.affiliatePrefix != "" && product.URL != "" {
-			product.URL = p.affiliatePrefix + url.QueryEscape(product.URL)
 		}
 
 		newProducts = append(newProducts, product)
@@ -357,25 +366,14 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		return nil
 	}
 
-	// 5. Save and notify every new configured-seller listing for v1.
-	for _, product := range newProducts {
-		item := AnalyzedProduct{
-			Product:     product,
-			CleanTitle:  product.Name,
-			IsWarm:      true,
-			DiscountPct: computeDiscount(product),
-			ProcessedAt: time.Now(),
-			LastSeen:    time.Now(),
+	// 5. AI-label each new item, save it, then notify according to subscription tier.
+	analyzedItems, tier1Passed, tier2Passed := p.analyzeNewItems(ctx, newProducts, logger)
+	stats.tier1Passed = tier1Passed
+	stats.tier2Passed = tier2Passed
+	for _, item := range analyzedItems {
+		if item.IsWarm || item.IsLavaHot {
+			stats.warmHot++
 		}
-		if err := p.store.SaveBestBuyProduct(ctx, item); err != nil {
-			logger.Error("Failed to save Best Buy new listing",
-				"sku", item.SKU,
-				"title", item.Name,
-				"error", err,
-			)
-			continue
-		}
-		stats.warmHot++
 
 		eligibleSubs := filterEligibleSubs(item, bbSubs)
 		if len(eligibleSubs) == 0 {
@@ -406,10 +404,12 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 }
 
 // analyzeNewItems runs the tiered AI analysis pipeline on new products.
-// Returns analyzed products that are warm or hot, and the total tier-1 pass count.
-func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, logger *slog.Logger) ([]AnalyzedProduct, int) {
-	var warmHotItems []AnalyzedProduct
+// It returns every saved listing so bb_new can post all new inventory with
+// labels, while bb_warm_hot and bb_hot can filter on the same AI fields.
+func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, logger *slog.Logger) ([]AnalyzedProduct, int, int) {
+	var analyzedItems []AnalyzedProduct
 	totalTier1 := 0
+	totalTier2 := 0
 
 	for i := 0; i < len(products); i += batchSize {
 		if ctx.Err() != nil {
@@ -422,7 +422,7 @@ func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, log
 			select {
 			case <-ctx.Done():
 				logger.Warn("Context cancelled during inter-batch delay", "processed", i, "total", len(products))
-				return warmHotItems, totalTier1
+				return analyzedItems, totalTier1, totalTier2
 			case <-time.After(2 * time.Second):
 			}
 		}
@@ -433,9 +433,10 @@ func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, log
 		}
 		batch := products[i:end]
 
-		batchResults, t1Count, err := p.processBatch(ctx, batch, logger)
-		warmHotItems = append(warmHotItems, batchResults...)
+		batchResults, t1Count, t2Count, err := p.processBatch(ctx, batch, logger)
+		analyzedItems = append(analyzedItems, batchResults...)
 		totalTier1 += t1Count
+		totalTier2 += t2Count
 		if err != nil {
 			logger.Warn("Stopping batch analysis early, AI models exhausted", "processed", i+len(batch), "total", len(products))
 			// Save remaining products without analysis
@@ -450,16 +451,17 @@ func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, log
 				if saveErr := p.store.SaveBestBuyProduct(ctx, analyzed); saveErr != nil {
 					logger.Error("Failed to save unanalyzed product", "sku", products[j].SKU, "error", saveErr)
 				}
+				analyzedItems = append(analyzedItems, analyzed)
 			}
 			break
 		}
 	}
 
-	return warmHotItems, totalTier1
+	return analyzedItems, totalTier1, totalTier2
 }
 
 // processBatch handles a single batch through both AI tiers.
-func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *slog.Logger) ([]AnalyzedProduct, int, error) {
+func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *slog.Logger) ([]AnalyzedProduct, int, int, error) {
 	var results []AnalyzedProduct
 
 	if p.analyzer == nil {
@@ -475,8 +477,9 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *s
 			if err := p.store.SaveBestBuyProduct(ctx, analyzed); err != nil {
 				logger.Error("Failed to save product", "sku", product.SKU, "error", err)
 			}
+			results = append(results, analyzed)
 		}
-		return results, 0, nil
+		return results, 0, 0, nil
 	}
 
 	// Tier 1: Batch screening
@@ -495,8 +498,9 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *s
 				if saveErr := p.store.SaveBestBuyProduct(ctx, analyzed); saveErr != nil {
 					logger.Error("Failed to save product", "sku", product.SKU, "error", saveErr)
 				}
+				results = append(results, analyzed)
 			}
-			return results, 0, err
+			return results, 0, 0, err
 		}
 		logger.Error("Tier-1 batch screening failed", "batch_size", len(batch), "error", err)
 		for _, product := range batch {
@@ -510,8 +514,9 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *s
 			if saveErr := p.store.SaveBestBuyProduct(ctx, analyzed); saveErr != nil {
 				logger.Error("Failed to save product", "sku", product.SKU, "error", saveErr)
 			}
+			results = append(results, analyzed)
 		}
-		return results, 0, nil
+		return results, 0, 0, nil
 	}
 
 	// Build screen map by SKU
@@ -543,6 +548,7 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *s
 			if err := p.store.SaveBestBuyProduct(ctx, analyzed); err != nil {
 				logger.Error("Failed to save product", "sku", product.SKU, "error", err)
 			}
+			results = append(results, analyzed)
 			continue
 		}
 		tier1Passed = append(tier1Passed, tier1Candidate{product, screen})
@@ -553,90 +559,82 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *s
 		"passed_tier1", len(tier1Passed),
 	)
 
-	// Tier 2: Individual verification for tier-1 candidates
+	// Tier 2: Batch verification for tier-1 candidates, falling back to individual
+	// calls if Gemini rejects or fails the batch.
+	tier2Passed := 0
+	batchAnalyzeResults := make(map[string]BatchAnalyzeResult)
+	if len(tier1Passed) > 0 {
+		products := make([]Product, 0, len(tier1Passed))
+		for _, candidate := range tier1Passed {
+			products = append(products, candidate.product)
+		}
+		if batchResults, err := p.analyzer.AnalyzeBestBuyBatch(ctx, products); err != nil {
+			logger.Warn("Tier-2 batch verification failed; falling back to individual calls", "batch_size", len(products), "error", err)
+		} else {
+			for _, result := range batchResults {
+				batchAnalyzeResults[result.SKU] = result
+			}
+		}
+	}
+
 	for _, candidate := range tier1Passed {
 		if ctx.Err() != nil {
 			logger.Warn("Context cancelled, stopping tier-2 verification")
 			break
 		}
 
-		analyzeResult, err := p.analyzer.AnalyzeBestBuyProduct(ctx, candidate.product)
-		if err != nil {
-			logger.Warn("Tier-2 verification failed",
-				"sku", candidate.product.SKU,
-				"name", candidate.product.Name,
-				"error", err,
-			)
-			analyzed := AnalyzedProduct{
-				Product:     candidate.product,
-				CleanTitle:  candidate.screenResult.CleanTitle,
-				DiscountPct: computeDiscount(candidate.product),
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
-			if saveErr := p.store.SaveBestBuyProduct(ctx, analyzed); saveErr != nil {
-				logger.Error("Failed to save product", "sku", candidate.product.SKU, "error", saveErr)
-			}
-			continue
-		}
-
-		if analyzeResult == nil {
-			logger.Info("Item failed tier-2 verification (nil result)",
-				"sku", candidate.product.SKU,
-				"name", candidate.product.Name,
-			)
-			analyzed := AnalyzedProduct{
-				Product:     candidate.product,
-				CleanTitle:  candidate.screenResult.CleanTitle,
-				DiscountPct: computeDiscount(candidate.product),
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
-			if saveErr := p.store.SaveBestBuyProduct(ctx, analyzed); saveErr != nil {
-				logger.Error("Failed to save product", "sku", candidate.product.SKU, "error", saveErr)
-			}
-			continue
-		}
-
 		analyzed := AnalyzedProduct{
 			Product:     candidate.product,
-			CleanTitle:  analyzeResult.CleanTitle,
-			IsWarm:      analyzeResult.IsWarm,
-			IsLavaHot:   analyzeResult.IsLavaHot,
-			Summary:     analyzeResult.Summary,
+			CleanTitle:  candidate.screenResult.CleanTitle,
 			DiscountPct: computeDiscount(candidate.product),
 			ProcessedAt: time.Now(),
 			LastSeen:    time.Now(),
 		}
 
+		if result, ok := batchAnalyzeResults[candidate.product.SKU]; ok {
+			analyzed.CleanTitle = firstNonEmpty(result.CleanTitle, analyzed.CleanTitle, candidate.product.Name)
+			analyzed.IsWarm = result.IsWarm
+			analyzed.IsLavaHot = result.IsLavaHot
+			analyzed.Summary = result.Summary
+		} else {
+			analyzeResult, err := p.analyzer.AnalyzeBestBuyProduct(ctx, candidate.product)
+			if err != nil {
+				logger.Warn("Tier-2 verification failed",
+					"sku", candidate.product.SKU,
+					"name", candidate.product.Name,
+					"error", err,
+				)
+			} else if analyzeResult != nil {
+				analyzed.CleanTitle = firstNonEmpty(analyzeResult.CleanTitle, analyzed.CleanTitle, candidate.product.Name)
+				analyzed.IsWarm = analyzeResult.IsWarm
+				analyzed.IsLavaHot = analyzeResult.IsLavaHot
+				analyzed.Summary = analyzeResult.Summary
+			}
+		}
+
+		if analyzed.CleanTitle == "" {
+			analyzed.CleanTitle = candidate.product.Name
+		}
 		if err := p.store.SaveBestBuyProduct(ctx, analyzed); err != nil {
 			logger.Error("Failed to save analyzed product", "sku", candidate.product.SKU, "error", err)
 			continue
 		}
-
-		if !analyzed.IsWarm && !analyzed.IsLavaHot {
-			logger.Info("Item failed tier-2 verification (not warm/hot)",
+		if analyzed.IsWarm || analyzed.IsLavaHot {
+			tier2Passed++
+			logger.Info("Best Buy deal labeled warm/hot",
 				"sku", candidate.product.SKU,
-				"name", candidate.product.Name,
-				"clean_title", analyzeResult.CleanTitle,
+				"clean_title", analyzed.CleanTitle,
+				"is_warm", analyzed.IsWarm,
+				"is_lava_hot", analyzed.IsLavaHot,
+				"discount_pct", analyzed.DiscountPct,
+				"seller", candidate.product.SellerName,
+				"source", candidate.product.Source,
 			)
-			continue
 		}
-
-		logger.Info("Deal passed both tiers",
-			"sku", candidate.product.SKU,
-			"clean_title", analyzed.CleanTitle,
-			"is_warm", analyzed.IsWarm,
-			"is_lava_hot", analyzed.IsLavaHot,
-			"discount_pct", analyzed.DiscountPct,
-			"seller", candidate.product.SellerName,
-			"source", candidate.product.Source,
-		)
-
 		results = append(results, analyzed)
 	}
 
-	return results, len(tier1Passed), nil
+	return results, len(tier1Passed), tier2Passed, nil
 }
 
 // computeDiscount calculates the discount percentage for a product.
@@ -661,12 +659,13 @@ func filterEligibleSubs(product AnalyzedProduct, subs []models.Subscription) []m
 // isBestBuyEligible checks whether a deal should be sent to a given subscription.
 func isBestBuyEligible(product AnalyzedProduct, sub models.Subscription) bool {
 	switch sub.DealType {
-	case "bb_new", "bb_warm_hot", "bb_hot":
+	case "bb_new":
 		return true
+	case "bb_warm_hot":
+		return product.IsWarm || product.IsLavaHot
+	case "bb_hot":
+		return product.IsLavaHot
 	default:
-		if strings.HasPrefix(sub.DealType, "bb_") {
-			return true
-		}
-		return false
+		return strings.HasPrefix(sub.DealType, "bb_") && (product.IsWarm || product.IsLavaHot)
 	}
 }

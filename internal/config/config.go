@@ -14,6 +14,8 @@ import (
 
 type Config struct {
 	ProjectID              string
+	StorageBackend         string
+	DatabaseURL            string
 	Port                   string
 	AmazonAffiliateTag     string
 	BestBuyAffiliatePrefix string
@@ -33,10 +35,12 @@ type Config struct {
 	DiscordBotToken  string
 
 	// eBay API (optional — eBay features disabled if not set)
-	EbayClientID       string
-	EbayClientSecret   string
-	EbayCouponBackends []string
-	EbayPollInterval   time.Duration
+	EbayClientID                string
+	EbayClientSecret            string
+	EbayCouponBackends          []string
+	EbayPollInterval            time.Duration
+	EbayCouponDiscoveryInterval time.Duration
+	EbayCouponSampleSize        int
 
 	// Proxy (optional — Facebook/Carfax scraping runs without proxy if not set)
 	ProxyURL string
@@ -129,10 +133,16 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	bestBuyPollInterval, err := durationEnv("BESTBUY_POLL_INTERVAL", 15*time.Minute)
+	bestBuyPollInterval, err := durationEnv("BESTBUY_POLL_INTERVAL", 30*time.Minute)
 	if err != nil {
 		return nil, err
 	}
+
+	ebayCouponDiscoveryInterval, err := durationEnv("EBAY_COUPON_DISCOVERY_INTERVAL", 6*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	ebayCouponSampleSize := intEnv("EBAY_COUPON_SAMPLE_SIZE", 3)
 
 	geminiLocation := os.Getenv("GEMINI_LOCATION")
 	if geminiLocation == "" {
@@ -175,6 +185,8 @@ func Load() (*Config, error) {
 
 	return &Config{
 		ProjectID:              projectID,
+		StorageBackend:         firstNonEmpty(os.Getenv("STORAGE_BACKEND"), "firestore"),
+		DatabaseURL:            os.Getenv("DATABASE_URL"),
 		Port:                   port,
 		AmazonAffiliateTag:     amazonAffiliateTag,
 		BestBuyAffiliatePrefix: bestBuyAffiliatePrefix,
@@ -190,25 +202,27 @@ func Load() (*Config, error) {
 			"gemini-2.5-flash",
 			"gemini-2.5-pro",
 		},
-		DiscordAppID:               os.Getenv("DISCORD_APP_ID"),
-		DiscordPublicKey:           discordPublicKey,
-		DiscordBotToken:            discordBotToken,
-		EbayClientID:               os.Getenv("EBAY_CLIENT_ID"),
-		EbayClientSecret:           os.Getenv("EBAY_CLIENT_SECRET"),
-		EbayCouponBackends:         csvEnv("EBAY_COUPON_BACKENDS", []string{"http", "external-stealth"}),
-		EbayPollInterval:           ebayPollInterval,
-		ProxyURL:                   os.Getenv("PROXY_URL"),
-		MemoryExpressPollInterval:  memexpressPollInterval,
-		MemoryExpressChromePath:    firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
-		MemoryExpressChromeProfile: os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
-		MemoryExpressBackends:      csvEnv("MEMEXPRESS_BACKENDS", []string{"chromedp-persistent", "external-stealth", "http"}),
-		BestBuyBackends:            csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
-		BestBuyPollInterval:        bestBuyPollInterval,
-		LocalSchedulerEnabled:      boolEnv("LOCAL_SCHEDULER_ENABLED", false),
-		CarfaxTokenServiceURL:      os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
-		CarfaxTokenServiceSecret:   os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
-		RedditServiceURL:           os.Getenv("REDDIT_SERVICE_URL"),
-		RedditServiceSecret:        os.Getenv("REDDIT_SERVICE_SECRET"),
+		DiscordAppID:                os.Getenv("DISCORD_APP_ID"),
+		DiscordPublicKey:            discordPublicKey,
+		DiscordBotToken:             discordBotToken,
+		EbayClientID:                os.Getenv("EBAY_CLIENT_ID"),
+		EbayClientSecret:            os.Getenv("EBAY_CLIENT_SECRET"),
+		EbayCouponBackends:          csvEnv("EBAY_COUPON_BACKENDS", []string{"http", "external-stealth"}),
+		EbayPollInterval:            ebayPollInterval,
+		EbayCouponDiscoveryInterval: ebayCouponDiscoveryInterval,
+		EbayCouponSampleSize:        ebayCouponSampleSize,
+		ProxyURL:                    os.Getenv("PROXY_URL"),
+		MemoryExpressPollInterval:   memexpressPollInterval,
+		MemoryExpressChromePath:     firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
+		MemoryExpressChromeProfile:  os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
+		MemoryExpressBackends:       csvEnv("MEMEXPRESS_BACKENDS", []string{"chromedp-persistent", "external-stealth", "http"}),
+		BestBuyBackends:             csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
+		BestBuyPollInterval:         bestBuyPollInterval,
+		LocalSchedulerEnabled:       boolEnv("LOCAL_SCHEDULER_ENABLED", false),
+		CarfaxTokenServiceURL:       os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
+		CarfaxTokenServiceSecret:    os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
+		RedditServiceURL:            os.Getenv("REDDIT_SERVICE_URL"),
+		RedditServiceSecret:         os.Getenv("REDDIT_SERVICE_SECRET"),
 	}, nil
 }
 
@@ -260,6 +274,19 @@ func boolEnv(key string, fallback bool) bool {
 	parsed, err := strconv.ParseBool(raw)
 	if err != nil {
 		slog.Warn("Invalid boolean env value; using default", "key", key, "value", raw, "default", fallback)
+		return fallback
+	}
+	return parsed
+}
+
+func intEnv(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		slog.Warn("Invalid integer env value; using default", "key", key, "value", raw, "default", fallback)
 		return fallback
 	}
 	return parsed

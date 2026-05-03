@@ -89,6 +89,20 @@ func (e CarfaxCacheEntry) ExpiryTime() time.Time {
 
 // GetCarfaxCache retrieves a cached Carfax valuation. Returns nil if not found.
 func (c *Client) GetCarfaxCache(ctx context.Context, year int, make, model, trim, postalPrefix string) (*CarfaxCacheEntry, error) {
+	if c.usesPostgres() {
+		docID := carfaxCacheKey(year, make, model, trim, postalPrefix)
+		var entry CarfaxCacheEntry
+		ok, err := c.GetDocument(ctx, carfaxCacheCollection, docID, &entry)
+		if err != nil || !ok {
+			return nil, err
+		}
+		entry.ExpiresAt = entry.ExpiryTime()
+		if !entry.ExpiresAt.IsZero() && time.Now().After(entry.ExpiresAt) {
+			return nil, nil
+		}
+		return &entry, nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -115,6 +129,17 @@ func (c *Client) GetCarfaxCache(ctx context.Context, year int, make, model, trim
 
 // SaveCarfaxCache stores a Carfax valuation result in the cache.
 func (c *Client) SaveCarfaxCache(ctx context.Context, entry *CarfaxCacheEntry) error {
+	if c.usesPostgres() {
+		postalPrefix := entry.PostalPrefix
+		if len(postalPrefix) > 3 {
+			postalPrefix = postalPrefix[:3]
+		}
+		docID := carfaxCacheKey(entry.Year, entry.Make, entry.Model, entry.Trim, postalPrefix)
+		entry.CachedAt = time.Now()
+		entry.ExpiresAt = entry.CachedAt.Add(carfaxCacheRetention)
+		return c.SetDocument(ctx, carfaxCacheCollection, docID, entry)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -149,6 +174,15 @@ func (c *Client) SaveCarfaxCache(ctx context.Context, entry *CarfaxCacheEntry) e
 // property: "Make", "Model", "Trim", "Engine", etc.
 // normalizedParams: pre-normalized key fragment, e.g. "2018_honda" for Model lookups.
 func (c *Client) GetCarfaxOptions(ctx context.Context, property, normalizedParams string) ([]string, error) {
+	if c.usesPostgres() {
+		var entry CarfaxOptionsEntry
+		ok, err := c.GetDocument(ctx, carfaxOptionsCollection, carfaxOptionsKey(property, normalizedParams), &entry)
+		if err != nil || !ok {
+			return nil, err
+		}
+		return entry.Options, nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -176,6 +210,15 @@ func (c *Client) GetCarfaxOptions(ctx context.Context, property, normalizedParam
 // normalizedParams: pre-normalized key fragment, e.g. "2018_honda".
 // options: the valid dropdown values returned by Carfax.
 func (c *Client) SaveCarfaxOptions(ctx context.Context, property, normalizedParams string, options []string) error {
+	if c.usesPostgres() {
+		return c.SetDocument(ctx, carfaxOptionsCollection, carfaxOptionsKey(property, normalizedParams), CarfaxOptionsEntry{
+			Property: property,
+			Params:   normalizedParams,
+			Options:  options,
+			CachedAt: time.Now(),
+		})
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 

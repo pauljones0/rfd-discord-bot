@@ -2,14 +2,17 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
 	"cloud.google.com/go/firestore/apiv1/firestorepb"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -24,7 +27,9 @@ const firestoreCollection = "deals"
 const DefaultTimeout = 30 * time.Second
 
 type Client struct {
-	client *firestore.Client
+	client  *firestore.Client
+	pg      *pgxpool.Pool
+	backend string
 }
 
 func prepareDealForStorage(deal models.DealInfo) models.DealInfo {
@@ -42,6 +47,17 @@ func ensureDeadline(ctx context.Context, timeout time.Duration) (context.Context
 }
 
 func New(ctx context.Context, projectID string) (*Client, error) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("STORAGE_BACKEND")), "postgres") {
+		dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+		if dsn == "" {
+			return nil, fmt.Errorf("DATABASE_URL is required when STORAGE_BACKEND=postgres")
+		}
+		return NewPostgres(ctx, dsn)
+	}
+	return NewFirestore(ctx, projectID)
+}
+
+func NewFirestore(ctx context.Context, projectID string) (*Client, error) {
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -49,10 +65,33 @@ func New(ctx context.Context, projectID string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("firestore.NewClient: %w", err)
 	}
-	return &Client{client: client}, nil
+	return &Client{client: client, backend: "firestore"}, nil
+}
+
+func NewPostgres(ctx context.Context, databaseURL string) (*Client, error) {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("pgxpool.New: %w", err)
+	}
+	client := &Client{pg: pool, backend: "postgres"}
+	if err := client.ensurePostgresSchema(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return client, nil
 }
 
 func (c *Client) Close() error {
+	if c.pg != nil {
+		c.pg.Close()
+		return nil
+	}
+	if c.client == nil {
+		return nil
+	}
 	return c.client.Close()
 }
 
@@ -62,8 +101,28 @@ func (c *Client) FirestoreClient() *firestore.Client {
 	return c.client
 }
 
+func (c *Client) Backend() string {
+	if c.backend != "" {
+		return c.backend
+	}
+	if c.pg != nil {
+		return "postgres"
+	}
+	return "firestore"
+}
+
 // GetDealByID retrieves a deal by its Firestore Document ID.
 func (c *Client) GetDealByID(ctx context.Context, id string) (*models.DealInfo, error) {
+	if c.usesPostgres() {
+		var deal models.DealInfo
+		ok, err := c.GetDocument(ctx, firestoreCollection, id, &deal)
+		if err != nil || !ok {
+			return nil, err
+		}
+		deal.FirestoreID = id
+		return &deal, nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -89,6 +148,22 @@ func (c *Client) GetDealByID(ctx context.Context, id string) (*models.DealInfo, 
 func (c *Client) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*models.DealInfo, error) {
 	if len(ids) == 0 {
 		return make(map[string]*models.DealInfo), nil
+	}
+	if c.usesPostgres() {
+		result := make(map[string]*models.DealInfo, len(ids))
+		for _, id := range ids {
+			var deal models.DealInfo
+			ok, err := c.GetDocument(ctx, firestoreCollection, id, &deal)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
+			deal.FirestoreID = id
+			result[id] = &deal
+		}
+		return result, nil
 	}
 
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
@@ -123,6 +198,17 @@ func (c *Client) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*m
 
 // TryCreateDeal attempts to create a new deal. Returns error if it already exists.
 func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error {
+	if c.usesPostgres() {
+		deal = prepareDealForStorage(deal)
+		if err := c.CreateDocument(ctx, firestoreCollection, deal.FirestoreID, deal); err != nil {
+			if errors.Is(err, errDocumentExists) {
+				return models.ErrDealExists
+			}
+			return err
+		}
+		return nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -191,6 +277,11 @@ func buildDealUpdates(deal models.DealInfo) []firestore.Update {
 
 // UpdateDeal updates a specific deal using specific fields to avoid race conditions.
 func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
+	if c.usesPostgres() {
+		deal = prepareDealForStorage(deal)
+		return c.SetDocument(ctx, firestoreCollection, deal.FirestoreID, deal)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -203,6 +294,23 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 
 // TrimOldDeals deletes the oldest deals (by PublishedTimestamp) from the "deals" collection
 func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, firestoreCollection)
+		if err != nil {
+			return err
+		}
+		if len(rows) <= maxDeals {
+			return nil
+		}
+		sortDocumentsByTime(rows, "lastUpdated", true)
+		for _, row := range rows[:len(rows)-maxDeals] {
+			if err := c.DeleteDocument(ctx, firestoreCollection, row.ID); err != nil {
+				slog.Warn("TrimOldDeals: failed to delete postgres row", "id", row.ID, "error", err)
+			}
+		}
+		return nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, 2*time.Minute) // Longer timeout for cleanup
 	defer cancel()
 
@@ -283,6 +391,22 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 	if len(creates) == 0 && len(updates) == 0 {
 		return nil
 	}
+	if c.usesPostgres() {
+		var errs []error
+		for _, d := range creates {
+			d = prepareDealForStorage(d)
+			if err := c.CreateDocument(ctx, firestoreCollection, d.FirestoreID, d); err != nil {
+				errs = append(errs, fmt.Errorf("create %s: %w", d.FirestoreID, err))
+			}
+		}
+		for _, d := range updates {
+			d = prepareDealForStorage(d)
+			if err := c.SetDocument(ctx, firestoreCollection, d.FirestoreID, d); err != nil {
+				errs = append(errs, fmt.Errorf("update %s: %w", d.FirestoreID, err))
+			}
+		}
+		return errors.Join(errs...)
+	}
 
 	bw := c.client.BulkWriter(ctx)
 	col := c.client.Collection(firestoreCollection)
@@ -315,6 +439,9 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 func (c *Client) Ping(ctx context.Context) error {
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
+	if c.usesPostgres() {
+		return c.pg.Ping(ctx)
+	}
 
 	iter := c.client.Collections(ctx)
 	_, err := iter.Next()
@@ -326,6 +453,28 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // GetRecentDeals fetches deals published within the given duration ago from now.
 func (c *Client) GetRecentDeals(ctx context.Context, d time.Duration) ([]models.DealInfo, error) {
+	if c.usesPostgres() {
+		rows, err := c.ListDocuments(ctx, firestoreCollection)
+		if err != nil {
+			return nil, err
+		}
+		since := time.Now().Add(-d)
+		deals := make([]models.DealInfo, 0, len(rows))
+		for _, row := range rows {
+			if !documentTime(row.Data, "publishedTimestamp").Before(since) {
+				var deal models.DealInfo
+				if err := decodeDocument(row.Data, &deal); err != nil {
+					slog.Warn("Failed to decode recent deal", "id", row.ID, "error", err)
+					continue
+				}
+				deal.FirestoreID = row.ID
+				deals = append(deals, deal)
+			}
+		}
+		sortDealsByPublished(deals)
+		return deals, nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -358,6 +507,15 @@ func (c *Client) GetRecentDeals(ctx context.Context, d time.Duration) ([]models.
 
 // GetGeminiQuotaStatus retrieves the Gemini fallback state.
 func (c *Client) GetGeminiQuotaStatus(ctx context.Context) (*models.GeminiQuotaStatus, error) {
+	if c.usesPostgres() {
+		var quota models.GeminiQuotaStatus
+		ok, err := c.GetDocument(ctx, "bot_config", "gemini_quota", &quota)
+		if err != nil || !ok {
+			return nil, err
+		}
+		return &quota, nil
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -379,6 +537,11 @@ func (c *Client) GetGeminiQuotaStatus(ctx context.Context) (*models.GeminiQuotaS
 
 // UpdateGeminiQuotaStatus updates the Gemini fallback state.
 func (c *Client) UpdateGeminiQuotaStatus(ctx context.Context, quota models.GeminiQuotaStatus) error {
+	if c.usesPostgres() {
+		quota.LastUpdated = time.Now()
+		return c.SetDocument(ctx, "bot_config", "gemini_quota", quota)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -400,6 +563,15 @@ type TokenServiceConfig struct {
 // GetTokenServiceURL retrieves the current Carfax token service URL from bot_config.
 // Returns ("", nil) if not configured.
 func (c *Client) GetTokenServiceURL(ctx context.Context) (string, error) {
+	if c.usesPostgres() {
+		var cfg TokenServiceConfig
+		ok, err := c.GetDocument(ctx, "bot_config", "token_service", &cfg)
+		if err != nil || !ok {
+			return "", err
+		}
+		return validateDynamicServiceURL(cfg.URL, cfg.UpdatedAt, "Token service URL")
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -418,18 +590,18 @@ func (c *Client) GetTokenServiceURL(ctx context.Context) (string, error) {
 
 	// Reject stale URLs for ephemeral Cloudflare quick tunnels (trycloudflare.com)
 	// which get new random subdomains on restart. Stable custom domains are always trusted.
-	if strings.Contains(cfg.URL, "trycloudflare.com") && time.Since(cfg.UpdatedAt) > time.Hour {
-		slog.Warn("Token service URL is stale (>1h old), ignoring ephemeral tunnel",
-			"processor", "facebook", "component", "carfax_http",
-			"url", cfg.URL, "age", time.Since(cfg.UpdatedAt).Round(time.Minute))
-		return "", nil
-	}
-
-	return cfg.URL, nil
+	return validateDynamicServiceURL(cfg.URL, cfg.UpdatedAt, "Token service URL")
 }
 
 // SaveTokenServiceURL stores the current Carfax token service URL in bot_config.
 func (c *Client) SaveTokenServiceURL(ctx context.Context, url string) error {
+	if c.usesPostgres() {
+		return c.SetDocument(ctx, "bot_config", "token_service", TokenServiceConfig{
+			URL:       url,
+			UpdatedAt: time.Now(),
+		})
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -445,6 +617,15 @@ func (c *Client) SaveTokenServiceURL(ctx context.Context, url string) error {
 
 // GetRedditServiceURL retrieves the dynamically registered Reddit relay service URL.
 func (c *Client) GetRedditServiceURL(ctx context.Context) (string, error) {
+	if c.usesPostgres() {
+		var cfg TokenServiceConfig
+		ok, err := c.GetDocument(ctx, "bot_config", "reddit_service", &cfg)
+		if err != nil || !ok {
+			return "", err
+		}
+		return validateDynamicServiceURL(cfg.URL, cfg.UpdatedAt, "Reddit service URL")
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -461,17 +642,18 @@ func (c *Client) GetRedditServiceURL(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to decode reddit service config: %w", err)
 	}
 
-	if strings.Contains(cfg.URL, "trycloudflare.com") && time.Since(cfg.UpdatedAt) > time.Hour {
-		slog.Warn("Reddit service URL is stale, ignoring",
-			"url", cfg.URL, "age", time.Since(cfg.UpdatedAt).Round(time.Second))
-		return "", nil
-	}
-
-	return cfg.URL, nil
+	return validateDynamicServiceURL(cfg.URL, cfg.UpdatedAt, "Reddit service URL")
 }
 
 // SaveRedditServiceURL saves the Reddit relay service URL to Firestore.
 func (c *Client) SaveRedditServiceURL(ctx context.Context, url string) error {
+	if c.usesPostgres() {
+		return c.SetDocument(ctx, "bot_config", "reddit_service", TokenServiceConfig{
+			URL:       url,
+			UpdatedAt: time.Now(),
+		})
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -484,4 +666,28 @@ func (c *Client) SaveRedditServiceURL(ctx context.Context, url string) error {
 		return fmt.Errorf("failed to save reddit service URL: %w", err)
 	}
 	return nil
+}
+
+func validateDynamicServiceURL(rawURL string, updatedAt time.Time, label string) (string, error) {
+	if strings.Contains(rawURL, "trycloudflare.com") && time.Since(updatedAt) > time.Hour {
+		slog.Warn(label+" is stale (>1h old), ignoring ephemeral tunnel",
+			"processor", "facebook",
+			"url", rawURL,
+			"age", time.Since(updatedAt).Round(time.Minute))
+		return "", nil
+	}
+	return rawURL, nil
+}
+
+func randomDocumentID() string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	var b [20]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	out := make([]byte, len(b))
+	for i, v := range b {
+		out[i] = alphabet[int(v)%len(alphabet)]
+	}
+	return string(out)
 }

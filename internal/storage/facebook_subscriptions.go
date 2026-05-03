@@ -17,6 +17,10 @@ func facebookSubscriptionDocID(guildID, channelID, city string) string {
 
 // SaveFacebookSubscription creates or updates a Facebook subscription in Firestore.
 func (c *Client) SaveFacebookSubscription(ctx context.Context, sub models.Subscription) error {
+	if c.usesPostgres() {
+		return c.SetDocument(ctx, subscriptionsCollection, facebookSubscriptionDocID(sub.GuildID, sub.ChannelID, sub.City), sub)
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -30,6 +34,10 @@ func (c *Client) SaveFacebookSubscription(ctx context.Context, sub models.Subscr
 
 // RemoveFacebookSubscription removes a Facebook subscription by guild, channel, and city.
 func (c *Client) RemoveFacebookSubscription(ctx context.Context, guildID, channelID, city string) error {
+	if c.usesPostgres() {
+		return c.DeleteDocument(ctx, subscriptionsCollection, facebookSubscriptionDocID(guildID, channelID, city))
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -43,6 +51,12 @@ func (c *Client) RemoveFacebookSubscription(ctx context.Context, guildID, channe
 
 // GetFacebookSubscriptions retrieves all active Facebook subscriptions.
 func (c *Client) GetFacebookSubscriptions(ctx context.Context) ([]models.Subscription, error) {
+	if c.usesPostgres() {
+		return c.subscriptionsWhere(ctx, func(row Document) bool {
+			return documentString(row.Data, "subscriptionType") == "facebook"
+		})
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 
@@ -71,6 +85,13 @@ func (c *Client) GetFacebookSubscriptions(ctx context.Context) ([]models.Subscri
 
 // GetFacebookSubscriptionsByGuild retrieves all Facebook subscriptions for a guild.
 func (c *Client) GetFacebookSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
+	if c.usesPostgres() {
+		return c.subscriptionsWhere(ctx, func(row Document) bool {
+			return documentString(row.Data, "guildID") == guildID &&
+				documentString(row.Data, "subscriptionType") == "facebook"
+		})
+	}
+
 	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
 	defer cancel()
 

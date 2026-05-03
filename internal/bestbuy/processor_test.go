@@ -41,6 +41,11 @@ func (s *bestBuyTestStore) SaveBestBuyProduct(_ context.Context, product Analyze
 	return nil
 }
 
+func (s *bestBuyTestStore) RefreshBestBuyProductLastSeen(_ context.Context, product Product) error {
+	s.exists[product.SKU+"_"+product.Source] = true
+	return nil
+}
+
 func (s *bestBuyTestStore) PruneBestBuyProducts(context.Context, int, int) error {
 	return nil
 }

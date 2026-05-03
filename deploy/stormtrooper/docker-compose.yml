@@ -1,4 +1,21 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: rfd-discord-bot-postgres
+    restart: unless-stopped
+    env_file:
+      - ${RFD_BOT_ENV_FILE:-/opt/rfd-discord-bot/.env}
+    environment:
+      POSTGRES_DB: rfd_discord_bot
+      POSTGRES_USER: rfd_bot
+    volumes:
+      - ${RFD_BOT_POSTGRES_DIR:-/srv/appdata/rfd-discord-bot/postgres}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rfd_bot -d rfd_discord_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   bot:
     container_name: rfd-discord-bot
     build:
@@ -14,6 +31,9 @@ services:
       SCRAPELAB_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
       EBAY_COUPON_EXTERNAL_STEALTH_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py --wait-ms 7000
       EBAY_COUPON_PAID_TRIAL_COMMAND: /opt/scrape-venv/bin/python /root/scripts/browserless_bql_fetch.py --wait-ms 5000
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "127.0.0.1:18080:8080"
     volumes:

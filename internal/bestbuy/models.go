@@ -69,6 +69,15 @@ type AnalyzeResult struct {
 	Summary    string `json:"summary"`
 }
 
+// BatchAnalyzeResult is the JSON structure returned by Gemini for batch tier-2 verification.
+type BatchAnalyzeResult struct {
+	SKU        string `json:"sku"`
+	CleanTitle string `json:"clean_title"`
+	IsWarm     bool   `json:"is_warm"`
+	IsLavaHot  bool   `json:"is_lava_hot"`
+	Summary    string `json:"summary"`
+}
+
 // BatchScreenResult represents the tier-1 AI screening result for a single item.
 type BatchScreenResult struct {
 	SKU        string `json:"sku"`

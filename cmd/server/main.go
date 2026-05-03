@@ -61,12 +61,12 @@ func main() {
 	ctx := context.Background()
 	store, err := storage.New(ctx, cfg.ProjectID)
 	if err != nil {
-		slog.Error("Critical error initializing Firestore client", "error", err)
+		slog.Error("Critical error initializing storage client", "error", err)
 		os.Exit(1)
 	}
 	defer func() {
 		if err := store.Close(); err != nil {
-			slog.Error("Error closing Firestore client", "error", err)
+			slog.Error("Error closing storage client", "error", err)
 		}
 	}()
 
@@ -94,6 +94,7 @@ func main() {
 	if ebayClient != nil {
 		ebayClient.SetCouponBackends(cfg.EbayCouponBackends)
 		ebayProc = ebay.NewProcessor(store, ebayClient, n)
+		ebayProc.SetCouponDiscoveryConfig(cfg.EbayCouponDiscoveryInterval, cfg.EbayCouponSampleSize)
 		slog.Info("eBay deal processor initialized", "coupon_backends", cfg.EbayCouponBackends)
 	} else {
 		slog.Info("eBay features disabled (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set)")
@@ -133,7 +134,7 @@ func main() {
 	// Initialize HardwareSwap processor (requires AI client and Reddit relay service)
 	var hwProc *hardwareswap.Processor
 	if aiClient != nil {
-		hwStore := hardwareswap.NewStore(store.FirestoreClient())
+		hwStore := hardwareswapStore(store)
 		redditClient := reddit.NewClient(cfg.RedditServiceURL, cfg.RedditServiceSecret, store)
 		hwProc = hardwareswap.NewProcessor(hwStore, redditClient, aiClient, cfg.DiscordBotToken)
 		slog.Info("HardwareSwap processor initialized")
@@ -161,7 +162,7 @@ func main() {
 	// Build HardwareSwap store for the API handler (may be nil if AI is unavailable)
 	var hwStoreForAPI *hardwareswap.Store
 	if hwProc != nil {
-		hwStoreForAPI = hardwareswap.NewStore(store.FirestoreClient())
+		hwStoreForAPI = hardwareswapStore(store)
 	}
 	apiHandler, err := api.NewHandler(cfg, store, hwStoreForAPI, aiClient)
 	if err != nil {
@@ -243,7 +244,7 @@ func main() {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok", "firestore": "connected"}); err != nil {
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok", "storage": store.Backend(), "details": "connected"}); err != nil {
 			slog.Error("Failed to encode health response", "error", err)
 		}
 	})
@@ -290,6 +291,16 @@ func main() {
 	}
 	<-shutdownDone
 	slog.Info("Server stopped.")
+}
+
+func hardwareswapStore(store *storage.Client) *hardwareswap.Store {
+	if store == nil {
+		return nil
+	}
+	if fsClient := store.FirestoreClient(); fsClient != nil {
+		return hardwareswap.NewStore(fsClient)
+	}
+	return hardwareswap.NewDocumentStore(store)
 }
 
 func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {

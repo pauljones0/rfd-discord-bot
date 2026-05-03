@@ -841,15 +841,22 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 		title = product.Name
 	}
 	if product.IsLavaHot {
-		title += " 🔥"
+		title += " [Hot]"
 	}
 
-	embedColor := colorWarmDeal
+	embedColor := colorColdDeal
+	aiLabel := "New listing"
+	if product.IsWarm {
+		embedColor = colorWarmDeal
+		aiLabel = "Warm deal"
+	}
 	if product.IsLavaHot {
 		embedColor = colorHotDeal
+		aiLabel = "Lava hot deal"
 	}
 
 	var fields []discordEmbedField
+	fields = append(fields, discordEmbedField{Name: "AI Label", Value: aiLabel, Inline: true})
 
 	// Price field with strikethrough original
 	if product.SalePrice > 0 && product.SalePrice < product.RegularPrice {

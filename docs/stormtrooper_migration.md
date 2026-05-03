@@ -1,7 +1,8 @@
 # Stormtrooper Migration Runbook
 
 This runbook moves the bot from Cloud Run + Cloud Scheduler to Docker Compose on
-Stormtrooper while keeping Firestore as the phase-1 source of truth.
+Stormtrooper with local Postgres as the runtime store. Firestore is retained as
+the migration source and rollback backup until parity is verified.
 
 ## Current Production Snapshot
 
@@ -14,14 +15,15 @@ Stormtrooper while keeping Firestore as the phase-1 source of truth.
   - Memory Express: every `30m`
   - Best Buy: paused
   - Facebook: paused
-- Firestore remains active in phase 1.
+- Firestore remains available as the backup/export source; runtime should use
+  `STORAGE_BACKEND=postgres` after migration.
 
 ## Files On Stormtrooper
 
 Create these preferred paths outside git:
 
 ```bash
-sudo mkdir -p /opt/rfd-discord-bot /srv/appdata/rfd-discord-bot
+sudo mkdir -p /opt/rfd-discord-bot /srv/appdata/rfd-discord-bot /srv/appdata/rfd-discord-bot/postgres
 sudo chown -R "$USER":"$USER" /opt/rfd-discord-bot /srv/appdata/rfd-discord-bot
 ```
 
@@ -31,12 +33,17 @@ Start with:
 ```bash
 GOOGLE_CLOUD_PROJECT=may2025-01
 LOCAL_SCHEDULER_ENABLED=false
+STORAGE_BACKEND=postgres
+POSTGRES_PASSWORD=generate-a-long-local-password
+DATABASE_URL=postgres://rfd_bot:generate-a-long-local-password@postgres:5432/rfd_discord_bot?sslmode=disable
 RFD_POLL_INTERVAL=3m
 EBAY_POLL_INTERVAL=30m
 MEMEXPRESS_POLL_INTERVAL=30m
-BESTBUY_POLL_INTERVAL=15m
+BESTBUY_POLL_INTERVAL=30m
 
-EBAY_COUPON_BACKENDS=http,external-stealth
+EBAY_COUPON_BACKENDS=http,external-stealth,paid-trial
+EBAY_COUPON_DISCOVERY_INTERVAL=6h
+EBAY_COUPON_SAMPLE_SIZE=3
 MEMEXPRESS_BACKENDS=chromedp-persistent,external-stealth,http
 BESTBUY_BACKENDS=bestbuy-algolia,http
 EBAY_COUPON_EXTERNAL_STEALTH_COMMAND=xvfb-run -a /opt/scrape-venv/bin/python scripts/camoufox_fetch.py "{url}" --wait-ms 7000
@@ -45,7 +52,7 @@ EBAY_COUPON_EXTERNAL_STEALTH_COMMAND=xvfb-run -a /opt/scrape-venv/bin/python scr
 Keep Discord, Gemini, eBay, and optional Cloudflare Tunnel secrets in that same
 env file. Do not commit it.
 
-Mount the phase-1 Firestore credential JSON at:
+Keep a Firestore credential JSON for migration and rollback checks at:
 
 ```text
 /opt/rfd-discord-bot/gcp-sa-key.json
@@ -73,7 +80,7 @@ export RFD_BOT_DATA_DIR="$HOME/appdata/rfd-discord-bot"
 From the repo root on Stormtrooper:
 
 ```bash
-docker compose -f deploy/stormtrooper/docker-compose.yml up -d --build bot
+docker compose -f deploy/stormtrooper/docker-compose.yml up -d --build
 ```
 
 Health check:
@@ -81,6 +88,17 @@ Health check:
 ```bash
 curl -fsS http://127.0.0.1:18080/health
 ```
+
+Migrate Firestore into local Postgres from inside the running bot container:
+
+```bash
+docker compose -f deploy/stormtrooper/docker-compose.yml exec bot \
+  ./migrate-store -project may2025-01
+```
+
+The migration writes every top-level Firestore collection to the local JSONB
+document table while preserving document IDs, then prints per-collection counts.
+Run it again with `-verify-only` for a cheap parity check after the first import.
 
 Run scrape lab against Firestore targets from inside the container:
 
@@ -146,27 +164,23 @@ Update the Discord Developer Portal interaction endpoint only after:
 https://bot.pauljones0.uk/discord/interactions
 ```
 
-is reachable and `/health` returns Firestore connected.
+is reachable and `/health` returns `{"storage":"postgres","details":"connected"}`.
 
 ## Cutover Order
 
 1. Deploy Compose with `LOCAL_SCHEDULER_ENABLED=false`.
-2. Confirm `/health` and scrape-lab evidence from Stormtrooper.
-3. Prime Best Buy baseline with notifications disabled.
-4. Enable local scheduler for one processor at a time by updating the env file
-   and restarting Compose.
-5. After each verified Stormtrooper run, pause the matching Cloud Scheduler job:
-   Memory Express, eBay, RFD, then Best Buy when desired.
-6. Keep Cloud Run deployed but idle for 24-48 hours as rollback.
-7. Disable/delete old Cloud Scheduler and Cloud Run only after the local runs are
-   stable.
+2. Run `migrate-store` and confirm `/health` reports Postgres connected.
+3. Confirm scrape-lab evidence from Stormtrooper.
+4. Prime Best Buy baseline with notifications disabled.
+5. Enable `LOCAL_SCHEDULER_ENABLED=true` with RFD `3m` and eBay, Memory
+   Express, and Best Buy `30m`.
+6. Verify one local run of each enabled processor.
+7. Re-register Discord commands from Stormtrooper:
 
-## Phase 2
+```bash
+docker compose -f deploy/stormtrooper/docker-compose.yml exec bot ./register-commands
+```
 
-After parity is proven, migrate Firestore to a local Postgres container:
-
-1. Add a storage abstraction or Postgres-backed store implementation.
-2. Export Firestore collections.
-3. Import into Postgres.
-4. Switch storage config from Firestore to Postgres.
-5. Keep Firestore read-only until a full polling and notification cycle passes.
+8. Pause/delete Cloud Scheduler jobs and delete Cloud Run after backup/export
+   verification. Do not delete Firestore until Postgres has passed a full
+   polling and notification cycle.

@@ -40,8 +40,14 @@ func TestLoad(t *testing.T) {
 	if cfg.MemoryExpressPollInterval != 30*time.Minute {
 		t.Errorf("Expected default Memory Express poll interval 30m, got %s", cfg.MemoryExpressPollInterval)
 	}
-	if cfg.BestBuyPollInterval != 15*time.Minute {
-		t.Errorf("Expected default Best Buy poll interval 15m, got %s", cfg.BestBuyPollInterval)
+	if cfg.BestBuyPollInterval != 30*time.Minute {
+		t.Errorf("Expected default Best Buy poll interval 30m, got %s", cfg.BestBuyPollInterval)
+	}
+	if cfg.EbayCouponDiscoveryInterval != 6*time.Hour {
+		t.Errorf("Expected default eBay coupon discovery interval 6h, got %s", cfg.EbayCouponDiscoveryInterval)
+	}
+	if cfg.EbayCouponSampleSize != 3 {
+		t.Errorf("Expected default eBay coupon sample size 3, got %d", cfg.EbayCouponSampleSize)
 	}
 	if cfg.LocalSchedulerEnabled {
 		t.Errorf("Expected local scheduler to be disabled by default")
