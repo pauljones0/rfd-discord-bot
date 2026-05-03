@@ -518,7 +518,7 @@ func bestCouponSnapshot(coupons []AvailableCoupon) couponSnapshot {
 // FetchPageCouponSnapshot attempts buyer-visible eBay listing-page coupon
 // discovery using the configured backend fallback order.
 func (c *Client) FetchPageCouponSnapshot(ctx context.Context, item BrowseAPIItem, basePrice float64) (couponSnapshot, error) {
-	coupon, source, err := c.FetchPageCoupon(ctx, item, basePrice)
+	coupon, source, err := c.fetchPageCoupon(ctx, item, basePrice, 30*time.Second)
 	if err != nil {
 		return couponSnapshot{}, err
 	}
@@ -531,8 +531,19 @@ func (c *Client) FetchPageCouponSnapshot(ctx context.Context, item BrowseAPIItem
 // FetchPageCoupon attempts buyer-visible eBay listing-page coupon discovery and
 // returns the parsed coupon metadata plus the backend source that found it.
 func (c *Client) FetchPageCoupon(ctx context.Context, item BrowseAPIItem, basePrice float64) (PageCoupon, string, error) {
+	return c.fetchPageCoupon(ctx, item, basePrice, 30*time.Second)
+}
+
+func (c *Client) FetchPageCouponWithTimeout(ctx context.Context, item BrowseAPIItem, basePrice float64, timeout time.Duration) (PageCoupon, string, error) {
+	return c.fetchPageCoupon(ctx, item, basePrice, timeout)
+}
+
+func (c *Client) fetchPageCoupon(ctx context.Context, item BrowseAPIItem, basePrice float64, timeout time.Duration) (PageCoupon, string, error) {
 	if c == nil {
 		return PageCoupon{}, "", fmt.Errorf("eBay client not initialized")
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
 	pageURL := item.ItemWebURL
 	if pageURL == "" {
@@ -556,7 +567,7 @@ func (c *Client) FetchPageCoupon(ctx context.Context, item BrowseAPIItem, basePr
 		result := scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
 			Backend:         backend,
 			URL:             pageURL,
-			Timeout:         30 * time.Second,
+			Timeout:         timeout,
 			ExternalCommand: ebayCouponExternalCommand(),
 			PaidCommand:     ebayCouponPaidCommand(),
 		})

@@ -595,7 +595,9 @@ func (p *Processor) discoverSellerCoupon(ctx context.Context, marketplace, selle
 		if basePrice <= 0 {
 			continue
 		}
-		coupon, source, err := p.client.FetchPageCoupon(ctx, item, basePrice)
+		sampleCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		coupon, source, err := p.client.FetchPageCouponWithTimeout(sampleCtx, item, basePrice, 8*time.Second)
+		cancel()
 		if err != nil {
 			logger.Warn("Failed eBay seller coupon discovery sample",
 				"seller", seller,
