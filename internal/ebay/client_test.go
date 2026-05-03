@@ -108,6 +108,42 @@ func TestBestCouponSnapshot_UsesLargestCoupon(t *testing.T) {
 	}
 }
 
+func TestEbayCouponExternalCommandPrefersSiteSpecificEnv(t *testing.T) {
+	t.Setenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND", "global-camoufox")
+	t.Setenv("EBAY_COUPON_EXTERNAL_STEALTH_COMMAND", "ebay-camoufox")
+
+	if got := ebayCouponExternalCommand(); got != "ebay-camoufox" {
+		t.Fatalf("ebayCouponExternalCommand() = %q, want site-specific command", got)
+	}
+}
+
+func TestEbayCouponExternalCommandFallsBackToScrapeLabEnv(t *testing.T) {
+	t.Setenv("EBAY_COUPON_EXTERNAL_STEALTH_COMMAND", "")
+	t.Setenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND", "global-camoufox")
+
+	if got := ebayCouponExternalCommand(); got != "global-camoufox" {
+		t.Fatalf("ebayCouponExternalCommand() = %q, want global fallback", got)
+	}
+}
+
+func TestEbayCouponPaidCommandPrefersSiteSpecificEnv(t *testing.T) {
+	t.Setenv("SCRAPELAB_PAID_TRIAL_COMMAND", "global-browserless")
+	t.Setenv("EBAY_COUPON_PAID_TRIAL_COMMAND", "ebay-browserless")
+
+	if got := ebayCouponPaidCommand(); got != "ebay-browserless" {
+		t.Fatalf("ebayCouponPaidCommand() = %q, want site-specific command", got)
+	}
+}
+
+func TestEbayCouponPaidCommandFallsBackToScrapeLabEnv(t *testing.T) {
+	t.Setenv("EBAY_COUPON_PAID_TRIAL_COMMAND", "")
+	t.Setenv("SCRAPELAB_PAID_TRIAL_COMMAND", "global-browserless")
+
+	if got := ebayCouponPaidCommand(); got != "global-browserless" {
+		t.Fatalf("ebayCouponPaidCommand() = %q, want global fallback", got)
+	}
+}
+
 func TestBrowseItemDetailURL_FallsBackToEncodedItemID(t *testing.T) {
 	got := browseItemDetailURL(BrowseAPIItem{ItemID: "v1|111|0"})
 	want := ebayBrowseItemURL + "/v1%7C111%7C0"

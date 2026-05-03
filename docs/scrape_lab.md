@@ -18,7 +18,7 @@ The command adapters read the target URL from `SCRAPELAB_TARGET_URL` and should 
 
 ```powershell
 $env:SCRAPELAB_EXTERNAL_STEALTH_COMMAND = "python .\scripts\camoufox_fetch.py '{url}'"
-$env:SCRAPELAB_PAID_TRIAL_COMMAND = "node .\scripts\browserless_fetch.mjs '{url}'"
+$env:SCRAPELAB_PAID_TRIAL_COMMAND = "python .\scripts\browserless_bql_fetch.py '{url}'"
 ```
 
 ## Firestore Targets
@@ -97,12 +97,28 @@ go run ./cmd/scrape-lab -backends http,bestbuy-algolia,chromedp-cloudrun -env lo
 Production processors use ordered backend lists:
 
 ```text
-EBAY_COUPON_BACKENDS=http
+EBAY_COUPON_BACKENDS=http,external-stealth
+EBAY_COUPON_EXTERNAL_STEALTH_COMMAND=xvfb-run -a /opt/scrape-venv/bin/python scripts/camoufox_fetch.py "{url}" --wait-ms 7000
 MEMEXPRESS_BACKENDS=chromedp-persistent,external-stealth,http
 BESTBUY_BACKENDS=bestbuy-algolia,http,chromedp-cloudrun,playwright
 ```
 
-Keep paid services out of these lists until the scrape lab shows repeatable failure on free/local options.
+For eBay, the site-specific command envs are used before scrape-lab globals:
+
+```text
+EBAY_COUPON_EXTERNAL_STEALTH_COMMAND
+EBAY_COUPON_PAID_TRIAL_COMMAND
+```
+
+Keep `paid-trial` out of production lists until the scrape lab shows repeatable failure on free/local options and a tiny paid sample succeeds. The Browserless proof of concept uses the BrowserQL stealth route and requires `BROWSERLESS_TOKEN`:
+
+```bash
+export BROWSERLESS_TOKEN=...
+export SCRAPELAB_PAID_TRIAL_COMMAND='/opt/scrape-venv/bin/python scripts/browserless_bql_fetch.py "{url}" --wait-ms 5000'
+./scrape-lab -from-firestore -sites ebay -ebay-limit 3 -backends paid-trial -env stormtrooper -out /data/scrape-lab-browserless-ebay-$(date +%Y%m%d-%H%M%S)
+```
+
+Stop the paid trial after three listing attempts or before the configured spend cap, whichever comes first.
 
 ## GCE Persistent Browser Runner
 

@@ -39,6 +39,7 @@ BESTBUY_POLL_INTERVAL=15m
 EBAY_COUPON_BACKENDS=http,external-stealth
 MEMEXPRESS_BACKENDS=chromedp-persistent,external-stealth,http
 BESTBUY_BACKENDS=bestbuy-algolia,http
+EBAY_COUPON_EXTERNAL_STEALTH_COMMAND=xvfb-run -a /opt/scrape-venv/bin/python scripts/camoufox_fetch.py "{url}" --wait-ms 7000
 ```
 
 Keep Discord, Gemini, eBay, and optional Cloudflare Tunnel secrets in that same
@@ -88,6 +89,29 @@ docker compose -f deploy/stormtrooper/docker-compose.yml exec bot \
   ./scrape-lab -from-firestore -sites ebay,memoryexpress,bestbuy \
   -backends http,external-stealth,bestbuy-algolia \
   -out /data/scrape-lab-$(date +%Y%m%d-%H%M%S)
+```
+
+To verify the eBay Camoufox fallback specifically, keep the scheduler disabled
+and run only three Firestore-backed item pages:
+
+```bash
+docker compose -f deploy/stormtrooper/docker-compose.yml exec \
+  -e SCRAPELAB_EXTERNAL_STEALTH_COMMAND='xvfb-run -a /opt/scrape-venv/bin/python scripts/camoufox_fetch.py "{url}" --wait-ms 7000' \
+  bot ./scrape-lab -from-firestore -sites ebay -ebay-limit 3 \
+  -backends external-stealth -env stormtrooper \
+  -out /data/scrape-lab-stormtrooper-ebay-camoufox-$(date +%Y%m%d-%H%M%S)
+```
+
+Only if Camoufox is blocked or errors on all three samples, run the Browserless
+paid trial with the same target cap:
+
+```bash
+docker compose -f deploy/stormtrooper/docker-compose.yml exec \
+  -e BROWSERLESS_TOKEN="$BROWSERLESS_TOKEN" \
+  -e SCRAPELAB_PAID_TRIAL_COMMAND='/opt/scrape-venv/bin/python scripts/browserless_bql_fetch.py "{url}" --wait-ms 5000' \
+  bot ./scrape-lab -from-firestore -sites ebay -ebay-limit 3 \
+  -backends paid-trial -env stormtrooper \
+  -out /data/scrape-lab-stormtrooper-ebay-browserless-$(date +%Y%m%d-%H%M%S)
 ```
 
 Prime Best Buy before enabling subscriptions or the scheduler:

@@ -544,8 +544,8 @@ func (c *Client) FetchPageCouponSnapshot(ctx context.Context, item BrowseAPIItem
 			Backend:         backend,
 			URL:             pageURL,
 			Timeout:         30 * time.Second,
-			ExternalCommand: os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
-			PaidCommand:     os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
+			ExternalCommand: ebayCouponExternalCommand(),
+			PaidCommand:     ebayCouponPaidCommand(),
 		})
 		if result.Error != "" {
 			errs = append(errs, fmt.Errorf("%s: %s", backend, result.Error))
@@ -567,6 +567,23 @@ func (c *Client) FetchPageCouponSnapshot(ctx context.Context, item BrowseAPIItem
 		return couponSnapshot{}, errors.Join(errs...)
 	}
 	return couponSnapshot{}, nil
+}
+
+func ebayCouponExternalCommand() string {
+	return firstNonEmptyEnv("EBAY_COUPON_EXTERNAL_STEALTH_COMMAND", "SCRAPELAB_EXTERNAL_STEALTH_COMMAND")
+}
+
+func ebayCouponPaidCommand() string {
+	return firstNonEmptyEnv("EBAY_COUPON_PAID_TRIAL_COMMAND", "SCRAPELAB_PAID_TRIAL_COMMAND")
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (c *Client) fetchPage(ctx context.Context, sellerFilter, marketplace, categoryID string, offset int, sinceTime time.Time) ([]BrowseAPIItem, bool, error) {

@@ -13,12 +13,22 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o scrape-lab ./cmd/scrape-lab
 FROM mcr.microsoft.com/playwright:v1.52.0-noble
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates python3 python3-pip python3-venv xvfb \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libasound2t64 \
+        libgtk-3-0 \
+        libx11-xcb1 \
+        python3 \
+        python3-pip \
+        python3-venv \
+        xauth \
+        xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/scrape-venv \
     && /opt/scrape-venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/scrape-venv/bin/pip install --no-cache-dir nodriver
+    && /opt/scrape-venv/bin/pip install --no-cache-dir camoufox nodriver \
+    && /opt/scrape-venv/bin/python -m camoufox fetch
 
 ENV PATH="/opt/scrape-venv/bin:${PATH}"
 
