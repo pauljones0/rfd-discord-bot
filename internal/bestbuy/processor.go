@@ -255,9 +255,7 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 	}
 
 	if len(bbSubs) == 0 {
-		stats.exitReason = "no_subscriptions"
-		logger.Info("No Best Buy subscriptions found")
-		return nil
+		logger.Info("No Best Buy subscriptions found; polling will refresh inventory without notifications")
 	}
 
 	if seeded, err := p.store.SeedBestBuySellers(ctx); err != nil {

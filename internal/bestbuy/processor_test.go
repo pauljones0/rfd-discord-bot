@@ -157,3 +157,40 @@ func TestPrimeBaselineSavesInventoryWithoutNotifications(t *testing.T) {
 		t.Fatalf("sent after baseline duplicate run = %d, want 0", len(notifier.sent))
 	}
 }
+
+func TestProcessBestBuyDeals_PollsWithoutSubscriptions(t *testing.T) {
+	store := &bestBuyTestStore{
+		sellers: []Seller{{ID: "591375", Name: "Tech Outlet Center", SearchPath: "sellerName:Tech Outlet Center", IsActive: true}},
+		exists:  make(map[string]bool),
+	}
+	notifier := &bestBuyTestNotifier{}
+	client := NewClient()
+	client.httpClient = &http.Client{Transport: bestBuyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{
+			"currentPage":1,
+			"total":1,
+			"totalPages":1,
+			"pageSize":48,
+			"products":[
+				{"sku":"333","name":"Open Box Desktop","productUrl":"/en-ca/product/333","regularPrice":900,"salePrice":700,"seller":"Tech Outlet Center"}
+			]
+		}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	processor := NewProcessor(store, client, nil, notifier, "")
+	if err := processor.ProcessBestBuyDeals(context.Background()); err != nil {
+		t.Fatalf("ProcessBestBuyDeals() error = %v", err)
+	}
+	if len(store.saved) != 1 {
+		t.Fatalf("saved records = %d, want 1", len(store.saved))
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("sent = %d, want 0 without subscriptions", len(notifier.sent))
+	}
+}
