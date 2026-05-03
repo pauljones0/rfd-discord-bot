@@ -59,6 +59,9 @@ logs/
 #playwright
 .playwright-mcp
 
+# Local scrape-lab artifacts and prototype virtualenvs
+.codex-remote/
+
 # MCP server config
 .mcp.json
 

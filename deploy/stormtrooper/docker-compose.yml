@@ -1,0 +1,30 @@
+services:
+  bot:
+    container_name: rfd-discord-bot
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ${RFD_BOT_ENV_FILE:-/opt/rfd-discord-bot/.env}
+    environment:
+      PORT: "8080"
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-sa-key.json
+      MEMEXPRESS_CHROME_PROFILE_DIR: /data/memoryexpress-chrome
+      SCRAPELAB_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - ${RFD_BOT_DATA_DIR:-/srv/appdata/rfd-discord-bot}:/data
+      - ${RFD_BOT_GCP_CREDENTIALS:-/opt/rfd-discord-bot/gcp-sa-key.json}:/run/secrets/gcp-sa-key.json:ro
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file:
+      - ${RFD_BOT_ENV_FILE:-/opt/rfd-discord-bot/.env}
+    depends_on:
+      - bot
+    profiles:
+      - tunnel

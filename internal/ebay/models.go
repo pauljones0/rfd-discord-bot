@@ -55,6 +55,7 @@ type TrackedItem struct {
 	CouponDiscount    float64   `firestore:"couponDiscount,omitempty"`
 	CouponCode        string    `firestore:"couponCode,omitempty"`
 	CouponMessage     string    `firestore:"couponMessage,omitempty"`
+	CouponSource      string    `firestore:"couponSource,omitempty"`
 	OriginalPrice     float64   `firestore:"originalPrice,omitempty"`
 	LastNotifiedPrice float64   `firestore:"lastNotifiedPrice,omitempty"`
 	DropCount         int       `firestore:"dropCount,omitempty"`
@@ -77,6 +78,7 @@ type EbayItem struct {
 	CouponDiscount           float64
 	CouponCode               string
 	CouponMessage            string
+	CouponSource             string
 	PriceDrop                float64
 	PercentDrop              float64
 	DropCount                int
@@ -115,6 +117,7 @@ type BrowseAPIItem struct {
 	CouponDiscount   float64     `json:"-"`
 	CouponCode       string      `json:"-"`
 	CouponMessage    string      `json:"-"`
+	CouponSource     string      `json:"-"`
 	ItemCreationDate string      `json:"itemCreationDate"` // ISO8601
 	Marketplace      string      `json:"-"`
 }

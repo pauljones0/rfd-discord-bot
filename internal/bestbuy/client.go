@@ -8,25 +8,35 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pauljones0/rfd-discord-bot/internal/scrapebackend"
 )
 
 const (
+	BackendAlgolia = "bestbuy-algolia"
+
 	searchBaseURL = "https://www.bestbuy.ca/api/v2/json/search"
 	bestBuyBase   = "https://www.bestbuy.ca"
 	defaultRegion = "SK"
 	pageSize      = 48
 	maxPages      = 50 // safety cap to avoid runaway pagination
+
+	defaultAlgoliaAppID   = "NSQ22WGR1E"
+	defaultAlgoliaAPIKey  = "e24267dce0d612e5641fdc4949dd9c7c"
+	defaultAlgoliaIndexEN = "prod_products_en"
 )
 
 // searchResponse is the top-level JSON returned by the Best Buy search API.
 type searchResponse struct {
-	CurrentPage int              `json:"currentPage"`
-	Total       int              `json:"total"`
-	TotalPages  int              `json:"totalPages"`
-	PageSize    int              `json:"pageSize"`
-	Products    []apiProduct     `json:"products"`
+	CurrentPage int          `json:"currentPage"`
+	Total       int          `json:"total"`
+	TotalPages  int          `json:"totalPages"`
+	PageSize    int          `json:"pageSize"`
+	Products    []apiProduct `json:"products"`
 }
 
 // apiProduct maps the fields we care about from the search API product JSON.
@@ -46,10 +56,43 @@ type apiProduct struct {
 	IsClearance    bool    `json:"isClearance"`
 }
 
+type algoliaResponse struct {
+	Page    int          `json:"page"`
+	NbHits  int          `json:"nbHits"`
+	NbPages int          `json:"nbPages"`
+	Hits    []algoliaHit `json:"hits"`
+}
+
+type algoliaHit struct {
+	ObjectID          string `json:"objectID"`
+	SKU               string `json:"sku"`
+	Title             string `json:"title"`
+	ImageURL          string `json:"imageUrl"`
+	HighResImageURL   string `json:"highResImageUrl"`
+	CategoryName      string `json:"categoryName"`
+	SeoText           string `json:"seoText"`
+	Clearance         bool   `json:"clearance"`
+	InStock           bool   `json:"inStock"`
+	PreorderStartDate string `json:"preorderStartDate"`
+	Seller            struct {
+		SellerID    string `json:"sellerId"`
+		SellerName  string `json:"sellerName"`
+		Marketplace bool   `json:"marketplace"`
+	} `json:"seller"`
+	Price struct {
+		RegularPrice float64 `json:"regularPrice"`
+		CurrentPrice float64 `json:"currentPrice"`
+	} `json:"price"`
+	Rating struct {
+		CustomerRating float64 `json:"customerRating"`
+	} `json:"rating"`
+}
+
 // Client handles HTTP requests to the Best Buy Canada search API.
 type Client struct {
 	httpClient *http.Client
 	region     string
+	backends   []string
 }
 
 // NewClient creates a new Best Buy API client.
@@ -57,19 +100,21 @@ func NewClient() *Client {
 	return &Client{
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		region:     defaultRegion,
+		backends:   []string{scrapebackend.BackendHTTP},
 	}
+}
+
+// SetBackends configures the ordered backend fallback list for Best Buy fetches.
+func (c *Client) SetBackends(backends []string) {
+	if c == nil || len(backends) == 0 {
+		return
+	}
+	c.backends = append([]string(nil), backends...)
 }
 
 // FetchSellerProducts fetches all products for a given marketplace seller.
 func (c *Client) FetchSellerProducts(ctx context.Context, seller Seller) ([]Product, error) {
-	params := url.Values{
-		"lang":          {"en-CA"},
-		"pageSize":      {fmt.Sprintf("%d", pageSize)},
-		"currentRegion": {c.region},
-		"sortBy":        {"relevance"},
-		"sortDir":       {"desc"},
-		"path":          {"sellerName:" + seller.Name},
-	}
+	params := c.sellerSearchParams(seller)
 
 	products, err := c.fetchAllPages(ctx, params, "marketplace")
 	if err != nil {
@@ -83,6 +128,9 @@ func (c *Client) FetchSellerProducts(ctx context.Context, seller Seller) ([]Prod
 		}
 		if products[i].SellerName == "" {
 			products[i].SellerName = seller.Name
+		}
+		if seller.ID != "" {
+			products[i].Source = "seller:" + seller.ID
 		}
 	}
 
@@ -101,6 +149,21 @@ func (c *Client) FetchOpenBoxProducts(ctx context.Context) ([]Product, error) {
 	}
 
 	return c.fetchAllPages(ctx, params, "openbox")
+}
+
+func (c *Client) sellerSearchParams(seller Seller) url.Values {
+	searchPath := seller.SearchPath
+	if searchPath == "" {
+		searchPath = "sellerName:" + seller.Name
+	}
+	return url.Values{
+		"lang":          {"en-CA"},
+		"pageSize":      {fmt.Sprintf("%d", pageSize)},
+		"currentRegion": {c.region},
+		"sortBy":        {"relevance"},
+		"sortDir":       {"desc"},
+		"path":          {searchPath},
+	}
 }
 
 // fetchAllPages paginates through all pages of a search query and returns combined products.
@@ -155,7 +218,32 @@ func (c *Client) fetchAllPages(ctx context.Context, baseParams url.Values, sourc
 // doSearch performs a single search API request.
 func (c *Client) doSearch(ctx context.Context, params url.Values) (*searchResponse, error) {
 	reqURL := searchBaseURL + "?" + params.Encode()
+	backends := c.backends
+	if len(backends) == 0 {
+		backends = []string{scrapebackend.BackendHTTP}
+	}
 
+	var failures []string
+	for _, backend := range backends {
+		var result *searchResponse
+		var err error
+		if backend == BackendAlgolia {
+			result, err = c.doAlgoliaSearch(ctx, params)
+		} else if backend == scrapebackend.BackendHTTP {
+			result, err = c.doHTTPSearch(ctx, reqURL)
+		} else {
+			result, err = c.doBackendSearch(ctx, backend, reqURL)
+		}
+		if err == nil {
+			return result, nil
+		}
+		failures = append(failures, fmt.Sprintf("%s: %s", backend, err))
+	}
+
+	return nil, fmt.Errorf("all Best Buy backends failed: %s", strings.Join(failures, "; "))
+}
+
+func (c *Client) doHTTPSearch(ctx context.Context, reqURL string) (*searchResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -182,6 +270,184 @@ func (c *Client) doSearch(ctx context.Context, params url.Values) (*searchRespon
 	}
 
 	return &result, nil
+}
+
+func (c *Client) doAlgoliaSearch(ctx context.Context, params url.Values) (*searchResponse, error) {
+	algoliaParams := url.Values{}
+	algoliaParams.Set("query", params.Get("query"))
+	algoliaParams.Set("hitsPerPage", firstNonEmpty(params.Get("pageSize"), fmt.Sprintf("%d", pageSize)))
+
+	page := 1
+	if rawPage := params.Get("page"); rawPage != "" {
+		parsed, err := strconv.Atoi(rawPage)
+		if err != nil {
+			return nil, fmt.Errorf("invalid page %q: %w", rawPage, err)
+		}
+		page = parsed
+	}
+	if page < 1 {
+		page = 1
+	}
+	algoliaParams.Set("page", fmt.Sprintf("%d", page-1))
+
+	if facet := algoliaFacetFilterFromPath(params.Get("path")); facet != "" {
+		encodedFacet, err := json.Marshal([]string{facet})
+		if err != nil {
+			return nil, err
+		}
+		algoliaParams.Set("facetFilters", string(encodedFacet))
+	}
+
+	body, err := json.Marshal(map[string]string{"params": algoliaParams.Encode()})
+	if err != nil {
+		return nil, err
+	}
+
+	appID := firstNonEmpty(os.Getenv("BESTBUY_ALGOLIA_APP_ID"), defaultAlgoliaAppID)
+	apiKey := firstNonEmpty(os.Getenv("BESTBUY_ALGOLIA_API_KEY"), defaultAlgoliaAPIKey)
+	indexName := firstNonEmpty(os.Getenv("BESTBUY_ALGOLIA_INDEX_NAME"), defaultAlgoliaIndexEN)
+	reqURL := fmt.Sprintf("https://%s-dsn.algolia.net/1/indexes/%s/query", appID, url.PathEscape(indexName))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Algolia-Application-Id", appID)
+	req.Header.Set("X-Algolia-API-Key", apiKey)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Algolia request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("Algolia status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var decoded algoliaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("decode Algolia response: %w", err)
+	}
+	return algoliaSearchResponse(decoded), nil
+}
+
+func algoliaFacetFilterFromPath(path string) string {
+	path = strings.TrimSpace(path)
+	switch {
+	case path == "":
+		return ""
+	case strings.HasPrefix(path, "seller.sellerName:"):
+		return path
+	case strings.HasPrefix(path, "sellerName:"):
+		return "seller.sellerName:" + strings.TrimSpace(strings.TrimPrefix(path, "sellerName:"))
+	case strings.HasPrefix(path, "seller.sellerId:"):
+		return path
+	case strings.HasPrefix(path, "sellerId:"):
+		return "seller.sellerId:" + strings.TrimSpace(strings.TrimPrefix(path, "sellerId:"))
+	default:
+		return path
+	}
+}
+
+func algoliaSearchResponse(resp algoliaResponse) *searchResponse {
+	products := make([]apiProduct, 0, len(resp.Hits))
+	for _, hit := range resp.Hits {
+		sku := firstNonEmpty(hit.SKU, hit.ObjectID)
+		currentPrice := hit.Price.CurrentPrice
+		regularPrice := hit.Price.RegularPrice
+		if currentPrice == 0 {
+			currentPrice = regularPrice
+		}
+		if regularPrice == 0 {
+			regularPrice = currentPrice
+		}
+
+		imageURL := firstNonEmpty(hit.ImageURL, hit.HighResImageURL)
+		products = append(products, apiProduct{
+			SKU:            sku,
+			Name:           hit.Title,
+			ProductURL:     bestBuyProductURL(hit, sku),
+			ThumbnailImage: imageURL,
+			RegularPrice:   regularPrice,
+			SalePrice:      currentPrice,
+			CategoryName:   hit.CategoryName,
+			SellerID:       hit.Seller.SellerID,
+			Seller:         hit.Seller.SellerName,
+			CustomerRating: hit.Rating.CustomerRating,
+			IsMarketplace:  hit.Seller.Marketplace,
+			IsClearance:    hit.Clearance,
+		})
+	}
+
+	return &searchResponse{
+		CurrentPage: resp.Page + 1,
+		Total:       resp.NbHits,
+		TotalPages:  resp.NbPages,
+		PageSize:    len(products),
+		Products:    products,
+	}
+}
+
+func bestBuyProductURL(hit algoliaHit, sku string) string {
+	if sku == "" {
+		return ""
+	}
+	if hit.SeoText != "" {
+		return bestBuyBase + "/en-ca/product/" + url.PathEscape(hit.SeoText) + "/" + url.PathEscape(sku)
+	}
+	return bestBuyBase + "/en-ca/product/" + url.PathEscape(sku)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (c *Client) doBackendSearch(ctx context.Context, backend, reqURL string) (*searchResponse, error) {
+	result := scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
+		Backend:         backend,
+		URL:             reqURL,
+		Timeout:         45 * time.Second,
+		ExternalCommand: os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
+		PaidCommand:     os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
+	})
+	if result.Error != "" {
+		return nil, fmt.Errorf("%s", result.Error)
+	}
+	if result.BlockSignal != "" {
+		return nil, fmt.Errorf("blocked by %s", result.BlockSignal)
+	}
+
+	payload := extractJSONPayload(result.HTML)
+	if payload == "" {
+		return nil, fmt.Errorf("backend returned no JSON payload")
+	}
+	var decoded searchResponse
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		return nil, fmt.Errorf("failed to decode backend response: %w", err)
+	}
+	return &decoded, nil
+}
+
+func extractJSONPayload(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		return trimmed
+	}
+	start := strings.Index(trimmed, "{")
+	end := strings.LastIndex(trimmed, "}")
+	if start >= 0 && end > start {
+		return trimmed[start : end+1]
+	}
+	return ""
 }
 
 // convertProducts transforms API products into our domain Product type.
@@ -216,7 +482,7 @@ func convertProducts(apiProducts []apiProduct, source string) []Product {
 			IsMarketplace:  ap.IsMarketplace,
 			IsClearance:    ap.IsClearance,
 			IsOpenBox:      isOpenBox,
-			Source:          source,
+			Source:         source,
 		})
 	}
 	return products

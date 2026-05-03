@@ -10,10 +10,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pauljones0/rfd-discord-bot/internal/scrapebackend"
 )
 
 const (
@@ -46,6 +49,8 @@ type Client struct {
 	mu          sync.Mutex
 	accessToken string
 	tokenExpiry time.Time
+
+	couponBackends []string
 }
 
 type marketplaceCategoryGroup struct {
@@ -63,10 +68,20 @@ func NewClient(clientID, clientSecret string) *Client {
 	}
 
 	return &Client{
-		clientID:     clientID,
-		clientSecret: clientSecret,
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		clientID:       clientID,
+		clientSecret:   clientSecret,
+		httpClient:     &http.Client{Timeout: 30 * time.Second},
+		couponBackends: []string{scrapebackend.BackendHTTP},
 	}
+}
+
+// SetCouponBackends configures the ordered fallback list for buyer-visible
+// listing-page coupon discovery. Empty input leaves the existing default.
+func (c *Client) SetCouponBackends(backends []string) {
+	if c == nil || len(backends) == 0 {
+		return
+	}
+	c.couponBackends = append([]string(nil), backends...)
 }
 
 // tokenResponse represents the eBay OAuth token response.
@@ -364,6 +379,7 @@ type couponSnapshot struct {
 	DiscountAmount float64
 	Code           string
 	Message        string
+	Source         string
 }
 
 func (c *Client) populateCouponDetails(ctx context.Context, items []BrowseAPIItem) error {
@@ -395,6 +411,7 @@ func (c *Client) populateCouponDetails(ctx context.Context, items []BrowseAPIIte
 		items[i].CouponDiscount = coupon.DiscountAmount
 		items[i].CouponCode = coupon.Code
 		items[i].CouponMessage = coupon.Message
+		items[i].CouponSource = coupon.Source
 		enriched++
 	}
 
@@ -492,9 +509,64 @@ func bestCouponSnapshot(coupons []AvailableCoupon) couponSnapshot {
 			DiscountAmount: discount,
 			Code:           coupon.RedemptionCode,
 			Message:        coupon.Message,
+			Source:         "api",
 		}
 	}
 	return best
+}
+
+// FetchPageCouponSnapshot attempts buyer-visible eBay listing-page coupon
+// discovery using the configured backend fallback order.
+func (c *Client) FetchPageCouponSnapshot(ctx context.Context, item BrowseAPIItem, basePrice float64) (couponSnapshot, error) {
+	if c == nil {
+		return couponSnapshot{}, fmt.Errorf("eBay client not initialized")
+	}
+	pageURL := item.ItemWebURL
+	if pageURL == "" {
+		marketplaceHost := "www.ebay.ca"
+		if item.Marketplace == "EBAY_US" {
+			marketplaceHost = "www.ebay.com"
+		}
+		pageURL = fmt.Sprintf("https://%s/itm/%s", marketplaceHost, ExtractItemID(item.ItemID))
+	}
+	if pageURL == "" {
+		return couponSnapshot{}, fmt.Errorf("eBay item has no web URL")
+	}
+
+	backends := c.couponBackends
+	if len(backends) == 0 {
+		backends = []string{scrapebackend.BackendHTTP}
+	}
+
+	var errs []error
+	for _, backend := range backends {
+		result := scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
+			Backend:         backend,
+			URL:             pageURL,
+			Timeout:         30 * time.Second,
+			ExternalCommand: os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
+			PaidCommand:     os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
+		})
+		if result.Error != "" {
+			errs = append(errs, fmt.Errorf("%s: %s", backend, result.Error))
+			continue
+		}
+		if result.BlockSignal != "" {
+			errs = append(errs, fmt.Errorf("%s: blocked by %s", backend, result.BlockSignal))
+			continue
+		}
+
+		coupon := ExtractPageCoupon(result.HTML, basePrice)
+		if coupon.DiscountAmount <= 0 {
+			continue
+		}
+		return coupon.snapshot("page:" + backend), nil
+	}
+
+	if len(errs) > 0 {
+		return couponSnapshot{}, errors.Join(errs...)
+	}
+	return couponSnapshot{}, nil
 }
 
 func (c *Client) fetchPage(ctx context.Context, sellerFilter, marketplace, categoryID string, offset int, sinceTime time.Time) ([]BrowseAPIItem, bool, error) {

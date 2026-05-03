@@ -1,0 +1,4 @@
+bot.pauljones0.uk {
+	import common
+	reverse_proxy 127.0.0.1:18080
+}

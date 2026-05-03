@@ -7,18 +7,29 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -o scrape-lab ./cmd/scrape-lab
 
 # Stage 2: Runtime with Playwright browsers
 FROM mcr.microsoft.com/playwright:v1.52.0-noble
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates python3 python3-pip python3-venv xvfb \
+    && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /root/
-COPY --from=builder /app/server .
-COPY --from=builder /app/internal/scraper/selectors.json ./internal/scraper/selectors.json
+RUN python3 -m venv /opt/scrape-venv \
+    && /opt/scrape-venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/scrape-venv/bin/pip install --no-cache-dir nodriver
+
+ENV PATH="/opt/scrape-venv/bin:${PATH}"
 
 # Pre-install Chromium and Firefox during build to avoid startup latency.
 RUN npx playwright install chromium firefox
+
+WORKDIR /root/
+COPY --from=builder /app/server .
+COPY --from=builder /app/scrape-lab .
+COPY --from=builder /app/internal/scraper/selectors.json ./internal/scraper/selectors.json
+COPY --from=builder /app/scripts ./scripts
 
 EXPOSE 8080
 

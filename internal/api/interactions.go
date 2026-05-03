@@ -32,7 +32,7 @@ const (
 	InteractionResponseTypePong                     = 1
 	InteractionResponseTypeChannelMessageWithSource = 4
 	InteractionResponseTypeUpdateMessage            = 7
-	InteractionResponseTypeDeferredChannelMessage    = 5
+	InteractionResponseTypeDeferredChannelMessage   = 5
 	InteractionResponseTypeAutocompleteResult       = 8
 	InteractionResponseTypeModal                    = 9
 
@@ -62,14 +62,14 @@ type interactionRequest struct {
 	GuildID string             `json:"guild_id,omitempty"`
 	Member  *interactionMember `json:"member,omitempty"`
 	Message *discordMessage    `json:"message,omitempty"`
-	Token   string             `json:"token,omitempty"`   // Interaction token for deferred responses
+	Token   string             `json:"token,omitempty"` // Interaction token for deferred responses
 	AppID   string             `json:"application_id,omitempty"`
 }
 
 type interactionData struct {
 	Name       string               `json:"name,omitempty"`
 	Options    []interactionOption  `json:"options,omitempty"`
-	CustomID   string               `json:"custom_id,omitempty"`   // For components and modals
+	CustomID   string               `json:"custom_id,omitempty"` // For components and modals
 	Resolved   *interactionResolved `json:"resolved,omitempty"`
 	Components []interface{}        `json:"components,omitempty"` // For modal submit data
 }
@@ -659,7 +659,7 @@ func (h *Handler) handleSetupBestBuy(w http.ResponseWriter, req interactionReque
 	}
 
 	validFilters := map[string]bool{
-		"bb_warm_hot": true, "bb_hot": true,
+		"bb_new": true, "bb_warm_hot": true, "bb_hot": true,
 	}
 	if !validFilters[filter] {
 		h.respondPrivateMessage(w, "Invalid Best Buy filter type.")
@@ -1398,6 +1398,12 @@ func dealTypeLabel(dealType string) string {
 		return "eBay US price drops"
 	case "ebay_price_drop":
 		return "all eBay price drops"
+	case "bb_new":
+		return "Best Buy new seller listings"
+	case "bb_warm_hot":
+		return "Best Buy new seller listings (legacy warm/hot filter)"
+	case "bb_hot":
+		return "Best Buy new seller listings (legacy hot filter)"
 	default:
 		return dealType
 	}

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -15,6 +16,72 @@ import (
 )
 
 const bestbuyCollection = "bestbuy_deals"
+const bestbuySellersCollection = "bestbuy_sellers"
+
+// GetActiveBestBuySellers returns active Best Buy seller targets from Firestore.
+func (c *Client) GetActiveBestBuySellers(ctx context.Context) ([]bestbuy.Seller, error) {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	iter := c.client.Collection(bestbuySellersCollection).
+		Where("isActive", "==", true).
+		Documents(ctx)
+	defer iter.Stop()
+
+	var sellers []bestbuy.Seller
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate bestbuy sellers: %w", err)
+		}
+		var seller bestbuy.Seller
+		if err := doc.DataTo(&seller); err != nil {
+			slog.Warn("Failed to unmarshal bestbuy seller", "processor", "bestbuy", "id", doc.Ref.ID, "error", err)
+			continue
+		}
+		sellers = append(sellers, seller)
+	}
+	return sellers, nil
+}
+
+// SeedBestBuySellers populates the seller target collection if empty.
+func (c *Client) SeedBestBuySellers(ctx context.Context) (bool, error) {
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+
+	iter := c.client.Collection(bestbuySellersCollection).Limit(1).Documents(ctx)
+	defer iter.Stop()
+	_, err := iter.Next()
+	if err != iterator.Done {
+		if err != nil {
+			return false, fmt.Errorf("failed to check bestbuy sellers collection: %w", err)
+		}
+		return false, nil
+	}
+
+	now := time.Now()
+	bw := c.client.BulkWriter(ctx)
+	var errs []error
+	for _, seller := range bestbuy.DefaultSellers {
+		seller.AddedAt = now
+		if seller.IsActive == false {
+			seller.IsActive = true
+		}
+		docID := seller.ID
+		if docID == "" {
+			docID = seller.Name
+		}
+		if _, err := bw.Create(c.client.Collection(bestbuySellersCollection).Doc(docID), seller); err != nil {
+			errs = append(errs, fmt.Errorf("seed %s: %w", docID, err))
+		}
+	}
+	bw.Flush()
+	bw.End()
+	return true, errors.Join(errs...)
+}
 
 // bestBuyDocID generates a unique document ID for a Best Buy product.
 func bestBuyDocID(sku, source string) string {

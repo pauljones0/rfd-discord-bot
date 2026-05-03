@@ -18,12 +18,14 @@ type Config struct {
 	AmazonAffiliateTag     string
 	BestBuyAffiliatePrefix string
 	DiscordUpdateInterval  time.Duration
+	RFDPollInterval        time.Duration
 	MaxStoredDeals         int
 	AllowedDomains         []string
 	RFDBaseURL             string
 	GeminiAPIKeys          []string
 	GeminiLocations        []string
 	GeminiFallbackModels   []string
+	LocalSchedulerEnabled  bool
 
 	// Discord App Auth
 	DiscordAppID     string
@@ -31,8 +33,10 @@ type Config struct {
 	DiscordBotToken  string
 
 	// eBay API (optional — eBay features disabled if not set)
-	EbayClientID     string
-	EbayClientSecret string
+	EbayClientID       string
+	EbayClientSecret   string
+	EbayCouponBackends []string
+	EbayPollInterval   time.Duration
 
 	// Proxy (optional — Facebook/Carfax scraping runs without proxy if not set)
 	ProxyURL string
@@ -41,6 +45,11 @@ type Config struct {
 	MemoryExpressPollInterval  time.Duration
 	MemoryExpressChromePath    string
 	MemoryExpressChromeProfile string
+	MemoryExpressBackends      []string
+
+	// Best Buy scraping backend configuration.
+	BestBuyBackends     []string
+	BestBuyPollInterval time.Duration
 
 	// Carfax Token Service (optional — if not set, Carfax falls back to Playwright UI automation)
 	// The token service runs a real headed Chrome that generates high-scoring reCAPTCHA v3 tokens.
@@ -85,13 +94,19 @@ func Load() (*Config, error) {
 		bestBuyAffiliatePrefix = "https://bestbuyca.o93x.net/c/5215192/2035226/10221?u="
 	}
 
-	discordUpdateIntervalStr := os.Getenv("DISCORD_UPDATE_INTERVAL")
-	if discordUpdateIntervalStr == "" {
-		discordUpdateIntervalStr = "10m"
-	}
-	discordUpdateInterval, err := time.ParseDuration(discordUpdateIntervalStr)
+	discordUpdateInterval, err := durationEnv("DISCORD_UPDATE_INTERVAL", 10*time.Minute)
 	if err != nil {
-		return nil, fmt.Errorf("invalid DISCORD_UPDATE_INTERVAL %q: %w", discordUpdateIntervalStr, err)
+		return nil, err
+	}
+
+	rfdPollInterval, err := durationEnv("RFD_POLL_INTERVAL", 3*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	ebayPollInterval, err := durationEnv("EBAY_POLL_INTERVAL", 30*time.Minute)
+	if err != nil {
+		return nil, err
 	}
 
 	maxStoredDeals := 500
@@ -109,13 +124,14 @@ func Load() (*Config, error) {
 		slog.Warn("DISCORD_BOT_TOKEN not set, Discord application features may be disabled")
 	}
 
-	memexpressPollIntervalStr := os.Getenv("MEMEXPRESS_POLL_INTERVAL")
-	if memexpressPollIntervalStr == "" {
-		memexpressPollIntervalStr = "30m"
-	}
-	memexpressPollInterval, err := time.ParseDuration(memexpressPollIntervalStr)
+	memexpressPollInterval, err := durationEnv("MEMEXPRESS_POLL_INTERVAL", 30*time.Minute)
 	if err != nil {
-		return nil, fmt.Errorf("invalid MEMEXPRESS_POLL_INTERVAL %q: %w", memexpressPollIntervalStr, err)
+		return nil, err
+	}
+
+	bestBuyPollInterval, err := durationEnv("BESTBUY_POLL_INTERVAL", 15*time.Minute)
+	if err != nil {
+		return nil, err
 	}
 
 	geminiLocation := os.Getenv("GEMINI_LOCATION")
@@ -163,6 +179,7 @@ func Load() (*Config, error) {
 		AmazonAffiliateTag:     amazonAffiliateTag,
 		BestBuyAffiliatePrefix: bestBuyAffiliatePrefix,
 		DiscordUpdateInterval:  discordUpdateInterval,
+		RFDPollInterval:        rfdPollInterval,
 		MaxStoredDeals:         maxStoredDeals,
 		AllowedDomains:         []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com", "bestbuy.ca"},
 		RFDBaseURL:             "https://forums.redflagdeals.com",
@@ -178,10 +195,16 @@ func Load() (*Config, error) {
 		DiscordBotToken:            discordBotToken,
 		EbayClientID:               os.Getenv("EBAY_CLIENT_ID"),
 		EbayClientSecret:           os.Getenv("EBAY_CLIENT_SECRET"),
+		EbayCouponBackends:         csvEnv("EBAY_COUPON_BACKENDS", []string{"http", "external-stealth"}),
+		EbayPollInterval:           ebayPollInterval,
 		ProxyURL:                   os.Getenv("PROXY_URL"),
 		MemoryExpressPollInterval:  memexpressPollInterval,
 		MemoryExpressChromePath:    firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
 		MemoryExpressChromeProfile: os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
+		MemoryExpressBackends:      csvEnv("MEMEXPRESS_BACKENDS", []string{"chromedp-persistent", "external-stealth", "http"}),
+		BestBuyBackends:            csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
+		BestBuyPollInterval:        bestBuyPollInterval,
+		LocalSchedulerEnabled:      boolEnv("LOCAL_SCHEDULER_ENABLED", false),
 		CarfaxTokenServiceURL:      os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
 		CarfaxTokenServiceSecret:   os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
 		RedditServiceURL:           os.Getenv("REDDIT_SERVICE_URL"),
@@ -196,6 +219,50 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func csvEnv(key string, fallback []string) []string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return append([]string(nil), fallback...)
+	}
+	values := strings.Split(raw, ",")
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	if len(out) == 0 {
+		return append([]string(nil), fallback...)
+	}
+	return out
+}
+
+func durationEnv(key string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", key, raw, err)
+	}
+	return parsed, nil
+}
+
+func boolEnv(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		slog.Warn("Invalid boolean env value; using default", "key", key, "value", raw, "default", fallback)
+		return fallback
+	}
+	return parsed
 }
 
 func loadLooseDotEnv(path string) error {

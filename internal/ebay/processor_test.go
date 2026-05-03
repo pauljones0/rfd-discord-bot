@@ -149,6 +149,65 @@ func TestCouponIncreaseCountsAsDeeperPriceDrop(t *testing.T) {
 	}
 }
 
+func TestShouldFetchPageCouponOnlyAfterBaseOrAPIDrop(t *testing.T) {
+	tests := []struct {
+		name              string
+		existing          TrackedItem
+		basePrice         float64
+		apiCouponDiscount float64
+		want              bool
+	}{
+		{
+			name: "base price drop triggers page coupon discovery",
+			existing: TrackedItem{
+				Price:     500,
+				BasePrice: 500,
+			},
+			basePrice: 450,
+			want:      true,
+		},
+		{
+			name: "new page coupon alone does not trigger discovery path",
+			existing: TrackedItem{
+				Price:     500,
+				BasePrice: 500,
+			},
+			basePrice: 500,
+			want:      false,
+		},
+		{
+			name: "larger api coupon that lowers effective price triggers",
+			existing: TrackedItem{
+				Price:          480,
+				BasePrice:      500,
+				CouponDiscount: 20,
+			},
+			basePrice:         500,
+			apiCouponDiscount: 80,
+			want:              true,
+		},
+		{
+			name: "same api coupon does not trigger",
+			existing: TrackedItem{
+				Price:          480,
+				BasePrice:      500,
+				CouponDiscount: 20,
+			},
+			basePrice:         500,
+			apiCouponDiscount: 20,
+			want:              false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldFetchPageCoupon(tt.existing, tt.basePrice, tt.apiCouponDiscount); got != tt.want {
+				t.Fatalf("shouldFetchPageCoupon() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPriorDropCount(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -14,11 +14,14 @@ import (
 
 const (
 	// batchSize is the number of items to send to Gemini tier-1 screening at once.
-	batchSize = 10
+	batchSize         = 10
+	bestBuyMaxRecords = 10000
 )
 
 // Store abstracts Firestore operations for the Best Buy processor.
 type Store interface {
+	GetActiveBestBuySellers(ctx context.Context) ([]Seller, error)
+	SeedBestBuySellers(ctx context.Context) (bool, error)
 	BestBuyProductExists(ctx context.Context, sku, source string) (bool, error)
 	SaveBestBuyProduct(ctx context.Context, product AnalyzedProduct) error
 	PruneBestBuyProducts(ctx context.Context, maxAgeDays, maxRecords int) error
@@ -34,6 +37,16 @@ type Analyzer interface {
 // Notifier abstracts Discord notifications for Best Buy deals.
 type Notifier interface {
 	SendBestBuyDeal(ctx context.Context, product AnalyzedProduct, subs []models.Subscription) error
+}
+
+// BaselineStats summarizes a no-notification Best Buy inventory prime.
+type BaselineStats struct {
+	Sellers     int    `json:"sellers"`
+	Fetched     int    `json:"fetched"`
+	Existing    int    `json:"existing"`
+	Saved       int    `json:"saved"`
+	FetchErrors int    `json:"fetchErrors"`
+	ExitReason  string `json:"exitReason"`
 }
 
 // Processor handles the Best Buy deal processing pipeline.
@@ -55,6 +68,135 @@ func NewProcessor(store Store, client *Client, analyzer Analyzer, notifier Notif
 		notifier:        notifier,
 		affiliatePrefix: affiliatePrefix,
 	}
+}
+
+// PrimeBaseline saves the current configured-seller inventory without sending
+// Discord notifications. Run this before enabling Best Buy subscriptions or the
+// scheduler so historical seller inventory does not blast a channel on first run.
+func (p *Processor) PrimeBaseline(ctx context.Context) (BaselineStats, error) {
+	if !p.mu.TryLock() {
+		slog.Info("PrimeBestBuyBaseline: already in progress, skipping", "processor", "bestbuy")
+		return BaselineStats{ExitReason: "already_running"}, nil
+	}
+	defer p.mu.Unlock()
+
+	start := time.Now()
+	runID := start.Format("20060102-150405")
+	logger := slog.With("processor", "bestbuy", "runID", runID, "mode", "baseline")
+	stats := BaselineStats{}
+	defer func() {
+		logger.Info("Best Buy baseline prime complete",
+			"duration", time.Since(start).Round(time.Millisecond).String(),
+			"sellers", stats.Sellers,
+			"fetched", stats.Fetched,
+			"existing", stats.Existing,
+			"saved", stats.Saved,
+			"fetch_errors", stats.FetchErrors,
+			"exit_reason", stats.ExitReason,
+		)
+	}()
+
+	if seeded, err := p.store.SeedBestBuySellers(ctx); err != nil {
+		logger.Warn("Failed to seed Best Buy sellers", "error", err)
+	} else if seeded {
+		logger.Info("Seeded Best Buy sellers with defaults")
+	}
+
+	sellers, err := p.store.GetActiveBestBuySellers(ctx)
+	if err != nil {
+		stats.ExitReason = "seller_load_error"
+		return stats, fmt.Errorf("failed to get active Best Buy sellers: %w", err)
+	}
+	stats.Sellers = len(sellers)
+	if len(sellers) == 0 {
+		stats.ExitReason = "no_active_sellers"
+		return stats, nil
+	}
+
+	for i, seller := range sellers {
+		if ctx.Err() != nil {
+			stats.ExitReason = "context_cancelled"
+			return stats, ctx.Err()
+		}
+
+		products, err := p.client.FetchSellerProducts(ctx, seller)
+		if err != nil {
+			stats.FetchErrors++
+			logger.Error("Failed to fetch seller products",
+				"seller", seller.Name,
+				"sellerID", seller.ID,
+				"error", err,
+			)
+			continue
+		}
+		stats.Fetched += len(products)
+
+		for _, product := range products {
+			if ctx.Err() != nil {
+				stats.ExitReason = "context_cancelled"
+				return stats, ctx.Err()
+			}
+
+			exists, err := p.store.BestBuyProductExists(ctx, product.SKU, product.Source)
+			if err != nil {
+				if ctx.Err() != nil {
+					stats.ExitReason = "context_cancelled"
+					return stats, ctx.Err()
+				}
+				logger.Warn("Failed to check product existence",
+					"sku", product.SKU,
+					"source", product.Source,
+					"error", err,
+				)
+				continue
+			}
+			if exists {
+				stats.Existing++
+				continue
+			}
+
+			if p.affiliatePrefix != "" && product.URL != "" {
+				product.URL = p.affiliatePrefix + url.QueryEscape(product.URL)
+			}
+
+			item := AnalyzedProduct{
+				Product:     product,
+				CleanTitle:  product.Name,
+				DiscountPct: computeDiscount(product),
+				ProcessedAt: time.Now(),
+				LastSeen:    time.Now(),
+			}
+			if err := p.store.SaveBestBuyProduct(ctx, item); err != nil {
+				if ctx.Err() != nil {
+					stats.ExitReason = "context_cancelled"
+					return stats, ctx.Err()
+				}
+				logger.Error("Failed to save Best Buy baseline listing",
+					"sku", item.SKU,
+					"title", item.Name,
+					"error", err,
+				)
+				continue
+			}
+			stats.Saved++
+		}
+
+		if i < len(sellers)-1 {
+			select {
+			case <-ctx.Done():
+				stats.ExitReason = "context_cancelled"
+				return stats, ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+
+	if err := p.store.PruneBestBuyProducts(ctx, 30, bestBuyMaxRecords); err != nil {
+		logger.Warn("Failed to prune old products", "error", err)
+	}
+
+	stats.ExitReason = "success"
+	return stats, nil
 }
 
 // ProcessBestBuyDeals runs the full Best Buy deal processing pipeline.
@@ -116,11 +258,28 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		return nil
 	}
 
-	// 2. Fetch products from all sellers
-	var allProducts []Product
-	stats.sellers = len(DefaultSellers)
+	if seeded, err := p.store.SeedBestBuySellers(ctx); err != nil {
+		logger.Warn("Failed to seed Best Buy sellers", "error", err)
+	} else if seeded {
+		logger.Info("Seeded Best Buy sellers with defaults")
+	}
 
-	for _, seller := range DefaultSellers {
+	sellers, err := p.store.GetActiveBestBuySellers(ctx)
+	if err != nil {
+		stats.exitReason = "seller_load_error"
+		return fmt.Errorf("failed to get active Best Buy sellers: %w", err)
+	}
+	if len(sellers) == 0 {
+		stats.exitReason = "no_active_sellers"
+		logger.Info("No active Best Buy sellers configured")
+		return nil
+	}
+
+	// 2. Fetch products from all configured sellers.
+	var allProducts []Product
+	stats.sellers = len(sellers)
+
+	for i, seller := range sellers {
 		if ctx.Err() != nil {
 			stats.exitReason = "context_cancelled"
 			return ctx.Err()
@@ -142,22 +301,13 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		allProducts = append(allProducts, products...)
 
 		// Delay between sellers
-		select {
-		case <-ctx.Done():
-			stats.exitReason = "context_cancelled"
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-	}
-
-	// 3. Fetch Geek Squad open-box products
-	if ctx.Err() == nil {
-		openBoxProducts, err := p.client.FetchOpenBoxProducts(ctx)
-		if err != nil {
-			logger.Error("Failed to fetch open-box products", "error", err)
-		} else {
-			logger.Info("Fetched open-box products", "count", len(openBoxProducts))
-			allProducts = append(allProducts, openBoxProducts...)
+		if i < len(sellers)-1 {
+			select {
+			case <-ctx.Done():
+				stats.exitReason = "context_cancelled"
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
 		}
 	}
 
@@ -201,19 +351,30 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 	if len(newProducts) == 0 {
 		stats.exitReason = "no_new_items"
 		// Still prune
-		if err := p.store.PruneBestBuyProducts(ctx, 30, 1000); err != nil {
+		if err := p.store.PruneBestBuyProducts(ctx, 30, bestBuyMaxRecords); err != nil {
 			logger.Warn("Failed to prune old products", "error", err)
 		}
 		return nil
 	}
 
-	// 5. Tiered AI analysis on new products
-	warmHotItems, t1Passed := p.analyzeNewItems(ctx, newProducts, logger)
-	stats.tier1Passed = t1Passed
-	stats.tier2Passed = len(warmHotItems)
-
-	// 6. Notify for warm/hot items
-	for _, item := range warmHotItems {
+	// 5. Save and notify every new configured-seller listing for v1.
+	for _, product := range newProducts {
+		item := AnalyzedProduct{
+			Product:     product,
+			CleanTitle:  product.Name,
+			IsWarm:      true,
+			DiscountPct: computeDiscount(product),
+			ProcessedAt: time.Now(),
+			LastSeen:    time.Now(),
+		}
+		if err := p.store.SaveBestBuyProduct(ctx, item); err != nil {
+			logger.Error("Failed to save Best Buy new listing",
+				"sku", item.SKU,
+				"title", item.Name,
+				"error", err,
+			)
+			continue
+		}
 		stats.warmHot++
 
 		eligibleSubs := filterEligibleSubs(item, bbSubs)
@@ -235,8 +396,8 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		}
 	}
 
-	// 7. Prune old records
-	if err := p.store.PruneBestBuyProducts(ctx, 30, 1000); err != nil {
+	// 6. Prune old records
+	if err := p.store.PruneBestBuyProducts(ctx, 30, bestBuyMaxRecords); err != nil {
 		logger.Warn("Failed to prune old products", "error", err)
 	}
 
@@ -500,13 +661,11 @@ func filterEligibleSubs(product AnalyzedProduct, subs []models.Subscription) []m
 // isBestBuyEligible checks whether a deal should be sent to a given subscription.
 func isBestBuyEligible(product AnalyzedProduct, sub models.Subscription) bool {
 	switch sub.DealType {
-	case "bb_warm_hot":
-		return product.IsWarm || product.IsLavaHot
-	case "bb_hot":
-		return product.IsLavaHot
+	case "bb_new", "bb_warm_hot", "bb_hot":
+		return true
 	default:
 		if strings.HasPrefix(sub.DealType, "bb_") {
-			return product.IsLavaHot
+			return true
 		}
 		return false
 	}

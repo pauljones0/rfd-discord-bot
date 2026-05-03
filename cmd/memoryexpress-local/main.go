@@ -44,10 +44,15 @@ func main() {
 		slog.Warn("Failed to initialize Gemini client; Memory Express runner will save items without analysis", "error", err)
 	}
 
+	alerter := memoryexpress.Alerter(memoryexpress.DesktopAlerter{})
+	if os.Getenv("MEMEXPRESS_ALERT_MODE") == "log" {
+		alerter = memoryexpress.LoggingAlerter{}
+	}
+
 	localSession, err := memoryexpress.NewLocalBrowserSession(ctx, memoryexpress.LocalBrowserSessionOptions{
 		ChromePath:    cfg.MemoryExpressChromePath,
 		ChromeProfile: cfg.MemoryExpressChromeProfile,
-		Alerter:       memoryexpress.DesktopAlerter{},
+		Alerter:       alerter,
 	})
 	if err != nil {
 		slog.Error("Failed to start local Memory Express browser session", "error", err)

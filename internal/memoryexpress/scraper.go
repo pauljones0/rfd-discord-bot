@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/pauljones0/rfd-discord-bot/internal/scrapebackend"
 )
 
 const (
@@ -16,6 +19,17 @@ const (
 )
 
 var priceRe = regexp.MustCompile(`\$([0-9,]+\.\d{2})`)
+
+var fetchBackendHTML = func(ctx context.Context, backend, pageURL, chromeProfile string) scrapebackend.FetchResult {
+	return scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
+		Backend:         backend,
+		URL:             pageURL,
+		Timeout:         60 * time.Second,
+		ChromeProfile:   chromeProfile,
+		ExternalCommand: os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
+		PaidCommand:     os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
+	})
+}
 
 // ClearanceURL returns the Memory Express clearance URL for a store.
 func ClearanceURL(storeCode string) (string, error) {
@@ -39,6 +53,71 @@ func Scrape(ctx context.Context, storeCode string) ([]Product, error) {
 	}
 
 	return ParseClearanceHTML(storeCode, html)
+}
+
+// ScrapeWithConfiguredBackends returns a scrape function that tries each backend
+// in order and falls back when the page is blocked or still on a challenge.
+func ScrapeWithConfiguredBackends(backends []string, chromeProfile string) func(context.Context, string) ([]Product, error) {
+	return func(ctx context.Context, storeCode string) ([]Product, error) {
+		return ScrapeWithBackends(ctx, storeCode, backends, chromeProfile)
+	}
+}
+
+// ScrapeWithBackends fetches and parses a clearance page through an ordered
+// backend list. It is intentionally site-specific so Cloudflare challenge
+// detection remains tied to Memory Express' real markup.
+func ScrapeWithBackends(ctx context.Context, storeCode string, backends []string, chromeProfile string) ([]Product, error) {
+	url, err := ClearanceURL(storeCode)
+	if err != nil {
+		return nil, err
+	}
+	if len(backends) == 0 {
+		backends = []string{scrapebackend.BackendHTTP, scrapebackend.BackendChromedpCloudRun}
+	}
+
+	var failures []string
+	for _, backend := range backends {
+		result := fetchBackendHTML(ctx, backend, url, chromeProfile)
+		if result.Error != "" {
+			failures = append(failures, fmt.Sprintf("%s: %s", backend, result.Error))
+			continue
+		}
+		challenge := hasCloudflareChallenge(result.HTML)
+		blockSignal := result.BlockSignal
+		if strings.HasPrefix(blockSignal, "cloudflare") && !challenge {
+			blockSignal = ""
+		}
+		if blockSignal != "" || challenge {
+			signal := blockSignal
+			if signal == "" {
+				signal = "cloudflare-managed-challenge"
+			}
+			failures = append(failures, fmt.Sprintf("%s: %s", backend, signal))
+			slog.Warn("Memory Express backend hit challenge",
+				"processor", "memoryexpress",
+				"store", storeCode,
+				"backend", backend,
+				"signal", signal,
+			)
+			continue
+		}
+
+		products, parseErr := ParseClearanceHTML(storeCode, result.HTML)
+		if parseErr != nil {
+			failures = append(failures, fmt.Sprintf("%s: parse: %s", backend, parseErr))
+			continue
+		}
+		slog.Info("Memory Express backend succeeded",
+			"processor", "memoryexpress",
+			"store", storeCode,
+			"backend", backend,
+			"products", len(products),
+			"duration_ms", result.Duration.Milliseconds(),
+		)
+		return products, nil
+	}
+
+	return nil, fmt.Errorf("all Memory Express backends failed for %s: %s", storeCode, strings.Join(failures, "; "))
 }
 
 // ParseClearanceHTML parses browser-rendered Memory Express clearance HTML for a store.

@@ -123,63 +123,64 @@ func main() {
 					},
 				},
 				// setup-memoryexpress subcommand
-			{
-				"name":        "setup-memoryexpress",
-				"description": "Subscribe this channel to Memory Express clearance deal notifications.",
-				"type":        1, // SUB_COMMAND
-				"options": []map[string]interface{}{
-					{
-						"name":          "channel",
-						"description":   "The channel to publish deals to.",
-						"type":          7,           // CHANNEL
-						"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
-						"required":      true,
-					},
-					{
-						"name":         "store",
-						"description":  "The Memory Express store location (e.g. Saskatoon North).",
-						"type":         3, // STRING
-						"required":     true,
-						"autocomplete": true,
-					},
-					{
-						"name":        "filter",
-						"description": "The type of clearance deals to publish.",
-						"type":        3, // STRING
-						"required":    true,
-						"choices": []map[string]interface{}{
-							{"name": "Warm + Hot deals", "value": "me_warm_hot"},
-							{"name": "Hot deals only", "value": "me_hot"},
+				{
+					"name":        "setup-memoryexpress",
+					"description": "Subscribe this channel to Memory Express clearance deal notifications.",
+					"type":        1, // SUB_COMMAND
+					"options": []map[string]interface{}{
+						{
+							"name":          "channel",
+							"description":   "The channel to publish deals to.",
+							"type":          7,           // CHANNEL
+							"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
+							"required":      true,
+						},
+						{
+							"name":         "store",
+							"description":  "The Memory Express store location (e.g. Saskatoon North).",
+							"type":         3, // STRING
+							"required":     true,
+							"autocomplete": true,
+						},
+						{
+							"name":        "filter",
+							"description": "The type of clearance deals to publish.",
+							"type":        3, // STRING
+							"required":    true,
+							"choices": []map[string]interface{}{
+								{"name": "Warm + Hot deals", "value": "me_warm_hot"},
+								{"name": "Hot deals only", "value": "me_hot"},
+							},
 						},
 					},
 				},
-			},
-			// setup-bestbuy subcommand
-			{
-				"name":        "setup-bestbuy",
-				"description": "Subscribe this channel to Best Buy Marketplace & Open Box deal notifications.",
-				"type":        1, // SUB_COMMAND
-				"options": []map[string]interface{}{
-					{
-						"name":          "channel",
-						"description":   "The channel to publish deals to.",
-						"type":          7,           // CHANNEL
-						"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
-						"required":      true,
-					},
-					{
-						"name":        "filter",
-						"description": "The type of Best Buy deals to publish.",
-						"type":        3, // STRING
-						"required":    true,
-						"choices": []map[string]interface{}{
-							{"name": "Warm + Hot deals", "value": "bb_warm_hot"},
-							{"name": "Hot deals only", "value": "bb_hot"},
+				// setup-bestbuy subcommand
+				{
+					"name":        "setup-bestbuy",
+					"description": "Subscribe this channel to Best Buy Marketplace & Open Box deal notifications.",
+					"type":        1, // SUB_COMMAND
+					"options": []map[string]interface{}{
+						{
+							"name":          "channel",
+							"description":   "The channel to publish deals to.",
+							"type":          7,           // CHANNEL
+							"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
+							"required":      true,
+						},
+						{
+							"name":        "filter",
+							"description": "The type of Best Buy deals to publish.",
+							"type":        3, // STRING
+							"required":    true,
+							"choices": []map[string]interface{}{
+								{"name": "All new seller listings", "value": "bb_new"},
+								{"name": "Warm + Hot deals (legacy)", "value": "bb_warm_hot"},
+								{"name": "Hot deals only (legacy)", "value": "bb_hot"},
+							},
 						},
 					},
 				},
-			},
-			// remove subcommand
+				// remove subcommand
 				{
 					"name":        "remove",
 					"description": "Remove a deal subscription from this server.",

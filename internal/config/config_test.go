@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -29,6 +30,21 @@ func TestLoad(t *testing.T) {
 	}
 	if cfg.DiscordUpdateInterval != 10*time.Minute {
 		t.Errorf("Expected default 10m, got %s", cfg.DiscordUpdateInterval)
+	}
+	if cfg.RFDPollInterval != 3*time.Minute {
+		t.Errorf("Expected default RFD poll interval 3m, got %s", cfg.RFDPollInterval)
+	}
+	if cfg.EbayPollInterval != 30*time.Minute {
+		t.Errorf("Expected default eBay poll interval 30m, got %s", cfg.EbayPollInterval)
+	}
+	if cfg.MemoryExpressPollInterval != 30*time.Minute {
+		t.Errorf("Expected default Memory Express poll interval 30m, got %s", cfg.MemoryExpressPollInterval)
+	}
+	if cfg.BestBuyPollInterval != 15*time.Minute {
+		t.Errorf("Expected default Best Buy poll interval 15m, got %s", cfg.BestBuyPollInterval)
+	}
+	if cfg.LocalSchedulerEnabled {
+		t.Errorf("Expected local scheduler to be disabled by default")
 	}
 	if cfg.MaxStoredDeals != 500 {
 		t.Errorf("Expected default MaxStoredDeals 500, got %d", cfg.MaxStoredDeals)
@@ -112,6 +128,68 @@ func TestLoad_CustomBestBuyPrefix(t *testing.T) {
 
 	if cfg.BestBuyAffiliatePrefix != "https://custom.prefix/c/1/2/3?u=" {
 		t.Errorf("Expected custom prefix, got %q", cfg.BestBuyAffiliatePrefix)
+	}
+}
+
+func TestLoad_BackendFallbackConfig(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	t.Setenv("EBAY_COUPON_BACKENDS", "http, chromedp-cloudrun")
+	t.Setenv("MEMEXPRESS_BACKENDS", "http,chromedp-persistent, paid-trial")
+	t.Setenv("BESTBUY_BACKENDS", "http,playwright")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if !reflect.DeepEqual(cfg.EbayCouponBackends, []string{"http", "chromedp-cloudrun"}) {
+		t.Fatalf("EbayCouponBackends = %v", cfg.EbayCouponBackends)
+	}
+	if !reflect.DeepEqual(cfg.MemoryExpressBackends, []string{"http", "chromedp-persistent", "paid-trial"}) {
+		t.Fatalf("MemoryExpressBackends = %v", cfg.MemoryExpressBackends)
+	}
+	if !reflect.DeepEqual(cfg.BestBuyBackends, []string{"http", "playwright"}) {
+		t.Fatalf("BestBuyBackends = %v", cfg.BestBuyBackends)
+	}
+}
+
+func TestLoad_CustomSchedulerConfig(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	t.Setenv("LOCAL_SCHEDULER_ENABLED", "true")
+	t.Setenv("RFD_POLL_INTERVAL", "4m")
+	t.Setenv("EBAY_POLL_INTERVAL", "45m")
+	t.Setenv("MEMEXPRESS_POLL_INTERVAL", "35m")
+	t.Setenv("BESTBUY_POLL_INTERVAL", "20m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if !cfg.LocalSchedulerEnabled {
+		t.Fatal("LocalSchedulerEnabled = false, want true")
+	}
+	if cfg.RFDPollInterval != 4*time.Minute {
+		t.Fatalf("RFDPollInterval = %s, want 4m", cfg.RFDPollInterval)
+	}
+	if cfg.EbayPollInterval != 45*time.Minute {
+		t.Fatalf("EbayPollInterval = %s, want 45m", cfg.EbayPollInterval)
+	}
+	if cfg.MemoryExpressPollInterval != 35*time.Minute {
+		t.Fatalf("MemoryExpressPollInterval = %s, want 35m", cfg.MemoryExpressPollInterval)
+	}
+	if cfg.BestBuyPollInterval != 20*time.Minute {
+		t.Fatalf("BestBuyPollInterval = %s, want 20m", cfg.BestBuyPollInterval)
+	}
+}
+
+func TestLoad_InvalidSchedulerInterval(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	t.Setenv("RFD_POLL_INTERVAL", "not-a-duration")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() should return error for invalid RFD_POLL_INTERVAL")
 	}
 }
 

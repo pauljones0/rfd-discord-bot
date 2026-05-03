@@ -92,8 +92,9 @@ func main() {
 	ebayClient := ebay.NewClient(cfg.EbayClientID, cfg.EbayClientSecret)
 	var ebayProc *ebay.Processor
 	if ebayClient != nil {
+		ebayClient.SetCouponBackends(cfg.EbayCouponBackends)
 		ebayProc = ebay.NewProcessor(store, ebayClient, n)
-		slog.Info("eBay deal processor initialized")
+		slog.Info("eBay deal processor initialized", "coupon_backends", cfg.EbayCouponBackends)
 	} else {
 		slog.Info("eBay features disabled (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set)")
 	}
@@ -115,13 +116,19 @@ func main() {
 	}
 
 	// Initialize Memory Express processor (always available — no special credentials needed)
-	meProc := memoryexpress.NewProcessor(store, aiClient, n)
-	slog.Info("Memory Express clearance processor initialized")
+	meProc := memoryexpress.NewProcessor(
+		store,
+		aiClient,
+		n,
+		memoryexpress.WithScrapeFunc(memoryexpress.ScrapeWithConfiguredBackends(cfg.MemoryExpressBackends, cfg.MemoryExpressChromeProfile)),
+	)
+	slog.Info("Memory Express clearance processor initialized", "backends", cfg.MemoryExpressBackends)
 
 	// Initialize Best Buy processor (always available — no special credentials needed)
 	bbClient := bestbuy.NewClient()
+	bbClient.SetBackends(cfg.BestBuyBackends)
 	bbProc := bestbuy.NewProcessor(store, bbClient, aiClient, n, cfg.BestBuyAffiliatePrefix)
-	slog.Info("Best Buy Marketplace processor initialized")
+	slog.Info("Best Buy Marketplace processor initialized", "backends", cfg.BestBuyBackends)
 
 	// Initialize HardwareSwap processor (requires AI client and Reddit relay service)
 	var hwProc *hardwareswap.Processor
@@ -169,6 +176,7 @@ func main() {
 	mux.HandleFunc("/process-facebook", srv.ProcessFacebookHandler)
 	mux.HandleFunc("/process-memoryexpress", srv.ProcessMemoryExpressHandler)
 	mux.HandleFunc("/process-bestbuy", srv.ProcessBestBuyHandler)
+	mux.HandleFunc("POST /prime-bestbuy-baseline", srv.PrimeBestBuyBaselineHandler)
 	mux.HandleFunc("/process-hardwareswap", srv.ProcessHardwareSwapHandler)
 	mux.Handle("/discord/interactions", apiHandler)
 	mux.HandleFunc("POST /register-token-service", func(w http.ResponseWriter, r *http.Request) {
@@ -245,16 +253,22 @@ func main() {
 		Handler:           loggingMiddleware(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      5 * time.Minute,
+		WriteTimeout:      30 * time.Minute,
 		IdleTimeout:       60 * time.Second,
 	}
 
+	schedulerCtx, schedulerCancel := context.WithCancel(context.Background())
+	srv.StartLocalScheduler(schedulerCtx, cfg)
+
 	// Graceful shutdown on SIGTERM/SIGINT
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 		sig := <-sigCh
 		slog.Info("Received signal, shutting down gracefully...", "signal", sig)
+		schedulerCancel()
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -274,6 +288,7 @@ func main() {
 		slog.Error("Failed to listen and serve", "error", err)
 		os.Exit(1)
 	}
+	<-shutdownDone
 	slog.Info("Server stopped.")
 }
 
@@ -494,6 +509,56 @@ func (s *Server) ProcessBestBuyHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "Best Buy deal processing finished.")
+}
+
+func (s *Server) PrimeBestBuyBaselineHandler(w http.ResponseWriter, r *http.Request) {
+	if s.bestbuyProcessor == nil {
+		slog.Info("PrimeBestBuyBaselineHandler: Best Buy processor not configured, skipping", "processor", "bestbuy")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "Best Buy processor not configured"}); err != nil {
+			slog.Error("Failed to encode response", "processor", "bestbuy", "error", err)
+		}
+		return
+	}
+
+	select {
+	case s.bestbuySem <- struct{}{}:
+	default:
+		slog.Warn("PrimeBestBuyBaselineHandler: previous run still active, skipping",
+			"processor", "bestbuy",
+		)
+		w.WriteHeader(http.StatusTooManyRequests)
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
+			slog.Error("Failed to encode response", "processor", "bestbuy", "error", err)
+		}
+		return
+	}
+
+	defer func() { <-s.bestbuySem }()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("Panic in PrimeBestBuyBaseline", "processor", "bestbuy", "panic", recovered)
+			http.Error(w, "Best Buy baseline prime panicked", http.StatusInternalServerError)
+		}
+	}()
+
+	slog.Info("Starting Best Buy baseline prime", "processor", "bestbuy")
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)
+	defer cancel()
+	start := time.Now()
+	stats, err := s.bestbuyProcessor.PrimeBaseline(ctx)
+	if err != nil {
+		slog.Error("Error priming Best Buy baseline", "processor", "bestbuy", "error", err)
+		http.Error(w, "Best Buy baseline prime failed", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("Best Buy baseline prime finished", "processor", "bestbuy", "duration", time.Since(start), "saved", stats.Saved)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(map[string]any{"status": "ok", "stats": stats}); err != nil {
+		slog.Error("Failed to encode response", "processor", "bestbuy", "error", err)
+	}
 }
 
 func (s *Server) ProcessHardwareSwapHandler(w http.ResponseWriter, r *http.Request) {

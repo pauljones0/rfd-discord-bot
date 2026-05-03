@@ -68,6 +68,51 @@ func TestProcessDealsHandler_ReturnsBusyWhenSemaphoreFull(t *testing.T) {
 	}
 }
 
+func TestRunScheduledJobRunsWhenAvailable(t *testing.T) {
+	called := make(chan struct{}, 1)
+	srv := &Server{}
+	sem := make(chan struct{}, 1)
+
+	ran := srv.runScheduledJob(context.Background(), "test", sem, time.Second, func(context.Context) error {
+		called <- struct{}{}
+		return nil
+	})
+
+	if !ran {
+		t.Fatal("runScheduledJob() = false, want true")
+	}
+	select {
+	case <-called:
+	default:
+		t.Fatal("scheduled job did not call processor")
+	}
+	if len(sem) != 0 {
+		t.Fatalf("semaphore length = %d, want released", len(sem))
+	}
+}
+
+func TestRunScheduledJobSkipsWhenSemaphoreBusy(t *testing.T) {
+	called := false
+	srv := &Server{}
+	sem := make(chan struct{}, 1)
+	sem <- struct{}{}
+
+	ran := srv.runScheduledJob(context.Background(), "test", sem, time.Second, func(context.Context) error {
+		called = true
+		return nil
+	})
+
+	if ran {
+		t.Fatal("runScheduledJob() = true, want false")
+	}
+	if called {
+		t.Fatal("processor should not be called when semaphore is busy")
+	}
+	if len(sem) != 1 {
+		t.Fatalf("semaphore length = %d, want busy token preserved", len(sem))
+	}
+}
+
 func TestRootHandler_ReturnsOK(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()

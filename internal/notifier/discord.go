@@ -566,6 +566,9 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		if item.CouponCode != "" {
 			descBuilder.WriteString(fmt.Sprintf(" `%s`", item.CouponCode))
 		}
+		if strings.HasPrefix(item.CouponSource, "page:") {
+			descBuilder.WriteString(" (page)")
+		}
 	}
 
 	var meta []string
@@ -880,6 +883,9 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 	}
 
 	footerText := "Best Buy Marketplace"
+	if strings.HasPrefix(product.Source, "seller:") {
+		footerText = "Best Buy New Listing"
+	}
 	if product.Source == "openbox" || product.IsOpenBox {
 		footerText = "Geek Squad Certified Open Box"
 	}

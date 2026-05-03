@@ -4,15 +4,30 @@ import "time"
 
 // Seller represents a Best Buy Marketplace seller to monitor.
 type Seller struct {
-	ID   string
-	Name string
+	ID         string    `firestore:"id"`
+	Name       string    `firestore:"name"`
+	SearchPath string    `firestore:"searchPath,omitempty"`
+	SearchURL  string    `firestore:"searchURL,omitempty"`
+	IsActive   bool      `firestore:"isActive"`
+	AddedAt    time.Time `firestore:"addedAt"`
 }
 
 // DefaultSellers is the hardcoded list of marketplace sellers to track.
 var DefaultSellers = []Seller{
-	{ID: "591375", Name: "Tech Outlet Center"},
-	{ID: "459214", Name: "PRO OB"},
-	{ID: "35466598", Name: "Reversify"},
+	{
+		ID:         "591375",
+		Name:       "Tech Outlet Center",
+		SearchPath: "sellerName:Tech Outlet Center",
+		SearchURL:  "https://www.bestbuy.ca/en-ca/search?path=sellerName%3ATech+Outlet+Center",
+		IsActive:   true,
+	},
+	{
+		ID:         "1247543",
+		Name:       "Parts Search",
+		SearchPath: "sellerName:Parts Search",
+		SearchURL:  "https://www.bestbuy.ca/en-ca/search?path=sellerName%3AParts+Search",
+		IsActive:   true,
+	},
 }
 
 // Product represents a single product from the Best Buy Canada search API.

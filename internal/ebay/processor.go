@@ -167,6 +167,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				CouponDiscount: apiItem.CouponDiscount,
 				CouponCode:     apiItem.CouponCode,
 				CouponMessage:  apiItem.CouponMessage,
+				CouponSource:   apiItem.CouponSource,
 				OriginalPrice:  newPrice,
 				Currency:       currencyOrDefault(apiItem.Price),
 				Seller:         sellerUsername(apiItem.Seller),
@@ -177,6 +178,30 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				LastSeenAt:     now,
 			})
 			continue
+		}
+
+		if shouldFetchPageCoupon(existing, basePrice, apiItem.CouponDiscount) {
+			pageCoupon, err := p.client.FetchPageCouponSnapshot(ctx, apiItem, basePrice)
+			if err != nil {
+				logger.Warn("Failed to fetch eBay page coupon",
+					"itemID", itemID,
+					"backend_order", p.client.couponBackends,
+					"error", err,
+				)
+			} else if pageCoupon.DiscountAmount > apiItem.CouponDiscount {
+				apiItem.CouponDiscount = pageCoupon.DiscountAmount
+				apiItem.CouponCode = pageCoupon.Code
+				apiItem.CouponMessage = pageCoupon.Message
+				apiItem.CouponSource = pageCoupon.Source
+				newPrice = effectiveItemPrice(basePrice, apiItem.CouponDiscount)
+				logger.Info("Applied eBay page coupon to effective price",
+					"itemID", itemID,
+					"base_price", basePrice,
+					"coupon_discount", apiItem.CouponDiscount,
+					"coupon_source", apiItem.CouponSource,
+					"effective_price", newPrice,
+				)
+			}
 		}
 
 		// Backfill original price for legacy tracked items that predate this field.
@@ -219,6 +244,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				CouponDiscount:           apiItem.CouponDiscount,
 				CouponCode:               apiItem.CouponCode,
 				CouponMessage:            apiItem.CouponMessage,
+				CouponSource:             apiItem.CouponSource,
 				PriceDrop:                dollarDrop,
 				PercentDrop:              percentDrop,
 				DropCount:                existing.DropCount,
@@ -243,12 +269,13 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		newCouponDiscount := apiItem.CouponDiscount
 		newCouponCode := apiItem.CouponCode
 		newCouponMessage := apiItem.CouponMessage
+		newCouponSource := apiItem.CouponSource
 		if existing.Price != newPrice || existing.Title != apiItem.Title ||
 			existing.Condition != apiItem.Condition || existing.ItemURL != apiItem.ItemWebURL ||
 			existing.ImageURL != newImgURL || existing.Currency != newCurrency ||
 			existing.Seller != newSeller || existing.BasePrice != newBasePrice ||
 			existing.CouponDiscount != newCouponDiscount || existing.CouponCode != newCouponCode ||
-			existing.CouponMessage != newCouponMessage ||
+			existing.CouponMessage != newCouponMessage || existing.CouponSource != newCouponSource ||
 			backfilledOriginalPrice || backfilledDropCount || shouldNotify {
 			stats.updated++
 			existing.Price = newPrice
@@ -256,6 +283,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			existing.CouponDiscount = newCouponDiscount
 			existing.CouponCode = newCouponCode
 			existing.CouponMessage = newCouponMessage
+			existing.CouponSource = newCouponSource
 			existing.LastSeenAt = now
 			existing.Title = apiItem.Title
 			existing.Currency = newCurrency
@@ -404,6 +432,27 @@ func effectiveItemPrice(basePrice, couponDiscount float64) float64 {
 		return 0
 	}
 	return effectivePrice
+}
+
+func shouldFetchPageCoupon(existing TrackedItem, basePrice, apiCouponDiscount float64) bool {
+	if basePrice <= 0 {
+		return false
+	}
+
+	baselineBasePrice := existing.BasePrice
+	if baselineBasePrice <= 0 {
+		baselineBasePrice = existing.Price
+	}
+	if baselineBasePrice > 0 && basePrice < baselineBasePrice {
+		return true
+	}
+
+	if apiCouponDiscount > existing.CouponDiscount {
+		apiEffective := effectiveItemPrice(basePrice, apiCouponDiscount)
+		return apiEffective > 0 && existing.Price > 0 && apiEffective < existing.Price
+	}
+
+	return false
 }
 
 func shouldNotifyPriceDrop(existing TrackedItem, newPrice float64) (baselinePrice, dollarDrop, percentDrop float64, ok bool) {
