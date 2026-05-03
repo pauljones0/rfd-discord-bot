@@ -16,7 +16,7 @@ This is the living ROI table for the low-rate scraper experiments. A backend is 
 | eBay | `chromedp-persistent` on Stormtrooper | Akamai access denied on sampled Firestore item pages | `/data/scrape-lab-stormtrooper-ebay-chromedp` | Not enough for page coupon discovery from Stormtrooper. |
 | eBay | `external-stealth` with nodriver on Stormtrooper | Akamai access denied on sampled Firestore item pages | `/data/scrape-lab-stormtrooper-ebay-2` | Browser launches after container fixes, but eBay still blocks; needs Camoufox, a different host/IP, or paid browser trial. |
 | eBay | `external-stealth` with Camoufox on Stormtrooper | Akamai access denied on 3 sampled Firestore item pages | `/data/scrape-lab-stormtrooper-ebay-camoufox-20260503-023152` | Camoufox installs and runs, but Stormtrooper/IP is still blocked for eBay pages. |
-| eBay | `paid-trial` with Browserless on Stormtrooper | Not run; `BROWSERLESS_TOKEN` was not present | `/data/scrape-lab-stormtrooper-ebay-browserless-*` | Next rung is a capped 3-listing Browserless sample once the token is provided. |
+| eBay | `paid-trial` with Browserless on Stormtrooper | Passed on 3 sampled item pages; parsed coupons on 2 samples (`$10`, `$30` with `SCANNER`) | `/data/scrape-lab-stormtrooper-ebay-browserless-20260503-023754` | Proven final eBay-only fallback for post-drop coupon math. |
 | Memory Express | `http` | Cloudflare managed challenge | `.codex-remote/scrape-lab-memoryexpress-baseline` | Not reliable from this environment. |
 | Memory Express | `chromedp-cloudrun` | Cloudflare managed challenge | `.codex-remote/scrape-lab-memoryexpress-baseline` | Cloud Run browser path does not solve the current challenge. |
 | Memory Express | `chromedp-persistent` | Cloudflare managed challenge in the local trial | `.codex-remote/scrape-lab-persistent-abs-smoke` | Persistent Chrome may still be worth retesting on GCE, but local run did not pass. |
@@ -36,6 +36,6 @@ This is the living ROI table for the low-rate scraper experiments. A backend is 
 
 Current candidates:
 
-- eBay coupon pages: keep Browse API as source of truth. Page coupon discovery remains post-drop-only. Stormtrooper has now failed HTTP, chromedp, nodriver, and Camoufox against sampled item pages; the next rung is a capped three-listing Browserless paid sample once a token is available.
+- eBay coupon pages: keep Browse API as source of truth. Page coupon discovery remains post-drop-only. Stormtrooper failed HTTP, chromedp, nodriver, and Camoufox against sampled item pages; Browserless passed a capped three-listing paid sample and is the final eBay-only fallback when enabled.
 - Memory Express clearance: prefer `chromedp-persistent` on Stormtrooper for SKST, keep `external-stealth` as a fallback/prototype, and evaluate paid services only if persistent Chrome starts seeing repeated Cloudflare challenges.
 - Best Buy seller listings: use `bestbuy-algolia` first. It is free, avoids the Akamai-denied public page/API paths, and already maps into the existing new-listing notification processor.

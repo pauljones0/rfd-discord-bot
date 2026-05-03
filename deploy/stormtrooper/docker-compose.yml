@@ -13,6 +13,7 @@ services:
       MEMEXPRESS_CHROME_PROFILE_DIR: /data/memoryexpress-chrome
       SCRAPELAB_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
       EBAY_COUPON_EXTERNAL_STEALTH_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py --wait-ms 7000
+      EBAY_COUPON_PAID_TRIAL_COMMAND: /opt/scrape-venv/bin/python /root/scripts/browserless_bql_fetch.py --wait-ms 5000
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
