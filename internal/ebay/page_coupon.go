@@ -90,13 +90,25 @@ func ExtractPageCoupon(html string, basePrice float64) PageCoupon {
 	}
 
 	if codeMatch := pageCouponCodeRe.FindStringSubmatch(normalized); len(codeMatch) >= 2 {
-		best.Code = strings.ToUpper(strings.TrimSpace(codeMatch[1]))
+		best.Code = normalizeCouponCode(codeMatch[1])
 	}
 	best.ExpiresAt = parseCouponExpiry(normalized)
 	best.Scope = inferCouponScope(normalized)
 	best.Confidence = couponConfidence(best, normalized)
 	best.Signature = NormalizeCouponSignature(best)
 	return best
+}
+
+func normalizeCouponCode(raw string) string {
+	code := strings.ToUpper(strings.TrimSpace(raw))
+	code = strings.TrimSuffix(code, "SEE")
+	code = strings.TrimSuffix(code, "DETAILS")
+	switch code {
+	case "", "AND", "THE", "USE", "CODE", "OFF", "SAVE", "GET", "WITH", "COUPON":
+		return ""
+	default:
+		return code
+	}
 }
 
 func NormalizeCouponSignature(coupon PageCoupon) string {
