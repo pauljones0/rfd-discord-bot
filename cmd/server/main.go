@@ -303,223 +303,164 @@ func hardwareswapStore(store *storage.Client) *hardwareswap.Store {
 	return hardwareswap.NewDocumentStore(store)
 }
 
-func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
-	// Non-blocking check to see if we can acquire the semaphore
+type manualProcessOptions struct {
+	processorName string
+	startMessage  string
+	finishMessage string
+	errorMessage  string
+	panicMessage  string
+	successText   string
+	busyDetails   string
+	sem           chan struct{}
+	timeout       time.Duration
+	fn            func(context.Context) error
+	logAIState    bool
+	runStart      *atomic.Int64
+}
+
+func (s *Server) runManualProcess(w http.ResponseWriter, r *http.Request, opts manualProcessOptions) {
 	select {
-	case s.sem <- struct{}{}:
-		// acquired
+	case opts.sem <- struct{}{}:
 	default:
-		slog.Info("ProcessDealsHandler: dropped request due to concurrency limit", "processor", "rfd")
+		attrs := []any{"processor", opts.processorName}
+		if opts.runStart != nil {
+			if started := opts.runStart.Load(); started > 0 {
+				attrs = append(attrs, "running_for", time.Since(time.Unix(started, 0)).Round(time.Second).String())
+			}
+		}
+		slog.Warn("Manual processor request skipped because previous run is active", attrs...)
 		w.WriteHeader(http.StatusTooManyRequests)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing deals"}); err != nil {
-			slog.Error("Failed to encode response", "processor", "rfd", "error", err)
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": opts.busyDetails}); err != nil {
+			slog.Error("Failed to encode response", "processor", opts.processorName, "error", err)
 		}
 		return
 	}
 
-	defer func() { <-s.sem }()
+	if opts.runStart != nil {
+		opts.runStart.Store(time.Now().Unix())
+	}
+	defer func() {
+		if opts.runStart != nil {
+			opts.runStart.Store(0)
+		}
+		<-opts.sem
+	}()
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			slog.Error("Panic in ProcessDeals", "processor", "rfd", "panic", recovered)
-			http.Error(w, "deal processing panicked", http.StatusInternalServerError)
+			slog.Error(opts.panicMessage, "processor", opts.processorName, "panic", recovered)
+			http.Error(w, opts.errorMessage+" panicked", http.StatusInternalServerError)
 		}
 	}()
 
-	slog.Info("Starting RFD deal processing", "processor", "rfd")
-	if s.aiClient != nil {
+	slog.Info(opts.startMessage, "processor", opts.processorName)
+	if opts.logAIState && s.aiClient != nil {
 		s.aiClient.LogCurrentState()
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), opts.timeout)
 	defer cancel()
 	start := time.Now()
-	if err := s.processor.ProcessDeals(ctx); err != nil {
-		slog.Error("Error processing deals", "processor", "rfd", "error", err)
-		http.Error(w, "deal processing failed", http.StatusInternalServerError)
+	if err := opts.fn(ctx); err != nil {
+		slog.Error("Manual processor failed", "processor", opts.processorName, "error", err)
+		http.Error(w, opts.errorMessage+" failed", http.StatusInternalServerError)
 		return
 	}
-	slog.Info("RFD deal processing finished", "processor", "rfd", "duration", time.Since(start))
+	slog.Info(opts.finishMessage, "processor", opts.processorName, "duration", time.Since(start))
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "Deal processing finished.")
+	fmt.Fprintln(w, opts.successText)
+}
+
+func (s *Server) ProcessDealsHandler(w http.ResponseWriter, r *http.Request) {
+	s.runManualProcess(w, r, manualProcessOptions{
+		processorName: "rfd",
+		startMessage:  "Starting RFD deal processing",
+		finishMessage: "RFD deal processing finished",
+		errorMessage:  "deal processing",
+		panicMessage:  "Panic in ProcessDeals",
+		successText:   "Deal processing finished.",
+		busyDetails:   "server is busy processing deals",
+		sem:           s.sem,
+		timeout:       4 * time.Minute,
+		fn: func(ctx context.Context) error {
+			if s.processor == nil {
+				return nil
+			}
+			return s.processor.ProcessDeals(ctx)
+		},
+		logAIState: true,
+	})
 }
 
 func (s *Server) ProcessEbayHandler(w http.ResponseWriter, r *http.Request) {
 	if s.ebayProcessor == nil {
-		slog.Info("ProcessEbayHandler: eBay processor not configured, skipping", "processor", "ebay")
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "eBay features not configured"}); err != nil {
-			slog.Error("Failed to encode response", "processor", "ebay", "error", err)
-		}
+		writeSkipped(w, "ebay", "eBay features not configured")
 		return
 	}
-
-	select {
-	case s.ebaySem <- struct{}{}:
-	default:
-		slog.Info("ProcessEbayHandler: dropped request due to concurrency limit", "processor", "ebay")
-		w.WriteHeader(http.StatusTooManyRequests)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "server is busy processing eBay deals"}); err != nil {
-			slog.Error("Failed to encode response", "processor", "ebay", "error", err)
-		}
-		return
-	}
-
-	defer func() { <-s.ebaySem }()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			slog.Error("Panic in ProcessEbayDeals", "processor", "ebay", "panic", recovered)
-			http.Error(w, "eBay deal processing panicked", http.StatusInternalServerError)
-		}
-	}()
-
-	slog.Info("Starting eBay deal processing", "processor", "ebay")
-	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
-	defer cancel()
-	start := time.Now()
-	if err := s.ebayProcessor.ProcessEbayDeals(ctx); err != nil {
-		slog.Error("Error processing eBay deals", "processor", "ebay", "error", err)
-		http.Error(w, "eBay deal processing failed", http.StatusInternalServerError)
-		return
-	}
-	slog.Info("eBay deal processing finished", "processor", "ebay", "duration", time.Since(start))
-
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "eBay deal processing finished.")
+	s.runManualProcess(w, r, manualProcessOptions{
+		processorName: "ebay",
+		startMessage:  "Starting eBay deal processing",
+		finishMessage: "eBay deal processing finished",
+		errorMessage:  "eBay deal processing",
+		panicMessage:  "Panic in ProcessEbayDeals",
+		successText:   "eBay deal processing finished.",
+		busyDetails:   "server is busy processing eBay deals",
+		sem:           s.ebaySem,
+		timeout:       4 * time.Minute,
+		fn:            s.ebayProcessor.ProcessEbayDeals,
+	})
 }
 
 func (s *Server) ProcessFacebookHandler(w http.ResponseWriter, r *http.Request) {
 	if s.facebookProcessor == nil {
-		slog.Info("ProcessFacebookHandler: Facebook processor not configured, skipping", "processor", "facebook")
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "Facebook features not configured"}); err != nil {
-			slog.Error("Failed to encode response", "processor", "facebook", "error", err)
-		}
+		writeSkipped(w, "facebook", "Facebook features not configured")
 		return
 	}
-
-	select {
-	case s.facebookSem <- struct{}{}:
-	default:
-		runningFor := time.Duration(0)
-		if started := s.facebookRunStart.Load(); started > 0 {
-			runningFor = time.Since(time.Unix(started, 0))
-		}
-		slog.Warn("ProcessFacebookHandler: previous run still active, skipping",
-			"processor", "facebook",
-			"running_for", runningFor.Round(time.Second).String(),
-		)
-		w.WriteHeader(http.StatusTooManyRequests)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
-			slog.Error("Failed to encode response", "processor", "facebook", "error", err)
-		}
-		return
-	}
-
-	s.facebookRunStart.Store(time.Now().Unix())
-	defer func() {
-		s.facebookRunStart.Store(0)
-		<-s.facebookSem
-	}()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			slog.Error("Panic in ProcessFacebookDeals", "processor", "facebook", "panic", recovered)
-			http.Error(w, "Facebook deal processing panicked", http.StatusInternalServerError)
-		}
-	}()
-	slog.Info("Starting Facebook deal processing", "processor", "facebook")
-	if s.aiClient != nil {
-		s.aiClient.LogCurrentState()
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
-	defer cancel()
-	start := time.Now()
-	if err := s.facebookProcessor.ProcessFacebookDeals(ctx); err != nil {
-		slog.Error("Error processing Facebook deals", "processor", "facebook", "error", err)
-		http.Error(w, "Facebook deal processing failed", http.StatusInternalServerError)
-		return
-	}
-	slog.Info("Facebook deal processing finished", "processor", "facebook", "duration", time.Since(start))
-
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "Facebook deal processing finished.")
+	s.runManualProcess(w, r, manualProcessOptions{
+		processorName: "facebook",
+		startMessage:  "Starting Facebook deal processing",
+		finishMessage: "Facebook deal processing finished",
+		errorMessage:  "Facebook deal processing",
+		panicMessage:  "Panic in ProcessFacebookDeals",
+		successText:   "Facebook deal processing finished.",
+		busyDetails:   "previous run still active",
+		sem:           s.facebookSem,
+		timeout:       4 * time.Minute,
+		fn:            s.facebookProcessor.ProcessFacebookDeals,
+		logAIState:    true,
+		runStart:      &s.facebookRunStart,
+	})
 }
 
 func (s *Server) ProcessMemoryExpressHandler(w http.ResponseWriter, r *http.Request) {
-	select {
-	case s.memexpressSem <- struct{}{}:
-	default:
-		slog.Warn("ProcessMemoryExpressHandler: previous run still active, skipping",
-			"processor", "memoryexpress",
-		)
-		w.WriteHeader(http.StatusTooManyRequests)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
-			slog.Error("Failed to encode response", "processor", "memoryexpress", "error", err)
-		}
-		return
-	}
-
-	defer func() { <-s.memexpressSem }()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			slog.Error("Panic in ProcessMemExpressDeals", "processor", "memoryexpress", "panic", recovered)
-			http.Error(w, "Memory Express deal processing panicked", http.StatusInternalServerError)
-		}
-	}()
-	slog.Info("Starting Memory Express deal processing", "processor", "memoryexpress")
-	if s.aiClient != nil {
-		s.aiClient.LogCurrentState()
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-	defer cancel()
-	start := time.Now()
-	if err := s.memexpressProcessor.ProcessMemExpressDeals(ctx); err != nil {
-		slog.Error("Error processing Memory Express deals", "processor", "memoryexpress", "error", err)
-		http.Error(w, "Memory Express deal processing failed", http.StatusInternalServerError)
-		return
-	}
-	slog.Info("Memory Express deal processing finished", "processor", "memoryexpress", "duration", time.Since(start))
-
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "Memory Express deal processing finished.")
+	s.runManualProcess(w, r, manualProcessOptions{
+		processorName: "memoryexpress",
+		startMessage:  "Starting Memory Express deal processing",
+		finishMessage: "Memory Express deal processing finished",
+		errorMessage:  "Memory Express deal processing",
+		panicMessage:  "Panic in ProcessMemExpressDeals",
+		successText:   "Memory Express deal processing finished.",
+		busyDetails:   "previous run still active",
+		sem:           s.memexpressSem,
+		timeout:       2 * time.Minute,
+		fn:            s.memexpressProcessor.ProcessMemExpressDeals,
+		logAIState:    true,
+	})
 }
 
 func (s *Server) ProcessBestBuyHandler(w http.ResponseWriter, r *http.Request) {
-	select {
-	case s.bestbuySem <- struct{}{}:
-	default:
-		slog.Warn("ProcessBestBuyHandler: previous run still active, skipping",
-			"processor", "bestbuy",
-		)
-		w.WriteHeader(http.StatusTooManyRequests)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy", "details": "previous run still active"}); err != nil {
-			slog.Error("Failed to encode response", "processor", "bestbuy", "error", err)
-		}
-		return
-	}
-
-	defer func() { <-s.bestbuySem }()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			slog.Error("Panic in ProcessBestBuyDeals", "processor", "bestbuy", "panic", recovered)
-			http.Error(w, "Best Buy deal processing panicked", http.StatusInternalServerError)
-		}
-	}()
-	slog.Info("Starting Best Buy deal processing", "processor", "bestbuy")
-	if s.aiClient != nil {
-		s.aiClient.LogCurrentState()
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
-	defer cancel()
-	start := time.Now()
-	if err := s.bestbuyProcessor.ProcessBestBuyDeals(ctx); err != nil {
-		slog.Error("Error processing Best Buy deals", "processor", "bestbuy", "error", err)
-		http.Error(w, "Best Buy deal processing failed", http.StatusInternalServerError)
-		return
-	}
-	slog.Info("Best Buy deal processing finished", "processor", "bestbuy", "duration", time.Since(start))
-
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "Best Buy deal processing finished.")
+	s.runManualProcess(w, r, manualProcessOptions{
+		processorName: "bestbuy",
+		startMessage:  "Starting Best Buy deal processing",
+		finishMessage: "Best Buy deal processing finished",
+		errorMessage:  "Best Buy deal processing",
+		panicMessage:  "Panic in ProcessBestBuyDeals",
+		successText:   "Best Buy deal processing finished.",
+		busyDetails:   "previous run still active",
+		sem:           s.bestbuySem,
+		timeout:       3 * time.Minute,
+		fn:            s.bestbuyProcessor.ProcessBestBuyDeals,
+		logAIState:    true,
+	})
 }
 
 func (s *Server) PrimeBestBuyBaselineHandler(w http.ResponseWriter, r *http.Request) {
@@ -574,46 +515,30 @@ func (s *Server) PrimeBestBuyBaselineHandler(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) ProcessHardwareSwapHandler(w http.ResponseWriter, r *http.Request) {
 	if s.hwProcessor == nil {
-		slog.Info("ProcessHardwareSwapHandler: HardwareSwap processor not configured, skipping", "processor", "hardwareswap")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": "HardwareSwap features not configured"})
+		writeSkipped(w, "hardwareswap", "HardwareSwap features not configured")
 		return
 	}
 
-	select {
-	case s.hwSem <- struct{}{}:
-	default:
-		slog.Warn("ProcessHardwareSwapHandler: previous run still active, skipping", "processor", "hardwareswap")
-		w.WriteHeader(http.StatusTooManyRequests)
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "busy"}); err != nil {
-			slog.Error("Failed to encode response", "processor", "hardwareswap", "error", err)
-		}
-		return
-	}
+	s.runManualProcess(w, r, manualProcessOptions{
+		processorName: "hardwareswap",
+		startMessage:  "Starting HardwareSwap deal processing",
+		finishMessage: "HardwareSwap deal processing finished",
+		errorMessage:  "HardwareSwap deal processing",
+		panicMessage:  "Panic in ProcessHardwareSwapDeals",
+		successText:   "HardwareSwap deal processing finished.",
+		busyDetails:   "previous run still active",
+		sem:           s.hwSem,
+		timeout:       4 * time.Minute,
+		fn:            s.hwProcessor.ProcessHardwareSwapDeals,
+		logAIState:    true,
+	})
+}
 
-	defer func() { <-s.hwSem }()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			slog.Error("Panic in ProcessHardwareSwapDeals", "processor", "hardwareswap", "panic", recovered)
-			http.Error(w, "HardwareSwap deal processing panicked", http.StatusInternalServerError)
-		}
-	}()
-	slog.Info("Starting HardwareSwap deal processing", "processor", "hardwareswap")
-	if s.aiClient != nil {
-		s.aiClient.LogCurrentState()
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
-	defer cancel()
-	start := time.Now()
-	if err := s.hwProcessor.ProcessHardwareSwapDeals(ctx); err != nil {
-		slog.Error("Error processing HardwareSwap deals", "processor", "hardwareswap", "error", err)
-		http.Error(w, "HardwareSwap deal processing failed", http.StatusInternalServerError)
-		return
-	}
-	slog.Info("HardwareSwap deal processing finished", "processor", "hardwareswap", "duration", time.Since(start))
-
+func writeSkipped(w http.ResponseWriter, processorName, details string) {
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "HardwareSwap deal processing finished.")
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "skipped", "details": details}); err != nil {
+		slog.Error("Failed to encode response", "processor", processorName, "error", err)
+	}
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

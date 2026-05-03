@@ -21,9 +21,10 @@ $env:SCRAPELAB_EXTERNAL_STEALTH_COMMAND = "python .\scripts\camoufox_fetch.py '{
 $env:SCRAPELAB_PAID_TRIAL_COMMAND = "python .\scripts\browserless_bql_fetch.py '{url}'"
 ```
 
-## Firestore Targets
+## Firestore/Backup Targets
 
-Scrape lab can pull the real targets already tracked by the bot:
+Scrape lab can still pull real targets from Firestore while that backend remains
+available for migration and rollback:
 
 - eBay: recent `ebay_items` records with a non-empty `itemURL`, sorted by `lastSeenAt` descending.
 - Memory Express: subscribed store codes, deduped into clearance page URLs.
@@ -94,13 +95,13 @@ go run ./cmd/scrape-lab -backends http,bestbuy-algolia,chromedp-cloudrun -env lo
 
 ## Production Fallback Config
 
-Production processors use ordered backend lists:
+Production processors use ordered backend lists on Stormtrooper:
 
 ```text
-EBAY_COUPON_BACKENDS=http,external-stealth
+EBAY_COUPON_BACKENDS=http,external-stealth,paid-trial
 EBAY_COUPON_EXTERNAL_STEALTH_COMMAND=xvfb-run -a /opt/scrape-venv/bin/python scripts/camoufox_fetch.py "{url}" --wait-ms 7000
 MEMEXPRESS_BACKENDS=chromedp-persistent,external-stealth,http
-BESTBUY_BACKENDS=bestbuy-algolia,http,chromedp-cloudrun,playwright
+BESTBUY_BACKENDS=bestbuy-algolia,http
 ```
 
 For eBay, the site-specific command envs are used before scrape-lab globals:
@@ -120,24 +121,24 @@ export SCRAPELAB_PAID_TRIAL_COMMAND='/opt/scrape-venv/bin/python scripts/browser
 
 Stop the paid trial after three listing attempts or before the configured spend cap, whichever comes first.
 
-## GCE Persistent Browser Runner
+## Legacy Persistent Browser Runner
 
-For Memory Express, the cheapest remote browser option is a small GCE VM with Chrome, Xvfb, Firestore credentials, and the existing runner:
+For Memory Express experiments, a persistent browser runner can still be used on
+a small remote VM or local desktop. The active production path is the
+Stormtrooper bot container, so treat this as manual evidence gathering rather
+than normal operations:
 
 ```bash
 sudo apt update
 sudo apt install -y google-chrome-stable xvfb
 Xvfb :99 -screen 0 1920x1080x24 &
 export DISPLAY=:99
-export GOOGLE_CLOUD_PROJECT=your-project
 export DISCORD_BOT_TOKEN=...
 export GEMINI_API_KEY=...
 export MEMEXPRESS_ALERT_MODE=log
 export MEMEXPRESS_CHROME_PROFILE_DIR=/opt/rfd-discord-bot/memoryexpress-chrome
 ./memoryexpress-local
 ```
-
-When this runner is active, disable the Cloud Scheduler job that calls `/process-memoryexpress` so Cloud Run does not keep producing expected Cloudflare failures.
 
 ## Decision Rule
 

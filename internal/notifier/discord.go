@@ -390,6 +390,45 @@ func (c *Client) IsHot(deal models.DealInfo) bool {
 	return isHotByEngagement(likes, comments, views, hasViews)
 }
 
+func (c *Client) sendEmbedToSubscriptions(ctx context.Context, processor, title string, embed discordEmbed, subs []models.Subscription) error {
+	if c.botToken == "" {
+		return nil
+	}
+
+	payload := discordWebhookPayload{
+		Content: "",
+		Embeds:  []discordEmbed{embed},
+	}
+
+	for i, sub := range subs {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+		urlStr := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, sub.ChannelID)
+		_, err := c.doRequest(ctx, "POST", urlStr, payload)
+		if err != nil {
+			slog.Error("Failed to send deal to channel",
+				"processor", processor,
+				"channel", sub.ChannelID,
+				"title", title,
+				"error", err,
+			)
+		} else {
+			slog.Info("Deal sent",
+				"processor", processor,
+				"channel", sub.ChannelID,
+				"title", title,
+			)
+		}
+	}
+
+	return nil
+}
+
 // --- Facebook Deal Notifications ---
 
 // SendFacebookDeal sends a Facebook car deal notification to all subscribed channels.
@@ -709,39 +748,12 @@ func ebayItemHost(raw string) string {
 
 // SendMemExpressDeal sends a Memory Express clearance deal to subscribed Discord channels.
 func (c *Client) SendMemExpressDeal(ctx context.Context, product memoryexpress.AnalyzedProduct, subs []models.Subscription) error {
-	if c.botToken == "" {
-		return nil
-	}
-
 	embed := formatMemExpressEmbed(product)
-	payload := discordWebhookPayload{
-		Content: "",
-		Embeds:  []discordEmbed{embed},
+	title := product.CleanTitle
+	if title == "" {
+		title = product.Title
 	}
-
-	for i, sub := range subs {
-		if i > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
-		urlStr := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, sub.ChannelID)
-		_, err := c.doRequest(ctx, "POST", urlStr, payload)
-		if err != nil {
-			slog.Error("Failed to send Memory Express deal to channel",
-				"processor", "memoryexpress",
-				"channel", sub.ChannelID,
-				"title", product.CleanTitle,
-				"error", err,
-			)
-		} else {
-			slog.Info("Memory Express deal sent",
-				"processor", "memoryexpress",
-				"channel", sub.ChannelID,
-				"title", product.CleanTitle,
-			)
-		}
-	}
-
-	return nil
+	return c.sendEmbedToSubscriptions(ctx, "memoryexpress", title, embed, subs)
 }
 
 func formatMemExpressEmbed(product memoryexpress.AnalyzedProduct) discordEmbed {
@@ -800,39 +812,12 @@ func formatMemExpressEmbed(product memoryexpress.AnalyzedProduct) discordEmbed {
 
 // SendBestBuyDeal sends a Best Buy deal notification to all eligible subscriptions.
 func (c *Client) SendBestBuyDeal(ctx context.Context, product bestbuy.AnalyzedProduct, subs []models.Subscription) error {
-	if c.botToken == "" {
-		return nil
-	}
-
 	embed := formatBestBuyEmbed(product)
-	payload := discordWebhookPayload{
-		Content: "",
-		Embeds:  []discordEmbed{embed},
+	title := product.CleanTitle
+	if title == "" {
+		title = product.Name
 	}
-
-	for i, sub := range subs {
-		if i > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
-		urlStr := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, sub.ChannelID)
-		_, err := c.doRequest(ctx, "POST", urlStr, payload)
-		if err != nil {
-			slog.Error("Failed to send Best Buy deal to channel",
-				"processor", "bestbuy",
-				"channel", sub.ChannelID,
-				"title", product.CleanTitle,
-				"error", err,
-			)
-		} else {
-			slog.Info("Best Buy deal sent",
-				"processor", "bestbuy",
-				"channel", sub.ChannelID,
-				"title", product.CleanTitle,
-			)
-		}
-	}
-
-	return nil
+	return c.sendEmbedToSubscriptions(ctx, "bestbuy", title, embed, subs)
 }
 
 func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {

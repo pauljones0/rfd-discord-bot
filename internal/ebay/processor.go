@@ -162,7 +162,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	}
 
 	// 5. Process each fetched item — detect price drops or add new items.
-	// Only write to Firestore when fields actually changed to avoid redundant writes.
+	// Only write to storage when fields actually changed to avoid redundant writes.
 	now := time.Now()
 	currentIDs := make(map[string]bool, len(apiItems))
 	var priceDropItems []EbayItem
@@ -338,7 +338,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 
 	// Bulk write all new and changed items
 	if len(itemsToWrite) > 0 {
-		logger.Info("Writing eBay item changes to Firestore", "count", len(itemsToWrite))
+		logger.Info("Writing eBay item changes to storage", "count", len(itemsToWrite))
 		if err := p.store.BulkUpsertTrackedEbayItems(ctx, itemsToWrite); err != nil {
 			logger.Error("Failed to bulk upsert eBay items", "error", err)
 		}

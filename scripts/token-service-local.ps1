@@ -32,10 +32,6 @@ if (-not $Secret) {
     exit 1
 }
 $Port           = "8081"
-$GCPProject     = "may2025-01"
-$GCPRegion      = "us-central1"
-$CloudRunSvc    = "rfd-discord-bot"
-$GHRepo         = "pauljones0/rfd-discord-bot"
 $RestartDelay   = 10
 $TunnelLog      = Join-Path $ServiceDir "cloudflared.log"
 $TokenStdout    = Join-Path $ServiceDir "token-service-stdout.log"
@@ -120,17 +116,11 @@ function Get-TunnelUrl {
     return $null
 }
 
-function Update-CloudRunUrl {
+function Show-TunnelInstructions {
     param([string]$Url)
-    Write-Host "  Cloud Run -> $Url" -ForegroundColor Yellow
-    & gcloud run services update $CloudRunSvc --region $GCPRegion --project $GCPProject `
-        --update-env-vars "CARFAX_TOKEN_SERVICE_URL=$Url" --quiet 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host "  Cloud Run OK" -ForegroundColor Green }
-    else { Write-Host "  Cloud Run update failed" -ForegroundColor Red }
-
-    & gh secret set CARFAX_TOKEN_SERVICE_URL --body $Url --repo $GHRepo 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host "  GitHub secret OK" -ForegroundColor Green }
-    else { Write-Host "  GitHub secret failed" -ForegroundColor Red }
+    Write-Host "  Token service tunnel changed:" -ForegroundColor Yellow
+    Write-Host "    $Url" -ForegroundColor Green
+    Write-Host "  Set CARFAX_TOKEN_SERVICE_URL in the Stormtrooper env file, or POST it to /register-token-service if Facebook is enabled." -ForegroundColor DarkGray
 }
 
 # -- Cleanup on Ctrl+C --------------------------------------------------------
@@ -182,7 +172,7 @@ while ($true) {
     if ($tunnelUrl) {
         Write-Host "  Tunnel: $tunnelUrl" -ForegroundColor Green
         if ($tunnelUrl -ne $lastTunnelUrl) {
-            Update-CloudRunUrl -Url $tunnelUrl
+            Show-TunnelInstructions -Url $tunnelUrl
             $lastTunnelUrl = $tunnelUrl
         }
         # Verify

@@ -15,6 +15,7 @@ type testStore struct {
 	existing         map[string]struct{}
 	existenceQueries [][]Product
 	saved            []AnalyzedProduct
+	refreshed        []Product
 }
 
 func (s *testStore) GetExistingMemExpressProductIDs(_ context.Context, products []Product) (map[string]struct{}, error) {
@@ -25,6 +26,11 @@ func (s *testStore) GetExistingMemExpressProductIDs(_ context.Context, products 
 
 func (s *testStore) SaveMemExpressProduct(_ context.Context, product AnalyzedProduct) error {
 	s.saved = append(s.saved, product)
+	return nil
+}
+
+func (s *testStore) RefreshMemExpressProductLastSeen(_ context.Context, product Product) error {
+	s.refreshed = append(s.refreshed, product)
 	return nil
 }
 
@@ -100,6 +106,12 @@ func TestProcessMemExpressDeals_UsesBatchExistenceCheck(t *testing.T) {
 		if product.SKU == "SKU-2" {
 			t.Fatal("existing product should not be saved again")
 		}
+	}
+	if len(store.refreshed) != 1 {
+		t.Fatalf("refreshed products = %d, want 1", len(store.refreshed))
+	}
+	if store.refreshed[0].SKU != "SKU-2" {
+		t.Fatalf("refreshed SKU = %q, want SKU-2", store.refreshed[0].SKU)
 	}
 }
 

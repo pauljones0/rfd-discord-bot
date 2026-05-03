@@ -10,7 +10,19 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
 )
+
+func stringChoices(choices []dealtypes.Choice) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(choices))
+	for _, choice := range choices {
+		out = append(out, map[string]interface{}{
+			"name":  choice.Name,
+			"value": choice.Value,
+		})
+	}
+	return out
+}
 
 func main() {
 	cfg, err := config.Load()
@@ -52,14 +64,7 @@ func main() {
 							"description": "The type of RFD deals to publish.",
 							"type":        3, // STRING
 							"required":    true,
-							"choices": []map[string]interface{}{
-								{"name": "All deals", "value": "rfd_all"},
-								{"name": "Tech only", "value": "rfd_tech"},
-								{"name": "Warm + Hot (all)", "value": "rfd_warm_hot"},
-								{"name": "Warm + Hot (tech)", "value": "rfd_warm_hot_tech"},
-								{"name": "Hot only (all)", "value": "rfd_hot"},
-								{"name": "Hot only (tech)", "value": "rfd_hot_tech"},
-							},
+							"choices":     stringChoices(dealtypes.RFDChoices),
 						},
 					},
 				},
@@ -81,10 +86,7 @@ func main() {
 							"description": "The type of eBay deals to publish.",
 							"type":        3, // STRING
 							"required":    true,
-							"choices": []map[string]interface{}{
-								{"name": "Canada price drops", "value": "ebay_ca_price_drop"},
-								{"name": "US price drops", "value": "ebay_us_price_drop"},
-							},
+							"choices":     stringChoices(dealtypes.EbayChoices),
 						},
 					},
 				},
@@ -147,10 +149,7 @@ func main() {
 							"description": "The type of clearance deals to publish.",
 							"type":        3, // STRING
 							"required":    true,
-							"choices": []map[string]interface{}{
-								{"name": "Warm + Hot deals", "value": "me_warm_hot"},
-								{"name": "Hot deals only", "value": "me_hot"},
-							},
+							"choices":     stringChoices(dealtypes.MemoryExpressChoices),
 						},
 					},
 				},
@@ -172,11 +171,7 @@ func main() {
 							"description": "How strict Best Buy AI filtering should be.",
 							"type":        3, // STRING
 							"required":    true,
-							"choices": []map[string]interface{}{
-								{"name": "All new listings + AI labels", "value": "bb_new"},
-								{"name": "AI warm + hot deals only", "value": "bb_warm_hot"},
-								{"name": "AI hot deals only", "value": "bb_hot"},
-							},
+							"choices":     stringChoices(dealtypes.BestBuyChoices),
 						},
 					},
 				},
@@ -191,13 +186,7 @@ func main() {
 							"description": "The subscription type to remove.",
 							"type":        3, // STRING
 							"required":    true,
-							"choices": []map[string]interface{}{
-								{"name": "RFD", "value": "rfd"},
-								{"name": "eBay", "value": "ebay"},
-								{"name": "Facebook", "value": "facebook"},
-								{"name": "Memory Express", "value": "memoryexpress"},
-								{"name": "Best Buy", "value": "bestbuy"},
-							},
+							"choices":     stringChoices(dealtypes.RemoveChoices),
 						},
 					},
 				},

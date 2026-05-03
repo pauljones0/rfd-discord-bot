@@ -11,7 +11,7 @@ import (
 
 const subscriptionsCollection = "subscriptions"
 
-// SaveSubscription saves a new guild/channel subscription to Firestore.
+// SaveSubscription saves a new guild/channel subscription.
 func (c *Client) SaveSubscription(ctx context.Context, sub models.Subscription) error {
 	if c.usesPostgres() {
 		subscriptionType := sub.SubscriptionType
@@ -47,7 +47,7 @@ func (c *Client) SaveSubscription(ctx context.Context, sub models.Subscription) 
 	return nil
 }
 
-// RemoveSubscription removes a specific channel's subscription from Firestore.
+// RemoveSubscription removes a specific channel's subscription.
 func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID, dealType string) error {
 	if c.usesPostgres() {
 		rows, err := c.ListDocuments(ctx, subscriptionsCollection)

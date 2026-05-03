@@ -18,7 +18,7 @@ const (
 	bestBuyMaxRecords = 10000
 )
 
-// Store abstracts Firestore operations for the Best Buy processor.
+// Store abstracts persistence operations for the Best Buy processor.
 type Store interface {
 	GetActiveBestBuySellers(ctx context.Context) ([]Seller, error)
 	SeedBestBuySellers(ctx context.Context) (bool, error)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/ai"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
 	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
 	"github.com/pauljones0/rfd-discord-bot/internal/hardwareswap"
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
@@ -387,12 +388,7 @@ func (h *Handler) handleSetupRFD(w http.ResponseWriter, req interactionRequest, 
 		return
 	}
 
-	validFilters := map[string]bool{
-		"rfd_all": true, "rfd_tech": true,
-		"rfd_warm_hot": true, "rfd_warm_hot_tech": true,
-		"rfd_hot": true, "rfd_hot_tech": true,
-	}
-	if !validFilters[filter] {
+	if !dealtypes.IsRFD(filter) {
 		h.respondPrivateMessage(w, "Invalid RFD filter type.")
 		return
 	}
@@ -426,12 +422,7 @@ func (h *Handler) handleSetupEbay(w http.ResponseWriter, req interactionRequest,
 		return
 	}
 
-	validFilters := map[string]bool{
-		"ebay_ca_price_drop": true,
-		"ebay_us_price_drop": true,
-		"ebay_price_drop":    true,
-	}
-	if !validFilters[filter] {
+	if !dealtypes.IsEbay(filter) {
 		h.respondPrivateMessage(w, "Invalid eBay filter type.")
 		return
 	}
@@ -595,10 +586,7 @@ func (h *Handler) handleSetupMemoryExpress(w http.ResponseWriter, req interactio
 		return
 	}
 
-	validFilters := map[string]bool{
-		"me_warm_hot": true, "me_hot": true,
-	}
-	if !validFilters[filter] {
+	if !dealtypes.IsMemoryExpress(filter) {
 		h.respondPrivateMessage(w, "Invalid Memory Express filter type.")
 		return
 	}
@@ -658,10 +646,7 @@ func (h *Handler) handleSetupBestBuy(w http.ResponseWriter, req interactionReque
 		return
 	}
 
-	validFilters := map[string]bool{
-		"bb_new": true, "bb_warm_hot": true, "bb_hot": true,
-	}
-	if !validFilters[filter] {
+	if !dealtypes.IsBestBuy(filter) {
 		h.respondPrivateMessage(w, "Invalid Best Buy filter type.")
 		return
 	}
@@ -1015,18 +1000,7 @@ func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest
 		return
 	}
 
-	validTypes := map[string]bool{
-		// RFD types
-		"rfd_all": true, "rfd_tech": true,
-		"rfd_warm_hot": true, "rfd_warm_hot_tech": true,
-		"rfd_hot": true, "rfd_hot_tech": true,
-		// eBay types
-		"ebay_price_drop": true,
-		// Cross-source types
-		"warm_hot_all": true, "hot_all": true,
-	}
-
-	if !validTypes[dealType] {
+	if !dealtypes.IsLegacySetup(dealType) {
 		h.respondPrivateMessage(w, "Invalid deal type selected. Please use the autocomplete choices provided by the command.")
 		return
 	}
@@ -1389,24 +1363,7 @@ func buildRemoveButtons(subs []models.Subscription) []discordComponent {
 }
 
 func dealTypeLabel(dealType string) string {
-	switch dealType {
-	case "":
-		return "all"
-	case "ebay_ca_price_drop":
-		return "eBay Canada price drops"
-	case "ebay_us_price_drop":
-		return "eBay US price drops"
-	case "ebay_price_drop":
-		return "all eBay price drops"
-	case "bb_new":
-		return "Best Buy all new listings + AI labels"
-	case "bb_warm_hot":
-		return "Best Buy AI warm + hot deals"
-	case "bb_hot":
-		return "Best Buy AI hot deals only"
-	default:
-		return dealType
-	}
+	return dealtypes.Label(dealType)
 }
 
 // buildFacebookRemoveButtons creates remove buttons for Facebook subscriptions.

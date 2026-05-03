@@ -19,7 +19,9 @@ go.work
 go.work.sum
 
 # Environment variables
-.env*
+.env
+.env.*
+!.env.example
 *.env
 
 # IDE settings

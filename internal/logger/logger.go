@@ -18,7 +18,7 @@ const (
 	LevelEmergency = slog.Level(20)
 )
 
-// Setup configures the default slog logger for Cloud Run and local development.
+// Setup configures the default slog logger for container and local development.
 func Setup() {
 	var programLevel = new(slog.LevelVar) // Info by default
 	programLevel.Set(LevelInfo)
@@ -80,7 +80,7 @@ func Setup() {
 	}
 
 	var handler slog.Handler
-	// Use JSONHandler in Cloud Run for proper structured log parsing
+	// Use JSONHandler when running on Cloud Run for legacy compatibility.
 	if os.Getenv("K_SERVICE") != "" {
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	} else {
@@ -100,5 +100,3 @@ func Notice(msg string, args ...any) {
 func Critical(msg string, args ...any) {
 	slog.Default().Log(context.Background(), LevelCritical, msg, args...)
 }
-
-

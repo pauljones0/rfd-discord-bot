@@ -1,59 +1,33 @@
 # Memory Express Local Runner
 
-This runner moves Memory Express scraping off Cloud Run and onto your local machine while keeping:
+This is legacy documentation for `cmd/memoryexpress-local`.
 
-- GCP Firestore as the system of record
-- Gemini analysis
-- Discord notifications
+The active production path is now the main Stormtrooper bot container with:
 
-It uses a persistent headed Chrome profile with one tab per subscribed Memory Express store. If Cloudflare appears, the runner pauses on that tab, shows a desktop notification, and resumes automatically after the challenge is cleared.
+- `STORAGE_BACKEND=postgres`
+- `LOCAL_SCHEDULER_ENABLED=true`
+- `MEMEXPRESS_POLL_INTERVAL=30m`
+- Memory Express processing through `/process-memoryexpress` or the built-in
+  scheduler
 
-## Why this exists
+The standalone local runner is kept as an experimental/manual fallback for
+interactive Cloudflare troubleshooting. It is not part of the normal production
+schedule.
 
-Cloud Run was getting blocked by Cloudflare even with browser automation. The local runner keeps the Memory Express session on your residential connection and preserves cookies in a real Chrome profile.
+## Run Manually
 
-## Required setup
-
-1. Sign in for Google Application Default Credentials:
-
-```powershell
-gcloud auth application-default login
-```
-
-2. Set the environment variables the bot already uses:
+Use the standard bot environment plus any browser overrides:
 
 ```powershell
 $env:GOOGLE_CLOUD_PROJECT="may2025-01"
 $env:DISCORD_BOT_TOKEN="..."
 $env:GEMINI_API_KEY="..."
-```
-
-3. Optionally set local runner overrides:
-
-```powershell
-$env:MEMEXPRESS_POLL_INTERVAL="30m"
 $env:MEMEXPRESS_CHROME_PATH="C:\Program Files\Google\Chrome\Application\chrome.exe"
 $env:MEMEXPRESS_CHROME_PROFILE_DIR="$env:LOCALAPPDATA\rfd-discord-bot\memoryexpress-chrome-profile"
-```
 
-`MEMEXPRESS_CHROME_PATH` is optional if Chrome is already discoverable.
-
-`MEMEXPRESS_CHROME_PROFILE_DIR` is optional. If omitted, the runner creates a persistent profile under your local user cache directory.
-
-## Run it
-
-```powershell
 go run ./cmd/memoryexpress-local
 ```
 
-## Runtime behavior
-
-- The runner loads active Memory Express subscriptions from Firestore before each cycle.
-- It keeps exactly one tab open for each subscribed store.
-- It refreshes the subscribed store tabs on the poll interval.
-- If a tab hits Cloudflare, the runner brings that tab to the front, sends a desktop alert, and waits.
-- Once the page clears, scraping resumes automatically.
-
-## Recommended ops change
-
-If you are fully moving Memory Express to local-only operation, stop the Cloud Scheduler job that calls `/process-memoryexpress` so Cloud Run does not keep producing expected scrape failures.
+If this runner is revived for production, document the storage backend and
+notification behavior before enabling it. For now, prefer the main Stormtrooper
+service and scrape-lab evidence for backend decisions.

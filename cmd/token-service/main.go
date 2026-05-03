@@ -5,67 +5,68 @@
 // on carfax.ca and exposes an HTTP endpoint to generate reCAPTCHA tokens on demand.
 //
 // Architecture:
-//   Browser (Chrome + Xvfb) ←→ CDP ←→ Token Service ←→ Cloud Run bot
+//
+//	Browser (Chrome + Xvfb) <- CDP -> Token Service <- HTTP -> bot runtime
 //
 // The bot calls GET /token to obtain a high-scoring reCAPTCHA v3 token, then uses
 // it in direct HTTP calls to Carfax's API. This avoids headless browser detection
 // entirely because the Chrome instance is a real headed browser.
 //
 // ─────────────────────────────────────────────────────────────────────────────────
-// GCE VM Setup (e2-micro, ~$6/month):
+// Remote VM setup (optional):
 //
-//   1. Create a VM:
-//      gcloud compute instances create carfax-token-service \
-//        --machine-type=e2-micro --zone=us-central1-a \
-//        --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud
+//  1. Create a VM:
+//     gcloud compute instances create carfax-token-service \
+//     --machine-type=e2-micro --zone=us-central1-a \
+//     --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud
 //
-//   2. Install Chrome + Xvfb:
-//      sudo apt update && sudo apt install -y google-chrome-stable xvfb
+//  2. Install Chrome + Xvfb:
+//     sudo apt update && sudo apt install -y google-chrome-stable xvfb
 //
-//   3. Start Xvfb (virtual display):
-//      Xvfb :99 -screen 0 1920x1080x24 &
-//      export DISPLAY=:99
+//  3. Start Xvfb (virtual display):
+//     Xvfb :99 -screen 0 1920x1080x24 &
+//     export DISPLAY=:99
 //
-//   4. Run the service:
-//      TOKEN_SERVICE_SECRET=your-secret-here ./token-service
+//  4. Run the service:
+//     TOKEN_SERVICE_SECRET=your-secret-here ./token-service
 //
-//   5. Firewall rule (restrict to Cloud Run egress):
-//      gcloud compute firewall-rules create allow-token-service \
-//        --allow=tcp:8081 --source-ranges=0.0.0.0/0 --target-tags=token-service
+//  5. Firewall rule (restrict to the bot host if possible):
+//     gcloud compute firewall-rules create allow-token-service \
+//     --allow=tcp:8081 --source-ranges=0.0.0.0/0 --target-tags=token-service
 //
-//   6. Systemd service (auto-restart):
-//      See the [Service] section comments below for a systemd unit template.
+//  6. Systemd service (auto-restart):
+//     See the [Service] section comments below for a systemd unit template.
 //
 // ─────────────────────────────────────────────────────────────────────────────────
 // Local Machine / Home Server Setup:
 //
-//   No Xvfb needed — Chrome uses your real display.
+//	No Xvfb needed — Chrome uses your real display.
 //
-//   1. Set CHROME_PATH to your Chrome/Chromium binary (or leave empty for default)
-//   2. Run: TOKEN_SERVICE_SECRET=dev ./token-service
-//   3. Expose via Cloudflare Tunnel or ngrok:
-//      cloudflared tunnel --url http://localhost:8081
-//   4. Set CARFAX_TOKEN_SERVICE_URL in your bot's .env to the tunnel URL
+//	1. Set CHROME_PATH to your Chrome/Chromium binary (or leave empty for default)
+//	2. Run: TOKEN_SERVICE_SECRET=dev ./token-service
+//	3. Expose via Cloudflare Tunnel or ngrok:
+//	   cloudflared tunnel --url http://localhost:8081
+//	4. Set CARFAX_TOKEN_SERVICE_URL in your bot's .env to the tunnel URL
 //
 // ─────────────────────────────────────────────────────────────────────────────────
 // Systemd Unit Template (/etc/systemd/system/token-service.service):
 //
-//   [Unit]
-//   Description=Carfax reCAPTCHA Token Service
-//   After=network.target
+//	[Unit]
+//	Description=Carfax reCAPTCHA Token Service
+//	After=network.target
 //
-//   [Service]
-//   Type=simple
-//   User=chrome
-//   Environment=DISPLAY=:99
-//   Environment=TOKEN_SERVICE_SECRET=your-secret-here
-//   ExecStartPre=/usr/bin/Xvfb :99 -screen 0 1920x1080x24
-//   ExecStart=/opt/token-service/token-service
-//   Restart=always
-//   RestartSec=10
+//	[Service]
+//	Type=simple
+//	User=chrome
+//	Environment=DISPLAY=:99
+//	Environment=TOKEN_SERVICE_SECRET=your-secret-here
+//	ExecStartPre=/usr/bin/Xvfb :99 -screen 0 1920x1080x24
+//	ExecStart=/opt/token-service/token-service
+//	Restart=always
+//	RestartSec=10
 //
-//   [Install]
-//   WantedBy=multi-user.target
+//	[Install]
+//	WantedBy=multi-user.target
 //
 // ─────────────────────────────────────────────────────────────────────────────────
 package main

@@ -17,7 +17,7 @@ import (
 
 const memexpressCollection = "memexpress_deals"
 
-// MemExpressProductExists checks whether a clearance product already exists in Firestore.
+// MemExpressProductExists checks whether a clearance product already exists.
 func (c *Client) MemExpressProductExists(ctx context.Context, sku, storeCode string) (bool, error) {
 	if sku == "" || storeCode == "" {
 		return false, nil
@@ -103,7 +103,7 @@ func (c *Client) GetExistingMemExpressProductIDs(ctx context.Context, products [
 	return existing, nil
 }
 
-// SaveMemExpressProduct saves a clearance product to Firestore.
+// SaveMemExpressProduct saves a clearance product.
 func (c *Client) SaveMemExpressProduct(ctx context.Context, product memoryexpress.AnalyzedProduct) error {
 	if c.usesPostgres() {
 		return c.SetDocument(ctx, memexpressCollection, memoryexpress.DocID(product.SKU, product.StoreCode), product)
@@ -116,6 +116,38 @@ func (c *Client) SaveMemExpressProduct(ctx context.Context, product memoryexpres
 	_, err := c.client.Collection(memexpressCollection).Doc(docID).Set(ctx, product)
 	if err != nil {
 		return fmt.Errorf("failed to save memexpress product %s: %v", docID, err)
+	}
+	return nil
+}
+
+func (c *Client) RefreshMemExpressProductLastSeen(ctx context.Context, product memoryexpress.Product) error {
+	docID := memoryexpress.DocID(product.SKU, product.StoreCode)
+	now := time.Now()
+	if c.usesPostgres() {
+		var existing memoryexpress.AnalyzedProduct
+		ok, err := c.GetDocument(ctx, memexpressCollection, docID, &existing)
+		if err != nil || !ok {
+			return err
+		}
+		existing.Product = product
+		existing.LastSeen = now
+		return c.SetDocument(ctx, memexpressCollection, docID, existing)
+	}
+
+	ctx, cancel := ensureDeadline(ctx, DefaultTimeout)
+	defer cancel()
+	_, err := c.client.Collection(memexpressCollection).Doc(docID).Update(ctx, []firestore.Update{
+		{Path: "lastSeen", Value: now},
+		{Path: "regularPrice", Value: product.RegularPrice},
+		{Path: "clearancePrice", Value: product.ClearancePrice},
+		{Path: "salePrice", Value: product.SalePrice},
+		{Path: "discountPct", Value: product.DiscountPct},
+		{Path: "stock", Value: product.Stock},
+		{Path: "imageURL", Value: product.ImageURL},
+		{Path: "url", Value: product.URL},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to refresh memexpress product %s: %w", docID, err)
 	}
 	return nil
 }
@@ -222,7 +254,7 @@ func memExpressSubscriptionDocID(guildID, channelID, storeCode string) string {
 	return fmt.Sprintf("%s_%s_memoryexpress_%s", guildID, channelID, storeCode)
 }
 
-// SaveMemExpressSubscription creates or updates a Memory Express subscription in Firestore.
+// SaveMemExpressSubscription creates or updates a Memory Express subscription.
 func (c *Client) SaveMemExpressSubscription(ctx context.Context, sub models.Subscription) error {
 	if c.usesPostgres() {
 		return c.SetDocument(ctx, subscriptionsCollection, memExpressSubscriptionDocID(sub.GuildID, sub.ChannelID, sub.StoreCode), sub)

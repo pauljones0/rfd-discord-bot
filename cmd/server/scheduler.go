@@ -8,9 +8,8 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 )
 
-// StartLocalScheduler starts in-process polling loops for the processors that
-// used to be driven by Cloud Scheduler. It is disabled by default so migration
-// can deploy the container safely before cutover.
+// StartLocalScheduler starts in-process polling loops for active processors.
+// It can be disabled for branch testing or maintenance.
 func (s *Server) StartLocalScheduler(ctx context.Context, cfg *config.Config) {
 	if cfg == nil || !cfg.LocalSchedulerEnabled {
 		slog.Info("Local scheduler disabled")

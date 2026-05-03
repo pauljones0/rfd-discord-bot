@@ -16,10 +16,11 @@ const (
 	batchSize = 10
 )
 
-// Store abstracts Firestore operations for the Memory Express processor.
+// Store abstracts persistence operations for the Memory Express processor.
 type Store interface {
 	GetExistingMemExpressProductIDs(ctx context.Context, products []Product) (map[string]struct{}, error)
 	SaveMemExpressProduct(ctx context.Context, product AnalyzedProduct) error
+	RefreshMemExpressProductLastSeen(ctx context.Context, product Product) error
 	PruneMemExpressProducts(ctx context.Context, maxAgeDays, maxRecords int) error
 	GetMemExpressSubscriptions(ctx context.Context) ([]models.Subscription, error)
 }
@@ -184,6 +185,13 @@ func (p *Processor) ProcessMemExpressDeals(ctx context.Context) error {
 			}
 
 			if _, exists := existing[DocID(product.SKU, product.StoreCode)]; exists {
+				if err := p.store.RefreshMemExpressProductLastSeen(ctx, product); err != nil {
+					logger.Warn("Failed to refresh existing Memory Express listing",
+						"store", storeCode,
+						"sku", product.SKU,
+						"error", err,
+					)
+				}
 				continue
 			}
 			newProducts = append(newProducts, product)

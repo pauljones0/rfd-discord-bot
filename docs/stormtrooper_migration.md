@@ -1,41 +1,30 @@
-# Stormtrooper Migration Runbook
+# Stormtrooper Operations Runbook
 
-This runbook moves the bot from Cloud Run + Cloud Scheduler to Docker Compose on
-Stormtrooper with local Postgres as the runtime store. Firestore is retained as
-the migration source and rollback backup until parity is verified.
+Stormtrooper is the active production host. The bot runs with Docker Compose,
+local Postgres, and the built-in scheduler. Firestore is retained only for
+migration, rollback, and scrape-lab target discovery until we intentionally drop
+that support.
 
-## Current Production Snapshot
+## Runtime Paths
 
-- Cloud Run service: `rfd-discord-bot`
-- GCP project/region: `may2025-01/us-central1`
-- Deployed commit observed before migration work: `cbdcb99`
-- Cloud Scheduler cadence:
-  - RFD: every `3m`
-  - eBay: every `30m`
-  - Memory Express: every `30m`
-  - Best Buy: paused
-  - Facebook: paused
-- Firestore remains available as the backup/export source; runtime should use
-  `STORAGE_BACKEND=postgres` after migration.
-
-## Files On Stormtrooper
-
-Create these preferred paths outside git:
+Preferred user-owned paths:
 
 ```bash
-sudo mkdir -p /opt/rfd-discord-bot /srv/appdata/rfd-discord-bot /srv/appdata/rfd-discord-bot/postgres
-sudo chown -R "$USER":"$USER" /opt/rfd-discord-bot /srv/appdata/rfd-discord-bot
+$HOME/rfd-discord-bot
+$HOME/.config/rfd-discord-bot/.env
+$HOME/.config/rfd-discord-bot/adc.json
+$HOME/appdata/rfd-discord-bot
+$HOME/appdata/rfd-discord-bot/postgres
 ```
 
-`/opt/rfd-discord-bot/.env` should contain the production runtime variables.
-Start with:
+The `.env` file is outside git and should include:
 
-```bash
-GOOGLE_CLOUD_PROJECT=may2025-01
-LOCAL_SCHEDULER_ENABLED=false
+```env
 STORAGE_BACKEND=postgres
-POSTGRES_PASSWORD=generate-a-long-local-password
-DATABASE_URL=postgres://rfd_bot:generate-a-long-local-password@postgres:5432/rfd_discord_bot?sslmode=disable
+POSTGRES_PASSWORD=...
+DATABASE_URL=postgres://rfd_bot:...@postgres:5432/rfd_discord_bot?sslmode=disable
+
+LOCAL_SCHEDULER_ENABLED=true
 RFD_POLL_INTERVAL=3m
 EBAY_POLL_INTERVAL=30m
 MEMEXPRESS_POLL_INTERVAL=30m
@@ -46,61 +35,70 @@ EBAY_COUPON_DISCOVERY_INTERVAL=6h
 EBAY_COUPON_SAMPLE_SIZE=3
 MEMEXPRESS_BACKENDS=chromedp-persistent,external-stealth,http
 BESTBUY_BACKENDS=bestbuy-algolia,http
-EBAY_COUPON_EXTERNAL_STEALTH_COMMAND=xvfb-run -a /opt/scrape-venv/bin/python scripts/camoufox_fetch.py "{url}" --wait-ms 7000
 ```
 
-Keep Discord, Gemini, eBay, and optional Cloudflare Tunnel secrets in that same
-env file. Do not commit it.
+Keep Discord, Gemini, eBay, Cloudflare Tunnel, and optional Browserless secrets
+in that same file. Do not commit it.
 
-Keep a Firestore credential JSON for migration and rollback checks at:
-
-```text
-/opt/rfd-discord-bot/gcp-sa-key.json
-```
-
-This can be either a service-account key with Firestore permissions or an
-Application Default Credentials JSON exported from `gcloud auth
-application-default login`. The Compose file mounts it read-only and sets:
-
-```text
-GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gcp-sa-key.json
-```
-
-If the SSH user does not have root access, use user-owned paths and pass these
-environment overrides to Docker Compose:
+## Deploy Or Redeploy
 
 ```bash
-export RFD_BOT_ENV_FILE="$HOME/.config/rfd-discord-bot/.env"
-export RFD_BOT_GCP_CREDENTIALS="$HOME/.config/rfd-discord-bot/adc.json"
-export RFD_BOT_DATA_DIR="$HOME/appdata/rfd-discord-bot"
-```
-
-## Deploy
-
-From the repo root on Stormtrooper:
-
-```bash
+cd ~/rfd-discord-bot
+git pull --ff-only origin main
+RFD_BOT_ENV_FILE=$HOME/.config/rfd-discord-bot/.env \
+RFD_BOT_GCP_CREDENTIALS=$HOME/.config/rfd-discord-bot/adc.json \
+RFD_BOT_DATA_DIR=$HOME/appdata/rfd-discord-bot \
+RFD_BOT_POSTGRES_DIR=$HOME/appdata/rfd-discord-bot/postgres \
 docker compose -f deploy/stormtrooper/docker-compose.yml up -d --build
 ```
 
-Health check:
+For branch verification, check out the branch first and use the same Compose
+command.
+
+## Health And Logs
 
 ```bash
 curl -fsS http://127.0.0.1:18080/health
+docker compose -f deploy/stormtrooper/docker-compose.yml ps
+docker compose -f deploy/stormtrooper/docker-compose.yml logs --tail=200 bot
 ```
 
-Migrate Firestore into local Postgres from inside the running bot container:
+Healthy production should report:
+
+```json
+{"details":"connected","status":"ok","storage":"postgres"}
+```
+
+Scheduler logs should mention only these active loops unless a feature is
+explicitly re-enabled:
+
+- RFD
+- eBay
+- Memory Express
+- Best Buy
+
+Facebook remains paused/out of scope for the current local production cycle.
+
+## Manual Processor Checks
+
+Manual endpoints use the same no-overlap guard as scheduled runs:
 
 ```bash
-docker compose -f deploy/stormtrooper/docker-compose.yml exec bot \
-  ./migrate-store -project may2025-01
+curl -fsS http://127.0.0.1:18080/process
+curl -fsS http://127.0.0.1:18080/process-ebay
+curl -fsS http://127.0.0.1:18080/process-memoryexpress
+curl -fsS http://127.0.0.1:18080/process-bestbuy
 ```
 
-The migration writes every top-level Firestore collection to the local JSONB
-document table while preserving document IDs, then prints per-collection counts.
-Run it again with `-verify-only` for a cheap parity check after the first import.
+Prime Best Buy baseline without Discord notifications:
 
-Run scrape lab against Firestore targets from inside the container:
+```bash
+curl -fsS -X POST http://127.0.0.1:18080/prime-bestbuy-baseline
+```
+
+## Scrape Lab
+
+Run from inside the container when validating scraping backends:
 
 ```bash
 docker compose -f deploy/stormtrooper/docker-compose.yml exec bot \
@@ -109,8 +107,7 @@ docker compose -f deploy/stormtrooper/docker-compose.yml exec bot \
   -out /data/scrape-lab-$(date +%Y%m%d-%H%M%S)
 ```
 
-To verify the eBay Camoufox fallback specifically, keep the scheduler disabled
-and run only three Firestore-backed item pages:
+Camoufox-only eBay sample:
 
 ```bash
 docker compose -f deploy/stormtrooper/docker-compose.yml exec \
@@ -120,67 +117,47 @@ docker compose -f deploy/stormtrooper/docker-compose.yml exec \
   -out /data/scrape-lab-stormtrooper-ebay-camoufox-$(date +%Y%m%d-%H%M%S)
 ```
 
-Only if Camoufox is blocked or errors on all three samples, run the Browserless
-paid trial with the same target cap:
+Browserless stays a controlled trial path. Do not add `paid-trial` to production
+backends unless scrape-lab proves it returns useful eBay listing HTML and coupon
+parsing works on the capped sample.
 
-```bash
-docker compose -f deploy/stormtrooper/docker-compose.yml exec \
-  -e BROWSERLESS_TOKEN="$BROWSERLESS_TOKEN" \
-  -e SCRAPELAB_PAID_TRIAL_COMMAND='/opt/scrape-venv/bin/python scripts/browserless_bql_fetch.py "{url}" --wait-ms 5000' \
-  bot ./scrape-lab -from-firestore -sites ebay -ebay-limit 3 \
-  -backends paid-trial -env stormtrooper \
-  -out /data/scrape-lab-stormtrooper-ebay-browserless-$(date +%Y%m%d-%H%M%S)
-```
+## Discord Commands
 
-Prime Best Buy before enabling subscriptions or the scheduler:
-
-```bash
-curl -fsS -X POST http://127.0.0.1:18080/prime-bestbuy-baseline
-```
-
-This saves current configured-seller inventory without Discord notifications.
-
-## Public Ingress
-
-Preferred Cloudflare Tunnel:
-
-```bash
-docker compose -f deploy/stormtrooper/docker-compose.yml --profile tunnel up -d
-```
-
-The tunnel token belongs in `/opt/rfd-discord-bot/.env` as
-`CLOUDFLARED_TUNNEL_TOKEN=...` or `TUNNEL_TOKEN=...` if using Cloudflare's
-token-based `cloudflared` image flow.
-
-Caddy fallback:
-
-Add `deploy/stormtrooper/Caddyfile.fragment` to Stormtrooper's Caddyfile and
-reload Caddy. The route proxies `https://bot.pauljones0.uk` to
-`127.0.0.1:18080`.
-
-Update the Discord Developer Portal interaction endpoint only after:
-
-```text
-https://bot.pauljones0.uk/discord/interactions
-```
-
-is reachable and `/health` returns `{"storage":"postgres","details":"connected"}`.
-
-## Cutover Order
-
-1. Deploy Compose with `LOCAL_SCHEDULER_ENABLED=false`.
-2. Run `migrate-store` and confirm `/health` reports Postgres connected.
-3. Confirm scrape-lab evidence from Stormtrooper.
-4. Prime Best Buy baseline with notifications disabled.
-5. Enable `LOCAL_SCHEDULER_ENABLED=true` with RFD `3m` and eBay, Memory
-   Express, and Best Buy `30m`.
-6. Verify one local run of each enabled processor.
-7. Re-register Discord commands from Stormtrooper:
+After changing command definitions:
 
 ```bash
 docker compose -f deploy/stormtrooper/docker-compose.yml exec bot ./register-commands
 ```
 
-8. Pause/delete Cloud Scheduler jobs and delete Cloud Run after backup/export
-   verification. Do not delete Firestore until Postgres has passed a full
-   polling and notification cycle.
+Current public interaction endpoint:
+
+```text
+https://bot.pauljones0.uk/discord/interactions
+```
+
+## Firestore Rollback And Migration
+
+Firestore support is still present for rollback and data movement:
+
+```bash
+docker compose -f deploy/stormtrooper/docker-compose.yml exec bot \
+  ./migrate-store -project may2025-01 -verify
+```
+
+Keep the ADC/service-account JSON outside git. The Compose file mounts it
+read-only at `/run/secrets/gcp-sa-key.json`.
+
+Do not delete Firestore until Postgres has passed enough production scheduler
+cycles that rollback is no longer useful.
+
+## GCP Shutdown Check
+
+The app runtime should not depend on Cloud Run or Cloud Scheduler anymore. A
+read-only check should return zero services/jobs for the old project and region:
+
+```bash
+gcloud scheduler jobs list --project may2025-01 --location us-central1
+gcloud run services list --project may2025-01 --region us-central1
+```
+
+The GitHub Actions Cloud Run deploy workflow is intentionally absent.
