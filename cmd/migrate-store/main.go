@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -21,10 +22,11 @@ func main() {
 	_ = godotenv.Load()
 
 	var (
-		projectID   = flag.String("project", os.Getenv("GOOGLE_CLOUD_PROJECT"), "GCP project ID for Firestore source")
-		databaseURL = flag.String("database-url", os.Getenv("DATABASE_URL"), "Postgres DATABASE_URL destination")
-		verifyOnly  = flag.Bool("verify-only", false, "verify counts without writing")
-		sampleCheck = flag.Int("sample-check", 3, "number of docs per collection to sample-compare")
+		projectID      = flag.String("project", os.Getenv("GOOGLE_CLOUD_PROJECT"), "GCP project ID for Firestore source")
+		databaseURL    = flag.String("database-url", os.Getenv("DATABASE_URL"), "Postgres DATABASE_URL destination")
+		verifyOnly     = flag.Bool("verify-only", false, "verify counts without writing")
+		sampleCheck    = flag.Int("sample-check", 3, "number of docs per collection to sample-compare")
+		collectionsArg = flag.String("collections", "", "comma-separated Firestore collections to migrate; defaults to known bot collections")
 	)
 	flag.Parse()
 
@@ -50,9 +52,14 @@ func main() {
 	}
 	defer pg.Close()
 
-	collections, err := listCollections(ctx, fs)
-	if err != nil {
-		log.Fatalf("list collections: %v", err)
+	collections := parseCollections(*collectionsArg)
+	if len(collections) == 0 {
+		var err error
+		collections, err = listCollections(ctx, fs)
+		if err != nil {
+			log.Printf("list collections failed (%v); falling back to known bot collections", err)
+			collections = defaultCollections()
+		}
 	}
 	sort.Strings(collections)
 
@@ -85,6 +92,44 @@ func main() {
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(results); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func parseCollections(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func defaultCollections() []string {
+	return []string{
+		"deals",
+		"subscriptions",
+		"bot_config",
+		"ebay_sellers",
+		"ebay_items",
+		"ebay_store_coupons",
+		"memexpress_deals",
+		"bestbuy_sellers",
+		"bestbuy_deals",
+		"car_deals",
+		"price_history",
+		"carfax_cache",
+		"carfax_options",
+		"blocked_proxy_ips",
+		"hw_servers",
+		"hw_alerts",
+		"hw_posts",
+		"hw_analytics",
+		"hw_system_prompts",
 	}
 }
 
