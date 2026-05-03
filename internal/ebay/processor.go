@@ -18,6 +18,7 @@ const (
 	priceDropMinDollars            = 50.0
 	defaultCouponDiscoveryInterval = 6 * time.Hour
 	defaultCouponSampleSize        = 3
+	defaultCouponDiscoveryBudget   = 75 * time.Second
 )
 
 // EbayStore abstracts the storage operations for the eBay processor.
@@ -47,6 +48,7 @@ type Processor struct {
 	mu                      sync.Mutex
 	couponDiscoveryInterval time.Duration
 	couponSampleSize        int
+	couponDiscoveryBudget   time.Duration
 }
 
 // NewProcessor creates a new eBay price-drop processor.
@@ -57,6 +59,7 @@ func NewProcessor(store EbayStore, client *Client, notifier EbayNotifier) *Proce
 		notifier:                notifier,
 		couponDiscoveryInterval: defaultCouponDiscoveryInterval,
 		couponSampleSize:        defaultCouponSampleSize,
+		couponDiscoveryBudget:   defaultCouponDiscoveryBudget,
 	}
 }
 
@@ -145,7 +148,9 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	stats.fetched = len(apiItems)
 	logger.Info("Fetched eBay listings", "total_items", len(apiItems))
 
-	couponCache := p.refreshSellerCouponCaches(ctx, apiItems, logger)
+	couponCtx, cancelCouponDiscovery := context.WithTimeout(ctx, p.couponDiscoveryBudgetOrDefault())
+	couponCache := p.refreshSellerCouponCaches(couponCtx, apiItems, logger)
+	cancelCouponDiscovery()
 
 	// 4. Load existing tracked items from storage
 	tracked, err := p.store.GetTrackedEbayItems(ctx)
@@ -708,6 +713,13 @@ func (p *Processor) couponDiscoveryIntervalOrDefault() time.Duration {
 		return p.couponDiscoveryInterval
 	}
 	return defaultCouponDiscoveryInterval
+}
+
+func (p *Processor) couponDiscoveryBudgetOrDefault() time.Duration {
+	if p.couponDiscoveryBudget > 0 {
+		return p.couponDiscoveryBudget
+	}
+	return defaultCouponDiscoveryBudget
 }
 
 func groupItemsForCouponDiscovery(items []BrowseAPIItem) map[string][]BrowseAPIItem {
