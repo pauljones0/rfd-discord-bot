@@ -105,25 +105,31 @@ type EbayPollState struct {
 // The Browse API remains the listing source of truth; these coupons are only used
 // during post-drop effective price calculations.
 type StoreCoupon struct {
-	Marketplace         string    `firestore:"marketplace"`
-	Seller              string    `firestore:"seller"`
-	Signature           string    `firestore:"signature"`
-	DiscountType        string    `firestore:"discountType,omitempty"` // "fixed", "percent", "none", or "unknown"
-	DiscountValue       float64   `firestore:"discountValue,omitempty"`
-	MaxDiscount         float64   `firestore:"maxDiscount,omitempty"`
-	Code                string    `firestore:"code,omitempty"`
-	RawText             string    `firestore:"rawText,omitempty"`
-	Confidence          float64   `firestore:"confidence,omitempty"`
-	Scope               string    `firestore:"scope,omitempty"` // "store", "item", "none", or "unknown"
-	SampledItemIDs      []string  `firestore:"sampledItemIDs,omitempty"`
-	SampledItemURLs     []string  `firestore:"sampledItemURLs,omitempty"`
-	FirstSeen           time.Time `firestore:"firstSeen"`
-	LastSeen            time.Time `firestore:"lastSeen"`
-	LastChecked         time.Time `firestore:"lastChecked"`
-	ExpiresAt           time.Time `firestore:"expiresAt,omitempty"`
-	NextCheckAt         time.Time `firestore:"nextCheckAt"`
-	Active              bool      `firestore:"active"`
-	ConsecutiveNoCoupon int       `firestore:"consecutiveNoCoupon,omitempty"`
+	Marketplace               string    `firestore:"marketplace"`
+	Seller                    string    `firestore:"seller"`
+	Signature                 string    `firestore:"signature"`
+	DiscountType              string    `firestore:"discountType,omitempty"` // "fixed", "percent", "none", or "unknown"
+	DiscountValue             float64   `firestore:"discountValue,omitempty"`
+	MaxDiscount               float64   `firestore:"maxDiscount,omitempty"`
+	FormulaType               string    `firestore:"formulaType,omitempty"` // "flat", "percent", "percent_cap", threshold variants, "ambiguous", or "unknown"
+	ThresholdAmount           float64   `firestore:"thresholdAmount,omitempty"`
+	Code                      string    `firestore:"code,omitempty"`
+	RawText                   string    `firestore:"rawText,omitempty"`
+	Confidence                float64   `firestore:"confidence,omitempty"`
+	InferenceMaxErrorCents    int       `firestore:"inferenceMaxErrorCents,omitempty"`
+	InferenceCompetingRules   int       `firestore:"inferenceCompetingRules,omitempty"`
+	InferenceNeedsMoreSamples bool      `firestore:"inferenceNeedsMoreSamples,omitempty"`
+	InferenceNextSampleHint   string    `firestore:"inferenceNextSampleHint,omitempty"`
+	Scope                     string    `firestore:"scope,omitempty"` // "store", "item", "none", or "unknown"
+	SampledItemIDs            []string  `firestore:"sampledItemIDs,omitempty"`
+	SampledItemURLs           []string  `firestore:"sampledItemURLs,omitempty"`
+	FirstSeen                 time.Time `firestore:"firstSeen"`
+	LastSeen                  time.Time `firestore:"lastSeen"`
+	LastChecked               time.Time `firestore:"lastChecked"`
+	ExpiresAt                 time.Time `firestore:"expiresAt,omitempty"`
+	NextCheckAt               time.Time `firestore:"nextCheckAt"`
+	Active                    bool      `firestore:"active"`
+	ConsecutiveNoCoupon       int       `firestore:"consecutiveNoCoupon,omitempty"`
 }
 
 // BrowseAPIItem represents a single item from the eBay Browse API response.

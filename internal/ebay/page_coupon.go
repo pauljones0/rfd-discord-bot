@@ -26,6 +26,7 @@ type PageCoupon struct {
 	MaxDiscount    float64
 	Code           string
 	Message        string
+	EvidenceText   string
 	ExpiresAt      time.Time
 	Scope          string
 	Signature      string
@@ -94,9 +95,31 @@ func ExtractPageCoupon(html string, basePrice float64) PageCoupon {
 	}
 	best.ExpiresAt = parseCouponExpiry(normalized)
 	best.Scope = inferCouponScope(normalized)
+	best.EvidenceText = couponEvidenceWindow(normalized, best.Message)
 	best.Confidence = couponConfidence(best, normalized)
 	best.Signature = NormalizeCouponSignature(best)
 	return best
+}
+
+func couponEvidenceWindow(text, anchor string) string {
+	if strings.TrimSpace(anchor) == "" {
+		return text
+	}
+	lowerText := strings.ToLower(text)
+	lowerAnchor := strings.ToLower(anchor)
+	index := strings.Index(lowerText, lowerAnchor)
+	if index < 0 {
+		return text
+	}
+	start := index - 180
+	if start < 0 {
+		start = 0
+	}
+	end := index + len(anchor) + 220
+	if end > len(text) {
+		end = len(text)
+	}
+	return strings.TrimSpace(text[start:end])
 }
 
 func normalizeCouponCode(raw string) string {

@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/ebay/couponinfer"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
@@ -584,9 +586,9 @@ func (p *Processor) discoverSellerCoupon(ctx context.Context, marketplace, selle
 	type sample struct {
 		coupon PageCoupon
 		item   BrowseAPIItem
-		source string
 	}
 	var samples []sample
+	var observations []couponInferenceObservation
 	for _, item := range items[:sampleSize] {
 		if ctx.Err() != nil {
 			break
@@ -596,7 +598,7 @@ func (p *Processor) discoverSellerCoupon(ctx context.Context, marketplace, selle
 			continue
 		}
 		sampleCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		coupon, source, err := p.client.FetchPageCouponWithTimeout(sampleCtx, item, basePrice, 8*time.Second)
+		coupon, _, err := p.client.FetchPageCouponWithTimeout(sampleCtx, item, basePrice, 8*time.Second)
 		cancel()
 		if err != nil {
 			logger.Warn("Failed eBay seller coupon discovery sample",
@@ -607,10 +609,19 @@ func (p *Processor) discoverSellerCoupon(ctx context.Context, marketplace, selle
 			)
 			continue
 		}
+		obs := couponInferenceObservation{
+			signature: coupon.Signature,
+			sample: couponinfer.Sample{
+				BaseCents:     priceToCents(basePrice),
+				DiscountCents: priceToCents(coupon.DiscountAmount),
+				Text:          couponEvidenceText(coupon),
+			},
+		}
+		observations = append(observations, obs)
 		if coupon.DiscountAmount <= 0 {
 			continue
 		}
-		samples = append(samples, sample{coupon: coupon, item: item, source: source})
+		samples = append(samples, sample{coupon: coupon, item: item})
 	}
 
 	if len(samples) == 0 {
@@ -662,6 +673,25 @@ func (p *Processor) discoverSellerCoupon(ctx context.Context, marketplace, selle
 		confidence = 0.98
 	}
 
+	inference := couponinfer.Infer(inferenceSamplesForSignature(observations, bestSig))
+	formulaType := inference.Rule.Type
+	discountType := best.coupon.DiscountType
+	discountValue := best.coupon.DiscountValue
+	maxDiscount := best.coupon.MaxDiscount
+	thresholdAmount := 0.0
+	signature := bestSig
+	if inferredCouponRuleUsable(inference.Rule.Type) {
+		discountType, discountValue, maxDiscount, thresholdAmount = storeCouponFieldsFromRule(inference.Rule)
+		signature = inference.Rule.Signature(best.coupon.Code)
+		if inference.Confidence > confidence {
+			confidence = inference.Confidence
+		}
+	} else if inference.Rule.Type == couponinfer.TypeAmbiguous || inference.Rule.Type == couponinfer.TypeUnknown {
+		if confidence > 0.6 {
+			confidence = 0.6
+		}
+	}
+
 	itemIDs := make([]string, 0, len(samples))
 	itemURLs := make([]string, 0, len(samples))
 	for _, s := range samples {
@@ -677,37 +707,102 @@ func (p *Processor) discoverSellerCoupon(ctx context.Context, marketplace, selle
 		nextCheck = best.coupon.ExpiresAt.Add(15 * time.Minute)
 	}
 	coupon := StoreCoupon{
-		Marketplace:     marketplace,
-		Seller:          seller,
-		Signature:       bestSig,
-		DiscountType:    best.coupon.DiscountType,
-		DiscountValue:   best.coupon.DiscountValue,
-		MaxDiscount:     best.coupon.MaxDiscount,
-		Code:            best.coupon.Code,
-		RawText:         best.coupon.Message,
-		Confidence:      confidence,
-		Scope:           scope,
-		SampledItemIDs:  itemIDs,
-		SampledItemURLs: itemURLs,
-		FirstSeen:       firstSeenOrNow(existing, bestSig, now),
-		LastSeen:        now,
-		LastChecked:     now,
-		ExpiresAt:       best.coupon.ExpiresAt,
-		NextCheckAt:     nextCheck,
-		Active:          confidence >= 0.75 && scope == "store",
+		Marketplace:               marketplace,
+		Seller:                    seller,
+		Signature:                 signature,
+		DiscountType:              discountType,
+		DiscountValue:             discountValue,
+		MaxDiscount:               maxDiscount,
+		FormulaType:               formulaType,
+		ThresholdAmount:           thresholdAmount,
+		Code:                      best.coupon.Code,
+		RawText:                   best.coupon.Message,
+		Confidence:                confidence,
+		InferenceMaxErrorCents:    int(inference.MaxErrorCents),
+		InferenceCompetingRules:   inference.CompetingRules,
+		InferenceNeedsMoreSamples: inference.NeedsMoreSamples,
+		InferenceNextSampleHint:   inference.NextSamplePriceHint,
+		Scope:                     scope,
+		SampledItemIDs:            itemIDs,
+		SampledItemURLs:           itemURLs,
+		FirstSeen:                 firstSeenOrNow(existing, signature, now),
+		LastSeen:                  now,
+		LastChecked:               now,
+		ExpiresAt:                 best.coupon.ExpiresAt,
+		NextCheckAt:               nextCheck,
+		Active:                    confidence >= 0.75 && scope == "store" && inferredCouponRuleUsable(formulaType),
 	}
 	logger.Info("Refreshed eBay seller coupon cache",
 		"seller", seller,
 		"marketplace", marketplace,
 		"signature", coupon.Signature,
+		"formula_type", coupon.FormulaType,
 		"scope", coupon.Scope,
 		"confidence", coupon.Confidence,
 		"active", coupon.Active,
+		"inference_max_error_cents", coupon.InferenceMaxErrorCents,
+		"inference_competing_rules", coupon.InferenceCompetingRules,
+		"inference_needs_more_samples", coupon.InferenceNeedsMoreSamples,
 		"sample_hits", counts[bestSig],
 		"sample_size", sampleSize,
 		"next_check", coupon.NextCheckAt,
 	)
 	return coupon
+}
+
+type couponInferenceObservation struct {
+	signature string
+	sample    couponinfer.Sample
+}
+
+func inferenceSamplesForSignature(observations []couponInferenceObservation, signature string) []couponinfer.Sample {
+	out := make([]couponinfer.Sample, 0, len(observations))
+	for _, observation := range observations {
+		if observation.signature == "" || observation.signature == signature {
+			out = append(out, observation.sample)
+		}
+	}
+	return out
+}
+
+func couponEvidenceText(coupon PageCoupon) string {
+	if strings.TrimSpace(coupon.EvidenceText) != "" {
+		return coupon.EvidenceText
+	}
+	return coupon.Message
+}
+
+func priceToCents(price float64) int64 {
+	if price <= 0 {
+		return 0
+	}
+	return int64(math.Round(price * 100))
+}
+
+func inferredCouponRuleUsable(ruleType string) bool {
+	switch ruleType {
+	case couponinfer.TypeFlat, couponinfer.TypePercent, couponinfer.TypePercentCap,
+		couponinfer.TypeThresholdFlat, couponinfer.TypeThresholdPercent:
+		return true
+	default:
+		return false
+	}
+}
+
+func storeCouponFieldsFromRule(rule couponinfer.Rule) (discountType string, discountValue, maxDiscount, thresholdAmount float64) {
+	switch rule.Type {
+	case couponinfer.TypeFlat, couponinfer.TypeThresholdFlat:
+		discountType = "fixed"
+		discountValue = float64(rule.ValueCents) / 100
+	case couponinfer.TypePercent, couponinfer.TypePercentCap, couponinfer.TypeThresholdPercent:
+		discountType = "percent"
+		discountValue = float64(rule.BasisPoints) / 100
+		maxDiscount = float64(rule.CapCents) / 100
+	default:
+		discountType = "unknown"
+	}
+	thresholdAmount = float64(rule.ThresholdCents) / 100
+	return discountType, discountValue, maxDiscount, thresholdAmount
 }
 
 func (p *Processor) couponDiscoveryIntervalOrDefault() time.Duration {
@@ -764,7 +859,11 @@ func couponCacheFresh(coupons []StoreCoupon, now time.Time) bool {
 func bestCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot {
 	var best couponSnapshot
 	now := time.Now()
+	latestChecked := latestCouponCheck(coupons)
 	for _, coupon := range coupons {
+		if !latestChecked.IsZero() && !coupon.LastChecked.Equal(latestChecked) {
+			continue
+		}
 		if !coupon.Active || coupon.Confidence < 0.75 || coupon.Scope != "store" {
 			continue
 		}
@@ -785,14 +884,40 @@ func bestCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot {
 	return best
 }
 
+func latestCouponCheck(coupons []StoreCoupon) time.Time {
+	var latest time.Time
+	for _, coupon := range coupons {
+		if coupon.LastChecked.After(latest) {
+			latest = coupon.LastChecked
+		}
+	}
+	return latest
+}
+
 func storeCouponDiscount(coupon StoreCoupon, basePrice float64) float64 {
-	switch coupon.DiscountType {
-	case "fixed":
+	if coupon.ThresholdAmount > 0 && basePrice < coupon.ThresholdAmount {
+		return 0
+	}
+	formulaType := coupon.FormulaType
+	if formulaType == "" {
+		switch coupon.DiscountType {
+		case "fixed":
+			formulaType = couponinfer.TypeFlat
+		case "percent":
+			if coupon.MaxDiscount > 0 {
+				formulaType = couponinfer.TypePercentCap
+			} else {
+				formulaType = couponinfer.TypePercent
+			}
+		}
+	}
+	switch formulaType {
+	case couponinfer.TypeFlat, couponinfer.TypeThresholdFlat:
 		if coupon.DiscountValue >= basePrice {
 			return 0
 		}
 		return roundCents(coupon.DiscountValue)
-	case "percent":
+	case couponinfer.TypePercent, couponinfer.TypePercentCap, couponinfer.TypeThresholdPercent:
 		discount := basePrice * coupon.DiscountValue / 100
 		if coupon.MaxDiscount > 0 && coupon.MaxDiscount < discount {
 			discount = coupon.MaxDiscount

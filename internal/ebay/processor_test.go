@@ -2,6 +2,7 @@ package ebay
 
 import (
 	"testing"
+	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -205,6 +206,74 @@ func TestShouldFetchPageCouponOnlyAfterBaseOrAPIDrop(t *testing.T) {
 				t.Fatalf("shouldFetchPageCoupon() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStoreCouponDiscountUsesInferredThreshold(t *testing.T) {
+	coupon := StoreCoupon{
+		FormulaType:     "threshold_flat",
+		DiscountType:    "fixed",
+		DiscountValue:   15,
+		ThresholdAmount: 75,
+	}
+	if got := storeCouponDiscount(coupon, 74.99); got != 0 {
+		t.Fatalf("discount below threshold = %v, want 0", got)
+	}
+	if got := storeCouponDiscount(coupon, 80); got != 15 {
+		t.Fatalf("discount above threshold = %v, want 15", got)
+	}
+}
+
+func TestBestCachedCouponSkipsLowConfidenceInferredCoupons(t *testing.T) {
+	coupon := StoreCoupon{
+		Active:        true,
+		Scope:         "store",
+		Confidence:    0.6,
+		FormulaType:   "flat",
+		DiscountType:  "fixed",
+		DiscountValue: 50,
+	}
+	if got := bestCachedCoupon([]StoreCoupon{coupon}, 500); got.DiscountAmount != 0 {
+		t.Fatalf("discount = %v, want 0 for low confidence coupon", got.DiscountAmount)
+	}
+}
+
+func TestBestCachedCouponAppliesInferredPercentCap(t *testing.T) {
+	coupon := StoreCoupon{
+		Active:        true,
+		Scope:         "store",
+		Confidence:    0.9,
+		FormulaType:   "percent_cap",
+		DiscountType:  "percent",
+		DiscountValue: 20,
+		MaxDiscount:   100,
+	}
+	if got := bestCachedCoupon([]StoreCoupon{coupon}, 800); got.DiscountAmount != 100 {
+		t.Fatalf("discount = %v, want 100", got.DiscountAmount)
+	}
+}
+
+func TestBestCachedCouponUsesLatestCouponCheckOnly(t *testing.T) {
+	oldCheck := time.Now().Add(-2 * time.Hour)
+	newCheck := time.Now()
+	oldActive := StoreCoupon{
+		Active:        true,
+		Scope:         "store",
+		Confidence:    0.9,
+		FormulaType:   "flat",
+		DiscountType:  "fixed",
+		DiscountValue: 50,
+		LastChecked:   oldCheck,
+	}
+	freshAmbiguous := StoreCoupon{
+		Active:      false,
+		Scope:       "store",
+		Confidence:  0.5,
+		FormulaType: "ambiguous",
+		LastChecked: newCheck,
+	}
+	if got := bestCachedCoupon([]StoreCoupon{oldActive, freshAmbiguous}, 500); got.DiscountAmount != 0 {
+		t.Fatalf("discount = %v, want 0 after fresher ambiguous check", got.DiscountAmount)
 	}
 }
 
