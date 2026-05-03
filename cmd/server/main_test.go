@@ -131,3 +131,14 @@ func TestRootHandler_ReturnsOK(t *testing.T) {
 		t.Fatalf("status body = %q, want %q", body["status"], "ok")
 	}
 }
+
+func TestRootHandler_ReturnsNotFoundForUnknownPath(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/process", nil)
+	rec := httptest.NewRecorder()
+
+	rootHandler(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}

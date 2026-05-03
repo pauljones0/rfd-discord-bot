@@ -4,12 +4,12 @@ import "time"
 
 // EbaySeller represents a tracked eBay seller stored in the document store.
 type EbaySeller struct {
-	Username    string    `firestore:"username"`
-	DisplayName string    `firestore:"displayName,omitempty"`
-	Marketplace string    `firestore:"marketplace,omitempty"` // "EBAY_CA" or "EBAY_US"; defaults to EBAY_CA
-	CategoryIDs []string  `firestore:"categoryIDs,omitempty"`
-	IsActive    bool      `firestore:"isActive"`
-	AddedAt     time.Time `firestore:"addedAt"`
+	Username    string    `docstore:"username"`
+	DisplayName string    `docstore:"displayName,omitempty"`
+	Marketplace string    `docstore:"marketplace,omitempty"` // "EBAY_CA" or "EBAY_US"; defaults to EBAY_CA
+	CategoryIDs []string  `docstore:"categoryIDs,omitempty"`
+	IsActive    bool      `docstore:"isActive"`
+	AddedAt     time.Time `docstore:"addedAt"`
 }
 
 // MarketplaceID returns the eBay marketplace ID for the seller.
@@ -48,27 +48,27 @@ func (s EbaySeller) EffectiveCategoryIDs() []string {
 
 // TrackedItem represents an eBay listing being monitored for price drops.
 type TrackedItem struct {
-	ItemID                   string    `firestore:"itemID"`
-	Title                    string    `firestore:"title"`
-	Price                    float64   `firestore:"price"` // Effective price after item-level coupons when available.
-	BasePrice                float64   `firestore:"basePrice,omitempty"`
-	CouponDiscount           float64   `firestore:"couponDiscount,omitempty"`
-	CouponCode               string    `firestore:"couponCode,omitempty"`
-	CouponMessage            string    `firestore:"couponMessage,omitempty"`
-	CouponSource             string    `firestore:"couponSource,omitempty"`
-	CouponSignature          string    `firestore:"couponSignature,omitempty"`
-	OriginalPrice            float64   `firestore:"originalPrice,omitempty"`
-	LastNotifiedPrice        float64   `firestore:"lastNotifiedPrice,omitempty"`
-	LastCouponAlertSignature string    `firestore:"lastCouponAlertSignature,omitempty"`
-	LastCouponAlertAt        time.Time `firestore:"lastCouponAlertAt,omitempty"`
-	DropCount                int       `firestore:"dropCount,omitempty"`
-	Currency                 string    `firestore:"currency"`
-	Seller                   string    `firestore:"seller"`
-	Condition                string    `firestore:"condition"`
-	ItemURL                  string    `firestore:"itemURL"`
-	ImageURL                 string    `firestore:"imageURL"`
-	FirstSeenAt              time.Time `firestore:"firstSeenAt"`
-	LastSeenAt               time.Time `firestore:"lastSeenAt"`
+	ItemID                   string    `docstore:"itemID"`
+	Title                    string    `docstore:"title"`
+	Price                    float64   `docstore:"price"` // Effective price after item-level coupons when available.
+	BasePrice                float64   `docstore:"basePrice,omitempty"`
+	CouponDiscount           float64   `docstore:"couponDiscount,omitempty"`
+	CouponCode               string    `docstore:"couponCode,omitempty"`
+	CouponMessage            string    `docstore:"couponMessage,omitempty"`
+	CouponSource             string    `docstore:"couponSource,omitempty"`
+	CouponSignature          string    `docstore:"couponSignature,omitempty"`
+	OriginalPrice            float64   `docstore:"originalPrice,omitempty"`
+	LastNotifiedPrice        float64   `docstore:"lastNotifiedPrice,omitempty"`
+	LastCouponAlertSignature string    `docstore:"lastCouponAlertSignature,omitempty"`
+	LastCouponAlertAt        time.Time `docstore:"lastCouponAlertAt,omitempty"`
+	DropCount                int       `docstore:"dropCount,omitempty"`
+	Currency                 string    `docstore:"currency"`
+	Seller                   string    `docstore:"seller"`
+	Condition                string    `docstore:"condition"`
+	ItemURL                  string    `docstore:"itemURL"`
+	ImageURL                 string    `docstore:"imageURL"`
+	FirstSeenAt              time.Time `docstore:"firstSeenAt"`
+	LastSeenAt               time.Time `docstore:"lastSeenAt"`
 }
 
 // EbayItem represents an eBay listing for Discord notification (price drop).
@@ -98,62 +98,62 @@ type EbayItem struct {
 
 // EbayPollState tracks the state of the last eBay polling run (singleton in bot_config).
 type EbayPollState struct {
-	LastPollTime  time.Time `firestore:"lastPollTime"`
-	LastPollItems int       `firestore:"lastPollItems"`
-	LastError     string    `firestore:"lastError,omitempty"`
-	LastUpdated   time.Time `firestore:"lastUpdated"`
+	LastPollTime  time.Time `docstore:"lastPollTime"`
+	LastPollItems int       `docstore:"lastPollItems"`
+	LastError     string    `docstore:"lastError,omitempty"`
+	LastUpdated   time.Time `docstore:"lastUpdated"`
 }
 
 // StoreCoupon caches seller/store-level coupons discovered from rendered item pages.
 // The Browse API remains the listing source of truth; these coupons are only used
 // during post-drop effective price calculations.
 type StoreCoupon struct {
-	Marketplace               string    `firestore:"marketplace"`
-	Seller                    string    `firestore:"seller"`
-	Signature                 string    `firestore:"signature"`
-	DiscountType              string    `firestore:"discountType,omitempty"` // "fixed", "percent", "none", or "unknown"
-	DiscountValue             float64   `firestore:"discountValue,omitempty"`
-	MaxDiscount               float64   `firestore:"maxDiscount,omitempty"`
-	FormulaType               string    `firestore:"formulaType,omitempty"` // "flat", "percent", "percent_cap", threshold variants, "ambiguous", or "unknown"
-	ThresholdAmount           float64   `firestore:"thresholdAmount,omitempty"`
-	Code                      string    `firestore:"code,omitempty"`
-	RawText                   string    `firestore:"rawText,omitempty"`
-	Confidence                float64   `firestore:"confidence,omitempty"`
-	InferenceMaxErrorCents    int       `firestore:"inferenceMaxErrorCents,omitempty"`
-	InferenceCompetingRules   int       `firestore:"inferenceCompetingRules,omitempty"`
-	InferenceNeedsMoreSamples bool      `firestore:"inferenceNeedsMoreSamples,omitempty"`
-	InferenceNextSampleHint   string    `firestore:"inferenceNextSampleHint,omitempty"`
-	Scope                     string    `firestore:"scope,omitempty"` // "store", "item", "none", or "unknown"
-	SampledItemIDs            []string  `firestore:"sampledItemIDs,omitempty"`
-	SampledItemURLs           []string  `firestore:"sampledItemURLs,omitempty"`
-	FirstSeen                 time.Time `firestore:"firstSeen"`
-	LastSeen                  time.Time `firestore:"lastSeen"`
-	LastChecked               time.Time `firestore:"lastChecked"`
-	ExpiresAt                 time.Time `firestore:"expiresAt,omitempty"`
-	NextCheckAt               time.Time `firestore:"nextCheckAt"`
-	Active                    bool      `firestore:"active"`
-	ConsecutiveNoCoupon       int       `firestore:"consecutiveNoCoupon,omitempty"`
+	Marketplace               string    `docstore:"marketplace"`
+	Seller                    string    `docstore:"seller"`
+	Signature                 string    `docstore:"signature"`
+	DiscountType              string    `docstore:"discountType,omitempty"` // "fixed", "percent", "none", or "unknown"
+	DiscountValue             float64   `docstore:"discountValue,omitempty"`
+	MaxDiscount               float64   `docstore:"maxDiscount,omitempty"`
+	FormulaType               string    `docstore:"formulaType,omitempty"` // "flat", "percent", "percent_cap", threshold variants, "ambiguous", or "unknown"
+	ThresholdAmount           float64   `docstore:"thresholdAmount,omitempty"`
+	Code                      string    `docstore:"code,omitempty"`
+	RawText                   string    `docstore:"rawText,omitempty"`
+	Confidence                float64   `docstore:"confidence,omitempty"`
+	InferenceMaxErrorCents    int       `docstore:"inferenceMaxErrorCents,omitempty"`
+	InferenceCompetingRules   int       `docstore:"inferenceCompetingRules,omitempty"`
+	InferenceNeedsMoreSamples bool      `docstore:"inferenceNeedsMoreSamples,omitempty"`
+	InferenceNextSampleHint   string    `docstore:"inferenceNextSampleHint,omitempty"`
+	Scope                     string    `docstore:"scope,omitempty"` // "store", "item", "none", or "unknown"
+	SampledItemIDs            []string  `docstore:"sampledItemIDs,omitempty"`
+	SampledItemURLs           []string  `docstore:"sampledItemURLs,omitempty"`
+	FirstSeen                 time.Time `docstore:"firstSeen"`
+	LastSeen                  time.Time `docstore:"lastSeen"`
+	LastChecked               time.Time `docstore:"lastChecked"`
+	ExpiresAt                 time.Time `docstore:"expiresAt,omitempty"`
+	NextCheckAt               time.Time `docstore:"nextCheckAt"`
+	Active                    bool      `docstore:"active"`
+	ConsecutiveNoCoupon       int       `docstore:"consecutiveNoCoupon,omitempty"`
 }
 
 // CouponObservation is one browser-derived coupon datapoint for a seller item.
 // Observations are used to infer whether a coupon formula is safe to apply across
 // a seller store without repeatedly opening listing pages.
 type CouponObservation struct {
-	Marketplace    string    `firestore:"marketplace"`
-	Seller         string    `firestore:"seller"`
-	Signature      string    `firestore:"signature"`
-	ItemID         string    `firestore:"itemID"`
-	ItemURL        string    `firestore:"itemURL,omitempty"`
-	BasePrice      float64   `firestore:"basePrice"`
-	DiscountAmount float64   `firestore:"discountAmount"`
-	Code           string    `firestore:"code,omitempty"`
-	Message        string    `firestore:"message,omitempty"`
-	EvidenceText   string    `firestore:"evidenceText,omitempty"`
-	Scope          string    `firestore:"scope,omitempty"`
-	Backend        string    `firestore:"backend,omitempty"`
-	Confidence     float64   `firestore:"confidence,omitempty"`
-	ObservedAt     time.Time `firestore:"observedAt"`
-	ExpiresAt      time.Time `firestore:"expiresAt,omitempty"`
+	Marketplace    string    `docstore:"marketplace"`
+	Seller         string    `docstore:"seller"`
+	Signature      string    `docstore:"signature"`
+	ItemID         string    `docstore:"itemID"`
+	ItemURL        string    `docstore:"itemURL,omitempty"`
+	BasePrice      float64   `docstore:"basePrice"`
+	DiscountAmount float64   `docstore:"discountAmount"`
+	Code           string    `docstore:"code,omitempty"`
+	Message        string    `docstore:"message,omitempty"`
+	EvidenceText   string    `docstore:"evidenceText,omitempty"`
+	Scope          string    `docstore:"scope,omitempty"`
+	Backend        string    `docstore:"backend,omitempty"`
+	Confidence     float64   `docstore:"confidence,omitempty"`
+	ObservedAt     time.Time `docstore:"observedAt"`
+	ExpiresAt      time.Time `docstore:"expiresAt,omitempty"`
 }
 
 // BrowseAPIItem represents a single item from the eBay Browse API response.

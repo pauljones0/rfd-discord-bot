@@ -39,7 +39,7 @@ func ensureDeadline(ctx context.Context, timeout time.Duration) (context.Context
 	return ctx, func() {}
 }
 
-func New(ctx context.Context, _ string) (*Client, error) {
+func New(ctx context.Context) (*Client, error) {
 	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if dsn == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
@@ -81,7 +81,7 @@ func (c *Client) GetDealByID(ctx context.Context, id string) (*models.DealInfo, 
 	if err != nil || !ok {
 		return nil, err
 	}
-	deal.FirestoreID = id
+	deal.DocumentID = id
 	return &deal, nil
 }
 
@@ -96,7 +96,7 @@ func (c *Client) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*m
 		if !ok {
 			continue
 		}
-		deal.FirestoreID = id
+		deal.DocumentID = id
 		result[id] = &deal
 	}
 	return result, nil
@@ -104,7 +104,7 @@ func (c *Client) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*m
 
 func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error {
 	deal = prepareDealForStorage(deal)
-	if err := c.CreateDocument(ctx, dealsCollection, deal.FirestoreID, deal); err != nil {
+	if err := c.CreateDocument(ctx, dealsCollection, deal.DocumentID, deal); err != nil {
 		if errors.Is(err, errDocumentExists) {
 			return models.ErrDealExists
 		}
@@ -115,7 +115,7 @@ func (c *Client) TryCreateDeal(ctx context.Context, deal models.DealInfo) error 
 
 func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 	deal = prepareDealForStorage(deal)
-	return c.SetDocument(ctx, dealsCollection, deal.FirestoreID, deal)
+	return c.SetDocument(ctx, dealsCollection, deal.DocumentID, deal)
 }
 
 func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
@@ -145,14 +145,14 @@ func (c *Client) BatchWrite(ctx context.Context, creates []models.DealInfo, upda
 	var errs []error
 	for _, d := range creates {
 		d = prepareDealForStorage(d)
-		if err := c.CreateDocument(ctx, dealsCollection, d.FirestoreID, d); err != nil {
-			errs = append(errs, fmt.Errorf("create %s: %w", d.FirestoreID, err))
+		if err := c.CreateDocument(ctx, dealsCollection, d.DocumentID, d); err != nil {
+			errs = append(errs, fmt.Errorf("create %s: %w", d.DocumentID, err))
 		}
 	}
 	for _, d := range updates {
 		d = prepareDealForStorage(d)
-		if err := c.SetDocument(ctx, dealsCollection, d.FirestoreID, d); err != nil {
-			errs = append(errs, fmt.Errorf("update %s: %w", d.FirestoreID, err))
+		if err := c.SetDocument(ctx, dealsCollection, d.DocumentID, d); err != nil {
+			errs = append(errs, fmt.Errorf("update %s: %w", d.DocumentID, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -180,7 +180,7 @@ func (c *Client) GetRecentDeals(ctx context.Context, d time.Duration) ([]models.
 			slog.Warn("Failed to decode recent deal", "id", row.ID, "error", err)
 			continue
 		}
-		deal.FirestoreID = row.ID
+		deal.DocumentID = row.ID
 		deals = append(deals, deal)
 	}
 	sortDealsByPublished(deals)
@@ -203,8 +203,8 @@ func (c *Client) UpdateGeminiQuotaStatus(ctx context.Context, quota models.Gemin
 
 // TokenServiceConfig stores the dynamic URL for an optional local relay service.
 type TokenServiceConfig struct {
-	URL       string    `firestore:"url"`
-	UpdatedAt time.Time `firestore:"updated_at"`
+	URL       string    `docstore:"url"`
+	UpdatedAt time.Time `docstore:"updated_at"`
 }
 
 func (c *Client) GetTokenServiceURL(ctx context.Context) (string, error) {

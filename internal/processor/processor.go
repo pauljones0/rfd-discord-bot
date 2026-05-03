@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
 	"github.com/pauljones0/rfd-discord-bot/internal/metrics"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
@@ -168,9 +169,9 @@ func (p *DealProcessor) scrapeAndValidate(ctx context.Context, logger *slog.Logg
 			continue
 		}
 
-		deal.FirestoreID = generateDealID(deal.PublishedTimestamp)
+		deal.DocumentID = generateDealID(deal.PublishedTimestamp)
 		if len(deal.Threads) > 0 {
-			deal.Threads[0].FirestoreID = deal.FirestoreID
+			deal.Threads[0].DocumentID = deal.DocumentID
 		}
 
 		validDeals = append(validDeals, *deal)
@@ -182,7 +183,7 @@ func (p *DealProcessor) scrapeAndValidate(ctx context.Context, logger *slog.Logg
 func (p *DealProcessor) loadExistingDeals(ctx context.Context, validDeals []models.DealInfo, logger *slog.Logger) (map[string]*models.DealInfo, error) {
 	var idsToLookup []string
 	for _, deal := range validDeals {
-		idsToLookup = append(idsToLookup, deal.FirestoreID)
+		idsToLookup = append(idsToLookup, deal.DocumentID)
 	}
 
 	existingDeals, err := p.store.GetDealsByIDs(ctx, idsToLookup)
@@ -198,7 +199,7 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 	var dealsToDetail []*models.DealInfo
 	for i := range validDeals {
 		deal := &validDeals[i]
-		existing := existingDeals[deal.FirestoreID]
+		existing := existingDeals[deal.DocumentID]
 
 		if existing == nil {
 			// New deal — needs details
@@ -304,7 +305,7 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 		}
 
 		deal := &validDeals[i]
-		existing := existingDeals[deal.FirestoreID]
+		existing := existingDeals[deal.DocumentID]
 		isNew := existing == nil
 
 		// Queue for title cleaning if:
@@ -342,7 +343,7 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 	// scraped deals to the same ID.
 	groupedDeals := make(map[string][]models.DealInfo)
 	for _, deal := range validDeals {
-		groupedDeals[deal.FirestoreID] = append(groupedDeals[deal.FirestoreID], deal)
+		groupedDeals[deal.DocumentID] = append(groupedDeals[deal.DocumentID], deal)
 	}
 
 	for documentID, dealsGroup := range groupedDeals {
@@ -481,7 +482,7 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 				}
 				existing.DiscordLastUpdatedTime = time.Now()
 			} else {
-				slog.Warn("Failed to send missing discord notifications", "processor", "rfd", "id", existing.FirestoreID, "error", err)
+				slog.Warn("Failed to send missing discord notifications", "processor", "rfd", "id", existing.DocumentID, "error", err)
 			}
 		}
 	}
@@ -496,7 +497,7 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		if err := p.notifier.Update(ctx, *existing); err == nil {
 			existing.DiscordLastUpdatedTime = time.Now()
 		} else {
-			slog.Warn("Failed to update discord notifications", "processor", "rfd", "id", existing.FirestoreID, "error", err)
+			slog.Warn("Failed to update discord notifications", "processor", "rfd", "id", existing.DocumentID, "error", err)
 		}
 	}
 
@@ -631,36 +632,5 @@ func (p *DealProcessor) isDealEligibleForSubscription(deal models.DealInfo, sub 
 	isTech := deal.Category != "" && util.IsTechCategory(deal.Category)
 	isWarm := deal.HasBeenWarm || p.notifier.IsWarm(deal)
 	isHot := deal.HasBeenHot || p.notifier.IsHot(deal)
-
-	switch sub.DealType {
-	// RFD: all deals
-	case "rfd_all":
-		return true
-	// RFD: tech only
-	case "rfd_tech":
-		return isTech
-	// RFD: warm + hot (all categories)
-	case "rfd_warm_hot":
-		return isWarm || isHot
-	// RFD: warm + hot tech only
-	case "rfd_warm_hot_tech":
-		return (isWarm || isHot) && isTech
-	// RFD: hot only
-	case "rfd_hot":
-		return isHot
-	// RFD: hot tech only
-	case "rfd_hot_tech":
-		return isHot && isTech
-
-	// Cross-source: RFD deals are eligible
-	case "warm_hot_all":
-		return isWarm || isHot
-	case "hot_all":
-		return isHot
-
-	// eBay-only: RFD deals are NOT eligible
-	case "ebay_warm_hot", "ebay_hot":
-		return false
-	}
-	return false
+	return dealtypes.RFDEligible(sub.DealType, isTech, isWarm, isHot)
 }

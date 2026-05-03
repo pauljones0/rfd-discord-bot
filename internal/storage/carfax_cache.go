@@ -15,16 +15,16 @@ const carfaxCacheRetention = 90 * 24 * time.Hour
 
 // CarfaxCacheEntry stores a cached Carfax valuation result.
 type CarfaxCacheEntry struct {
-	Year         int       `firestore:"year"`
-	Make         string    `firestore:"make"`
-	Model        string    `firestore:"model"`
-	Trim         string    `firestore:"trim"`
-	PostalPrefix string    `firestore:"postal_prefix"` // first 3 chars of postal code
-	LowValue     float64   `firestore:"low_value"`
-	HighValue    float64   `firestore:"high_value"`
-	MidValue     float64   `firestore:"mid_value"`
-	CachedAt     time.Time `firestore:"cached_at"`
-	ExpiresAt    time.Time `firestore:"expiresAt,omitempty"`
+	Year         int       `docstore:"year"`
+	Make         string    `docstore:"make"`
+	Model        string    `docstore:"model"`
+	Trim         string    `docstore:"trim"`
+	PostalPrefix string    `docstore:"postal_prefix"` // first 3 chars of postal code
+	LowValue     float64   `docstore:"low_value"`
+	HighValue    float64   `docstore:"high_value"`
+	MidValue     float64   `docstore:"mid_value"`
+	CachedAt     time.Time `docstore:"cached_at"`
+	ExpiresAt    time.Time `docstore:"expiresAt,omitempty"`
 }
 
 // CarfaxOptionsEntry stores the valid dropdown options returned by Carfax's cascade API.
@@ -38,10 +38,10 @@ type CarfaxCacheEntry struct {
 //   - year=2018, make=Honda, model=Civic Sedan → Trims: [DX, EX, EX-T, LX, ...]
 //   - year=2018, make=Honda, model=Civic Sedan, trim=EX → Engines: [2.0L I4]
 type CarfaxOptionsEntry struct {
-	Property string    `firestore:"property"` // "Make", "Model", "Trim", "Engine", etc.
-	Params   string    `firestore:"params"`   // normalized parent params, e.g. "year=2018&make=Honda"
-	Options  []string  `firestore:"options"`  // the valid dropdown values
-	CachedAt time.Time `firestore:"cached_at"`
+	Property string    `docstore:"property"` // "Make", "Model", "Trim", "Engine", etc.
+	Params   string    `docstore:"params"`   // normalized parent params, e.g. "year=2018&make=Honda"
+	Options  []string  `docstore:"options"`  // the valid dropdown values
+	CachedAt time.Time `docstore:"cached_at"`
 }
 
 // carfaxCacheKeyRe strips non-alphanumeric characters (except hyphens) for cache key generation.

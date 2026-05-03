@@ -298,10 +298,7 @@ func (h *Handler) handleCommand(w http.ResponseWriter, req interactionRequest) {
 		return
 	}
 
-	// Route both legacy /rfd-bot-setup and new /deals commands
 	switch req.Data.Name {
-	case "rfd-bot-setup":
-		h.handleLegacyCommand(w, req)
 	case "deals":
 		h.handleDealsCommand(w, req)
 	case "hw-setup", "hw-help", "hw-alert":
@@ -312,30 +309,6 @@ func (h *Handler) handleCommand(w http.ResponseWriter, req interactionRequest) {
 		h.handleHWCommand(w, req)
 	default:
 		h.respondError(w, "Unknown command.")
-	}
-}
-
-// handleLegacyCommand handles the old /rfd-bot-setup command for backward compatibility.
-func (h *Handler) handleLegacyCommand(w http.ResponseWriter, req interactionRequest) {
-	if req.GuildID == "" {
-		h.respondPrivateMessage(w, "This command can only be used in a server.")
-		return
-	}
-
-	// Look for the subcommand
-	var subCommandName string
-	var subCommandOptions []interactionOption
-	if len(req.Data.Options) > 0 {
-		subCommandName = req.Data.Options[0].Name
-		subCommandOptions = req.Data.Options[0].Options
-	}
-
-	if subCommandName == "set" {
-		h.handleSetCommand(w, req, subCommandOptions)
-	} else if subCommandName == "remove" {
-		h.handleRemoveCommand(w, req)
-	} else {
-		h.respondPrivateMessage(w, "Unknown subcommand. Usage: /rfd-bot-setup set <channel> OR /rfd-bot-setup remove")
 	}
 }
 
@@ -912,7 +885,7 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 		msg.WriteString("**Memory Express:**\n")
 		for _, sub := range meSubs {
 			storeName := memoryexpress.StoreName(sub.StoreCode)
-			msg.WriteString(fmt.Sprintf("  • <#%s> — %s (%s)\n", sub.ChannelID, storeName, sub.DealType))
+			msg.WriteString(fmt.Sprintf("  • <#%s> — %s (%s)\n", sub.ChannelID, storeName, dealTypeLabel(sub.DealType)))
 		}
 		msg.WriteString("\n")
 	}
@@ -920,7 +893,7 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 	if len(bbSubs) > 0 {
 		msg.WriteString("**Best Buy:**\n")
 		for _, sub := range bbSubs {
-			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, sub.DealType))
+			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
 		}
 	}
 
@@ -998,104 +971,6 @@ func (h *Handler) handleAutocomplete(w http.ResponseWriter, req interactionReque
 	})
 }
 
-// handleSetCommand handles the legacy /rfd-bot-setup set subcommand.
-func (h *Handler) handleSetCommand(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
-	var channelID string
-	var channelName string
-	var dealType string
-	for _, opt := range options {
-		if opt.Name == "channel" {
-			if val, ok := opt.Value.(string); ok {
-				channelID = val
-				// Try to get channel name from resolved data
-				if req.Data != nil && req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
-					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
-						channelName = ch.Name
-					}
-				}
-			}
-		} else if opt.Name == "type" {
-			if val, ok := opt.Value.(string); ok {
-				dealType = val
-			}
-		}
-	}
-
-	if channelID == "" || dealType == "" {
-		h.respondPrivateMessage(w, "Please select a channel and deal type.")
-		return
-	}
-
-	if !dealtypes.IsLegacySetup(dealType) {
-		h.respondPrivateMessage(w, "Invalid deal type selected. Please use the autocomplete choices provided by the command.")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	// Check if a subscription already exists for this channel
-	existing, err := h.store.GetSubscription(ctx, req.GuildID, channelID)
-	if err != nil {
-		slog.Error("Failed to check for existing subscription", "guild", req.GuildID, "channel", channelID, "error", err)
-		// Proceed anyway, worst case we overwrite without warning
-	}
-
-	if existing != nil && existing.DealType != dealType {
-		// Found an existing subscription with a different type, ask for confirmation
-		res := interactionResponse{
-			Type: InteractionResponseTypeChannelMessageWithSource,
-			Data: &interactionResponseData{
-				Content: fmt.Sprintf("⚠️ <#%s> is already set up to receive **%s** deals. Do you want to overwrite it with **%s** deals?", channelID, existing.DealType, dealType),
-				Flags:   MessageFlagEphemeral,
-				Components: &[]discordComponent{
-					{
-						Type: ComponentTypeActionRow,
-						Components: []discordComponent{
-							{
-								Type:     ComponentTypeButton,
-								Style:    ButtonStylePrimary,
-								Label:    "Confirm Update",
-								CustomID: fmt.Sprintf("confirm_update::%s::%s::%s", channelID, dealType, channelName),
-							},
-							{
-								Type:     ComponentTypeButton,
-								Style:    ButtonStyleSecondary,
-								Label:    "Cancel",
-								CustomID: "confirm_cancel",
-							},
-						},
-					},
-				},
-			},
-		}
-		writeJSON(w, res)
-		return
-	}
-
-	username := "Unknown"
-	if req.Member != nil {
-		username = req.Member.User.Username
-	}
-
-	sub := models.Subscription{
-		GuildID:     req.GuildID,
-		ChannelID:   channelID,
-		ChannelName: channelName,
-		DealType:    dealType,
-		AddedBy:     username,
-		AddedAt:     time.Now(),
-	}
-
-	if err := h.store.SaveSubscription(ctx, sub); err != nil {
-		slog.Error("Failed to save subscription", "guild", req.GuildID, "error", err)
-		h.respondPrivateMessage(w, "Failed to save subscription due to an internal error.")
-		return
-	}
-
-	h.respondPrivateMessage(w, fmt.Sprintf("✅ RFD Bot has been successfully set up to post deals in <#%s>!", channelID))
-}
-
 func (h *Handler) handleRemoveCommand(w http.ResponseWriter, req interactionRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -1143,7 +1018,6 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 
 	var channelID string
 	dealType := "all"
-	channelName := ""
 
 	if strings.HasPrefix(req.Data.CustomID, "hw_") {
 		if !h.hardwareSwapEnabled {
@@ -1242,61 +1116,6 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 			Data: &interactionResponseData{
 				Content:    fmt.Sprintf("🗑️ Memory Express subscription for **%s** has been removed from <#%s>.", storeName, meChannelID),
 				Components: &[]discordComponent{},
-			},
-		}
-		writeJSON(w, res)
-		return
-	} else if strings.HasPrefix(req.Data.CustomID, "confirm_update::") {
-		trimmed := strings.TrimPrefix(req.Data.CustomID, "confirm_update::")
-		parts := strings.SplitN(trimmed, "::", 3)
-		if len(parts) < 2 {
-			h.respondError(w, "Invalid confirmation data.")
-			return
-		}
-		channelID = parts[0]
-		dealType = parts[1]
-		if len(parts) > 2 {
-			channelName = parts[2]
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		username := "Unknown"
-		if req.Member != nil {
-			username = req.Member.User.Username
-		}
-
-		sub := models.Subscription{
-			GuildID:     req.GuildID,
-			ChannelID:   channelID,
-			ChannelName: channelName,
-			DealType:    dealType,
-			AddedBy:     username,
-			AddedAt:     time.Now(),
-		}
-
-		if err := h.store.SaveSubscription(ctx, sub); err != nil {
-			slog.Error("Failed to update subscription", "guild", req.GuildID, "channel", channelID, "error", err)
-			h.respondPrivateMessage(w, "Failed to update subscription due to an internal error.")
-			return
-		}
-
-		res := interactionResponse{
-			Type: InteractionResponseTypeUpdateMessage,
-			Data: &interactionResponseData{
-				Content:    fmt.Sprintf("✅ RFD Bot has been successfully updated to post **%s** deals in <#%s>!", dealType, channelID),
-				Components: &[]discordComponent{}, // Clear buttons
-			},
-		}
-		writeJSON(w, res)
-		return
-	} else if req.Data.CustomID == "confirm_cancel" {
-		res := interactionResponse{
-			Type: InteractionResponseTypeUpdateMessage,
-			Data: &interactionResponseData{
-				Content:    "❌ Update cancelled. No changes were made.",
-				Components: &[]discordComponent{}, // Clear buttons
 			},
 		}
 		writeJSON(w, res)
@@ -1405,9 +1224,10 @@ func buildMemExpressRemoveButtons(subs []models.Subscription) []discordComponent
 	var components []discordComponent
 	for _, sub := range subs {
 		storeName := memoryexpress.StoreName(sub.StoreCode)
-		label := fmt.Sprintf("Remove %s from #%s", storeName, sub.ChannelName)
+		filterLabel := dealTypeLabel(sub.DealType)
+		label := fmt.Sprintf("Remove %s (%s) from #%s", storeName, filterLabel, sub.ChannelName)
 		if sub.ChannelName == "" {
-			label = fmt.Sprintf("Remove %s", storeName)
+			label = fmt.Sprintf("Remove %s (%s)", storeName, filterLabel)
 		}
 
 		components = append(components, discordComponent{
@@ -1428,9 +1248,10 @@ func buildMemExpressRemoveButtons(subs []models.Subscription) []discordComponent
 func buildBestBuyRemoveButtons(subs []models.Subscription) []discordComponent {
 	var components []discordComponent
 	for _, sub := range subs {
-		label := fmt.Sprintf("Remove Best Buy from #%s", sub.ChannelName)
+		filterLabel := dealTypeLabel(sub.DealType)
+		label := fmt.Sprintf("Remove Best Buy (%s) from #%s", filterLabel, sub.ChannelName)
 		if sub.ChannelName == "" {
-			label = fmt.Sprintf("Remove Best Buy (%s)", sub.DealType)
+			label = fmt.Sprintf("Remove Best Buy (%s)", filterLabel)
 		}
 
 		components = append(components, discordComponent{

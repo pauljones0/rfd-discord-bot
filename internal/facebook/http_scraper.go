@@ -627,20 +627,20 @@ func findMarketplaceListings(blob string) []marketplaceFeedItem {
 
 // listingDetailData holds vehicle fields from a detail page.
 type listingDetailData struct {
-	Make         string
-	Model        string
-	Trim         string
-	Odometer     int
-	Transmission string
+	Make          string
+	Model         string
+	Trim          string
+	Odometer      int
+	Transmission  string
 	ExteriorColor string
-	Drivetrain   string
-	BodyStyle    string
-	FuelType     string
-	Condition    string
-	SellerType   string
-	Description  string
-	Title        string
-	LeafCategory string
+	Drivetrain    string
+	BodyStyle     string
+	FuelType      string
+	Condition     string
+	SellerType    string
+	Description   string
+	Title         string
+	LeafCategory  string
 }
 
 // findListingDetail walks a JSON blob for vehicle detail fields.

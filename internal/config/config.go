@@ -14,7 +14,6 @@ import (
 
 type Config struct {
 	ProjectID              string
-	StorageBackend         string
 	DatabaseURL            string
 	Port                   string
 	AmazonAffiliateTag     string
@@ -41,6 +40,8 @@ type Config struct {
 	EbayPollInterval            time.Duration
 	EbayCouponDiscoveryInterval time.Duration
 	EbayPaidBrowserEnabled      bool
+	EbayPaidBrowserMaxPerRun    int
+	EbayPaidBrowserMaxPerDay    int
 
 	// Proxy (optional — Facebook/Carfax scraping runs without proxy if not set)
 	ProxyURL string
@@ -51,6 +52,8 @@ type Config struct {
 	MemoryExpressChromeProfile      string
 	MemoryExpressBackends           []string
 	MemoryExpressPaidBrowserEnabled bool
+	MemoryExpressPaidMaxPerRun      int
+	MemoryExpressPaidMaxPerDay      int
 
 	// Best Buy scraping backend configuration.
 	BestBuyBackends     []string
@@ -185,7 +188,6 @@ func Load() (*Config, error) {
 
 	return &Config{
 		ProjectID:              projectID,
-		StorageBackend:         "postgres",
 		DatabaseURL:            os.Getenv("DATABASE_URL"),
 		Port:                   port,
 		AmazonAffiliateTag:     amazonAffiliateTag,
@@ -211,12 +213,16 @@ func Load() (*Config, error) {
 		EbayPollInterval:                ebayPollInterval,
 		EbayCouponDiscoveryInterval:     ebayCouponDiscoveryInterval,
 		EbayPaidBrowserEnabled:          boolEnv("EBAY_PAID_BROWSER_ENABLED", false),
+		EbayPaidBrowserMaxPerRun:        intEnv("EBAY_PAID_BROWSER_MAX_CALLS_PER_RUN", 1),
+		EbayPaidBrowserMaxPerDay:        intEnv("EBAY_PAID_BROWSER_MAX_CALLS_PER_DAY", 6),
 		ProxyURL:                        os.Getenv("PROXY_URL"),
 		MemoryExpressPollInterval:       memexpressPollInterval,
 		MemoryExpressChromePath:         firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
 		MemoryExpressChromeProfile:      os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
 		MemoryExpressBackends:           csvEnv("MEMEXPRESS_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
 		MemoryExpressPaidBrowserEnabled: boolEnv("MEMEXPRESS_PAID_BROWSER_ENABLED", false),
+		MemoryExpressPaidMaxPerRun:      intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
+		MemoryExpressPaidMaxPerDay:      intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
 		BestBuyBackends:                 csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
 		BestBuyPollInterval:             bestBuyPollInterval,
 		LocalSchedulerEnabled:           boolEnv("LOCAL_SCHEDULER_ENABLED", false),

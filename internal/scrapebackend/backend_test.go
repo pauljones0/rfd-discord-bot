@@ -1,6 +1,11 @@
 package scrapebackend
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
 
 func TestDetectBlockSignal(t *testing.T) {
 	tests := []struct {
@@ -48,5 +53,27 @@ func TestDetectBlockSignal(t *testing.T) {
 				t.Fatalf("DetectBlockSignal() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFetchHTMLPaidTrialRunsAttemptGuardBeforeCommand(t *testing.T) {
+	called := false
+	result := FetchHTML(context.Background(), FetchOptions{
+		Backend:     BackendPaidTrial,
+		URL:         "https://example.com",
+		Timeout:     time.Second,
+		PaidEnabled: true,
+		PaidCommand: "should-not-run",
+		PaidAttempt: func(context.Context) error {
+			called = true
+			return errors.New("cap reached")
+		},
+	})
+
+	if !called {
+		t.Fatalf("PaidAttempt was not called")
+	}
+	if result.Error == "" || result.Error != "cap reached" {
+		t.Fatalf("result error = %q, want cap reached", result.Error)
 	}
 }

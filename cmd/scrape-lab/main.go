@@ -113,11 +113,10 @@ func loadTargets(ctx context.Context, opts targetLoadOptions) ([]scrapelab.Targe
 	}
 
 	if opts.FromStore {
-		cfg, err := config.Load()
-		if err != nil {
+		if _, err := config.Load(); err != nil {
 			return nil, err
 		}
-		store, err := storage.New(ctx, cfg.ProjectID)
+		store, err := storage.New(ctx)
 		if err != nil {
 			return nil, err
 		}

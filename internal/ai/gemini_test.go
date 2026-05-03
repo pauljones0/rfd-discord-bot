@@ -605,10 +605,10 @@ func TestLocationPersistence(t *testing.T) {
 	client.initQuotaState(context.Background())
 
 	if client.currentLocation != "us-east4" {
-		t.Errorf("expected location loaded from Firestore: us-east4, got %q", client.currentLocation)
+		t.Errorf("expected location loaded from storage: us-east4, got %q", client.currentLocation)
 	}
 	if client.currentModel != "tier-2" {
-		t.Errorf("expected model loaded from Firestore: tier-2, got %q", client.currentModel)
+		t.Errorf("expected model loaded from storage: tier-2, got %q", client.currentModel)
 	}
 }
 
@@ -683,7 +683,6 @@ func TestStripCodeBlockWithTrailingText(t *testing.T) {
 		t.Errorf("stripCodeBlock with trailing text after code fence:\n  got:  %q\n  want: %q", got, want)
 	}
 }
-
 
 func TestHandleGenerationErrorUnsupportedFeature(t *testing.T) {
 	store := &mockQuotaStore{}

@@ -16,15 +16,12 @@ const bestbuySellersCollection = "bestbuy_sellers"
 
 // GetActiveBestBuySellers returns active Best Buy seller targets.
 func (c *Client) GetActiveBestBuySellers(ctx context.Context) ([]bestbuy.Seller, error) {
-	rows, err := c.ListDocuments(ctx, bestbuySellersCollection)
+	rows, err := c.ListDocumentsWhere(ctx, bestbuySellersCollection, map[string]any{"isActive": true})
 	if err != nil {
 		return nil, err
 	}
 	var sellers []bestbuy.Seller
 	for _, row := range rows {
-		if !documentBool(row.Data, "isActive") {
-			continue
-		}
 		var seller bestbuy.Seller
 		if err := decodeDocument(row.Data, &seller); err != nil {
 			slog.Warn("Failed to decode bestbuy seller", "processor", "bestbuy", "id", row.ID, "error", err)
@@ -143,10 +140,10 @@ func (c *Client) RemoveBestBuySubscription(ctx context.Context, guildID, channel
 
 // GetBestBuySubscriptionsByGuild retrieves all Best Buy subscriptions for a guild.
 func (c *Client) GetBestBuySubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
-	return c.subscriptionsWhere(ctx, func(row Document) bool {
-		return documentString(row.Data, "guildID") == guildID &&
-			documentString(row.Data, "subscriptionType") == "bestbuy"
-	})
+	return c.subscriptionsMatching(ctx, map[string]any{
+		"guildID":          guildID,
+		"subscriptionType": "bestbuy",
+	}, nil)
 }
 
 func bestbuyDiscount(p bestbuy.Product) float64 {

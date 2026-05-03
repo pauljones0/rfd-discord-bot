@@ -4,12 +4,12 @@ import "time"
 
 // Seller represents a Best Buy Marketplace seller to monitor.
 type Seller struct {
-	ID         string    `firestore:"id"`
-	Name       string    `firestore:"name"`
-	SearchPath string    `firestore:"searchPath,omitempty"`
-	SearchURL  string    `firestore:"searchURL,omitempty"`
-	IsActive   bool      `firestore:"isActive"`
-	AddedAt    time.Time `firestore:"addedAt"`
+	ID         string    `docstore:"id"`
+	Name       string    `docstore:"name"`
+	SearchPath string    `docstore:"searchPath,omitempty"`
+	SearchURL  string    `docstore:"searchURL,omitempty"`
+	IsActive   bool      `docstore:"isActive"`
+	AddedAt    time.Time `docstore:"addedAt"`
 }
 
 // DefaultSellers is the hardcoded list of marketplace sellers to track.
@@ -32,33 +32,33 @@ var DefaultSellers = []Seller{
 
 // Product represents a single product from the Best Buy Canada search API.
 type Product struct {
-	SKU            string  `firestore:"sku"`
-	Name           string  `firestore:"name"`
-	URL            string  `firestore:"url"`
-	ImageURL       string  `firestore:"imageURL,omitempty"`
-	RegularPrice   float64 `firestore:"regularPrice"`
-	SalePrice      float64 `firestore:"salePrice"`
-	SaleEndDate    string  `firestore:"saleEndDate,omitempty"`
-	CategoryName   string  `firestore:"categoryName,omitempty"`
-	SellerID       string  `firestore:"sellerID,omitempty"`
-	SellerName     string  `firestore:"sellerName,omitempty"`
-	CustomerRating float64 `firestore:"customerRating,omitempty"`
-	IsMarketplace  bool    `firestore:"isMarketplace"`
-	IsClearance    bool    `firestore:"isClearance"`
-	IsOpenBox      bool    `firestore:"isOpenBox"`
-	Source         string  `firestore:"source"` // "marketplace" or "openbox"
+	SKU            string  `docstore:"sku"`
+	Name           string  `docstore:"name"`
+	URL            string  `docstore:"url"`
+	ImageURL       string  `docstore:"imageURL,omitempty"`
+	RegularPrice   float64 `docstore:"regularPrice"`
+	SalePrice      float64 `docstore:"salePrice"`
+	SaleEndDate    string  `docstore:"saleEndDate,omitempty"`
+	CategoryName   string  `docstore:"categoryName,omitempty"`
+	SellerID       string  `docstore:"sellerID,omitempty"`
+	SellerName     string  `docstore:"sellerName,omitempty"`
+	CustomerRating float64 `docstore:"customerRating,omitempty"`
+	IsMarketplace  bool    `docstore:"isMarketplace"`
+	IsClearance    bool    `docstore:"isClearance"`
+	IsOpenBox      bool    `docstore:"isOpenBox"`
+	Source         string  `docstore:"source"` // "marketplace" or "openbox"
 }
 
 // AnalyzedProduct extends Product with AI analysis results and computed fields.
 type AnalyzedProduct struct {
 	Product
-	CleanTitle  string    `firestore:"cleanTitle"`
-	IsWarm      bool      `firestore:"isWarm"`
-	IsLavaHot   bool      `firestore:"isLavaHot"`
-	Summary     string    `firestore:"summary,omitempty"`
-	DiscountPct float64   `firestore:"discountPct"`
-	ProcessedAt time.Time `firestore:"processedAt"`
-	LastSeen    time.Time `firestore:"lastSeen"`
+	CleanTitle  string    `docstore:"cleanTitle"`
+	IsWarm      bool      `docstore:"isWarm"`
+	IsLavaHot   bool      `docstore:"isLavaHot"`
+	Summary     string    `docstore:"summary,omitempty"`
+	DiscountPct float64   `docstore:"discountPct"`
+	ProcessedAt time.Time `docstore:"processedAt"`
+	LastSeen    time.Time `docstore:"lastSeen"`
 }
 
 // AnalyzeResult is the JSON structure returned by Gemini for a Best Buy product.

@@ -205,10 +205,10 @@ func TestBuildMarketplaceURL(t *testing.T) {
 			wantURL:  "https://www.facebook.com/marketplace/110941395597405/vehicles/?exact=false&radius=500&maxPrice=5000",
 		},
 		{
-			city:    "Fake City",
+			city:     "Fake City",
 			category: "Vehicles",
-			radius:  500,
-			wantErr: true,
+			radius:   500,
+			wantErr:  true,
 		},
 		{
 			city:     "Toronto",

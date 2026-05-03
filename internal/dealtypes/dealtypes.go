@@ -5,43 +5,69 @@ type Choice struct {
 	Value string
 }
 
+const (
+	SubscriptionRFD           = "rfd"
+	SubscriptionEbay          = "ebay"
+	SubscriptionFacebook      = "facebook"
+	SubscriptionMemoryExpress = "memoryexpress"
+	SubscriptionBestBuy       = "bestbuy"
+	SubscriptionHardwareSwap  = "hardwareswap"
+
+	RFDAll         = "rfd_all"
+	RFDTech        = "rfd_tech"
+	RFDWarmHot     = "rfd_warm_hot"
+	RFDWarmHotTech = "rfd_warm_hot_tech"
+	RFDHot         = "rfd_hot"
+	RFDHotTech     = "rfd_hot_tech"
+
+	EbayCAPriceDrop = "ebay_ca_price_drop"
+	EbayUSPriceDrop = "ebay_us_price_drop"
+
+	MemoryExpressWarmHot = "me_warm_hot"
+	MemoryExpressHot     = "me_hot"
+
+	BestBuyNew     = "bb_new"
+	BestBuyWarmHot = "bb_warm_hot"
+	BestBuyHot     = "bb_hot"
+)
+
 var RFDChoices = []Choice{
-	{Name: "All deals", Value: "rfd_all"},
-	{Name: "Tech only", Value: "rfd_tech"},
-	{Name: "Warm + Hot (all)", Value: "rfd_warm_hot"},
-	{Name: "Warm + Hot (tech)", Value: "rfd_warm_hot_tech"},
-	{Name: "Hot only (all)", Value: "rfd_hot"},
-	{Name: "Hot only (tech)", Value: "rfd_hot_tech"},
+	{Name: "All deals", Value: RFDAll},
+	{Name: "Tech only", Value: RFDTech},
+	{Name: "Warm + Hot (all)", Value: RFDWarmHot},
+	{Name: "Warm + Hot (tech)", Value: RFDWarmHotTech},
+	{Name: "Hot only (all)", Value: RFDHot},
+	{Name: "Hot only (tech)", Value: RFDHotTech},
 }
 
 var EbayChoices = []Choice{
-	{Name: "Canada price drops", Value: "ebay_ca_price_drop"},
-	{Name: "US price drops", Value: "ebay_us_price_drop"},
+	{Name: "Canada price drops", Value: EbayCAPriceDrop},
+	{Name: "US price drops", Value: EbayUSPriceDrop},
 }
 
 var MemoryExpressChoices = []Choice{
-	{Name: "Warm + Hot deals", Value: "me_warm_hot"},
-	{Name: "Hot deals only", Value: "me_hot"},
+	{Name: "Warm + Hot deals", Value: MemoryExpressWarmHot},
+	{Name: "Hot deals only", Value: MemoryExpressHot},
 }
 
 var BestBuyChoices = []Choice{
-	{Name: "All new listings + AI labels", Value: "bb_new"},
-	{Name: "AI warm + hot deals only", Value: "bb_warm_hot"},
-	{Name: "AI hot deals only", Value: "bb_hot"},
+	{Name: "All new listings + AI labels", Value: BestBuyNew},
+	{Name: "AI warm + hot deals only", Value: BestBuyWarmHot},
+	{Name: "AI hot deals only", Value: BestBuyHot},
 }
 
 var RemoveChoices = []Choice{
-	{Name: "RFD", Value: "rfd"},
-	{Name: "eBay", Value: "ebay"},
-	{Name: "Facebook", Value: "facebook"},
-	{Name: "Memory Express", Value: "memoryexpress"},
-	{Name: "Best Buy", Value: "bestbuy"},
+	{Name: "RFD", Value: SubscriptionRFD},
+	{Name: "eBay", Value: SubscriptionEbay},
+	{Name: "Facebook", Value: SubscriptionFacebook},
+	{Name: "Memory Express", Value: SubscriptionMemoryExpress},
+	{Name: "Best Buy", Value: SubscriptionBestBuy},
 }
 
 func ActiveRemoveChoices(facebookEnabled, hardwareSwapEnabled bool) []Choice {
 	out := make([]Choice, 0, len(RemoveChoices))
 	for _, choice := range RemoveChoices {
-		if choice.Value == "facebook" && !facebookEnabled {
+		if choice.Value == SubscriptionFacebook && !facebookEnabled {
 			continue
 		}
 		out = append(out, choice)
@@ -51,11 +77,11 @@ func ActiveRemoveChoices(facebookEnabled, hardwareSwapEnabled bool) []Choice {
 
 func ValidSubscriptionType(value string, facebookEnabled, hardwareSwapEnabled bool) bool {
 	switch value {
-	case "rfd", "ebay", "memoryexpress", "bestbuy":
+	case SubscriptionRFD, SubscriptionEbay, SubscriptionMemoryExpress, SubscriptionBestBuy:
 		return true
-	case "facebook":
+	case SubscriptionFacebook:
 		return facebookEnabled
-	case "hardwareswap":
+	case SubscriptionHardwareSwap:
 		return hardwareSwapEnabled
 	default:
 		return false
@@ -67,7 +93,7 @@ func IsRFD(value string) bool {
 }
 
 func IsEbay(value string) bool {
-	return value == "ebay_price_drop" || containsValue(EbayChoices, value)
+	return containsValue(EbayChoices, value)
 }
 
 func IsMemoryExpress(value string) bool {
@@ -78,44 +104,92 @@ func IsBestBuy(value string) bool {
 	return containsValue(BestBuyChoices, value)
 }
 
-func IsLegacySetup(value string) bool {
-	return IsRFD(value) || value == "ebay_price_drop" || value == "warm_hot_all" || value == "hot_all"
-}
-
 func Label(value string) string {
 	switch value {
 	case "":
 		return "all"
-	case "rfd_all":
+	case RFDAll:
 		return "RFD all deals"
-	case "rfd_tech":
+	case RFDTech:
 		return "RFD tech deals"
-	case "rfd_warm_hot":
+	case RFDWarmHot:
 		return "RFD warm + hot deals"
-	case "rfd_warm_hot_tech":
+	case RFDWarmHotTech:
 		return "RFD warm + hot tech deals"
-	case "rfd_hot":
+	case RFDHot:
 		return "RFD hot deals"
-	case "rfd_hot_tech":
+	case RFDHotTech:
 		return "RFD hot tech deals"
-	case "ebay_ca_price_drop":
+	case EbayCAPriceDrop:
 		return "eBay Canada price drops"
-	case "ebay_us_price_drop":
+	case EbayUSPriceDrop:
 		return "eBay US price drops"
-	case "ebay_price_drop":
-		return "all eBay price drops"
-	case "me_warm_hot":
+	case MemoryExpressWarmHot:
 		return "Memory Express warm + hot deals"
-	case "me_hot":
+	case MemoryExpressHot:
 		return "Memory Express hot deals only"
-	case "bb_new":
+	case BestBuyNew:
 		return "Best Buy all new listings + AI labels"
-	case "bb_warm_hot":
+	case BestBuyWarmHot:
 		return "Best Buy AI warm + hot deals"
-	case "bb_hot":
+	case BestBuyHot:
 		return "Best Buy AI hot deals only"
 	default:
 		return value
+	}
+}
+
+func RFDEligible(dealType string, isTech, isWarm, isHot bool) bool {
+	switch dealType {
+	case RFDAll:
+		return true
+	case RFDTech:
+		return isTech
+	case RFDWarmHot:
+		return isWarm || isHot
+	case RFDWarmHotTech:
+		return (isWarm || isHot) && isTech
+	case RFDHot:
+		return isHot
+	case RFDHotTech:
+		return isHot && isTech
+	default:
+		return false
+	}
+}
+
+func EbayEligible(dealType, marketplace string) bool {
+	switch dealType {
+	case EbayCAPriceDrop:
+		return marketplace == "EBAY_CA"
+	case EbayUSPriceDrop:
+		return marketplace == "EBAY_US"
+	default:
+		return false
+	}
+}
+
+func MemoryExpressEligible(dealType string, isWarm, isLavaHot bool) bool {
+	switch dealType {
+	case MemoryExpressWarmHot:
+		return isWarm || isLavaHot
+	case MemoryExpressHot:
+		return isLavaHot
+	default:
+		return false
+	}
+}
+
+func BestBuyEligible(dealType string, isWarm, isLavaHot bool) bool {
+	switch dealType {
+	case BestBuyNew:
+		return true
+	case BestBuyWarmHot:
+		return isWarm || isLavaHot
+	case BestBuyHot:
+		return isLavaHot
+	default:
+		return false
 	}
 }
 

@@ -52,6 +52,7 @@ type Client struct {
 
 	couponBackends     []string
 	paidBrowserEnabled bool
+	paidAttempt        func(context.Context) error
 }
 
 type marketplaceCategoryGroup struct {
@@ -90,6 +91,13 @@ func (c *Client) SetPaidBrowserEnabled(enabled bool) {
 		return
 	}
 	c.paidBrowserEnabled = enabled
+}
+
+func (c *Client) SetPaidAttemptHook(hook func(context.Context) error) {
+	if c == nil {
+		return
+	}
+	c.paidAttempt = hook
 }
 
 // tokenResponse represents the eBay OAuth token response.
@@ -584,6 +592,7 @@ func (c *Client) fetchPageCoupon(ctx context.Context, item BrowseAPIItem, basePr
 			AICrawlerCommand: ebayCouponAICrawlerCommand(),
 			PaidCommand:      ebayCouponPaidCommand(),
 			PaidEnabled:      c.paidBrowserEnabled,
+			PaidAttempt:      c.paidAttempt,
 		})
 		if result.Error != "" {
 			errs = append(errs, fmt.Errorf("%s: %s", backend, result.Error))

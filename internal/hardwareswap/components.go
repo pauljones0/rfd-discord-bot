@@ -98,7 +98,7 @@ func showAIWizardModal() map[string]interface{} {
 							"type": 4, "custom_id": "text_query",
 							"label": "What are you looking for?", "style": 2,
 							"placeholder": "e.g. A used 3080 series GPU in Toronto under $500",
-							"required": true, "max_length": 300,
+							"required":    true, "max_length": 300,
 						},
 					},
 				},
@@ -135,7 +135,7 @@ func showManualModal(editCount string) map[string]interface{} {
 							"type": 4, "custom_id": "text_query",
 							"label": "Query Syntax", "style": 2,
 							"placeholder": "(rtx AND 4090) NOT (broken)",
-							"required": true, "max_length": 150,
+							"required":    true, "max_length": 150,
 						},
 					},
 				},
@@ -154,4 +154,3 @@ func updateMessage(content string) map[string]interface{} {
 		},
 	}
 }
-

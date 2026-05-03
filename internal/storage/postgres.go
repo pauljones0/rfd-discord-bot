@@ -168,6 +168,35 @@ func (c *Client) ListDocuments(ctx context.Context, collection string) ([]Docume
 	return docs, rows.Err()
 }
 
+func (c *Client) ListDocumentsWhere(ctx context.Context, collection string, fields map[string]any) ([]Document, error) {
+	if len(fields) == 0 {
+		return c.ListDocuments(ctx, collection)
+	}
+	payload, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("marshal document predicate %s: %w", collection, err)
+	}
+	rows, err := c.pg.Query(ctx, `SELECT doc_id, data FROM documents WHERE collection=$1 AND data @> $2::jsonb`, collection, payload)
+	if err != nil {
+		return nil, fmt.Errorf("list documents %s where %v: %w", collection, fields, err)
+	}
+	defer rows.Close()
+
+	var docs []Document
+	for rows.Next() {
+		var doc Document
+		var rowPayload []byte
+		if err := rows.Scan(&doc.ID, &rowPayload); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(rowPayload, &doc.Data); err != nil {
+			return nil, fmt.Errorf("unmarshal document %s/%s: %w", collection, doc.ID, err)
+		}
+		docs = append(docs, doc)
+	}
+	return docs, rows.Err()
+}
+
 func encodeDocument(value any) (map[string]any, error) {
 	if value == nil {
 		return map[string]any{}, nil
@@ -255,7 +284,7 @@ func encodeValue(v reflect.Value) any {
 }
 
 func documentFieldName(field reflect.StructField) (name string, omitEmpty bool, skip bool) {
-	tag := field.Tag.Get("firestore")
+	tag := field.Tag.Get("docstore")
 	if tag == "-" {
 		return "", false, true
 	}
@@ -299,7 +328,7 @@ func cloneMap(in map[string]any) map[string]any {
 func decodeDocument(data map[string]any, dst any) error {
 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		Result:           dst,
-		TagName:          "firestore",
+		TagName:          "docstore",
 		WeaklyTypedInput: true,
 		Squash:           true,
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(

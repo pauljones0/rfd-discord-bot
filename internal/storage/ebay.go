@@ -22,15 +22,12 @@ const (
 
 // GetActiveEbaySellers returns all active sellers.
 func (c *Client) GetActiveEbaySellers(ctx context.Context) ([]ebay.EbaySeller, error) {
-	rows, err := c.ListDocuments(ctx, ebaySellersCollection)
+	rows, err := c.ListDocumentsWhere(ctx, ebaySellersCollection, map[string]any{"isActive": true})
 	if err != nil {
 		return nil, err
 	}
 	var sellers []ebay.EbaySeller
 	for _, row := range rows {
-		if !documentBool(row.Data, "isActive") {
-			continue
-		}
 		var seller ebay.EbaySeller
 		if err := decodeDocument(row.Data, &seller); err != nil {
 			slog.Warn("Failed to decode ebay seller", "processor", "ebay", "id", row.ID, "error", err)
@@ -142,7 +139,7 @@ func ebayStoreCouponDocID(marketplace, seller, signature string) string {
 }
 
 func (c *Client) GetEbayStoreCoupons(ctx context.Context, marketplace, seller string) ([]ebay.StoreCoupon, error) {
-	rows, err := c.ListDocuments(ctx, ebayStoreCouponsCollection)
+	rows, err := c.ListDocumentsWhere(ctx, ebayStoreCouponsCollection, map[string]any{"marketplace": marketplace})
 	if err != nil {
 		return nil, err
 	}
@@ -177,21 +174,26 @@ func ebayCouponObservationDocID(obs ebay.CouponObservation) string {
 	if itemID == "" {
 		itemID = "unknown"
 	}
+	observedAt := obs.ObservedAt.UTC().Format("20060102T150405.000000000Z")
+	if obs.ObservedAt.IsZero() {
+		observedAt = fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	}
 	replacer := strings.NewReplacer("/", "_", " ", "_", ":", "_", "|", "_", "\\", "_")
-	return replacer.Replace(marketplace + "_" + seller + "_" + signature + "_" + itemID)
+	return replacer.Replace(marketplace + "_" + seller + "_" + signature + "_" + itemID + "_" + observedAt)
 }
 
 func (c *Client) GetEbayCouponObservations(ctx context.Context, marketplace, seller, signature string) ([]ebay.CouponObservation, error) {
-	rows, err := c.ListDocuments(ctx, ebayCouponObservationsCollection)
+	rows, err := c.ListDocumentsWhere(ctx, ebayCouponObservationsCollection, map[string]any{
+		"marketplace": marketplace,
+		"signature":   signature,
+	})
 	if err != nil {
 		return nil, err
 	}
 	var observations []ebay.CouponObservation
 	for _, row := range rows {
-		if !sameMarketplaceSeller(row.Data, marketplace, seller) {
-			continue
-		}
-		if !strings.EqualFold(documentString(row.Data, "signature"), signature) {
+		if !sameMarketplaceSeller(row.Data, marketplace, seller) ||
+			!strings.EqualFold(documentString(row.Data, "signature"), signature) {
 			continue
 		}
 		var obs ebay.CouponObservation

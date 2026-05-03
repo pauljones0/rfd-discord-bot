@@ -12,48 +12,48 @@ const dealRetention = 30 * 24 * time.Hour
 
 // DealInfo represents the structured information for a deal.
 type DealInfo struct {
-	Title                  string            `firestore:"title" validate:"required"`
-	PostURL                string            `firestore:"postURL" validate:"required,url"`
-	Category               string            `firestore:"category,omitempty"`
-	ThreadImageURL         string            `firestore:"threadImageURL,omitempty" validate:"omitempty,url"`
-	ActualDealURL          string            `firestore:"actualDealURL,omitempty" validate:"omitempty,url"`
-	FirestoreID            string            `firestore:"-"`                           // Legacy name for the document ID; not stored in the document itself.
-	DiscordMessageIDs      map[string]string `firestore:"discordMessageIDs,omitempty"` // Mapping of ChannelID -> MessageID
-	LastUpdated            time.Time         `firestore:"lastUpdated"`
-	PublishedTimestamp     time.Time         `firestore:"publishedTimestamp" validate:"required"` // Parsed from PostedTime
-	DiscordLastUpdatedTime time.Time         `firestore:"discordLastUpdatedTime,omitempty"`
-	ExpiresAt              time.Time         `firestore:"expiresAt,omitempty"`
+	Title                  string            `docstore:"title" validate:"required"`
+	PostURL                string            `docstore:"postURL" validate:"required,url"`
+	Category               string            `docstore:"category,omitempty"`
+	ThreadImageURL         string            `docstore:"threadImageURL,omitempty" validate:"omitempty,url"`
+	ActualDealURL          string            `docstore:"actualDealURL,omitempty" validate:"omitempty,url"`
+	DocumentID             string            `docstore:"-"`                           // Document ID; not stored in the document itself.
+	DiscordMessageIDs      map[string]string `docstore:"discordMessageIDs,omitempty"` // Mapping of ChannelID -> MessageID
+	LastUpdated            time.Time         `docstore:"lastUpdated"`
+	PublishedTimestamp     time.Time         `docstore:"publishedTimestamp" validate:"required"` // Parsed from PostedTime
+	DiscordLastUpdatedTime time.Time         `docstore:"discordLastUpdatedTime,omitempty"`
+	ExpiresAt              time.Time         `docstore:"expiresAt,omitempty"`
 
-	Threads      []ThreadContext `firestore:"threads"`
-	SearchTokens []string        `firestore:"searchTokens,omitempty"`
+	Threads      []ThreadContext `docstore:"threads"`
+	SearchTokens []string        `docstore:"searchTokens,omitempty"`
 
-	Price         string `firestore:"price,omitempty"`
-	OriginalPrice string `firestore:"originalPrice,omitempty"`
-	Savings       string `firestore:"savings,omitempty"`
-	Retailer      string `firestore:"retailer,omitempty"`
+	Price         string `docstore:"price,omitempty"`
+	OriginalPrice string `docstore:"originalPrice,omitempty"`
+	Savings       string `docstore:"savings,omitempty"`
+	Retailer      string `docstore:"retailer,omitempty"`
 
 	// AI Enriched Fields
-	CleanTitle  string `firestore:"cleanTitle,omitempty"`
-	AIProcessed bool   `firestore:"aiProcessed"`
+	CleanTitle  string `docstore:"cleanTitle,omitempty"`
+	AIProcessed bool   `docstore:"aiProcessed"`
 
 	// Rank Tracking — sticky flags set by engagement heat score
-	HasBeenWarm bool `firestore:"hasBeenWarm,omitempty"`
-	HasBeenHot  bool `firestore:"hasBeenHot,omitempty"`
+	HasBeenWarm bool `docstore:"hasBeenWarm,omitempty"`
+	HasBeenHot  bool `docstore:"hasBeenHot,omitempty"`
 
 	// Detailed Content
-	Description string `firestore:"description,omitempty"`
-	Comments    string `firestore:"comments,omitempty"` // Flattened comments for AI context
-	Summary     string `firestore:"summary,omitempty"`  // RFD editor summary if available
+	Description string `docstore:"description,omitempty"`
+	Comments    string `docstore:"comments,omitempty"` // Flattened comments for AI context
+	Summary     string `docstore:"summary,omitempty"`  // RFD editor summary if available
 }
 
 // ThreadContext represents an individual RedFlagDeals thread that is part of a DealIdea.
 type ThreadContext struct {
-	FirestoreID        string `firestore:"firestoreID"`
-	PostURL            string `firestore:"postURL" validate:"required,url"`
-	LikeCount          int    `firestore:"likeCount"`
-	CommentCount       int    `firestore:"commentCount" validate:"gte=0"`
-	ViewCount          int    `firestore:"viewCount" validate:"gte=0"`
-	ViewCountAvailable bool   `firestore:"viewCountAvailable,omitempty"`
+	DocumentID         string `docstore:"documentID"`
+	PostURL            string `docstore:"postURL" validate:"required,url"`
+	LikeCount          int    `docstore:"likeCount"`
+	CommentCount       int    `docstore:"commentCount" validate:"gte=0"`
+	ViewCount          int    `docstore:"viewCount" validate:"gte=0"`
+	ViewCountAvailable bool   `docstore:"viewCountAvailable,omitempty"`
 }
 
 // Stats returns the engagement metrics from the primary (most popular) thread.

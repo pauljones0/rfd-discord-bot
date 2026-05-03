@@ -17,7 +17,6 @@ $HOME/appdata/rfd-discord-bot/postgres
 The `.env` file is outside git and should include:
 
 ```env
-STORAGE_BACKEND=postgres
 POSTGRES_PASSWORD=...
 DATABASE_URL=postgres://rfd_bot:...@postgres:5432/rfd_discord_bot?sslmode=disable
 
@@ -30,8 +29,12 @@ BESTBUY_POLL_INTERVAL=30m
 EBAY_COUPON_BACKENDS=http,external-stealth,camoufox,ai-crawler,paid-trial
 EBAY_COUPON_DISCOVERY_INTERVAL=6h
 EBAY_PAID_BROWSER_ENABLED=true
+EBAY_PAID_BROWSER_MAX_CALLS_PER_RUN=1
+EBAY_PAID_BROWSER_MAX_CALLS_PER_DAY=6
 MEMEXPRESS_BACKENDS=http,external-stealth,camoufox,ai-crawler,paid-trial
 MEMEXPRESS_PAID_BROWSER_ENABLED=false
+MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_RUN=0
+MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_DAY=0
 BESTBUY_BACKENDS=bestbuy-algolia,http
 FACEBOOK_ENABLED=false
 HARDWARESWAP_ENABLED=false
@@ -84,7 +87,7 @@ on intentionally.
 Manual endpoints use the same no-overlap guard as scheduled runs:
 
 ```bash
-curl -fsS http://127.0.0.1:18080/process
+curl -fsS http://127.0.0.1:18080/process-deals
 curl -fsS http://127.0.0.1:18080/process-ebay
 curl -fsS http://127.0.0.1:18080/process-memoryexpress
 curl -fsS http://127.0.0.1:18080/process-bestbuy
@@ -134,14 +137,22 @@ Current public interaction endpoint:
 https://bot.pauljones0.uk/discord/interactions
 ```
 
-## Legacy Hosted Shutdown Check
+## Legacy Subscription Cleanup
 
-The app runtime should not depend on the old hosted deployment anymore. A
-read-only check should return zero services/jobs for the old project and region:
+Dry-run old deal/subscription values before deleting them:
 
 ```bash
-gcloud scheduler jobs list --project may2025-01 --location us-central1
-gcloud run services list --project may2025-01 --region us-central1
+docker compose -f deploy/stormtrooper/docker-compose.yml exec bot ./cleanup-legacy-subscriptions
 ```
 
-The hosted deploy workflow is intentionally absent.
+Delete only after the dry run reports exactly the records you expect:
+
+```bash
+docker compose -f deploy/stormtrooper/docker-compose.yml exec bot ./cleanup-legacy-subscriptions -execute
+```
+
+## Hosted Runtime
+
+The old hosted app runtime is intentionally absent. Stormtrooper is the active
+runtime, and the repo no longer carries deploy workflow code for the previous
+hosted scheduler/server setup.

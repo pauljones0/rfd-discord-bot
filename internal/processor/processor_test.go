@@ -40,11 +40,11 @@ func (m *mockStore) TryCreateDeal(_ context.Context, deal models.DealInfo) error
 	if m.createErr != nil {
 		return m.createErr
 	}
-	if _, exists := m.deals[deal.FirestoreID]; exists {
+	if _, exists := m.deals[deal.DocumentID]; exists {
 		return models.ErrDealExists
 	}
 	copy := deal
-	m.deals[deal.FirestoreID] = &copy
+	m.deals[deal.DocumentID] = &copy
 	return nil
 }
 
@@ -54,7 +54,7 @@ func (m *mockStore) UpdateDeal(_ context.Context, deal models.DealInfo) error {
 	}
 	m.updateCount++
 	copy := deal
-	m.deals[deal.FirestoreID] = &copy
+	m.deals[deal.DocumentID] = &copy
 	return nil
 }
 
@@ -502,7 +502,7 @@ func TestProcessDeals_RaceConditionHandling(t *testing.T) {
 	}
 }
 
-func TestConsolidatedFirestoreWrite(t *testing.T) {
+func TestConsolidatedDocumentWrite(t *testing.T) {
 	store := newMockStore()
 	notif := newMockNotifier()
 	scraper := &mockScraper{
@@ -586,8 +586,8 @@ func TestScrapeAndValidate_SubFunction(t *testing.T) {
 	if validDeals[0].Title != "Valid Deal" {
 		t.Errorf("Expected 'Valid Deal', got %s", validDeals[0].Title)
 	}
-	if validDeals[0].FirestoreID == "" {
-		t.Error("FirestoreID should be populated during validation")
+	if validDeals[0].DocumentID == "" {
+		t.Error("DocumentID should be populated during validation")
 	}
 }
 
@@ -604,19 +604,19 @@ func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
 	// Existing Changed (LikeCount Only): In existingDeals, changed LikeCount -> Should NOT fetch (Optimization)
 	// Existing Unchanged: In existingDeals, same data -> Should NOT fetch
 
-	newDeal := models.DealInfo{Title: "New", FirestoreID: "id1", Threads: []models.ThreadContext{{LikeCount: 5}}}
-	urlChangedDeal := models.DealInfo{Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://new.url", Threads: []models.ThreadContext{{LikeCount: 10}}}
-	onlyMetricsChangedDeal := models.DealInfo{Title: "MetricsChanged", FirestoreID: "id3", Threads: []models.ThreadContext{{LikeCount: 100}}} // was 50
-	unchangedDeal := models.DealInfo{Title: "Same", FirestoreID: "id4", Threads: []models.ThreadContext{{LikeCount: 5}}}
+	newDeal := models.DealInfo{Title: "New", DocumentID: "id1", Threads: []models.ThreadContext{{LikeCount: 5}}}
+	urlChangedDeal := models.DealInfo{Title: "UrlChanged", DocumentID: "id2", PostURL: "http://new.url", Threads: []models.ThreadContext{{LikeCount: 10}}}
+	onlyMetricsChangedDeal := models.DealInfo{Title: "MetricsChanged", DocumentID: "id3", Threads: []models.ThreadContext{{LikeCount: 100}}} // was 50
+	unchangedDeal := models.DealInfo{Title: "Same", DocumentID: "id4", Threads: []models.ThreadContext{{LikeCount: 5}}}
 
 	existingDeals := map[string]*models.DealInfo{
-		"id2": {Title: "UrlChanged", FirestoreID: "id2", PostURL: "http://old.url", ActualDealURL: "http://old.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 10}}},
-		"id3": {Title: "MetricsChanged", FirestoreID: "id3", ActualDealURL: "http://deal.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 50}}},
-		"id4": {Title: "Same", FirestoreID: "id4", ActualDealURL: "http://deal.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 5}}},
-		"id5": {Title: "OldTitle", FirestoreID: "id5", Description: "desc", ActualDealURL: "http://deal.url/item"},
+		"id2": {Title: "UrlChanged", DocumentID: "id2", PostURL: "http://old.url", ActualDealURL: "http://old.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 10}}},
+		"id3": {Title: "MetricsChanged", DocumentID: "id3", ActualDealURL: "http://deal.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 50}}},
+		"id4": {Title: "Same", DocumentID: "id4", ActualDealURL: "http://deal.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 5}}},
+		"id5": {Title: "OldTitle", DocumentID: "id5", Description: "desc", ActualDealURL: "http://deal.url/item"},
 	}
 
-	titleChangedDeal := models.DealInfo{Title: "TitleChanged", FirestoreID: "id5", Threads: []models.ThreadContext{{LikeCount: 5}}}
+	titleChangedDeal := models.DealInfo{Title: "TitleChanged", DocumentID: "id5", Threads: []models.ThreadContext{{LikeCount: 5}}}
 	validDeals := []models.DealInfo{newDeal, urlChangedDeal, onlyMetricsChangedDeal, unchangedDeal, titleChangedDeal}
 
 	p.enrichDealsWithDetails(context.Background(), validDeals, existingDeals, slog.Default())

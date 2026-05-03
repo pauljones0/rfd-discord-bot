@@ -44,7 +44,7 @@ func TestScrapeWithBackends_FallsBackAfterCloudflareChallenge(t *testing.T) {
 	defer func() { fetchBackendHTML = original }()
 
 	var attempted []string
-	fetchBackendHTML = func(_ context.Context, backend, _, _ string, _ bool) scrapebackend.FetchResult {
+	fetchBackendHTML = func(_ context.Context, backend, _, _ string, _ bool, _ func(context.Context) error) scrapebackend.FetchResult {
 		attempted = append(attempted, backend)
 		if backend == "http" {
 			return scrapebackend.FetchResult{
@@ -70,7 +70,7 @@ func TestScrapeWithBackends_FallsBackAfterCloudflareChallenge(t *testing.T) {
 		}
 	}
 
-	products, err := ScrapeWithBackends(context.Background(), "SKST", []string{"http", "chromedp-cloudrun"}, "")
+	products, err := ScrapeWithBackends(context.Background(), "SKST", []string{"http", "chromedp-cloudrun"}, "", false)
 	if err != nil {
 		t.Fatalf("ScrapeWithBackends() error = %v", err)
 	}

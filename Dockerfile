@@ -9,6 +9,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/server
 RUN CGO_ENABLED=0 GOOS=linux go build -o scrape-lab ./cmd/scrape-lab
 RUN CGO_ENABLED=0 GOOS=linux go build -o register-commands ./cmd/register-commands
+RUN CGO_ENABLED=0 GOOS=linux go build -o cleanup-legacy-subscriptions ./cmd/cleanup-legacy-subscriptions
 
 # Stage 2: Runtime with Playwright browsers
 FROM mcr.microsoft.com/playwright:v1.52.0-noble
@@ -40,6 +41,7 @@ WORKDIR /root/
 COPY --from=builder /app/server .
 COPY --from=builder /app/scrape-lab .
 COPY --from=builder /app/register-commands .
+COPY --from=builder /app/cleanup-legacy-subscriptions .
 COPY --from=builder /app/internal/scraper/selectors.json ./internal/scraper/selectors.json
 COPY --from=builder /app/scripts ./scripts
 

@@ -54,27 +54,27 @@ type ScrapedAd struct {
 
 // FacebookAdRecord represents a processed Facebook ad stored in the document store.
 type FacebookAdRecord struct {
-	ID           string    `firestore:"id"`
-	Title        string    `firestore:"title"`
-	Price        string    `firestore:"price"`
-	URL          string    `firestore:"url"`
-	Year         int       `firestore:"year"`
-	Make         string    `firestore:"make"`
-	Model        string    `firestore:"model"`
-	Mileage      int       `firestore:"mileage"`
-	Transmission string    `firestore:"transmission"`
-	Condition    string    `firestore:"condition"`
-	CarfaxValue  float64   `firestore:"carfax_value"`
-	VMRWholesale float64   `firestore:"vmr_wholesale"`
-	VMRRetail    float64   `firestore:"vmr_retail"`
-	IsGoodDeal   bool      `firestore:"is_good_deal"`
-	ProcessedAt  time.Time `firestore:"processed_at"`
-	LastSeen     time.Time `firestore:"last_seen"`
+	ID           string    `docstore:"id"`
+	Title        string    `docstore:"title"`
+	Price        string    `docstore:"price"`
+	URL          string    `docstore:"url"`
+	Year         int       `docstore:"year"`
+	Make         string    `docstore:"make"`
+	Model        string    `docstore:"model"`
+	Mileage      int       `docstore:"mileage"`
+	Transmission string    `docstore:"transmission"`
+	Condition    string    `docstore:"condition"`
+	CarfaxValue  float64   `docstore:"carfax_value"`
+	VMRWholesale float64   `docstore:"vmr_wholesale"`
+	VMRRetail    float64   `docstore:"vmr_retail"`
+	IsGoodDeal   bool      `docstore:"is_good_deal"`
+	ProcessedAt  time.Time `docstore:"processed_at"`
+	LastSeen     time.Time `docstore:"last_seen"`
 }
 
 // PriceHistory stores a daily price snapshot for a vehicle model.
 type PriceHistory struct {
-	Model string  `firestore:"model"`
-	Date  string  `firestore:"date"`
-	Value float64 `firestore:"value"`
+	Model string  `docstore:"model"`
+	Date  string  `docstore:"date"`
+	Value float64 `docstore:"value"`
 }

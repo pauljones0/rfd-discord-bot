@@ -26,15 +26,13 @@ func (c *Client) RemoveFacebookSubscription(ctx context.Context, guildID, channe
 
 // GetFacebookSubscriptions retrieves all active Facebook subscriptions.
 func (c *Client) GetFacebookSubscriptions(ctx context.Context) ([]models.Subscription, error) {
-	return c.subscriptionsWhere(ctx, func(row Document) bool {
-		return documentString(row.Data, "subscriptionType") == "facebook"
-	})
+	return c.subscriptionsMatching(ctx, map[string]any{"subscriptionType": "facebook"}, nil)
 }
 
 // GetFacebookSubscriptionsByGuild retrieves all Facebook subscriptions for a guild.
 func (c *Client) GetFacebookSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
-	return c.subscriptionsWhere(ctx, func(row Document) bool {
-		return documentString(row.Data, "guildID") == guildID &&
-			documentString(row.Data, "subscriptionType") == "facebook"
-	})
+	return c.subscriptionsMatching(ctx, map[string]any{
+		"guildID":          guildID,
+		"subscriptionType": "facebook",
+	}, nil)
 }

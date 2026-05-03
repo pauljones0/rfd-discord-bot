@@ -170,7 +170,7 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 
 		// Layer 1: Exact ID match — same PublishedTimestamp means same post, skip silently.
 		// This is the normal case: the same deal appears on the page every scrape cycle.
-		if _, alreadyKnown := existingDeals[dealA.FirestoreID]; alreadyKnown {
+		if _, alreadyKnown := existingDeals[dealA.DocumentID]; alreadyKnown {
 			dedupedScraped = append(dedupedScraped, *dealA)
 			continue
 		}
@@ -201,11 +201,11 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 		if matchedExisting != nil {
 			logger.Info("Deal deduplicated with existing recent deal", "scrapedTitle", dealA.Title, "existingTitle", matchedExisting.Title)
 			// Ensure it's in the existingDeals map so the rest of the pipeline updates it.
-			// We point DealA's FirestoreID to the existing one.
-			dealA.FirestoreID = matchedExisting.FirestoreID
+			// Point DealA's document ID to the existing record.
+			dealA.DocumentID = matchedExisting.DocumentID
 
-			if _, ok := existingDeals[matchedExisting.FirestoreID]; !ok {
-				existingDeals[matchedExisting.FirestoreID] = matchedExisting
+			if _, ok := existingDeals[matchedExisting.DocumentID]; !ok {
+				existingDeals[matchedExisting.DocumentID] = matchedExisting
 			}
 			dedupedScraped = append(dedupedScraped, *dealA)
 			continue
@@ -233,7 +233,7 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 			if isMatch {
 				logger.Info("Scraped deal deduplicated with another scraped deal", "titleA", dealA.Title, "titleB", dealB.Title)
 				// Merge DealB's thread into DealA.
-				dealB.FirestoreID = dealA.FirestoreID
+				dealB.DocumentID = dealA.DocumentID
 				matchedScrapedIndices[j] = true
 				if !merged {
 					// First match: emit A once, then B.

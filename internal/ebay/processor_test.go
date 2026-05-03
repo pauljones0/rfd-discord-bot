@@ -488,12 +488,6 @@ func TestIsEbayEligible_MarketplaceFilters(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "legacy all ebay filter accepts canadian item",
-			item: caItem,
-			sub:  models.Subscription{DealType: "ebay_price_drop"},
-			want: true,
-		},
-		{
 			name: "marketplace falls back to item url",
 			item: EbayItem{ItemURL: "https://www.ebay.com/itm/123"},
 			sub:  models.Subscription{DealType: "ebay_us_price_drop"},

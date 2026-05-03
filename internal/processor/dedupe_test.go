@@ -102,7 +102,7 @@ func TestDeduplicateDeals_ScrapedWithExisting(t *testing.T) {
 
 	recentDeals := []models.DealInfo{
 		{
-			FirestoreID:   "existing-1",
+			DocumentID:    "existing-1",
 			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
@@ -111,13 +111,13 @@ func TestDeduplicateDeals_ScrapedWithExisting(t *testing.T) {
 
 	scrapedDeals := []models.DealInfo{
 		{
-			FirestoreID:   "scraped-new-id-1",
+			DocumentID:    "scraped-new-id-1",
 			Title:         "[Samsung] Galaxy S24 Ultra 512gb (Price Drop)",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			Threads:       []models.ThreadContext{{PostURL: "url1"}},
 		},
 		{
-			FirestoreID:   "scraped-new-id-2", // different URL, but very similar title
+			DocumentID:    "scraped-new-id-2", // different URL, but very similar title
 			Title:         "Galaxy S24 Ultra 512GB - $1099 (SPC/Perkopolis)",
 			ActualDealURL: "",
 			Threads:       []models.ThreadContext{{PostURL: "url2"}},
@@ -132,12 +132,12 @@ func TestDeduplicateDeals_ScrapedWithExisting(t *testing.T) {
 		t.Fatalf("Expected 2 deduplicated deals (mapped), got %d", len(deduped))
 	}
 
-	if deduped[0].FirestoreID != "existing-1" {
-		t.Errorf("Expected first scraped deal to map to existing-1, got %s", deduped[0].FirestoreID)
+	if deduped[0].DocumentID != "existing-1" {
+		t.Errorf("Expected first scraped deal to map to existing-1, got %s", deduped[0].DocumentID)
 	}
 
-	if deduped[1].FirestoreID != "existing-1" {
-		t.Errorf("Expected second scraped deal to map to existing-1, got %s", deduped[1].FirestoreID)
+	if deduped[1].DocumentID != "existing-1" {
+		t.Errorf("Expected second scraped deal to map to existing-1, got %s", deduped[1].DocumentID)
 	}
 }
 
@@ -148,19 +148,19 @@ func TestDeduplicateDeals_ScrapedWithScraped(t *testing.T) {
 
 	scrapedDeals := []models.DealInfo{
 		{
-			FirestoreID:   "id-1",
+			DocumentID:    "id-1",
 			Title:         "250GB 5G+ $40/mo. w/ Digital Discount and $40 ongoing credit",
 			ActualDealURL: "https://shop.freedommobile.ca/en-CA/plans",
 			Threads:       []models.ThreadContext{{PostURL: "thread-1"}},
 		},
 		{
-			FirestoreID:   "id-2",
+			DocumentID:    "id-2",
 			Title:         "Freedom Mobile $40/mo 250GB 5G+ Canada/US/Mexico With Roam Beyond",
 			ActualDealURL: "https://shop.freedommobile.ca/en-CA/plans",
 			Threads:       []models.ThreadContext{{PostURL: "thread-2"}},
 		},
 		{
-			FirestoreID:   "id-3", // completely different deal
+			DocumentID:    "id-3", // completely different deal
 			Title:         "Apple AirPods Pro 2 - $249",
 			ActualDealURL: "https://amazon.ca/airpods",
 			Threads:       []models.ThreadContext{{PostURL: "thread-3"}},
@@ -169,16 +169,16 @@ func TestDeduplicateDeals_ScrapedWithScraped(t *testing.T) {
 
 	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, nil, logger)
 
-	// Expect 3 deals total, but first two should share the same FirestoreID!
+	// Expect 3 deals total, but first two should share the same DocumentID!
 	if len(deduped) != 3 {
 		t.Fatalf("Expected 3 valid deduplicated items, got %d", len(deduped))
 	}
 
-	if deduped[0].FirestoreID != deduped[1].FirestoreID {
-		t.Errorf("Expected deal 1 and deal 2 to merge and share ID. IDs: %s, %s", deduped[0].FirestoreID, deduped[1].FirestoreID)
+	if deduped[0].DocumentID != deduped[1].DocumentID {
+		t.Errorf("Expected deal 1 and deal 2 to merge and share ID. IDs: %s, %s", deduped[0].DocumentID, deduped[1].DocumentID)
 	}
 
-	if deduped[1].FirestoreID == deduped[2].FirestoreID {
+	if deduped[1].DocumentID == deduped[2].DocumentID {
 		t.Errorf("Expected deal 3 to have different ID.")
 	}
 }
@@ -230,37 +230,37 @@ func TestGenerateSearchTokens_URLDomainNoise(t *testing.T) {
 }
 
 func TestDeduplicateDeals_Layer1_ExactIDSkipsSilently(t *testing.T) {
-	// Layer 1: When a scraped deal's FirestoreID already exists in existingDeals,
+	// Layer 1: When a scraped deal's DocumentID already exists in existingDeals,
 	// it should be passed through without fuzzy matching or logging "deduplicated".
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	p := &DealProcessor{}
 
-	// Simulate deals already in Firestore (loaded by loadExistingDeals)
+	// Simulate deals already in the document store (loaded by loadExistingDeals)
 	existingDeals := map[string]*models.DealInfo{
 		"known-id-1": {
-			FirestoreID:   "known-id-1",
+			DocumentID:    "known-id-1",
 			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
 		},
 		"known-id-2": {
-			FirestoreID:   "known-id-2",
+			DocumentID:    "known-id-2",
 			Title:         "Apple AirPods Pro 2 - $249",
 			ActualDealURL: "https://amazon.ca/airpods",
 			SearchTokens:  []string{"apple", "airpods", "pro", "249"},
 		},
 	}
 
-	// Scraped deals have the same FirestoreIDs (same PublishedTimestamp = same posts)
+	// Scraped deals have the same DocumentIDs (same PublishedTimestamp = same posts)
 	scrapedDeals := []models.DealInfo{
 		{
-			FirestoreID:   "known-id-1",
+			DocumentID:    "known-id-1",
 			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			Threads:       []models.ThreadContext{{PostURL: "thread-1"}},
 		},
 		{
-			FirestoreID:   "known-id-2",
+			DocumentID:    "known-id-2",
 			Title:         "Apple AirPods Pro 2 - $249",
 			ActualDealURL: "https://amazon.ca/airpods",
 			Threads:       []models.ThreadContext{{PostURL: "thread-2"}},
@@ -269,15 +269,15 @@ func TestDeduplicateDeals_Layer1_ExactIDSkipsSilently(t *testing.T) {
 
 	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, nil, logger)
 
-	// Both should pass through, keeping their original FirestoreIDs
+	// Both should pass through, keeping their original DocumentIDs
 	if len(deduped) != 2 {
 		t.Fatalf("Expected 2 deals, got %d", len(deduped))
 	}
-	if deduped[0].FirestoreID != "known-id-1" {
-		t.Errorf("Expected known-id-1, got %s", deduped[0].FirestoreID)
+	if deduped[0].DocumentID != "known-id-1" {
+		t.Errorf("Expected known-id-1, got %s", deduped[0].DocumentID)
 	}
-	if deduped[1].FirestoreID != "known-id-2" {
-		t.Errorf("Expected known-id-2, got %s", deduped[1].FirestoreID)
+	if deduped[1].DocumentID != "known-id-2" {
+		t.Errorf("Expected known-id-2, got %s", deduped[1].DocumentID)
 	}
 
 	// SearchTokens should NOT be generated (Layer 1 skips before token generation)
@@ -287,7 +287,7 @@ func TestDeduplicateDeals_Layer1_ExactIDSkipsSilently(t *testing.T) {
 }
 
 func TestDeduplicateDeals_Layer2_FuzzyMatchForDifferentPosts(t *testing.T) {
-	// Layer 2: When a scraped deal has a NEW FirestoreID (not in existingDeals),
+	// Layer 2: When a scraped deal has a NEW DocumentID (not in existingDeals),
 	// but fuzzy-matches a recent deal, it should be remapped to the existing ID.
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	p := &DealProcessor{}
@@ -296,17 +296,17 @@ func TestDeduplicateDeals_Layer2_FuzzyMatchForDifferentPosts(t *testing.T) {
 
 	recentDeals := []models.DealInfo{
 		{
-			FirestoreID:   "original-post-id",
+			DocumentID:    "original-post-id",
 			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
 		},
 	}
 
-	// Different user posted a very similar deal (different timestamp = different FirestoreID)
+	// Different user posted a very similar deal (different timestamp = different DocumentID)
 	scrapedDeals := []models.DealInfo{
 		{
-			FirestoreID:   "new-post-different-timestamp",
+			DocumentID:    "new-post-different-timestamp",
 			Title:         "[Samsung] Galaxy S24 Ultra 512GB Price Drop $1099",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			Threads:       []models.ThreadContext{{PostURL: "thread-new"}},
@@ -319,8 +319,8 @@ func TestDeduplicateDeals_Layer2_FuzzyMatchForDifferentPosts(t *testing.T) {
 		t.Fatalf("Expected 1 deal, got %d", len(deduped))
 	}
 	// Should be remapped to the original post's ID
-	if deduped[0].FirestoreID != "original-post-id" {
-		t.Errorf("Expected FirestoreID to be remapped to original-post-id, got %s", deduped[0].FirestoreID)
+	if deduped[0].DocumentID != "original-post-id" {
+		t.Errorf("Expected DocumentID to be remapped to original-post-id, got %s", deduped[0].DocumentID)
 	}
 }
 
@@ -331,7 +331,7 @@ func TestDeduplicateDeals_MixedLayers(t *testing.T) {
 
 	existingDeals := map[string]*models.DealInfo{
 		"known-id": {
-			FirestoreID:  "known-id",
+			DocumentID:   "known-id",
 			Title:        "AirPods Pro 2 - $249",
 			SearchTokens: []string{"airpods", "pro", "249"},
 		},
@@ -339,7 +339,7 @@ func TestDeduplicateDeals_MixedLayers(t *testing.T) {
 
 	recentDeals := []models.DealInfo{
 		{
-			FirestoreID:   "recent-samsung",
+			DocumentID:    "recent-samsung",
 			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
@@ -349,21 +349,21 @@ func TestDeduplicateDeals_MixedLayers(t *testing.T) {
 	scrapedDeals := []models.DealInfo{
 		{
 			// Layer 1: exact ID match, should skip fuzzy matching
-			FirestoreID:   "known-id",
+			DocumentID:    "known-id",
 			Title:         "AirPods Pro 2 - $249",
 			ActualDealURL: "https://amazon.ca/airpods",
 			Threads:       []models.ThreadContext{{PostURL: "thread-1"}},
 		},
 		{
 			// Layer 2: new post, should fuzzy match against recentDeals
-			FirestoreID:   "brand-new-id",
+			DocumentID:    "brand-new-id",
 			Title:         "Samsung Galaxy S24 Ultra 512GB on sale",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			Threads:       []models.ThreadContext{{PostURL: "thread-2"}},
 		},
 		{
 			// Brand new deal, no match anywhere
-			FirestoreID:   "totally-new",
+			DocumentID:    "totally-new",
 			Title:         "Costco Kirkland Batteries 48pk $15",
 			ActualDealURL: "https://costco.ca/batteries",
 			Threads:       []models.ThreadContext{{PostURL: "thread-3"}},
@@ -377,16 +377,16 @@ func TestDeduplicateDeals_MixedLayers(t *testing.T) {
 	}
 
 	// Deal 1: Layer 1 pass-through, keeps original ID
-	if deduped[0].FirestoreID != "known-id" {
-		t.Errorf("Deal 1 should keep known-id, got %s", deduped[0].FirestoreID)
+	if deduped[0].DocumentID != "known-id" {
+		t.Errorf("Deal 1 should keep known-id, got %s", deduped[0].DocumentID)
 	}
 	// Deal 2: Layer 2 remapped to recent deal
-	if deduped[1].FirestoreID != "recent-samsung" {
-		t.Errorf("Deal 2 should be remapped to recent-samsung, got %s", deduped[1].FirestoreID)
+	if deduped[1].DocumentID != "recent-samsung" {
+		t.Errorf("Deal 2 should be remapped to recent-samsung, got %s", deduped[1].DocumentID)
 	}
 	// Deal 3: No match, keeps its own ID
-	if deduped[2].FirestoreID != "totally-new" {
-		t.Errorf("Deal 3 should keep totally-new, got %s", deduped[2].FirestoreID)
+	if deduped[2].DocumentID != "totally-new" {
+		t.Errorf("Deal 3 should keep totally-new, got %s", deduped[2].DocumentID)
 	}
 }
 
@@ -398,19 +398,19 @@ func TestDeduplicateDeals_ThreeWayMerge(t *testing.T) {
 	// Three deals that are all duplicates of each other (same URL)
 	scrapedDeals := []models.DealInfo{
 		{
-			FirestoreID:   "id-a",
+			DocumentID:    "id-a",
 			Title:         "Samsung Galaxy S24 Ultra 512GB",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			Threads:       []models.ThreadContext{{PostURL: "thread-a"}},
 		},
 		{
-			FirestoreID:   "id-b",
+			DocumentID:    "id-b",
 			Title:         "[Samsung] Galaxy S24 Ultra 512gb - Price Drop",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			Threads:       []models.ThreadContext{{PostURL: "thread-b"}},
 		},
 		{
-			FirestoreID:   "id-c",
+			DocumentID:    "id-c",
 			Title:         "Galaxy S24 Ultra 512GB SPC Offer",
 			ActualDealURL: "https://samsung.com/ca/s24",
 			Threads:       []models.ThreadContext{{PostURL: "thread-c"}},
@@ -419,15 +419,15 @@ func TestDeduplicateDeals_ThreeWayMerge(t *testing.T) {
 
 	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, nil, logger)
 
-	// All 3 should appear in output but share the same FirestoreID
+	// All 3 should appear in output but share the same DocumentID
 	if len(deduped) != 3 {
 		t.Fatalf("Expected 3 deduplicated items, got %d", len(deduped))
 	}
 
-	sharedID := deduped[0].FirestoreID
+	sharedID := deduped[0].DocumentID
 	for i, d := range deduped {
-		if d.FirestoreID != sharedID {
-			t.Errorf("Deal %d has FirestoreID %q, expected all to share %q", i, d.FirestoreID, sharedID)
+		if d.DocumentID != sharedID {
+			t.Errorf("Deal %d has DocumentID %q, expected all to share %q", i, d.DocumentID, sharedID)
 		}
 	}
 }

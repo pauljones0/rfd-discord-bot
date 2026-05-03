@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/productmonitor"
 )
 
 const (
@@ -460,179 +461,80 @@ func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, log
 
 // processBatch handles a single batch through both AI tiers.
 func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *slog.Logger) ([]AnalyzedProduct, int, int, error) {
-	var results []AnalyzedProduct
-
-	if p.analyzer == nil {
-		logger.Warn("AI analyzer not available, saving products without analysis")
-		for _, product := range batch {
-			analyzed := AnalyzedProduct{
-				Product:     product,
-				CleanTitle:  product.Name,
-				DiscountPct: computeDiscount(product),
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
-			if err := p.store.SaveBestBuyProduct(ctx, analyzed); err != nil {
-				logger.Error("Failed to save product", "sku", product.SKU, "error", err)
-			}
-			results = append(results, analyzed)
-		}
-		return results, 0, 0, nil
+	cfg := productmonitor.Config[Product, BatchScreenResult, BatchAnalyzeResult, AnalyzedProduct]{
+		ProductKey:  func(product Product) string { return product.SKU },
+		ScreenKey:   func(screen BatchScreenResult) string { return screen.SKU },
+		AnalyzeKey:  func(result BatchAnalyzeResult) string { return result.SKU },
+		IsTopDeal:   func(screen BatchScreenResult) bool { return screen.IsTopDeal },
+		IsWarmHot:   func(product AnalyzedProduct) bool { return product.IsWarm || product.IsLavaHot },
+		ReturnSaved: func(AnalyzedProduct) bool { return true },
+		Fallback:    bestBuyFallback,
+		FromScreen:  bestBuyFromScreen,
+		FromAnalysis: func(product Product, screen BatchScreenResult, result BatchAnalyzeResult) AnalyzedProduct {
+			return bestBuyFromAnalysis(product, screen, result)
+		},
+		Save: p.store.SaveBestBuyProduct,
 	}
-
-	// Tier 1: Batch screening
-	screenResults, err := p.analyzer.ScreenBestBuyBatch(ctx, batch)
-	if err != nil {
-		if strings.Contains(err.Error(), "all model tiers exhausted") {
-			logger.Warn("Tier-1 batch screening skipped, AI quota exhausted", "batch_size", len(batch))
-			for _, product := range batch {
-				analyzed := AnalyzedProduct{
-					Product:     product,
-					CleanTitle:  product.Name,
-					DiscountPct: computeDiscount(product),
-					ProcessedAt: time.Now(),
-					LastSeen:    time.Now(),
-				}
-				if saveErr := p.store.SaveBestBuyProduct(ctx, analyzed); saveErr != nil {
-					logger.Error("Failed to save product", "sku", product.SKU, "error", saveErr)
-				}
-				results = append(results, analyzed)
+	if p.analyzer != nil {
+		cfg.ScreenBatch = p.analyzer.ScreenBestBuyBatch
+		cfg.AnalyzeBatch = p.analyzer.AnalyzeBestBuyBatch
+		cfg.AnalyzeOne = func(ctx context.Context, product Product) (*BatchAnalyzeResult, error) {
+			result, err := p.analyzer.AnalyzeBestBuyProduct(ctx, product)
+			if err != nil || result == nil {
+				return nil, err
 			}
-			return results, 0, 0, err
-		}
-		logger.Error("Tier-1 batch screening failed", "batch_size", len(batch), "error", err)
-		for _, product := range batch {
-			analyzed := AnalyzedProduct{
-				Product:     product,
-				CleanTitle:  product.Name,
-				DiscountPct: computeDiscount(product),
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
-			if saveErr := p.store.SaveBestBuyProduct(ctx, analyzed); saveErr != nil {
-				logger.Error("Failed to save product", "sku", product.SKU, "error", saveErr)
-			}
-			results = append(results, analyzed)
-		}
-		return results, 0, 0, nil
-	}
-
-	// Build screen map by SKU
-	screenMap := make(map[string]BatchScreenResult)
-	for _, r := range screenResults {
-		screenMap[r.SKU] = r
-	}
-
-	type tier1Candidate struct {
-		product      Product
-		screenResult BatchScreenResult
-	}
-	var tier1Passed []tier1Candidate
-
-	// Save non-top-deal products and collect tier-1 candidates
-	for _, product := range batch {
-		screen, ok := screenMap[product.SKU]
-		if !ok || !screen.IsTopDeal {
-			analyzed := AnalyzedProduct{
-				Product:     product,
-				CleanTitle:  product.Name,
-				DiscountPct: computeDiscount(product),
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
-			if ok && screen.CleanTitle != "" {
-				analyzed.CleanTitle = screen.CleanTitle
-			}
-			if err := p.store.SaveBestBuyProduct(ctx, analyzed); err != nil {
-				logger.Error("Failed to save product", "sku", product.SKU, "error", err)
-			}
-			results = append(results, analyzed)
-			continue
-		}
-		tier1Passed = append(tier1Passed, tier1Candidate{product, screen})
-	}
-
-	logger.Info("Tier-1 screening results",
-		"batch_size", len(batch),
-		"passed_tier1", len(tier1Passed),
-	)
-
-	// Tier 2: Batch verification for tier-1 candidates, falling back to individual
-	// calls if Gemini rejects or fails the batch.
-	tier2Passed := 0
-	batchAnalyzeResults := make(map[string]BatchAnalyzeResult)
-	if len(tier1Passed) > 0 {
-		products := make([]Product, 0, len(tier1Passed))
-		for _, candidate := range tier1Passed {
-			products = append(products, candidate.product)
-		}
-		if batchResults, err := p.analyzer.AnalyzeBestBuyBatch(ctx, products); err != nil {
-			logger.Warn("Tier-2 batch verification failed; falling back to individual calls", "batch_size", len(products), "error", err)
-		} else {
-			for _, result := range batchResults {
-				batchAnalyzeResults[result.SKU] = result
-			}
+			return &BatchAnalyzeResult{
+				SKU:        product.SKU,
+				CleanTitle: result.CleanTitle,
+				IsWarm:     result.IsWarm,
+				IsLavaHot:  result.IsLavaHot,
+				Summary:    result.Summary,
+			}, nil
 		}
 	}
 
-	for _, candidate := range tier1Passed {
-		if ctx.Err() != nil {
-			logger.Warn("Context cancelled, stopping tier-2 verification")
-			break
-		}
-
-		analyzed := AnalyzedProduct{
-			Product:     candidate.product,
-			CleanTitle:  candidate.screenResult.CleanTitle,
-			DiscountPct: computeDiscount(candidate.product),
-			ProcessedAt: time.Now(),
-			LastSeen:    time.Now(),
-		}
-
-		if result, ok := batchAnalyzeResults[candidate.product.SKU]; ok {
-			analyzed.CleanTitle = firstNonEmpty(result.CleanTitle, analyzed.CleanTitle, candidate.product.Name)
-			analyzed.IsWarm = result.IsWarm
-			analyzed.IsLavaHot = result.IsLavaHot
-			analyzed.Summary = result.Summary
-		} else {
-			analyzeResult, err := p.analyzer.AnalyzeBestBuyProduct(ctx, candidate.product)
-			if err != nil {
-				logger.Warn("Tier-2 verification failed",
-					"sku", candidate.product.SKU,
-					"name", candidate.product.Name,
-					"error", err,
-				)
-			} else if analyzeResult != nil {
-				analyzed.CleanTitle = firstNonEmpty(analyzeResult.CleanTitle, analyzed.CleanTitle, candidate.product.Name)
-				analyzed.IsWarm = analyzeResult.IsWarm
-				analyzed.IsLavaHot = analyzeResult.IsLavaHot
-				analyzed.Summary = analyzeResult.Summary
-			}
-		}
-
-		if analyzed.CleanTitle == "" {
-			analyzed.CleanTitle = candidate.product.Name
-		}
-		if err := p.store.SaveBestBuyProduct(ctx, analyzed); err != nil {
-			logger.Error("Failed to save analyzed product", "sku", candidate.product.SKU, "error", err)
-			continue
-		}
-		if analyzed.IsWarm || analyzed.IsLavaHot {
-			tier2Passed++
+	result, err := productmonitor.ProcessBatch(ctx, batch, cfg, logger)
+	for _, item := range result.Items {
+		if item.IsWarm || item.IsLavaHot {
 			logger.Info("Best Buy deal labeled warm/hot",
-				"sku", candidate.product.SKU,
-				"clean_title", analyzed.CleanTitle,
-				"is_warm", analyzed.IsWarm,
-				"is_lava_hot", analyzed.IsLavaHot,
-				"discount_pct", analyzed.DiscountPct,
-				"seller", candidate.product.SellerName,
-				"source", candidate.product.Source,
+				"sku", item.SKU,
+				"clean_title", item.CleanTitle,
+				"is_warm", item.IsWarm,
+				"is_lava_hot", item.IsLavaHot,
+				"discount_pct", item.DiscountPct,
+				"seller", item.SellerName,
+				"source", item.Source,
 			)
 		}
-		results = append(results, analyzed)
 	}
+	return result.Items, result.Tier1Passed, result.Tier2Passed, err
+}
 
-	return results, len(tier1Passed), tier2Passed, nil
+func bestBuyFallback(product Product) AnalyzedProduct {
+	return AnalyzedProduct{
+		Product:     product,
+		CleanTitle:  product.Name,
+		DiscountPct: computeDiscount(product),
+		ProcessedAt: time.Now(),
+		LastSeen:    time.Now(),
+	}
+}
+
+func bestBuyFromScreen(product Product, screen BatchScreenResult) AnalyzedProduct {
+	analyzed := bestBuyFallback(product)
+	if screen.CleanTitle != "" {
+		analyzed.CleanTitle = screen.CleanTitle
+	}
+	return analyzed
+}
+
+func bestBuyFromAnalysis(product Product, screen BatchScreenResult, result BatchAnalyzeResult) AnalyzedProduct {
+	analyzed := bestBuyFromScreen(product, screen)
+	analyzed.CleanTitle = firstNonEmpty(result.CleanTitle, analyzed.CleanTitle, product.Name)
+	analyzed.IsWarm = result.IsWarm
+	analyzed.IsLavaHot = result.IsLavaHot
+	analyzed.Summary = result.Summary
+	return analyzed
 }
 
 // computeDiscount calculates the discount percentage for a product.
@@ -656,14 +558,5 @@ func filterEligibleSubs(product AnalyzedProduct, subs []models.Subscription) []m
 
 // isBestBuyEligible checks whether a deal should be sent to a given subscription.
 func isBestBuyEligible(product AnalyzedProduct, sub models.Subscription) bool {
-	switch sub.DealType {
-	case "bb_new":
-		return true
-	case "bb_warm_hot":
-		return product.IsWarm || product.IsLavaHot
-	case "bb_hot":
-		return product.IsLavaHot
-	default:
-		return strings.HasPrefix(sub.DealType, "bb_") && (product.IsWarm || product.IsLavaHot)
-	}
+	return dealtypes.BestBuyEligible(sub.DealType, product.IsWarm, product.IsLavaHot)
 }

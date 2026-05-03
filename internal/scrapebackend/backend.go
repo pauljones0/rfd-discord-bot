@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -43,6 +44,7 @@ type FetchOptions struct {
 	AICrawlerCommand string
 	PaidCommand      string
 	PaidEnabled      bool
+	PaidAttempt      func(context.Context) error
 }
 
 // FetchResult captures the observable result from one backend attempt.
@@ -96,6 +98,13 @@ func FetchHTML(ctx context.Context, opts FetchOptions) FetchResult {
 	case BackendPaidTrial:
 		if !opts.PaidEnabled {
 			err = fmt.Errorf("paid browser backend is disabled")
+		} else if opts.PaidAttempt != nil {
+			if attemptErr := opts.PaidAttempt(attemptCtx); attemptErr != nil {
+				slog.Warn("Paid browser attempt skipped", "backend", opts.Backend, "url", opts.URL, "reason", attemptErr)
+				err = attemptErr
+			} else {
+				html, err = fetchCommand(attemptCtx, opts.PaidCommand, opts.URL)
+			}
 		} else {
 			html, err = fetchCommand(attemptCtx, opts.PaidCommand, opts.URL)
 		}

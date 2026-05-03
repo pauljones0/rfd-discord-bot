@@ -52,9 +52,7 @@ func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID, dea
 
 // GetSubscriptionsByGuild retrieves all active subscriptions for a specific guild.
 func (c *Client) GetSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
-	return c.subscriptionsWhere(ctx, func(row Document) bool {
-		return documentString(row.Data, "guildID") == guildID
-	})
+	return c.subscriptionsMatching(ctx, map[string]any{"guildID": guildID}, nil)
 }
 
 // GetAllSubscriptions retrieves all registered active subscriptions.
@@ -64,9 +62,7 @@ func (c *Client) GetAllSubscriptions(ctx context.Context) ([]models.Subscription
 
 // GetSubscription retrieves a specific subscription by its guild and channel.
 func (c *Client) GetSubscription(ctx context.Context, guildID, channelID string) (*models.Subscription, error) {
-	subs, err := c.subscriptionsWhere(ctx, func(row Document) bool {
-		return documentString(row.Data, "guildID") == guildID && documentString(row.Data, "channelID") == channelID
-	})
+	subs, err := c.subscriptionsMatching(ctx, map[string]any{"guildID": guildID, "channelID": channelID}, nil)
 	if err != nil || len(subs) == 0 {
 		return nil, err
 	}
@@ -74,13 +70,17 @@ func (c *Client) GetSubscription(ctx context.Context, guildID, channelID string)
 }
 
 func (c *Client) subscriptionsWhere(ctx context.Context, keep func(Document) bool) ([]models.Subscription, error) {
-	rows, err := c.ListDocuments(ctx, subscriptionsCollection)
+	return c.subscriptionsMatching(ctx, nil, keep)
+}
+
+func (c *Client) subscriptionsMatching(ctx context.Context, fields map[string]any, keep func(Document) bool) ([]models.Subscription, error) {
+	rows, err := c.ListDocumentsWhere(ctx, subscriptionsCollection, fields)
 	if err != nil {
 		return nil, err
 	}
 	var subs []models.Subscription
 	for _, row := range rows {
-		if !keep(row) {
+		if keep != nil && !keep(row) {
 			continue
 		}
 		var sub models.Subscription

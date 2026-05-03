@@ -28,7 +28,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	store, err := storage.New(ctx, cfg.ProjectID)
+	store, err := storage.New(ctx)
 	if err != nil {
 		slog.Error("Failed to initialize storage", "error", err)
 		os.Exit(1)

@@ -14,47 +14,47 @@ import (
 
 // ServerConfig stores Discord server configuration for HardwareSwap.
 type ServerConfig struct {
-	FeedChannelID string    `firestore:"feed_channel_id"`
-	PingChannelID string    `firestore:"ping_channel_id"`
-	UpdatedAt     time.Time `firestore:"updated_at"`
+	FeedChannelID string    `docstore:"feed_channel_id"`
+	PingChannelID string    `docstore:"ping_channel_id"`
+	UpdatedAt     time.Time `docstore:"updated_at"`
 }
 
 // AlertRule represents a single user's keyword alert.
 type AlertRule struct {
-	ID        string    `firestore:"-"`
-	UserID    string    `firestore:"user_id"`
-	ServerID  string    `firestore:"server_id"`
-	MustHave  []string  `firestore:"must_have"`
-	AnyOf     []string  `firestore:"any_of"`
-	MustNot   []string  `firestore:"must_not"`
-	RawQuery  string    `firestore:"raw_query"`
-	CreatedAt time.Time `firestore:"created_at"`
+	ID        string    `docstore:"-"`
+	UserID    string    `docstore:"user_id"`
+	ServerID  string    `docstore:"server_id"`
+	MustHave  []string  `docstore:"must_have"`
+	AnyOf     []string  `docstore:"any_of"`
+	MustNot   []string  `docstore:"must_not"`
+	RawQuery  string    `docstore:"raw_query"`
+	CreatedAt time.Time `docstore:"created_at"`
 }
 
 // PostRecord maps a Reddit post ID to Discord message IDs for updating/striking-through.
 type PostRecord struct {
-	RedditID     string            `firestore:"reddit_id"`
-	CleanedTitle string            `firestore:"cleaned_title"`
-	ServerMsgs   map[string]string `firestore:"server_msgs"`
-	PostedAt     time.Time         `firestore:"posted_at"`
+	RedditID     string            `docstore:"reddit_id"`
+	CleanedTitle string            `docstore:"cleaned_title"`
+	ServerMsgs   map[string]string `docstore:"server_msgs"`
+	PostedAt     time.Time         `docstore:"posted_at"`
 }
 
 // AnalyticsRecord stores how an alert was created to evaluate AI effectiveness.
 type AnalyticsRecord struct {
-	ID                 string    `firestore:"-"`
-	FlowType           string    `firestore:"flow_type"`
-	OriginalUserPrompt string    `firestore:"original_user_prompt,omitempty"`
-	AISuggestedQuery   string    `firestore:"ai_suggested_query,omitempty"`
-	FinalSavedQuery    string    `firestore:"final_saved_query,omitempty"`
-	Outcome            string    `firestore:"outcome"`
-	EditCount          int       `firestore:"edit_count"`
-	CreatedAt          time.Time `firestore:"created_at"`
+	ID                 string    `docstore:"-"`
+	FlowType           string    `docstore:"flow_type"`
+	OriginalUserPrompt string    `docstore:"original_user_prompt,omitempty"`
+	AISuggestedQuery   string    `docstore:"ai_suggested_query,omitempty"`
+	FinalSavedQuery    string    `docstore:"final_saved_query,omitempty"`
+	Outcome            string    `docstore:"outcome"`
+	EditCount          int       `docstore:"edit_count"`
+	CreatedAt          time.Time `docstore:"created_at"`
 }
 
 // SystemPrompt stores dynamically updated AI system instructions.
 type SystemPrompt struct {
-	PromptText string    `firestore:"prompt_text"`
-	UpdatedAt  time.Time `firestore:"updated_at"`
+	PromptText string    `docstore:"prompt_text"`
+	UpdatedAt  time.Time `docstore:"updated_at"`
 }
 
 // Store provides document-store operations for the HardwareSwap processor.
@@ -273,7 +273,7 @@ func (s *Store) SetSystemPrompt(ctx context.Context, key, promptText string) err
 func decodeHWDocument(data map[string]any, dst any) error {
 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		Result:           dst,
-		TagName:          "firestore",
+		TagName:          "docstore",
 		WeaklyTypedInput: true,
 		Squash:           true,
 		DecodeHook:       mapstructure.StringToTimeHookFunc(time.RFC3339Nano),

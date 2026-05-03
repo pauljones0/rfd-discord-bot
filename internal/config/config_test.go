@@ -46,6 +46,12 @@ func TestLoad(t *testing.T) {
 	if cfg.EbayCouponDiscoveryInterval != 6*time.Hour {
 		t.Errorf("Expected default eBay coupon discovery interval 6h, got %s", cfg.EbayCouponDiscoveryInterval)
 	}
+	if cfg.EbayPaidBrowserMaxPerRun != 1 || cfg.EbayPaidBrowserMaxPerDay != 6 {
+		t.Errorf("Expected eBay paid browser caps 1/run and 6/day, got %d/%d", cfg.EbayPaidBrowserMaxPerRun, cfg.EbayPaidBrowserMaxPerDay)
+	}
+	if cfg.MemoryExpressPaidMaxPerRun != 0 || cfg.MemoryExpressPaidMaxPerDay != 0 {
+		t.Errorf("Expected Memory Express paid browser caps disabled, got %d/%d", cfg.MemoryExpressPaidMaxPerRun, cfg.MemoryExpressPaidMaxPerDay)
+	}
 	if cfg.LocalSchedulerEnabled {
 		t.Errorf("Expected local scheduler to be disabled by default")
 	}
@@ -66,9 +72,6 @@ func TestLoad_ProjectIDOptionalForLocalPostgres(t *testing.T) {
 	}
 	if cfg.ProjectID != "" {
 		t.Fatalf("ProjectID = %q, want empty local default", cfg.ProjectID)
-	}
-	if cfg.StorageBackend != "postgres" {
-		t.Fatalf("StorageBackend = %q, want postgres", cfg.StorageBackend)
 	}
 }
 

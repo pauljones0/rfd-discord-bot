@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay/couponinfer"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -45,6 +46,11 @@ type EbayNotifier interface {
 	SendEbayDeal(ctx context.Context, item EbayItem, subs []models.Subscription) (map[string]string, error)
 }
 
+type PaidLimiter interface {
+	BeginRun()
+	BeforeAttempt(ctx context.Context) error
+}
+
 // Processor handles the eBay price-drop monitoring pipeline.
 type Processor struct {
 	store                   EbayStore
@@ -53,6 +59,7 @@ type Processor struct {
 	mu                      sync.Mutex
 	couponDiscoveryInterval time.Duration
 	couponDiscoveryBudget   time.Duration
+	paidLimiter             PaidLimiter
 }
 
 // NewProcessor creates a new eBay price-drop processor.
@@ -72,6 +79,13 @@ func (p *Processor) SetCouponDiscoveryInterval(interval time.Duration) {
 	}
 }
 
+func (p *Processor) SetPaidLimiter(limiter PaidLimiter) {
+	p.paidLimiter = limiter
+	if p.client != nil && limiter != nil {
+		p.client.SetPaidAttemptHook(limiter.BeforeAttempt)
+	}
+}
+
 // ProcessEbayDeals runs the eBay price-drop monitoring pipeline.
 func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	if p.client == nil {
@@ -84,6 +98,9 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		return nil
 	}
 	defer p.mu.Unlock()
+	if p.paidLimiter != nil {
+		p.paidLimiter.BeginRun()
+	}
 
 	start := time.Now()
 	runID := start.Format("20060102-150405")
@@ -391,25 +408,11 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 
 // isEbayEligible checks whether a price drop should be sent to a given subscription.
 func isEbayEligible(item EbayItem, sub models.Subscription) bool {
-	switch sub.DealType {
-	case "ebay_ca_price_drop":
-		return ebayItemMarketplace(item) == "EBAY_CA"
-	case "ebay_us_price_drop":
-		return ebayItemMarketplace(item) == "EBAY_US"
-	case "ebay_price_drop", "ebay_warm_hot", "ebay_hot", "warm_hot_all", "hot_all":
-		return true
-	default:
-		return false
-	}
+	return dealtypes.EbayEligible(sub.DealType, ebayItemMarketplace(item))
 }
 
 func isEbayDealType(dealType string) bool {
-	switch dealType {
-	case "ebay_ca_price_drop", "ebay_us_price_drop", "ebay_price_drop", "ebay_warm_hot", "ebay_hot", "warm_hot_all", "hot_all":
-		return true
-	default:
-		return false
-	}
+	return dealtypes.IsEbay(dealType)
 }
 
 func eligibleEbaySubscriptions(item EbayItem, subs []models.Subscription) []models.Subscription {

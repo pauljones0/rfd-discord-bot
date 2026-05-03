@@ -52,7 +52,7 @@ Manual HTTP triggers still exist and use the same concurrency guards as the
 scheduler:
 
 ```text
-GET /process
+GET /process-deals
 GET /process-ebay
 GET /process-memoryexpress
 GET /process-bestbuy
@@ -85,6 +85,8 @@ Typical Stormtrooper backend order:
 EBAY_COUPON_BACKENDS=http,external-stealth,camoufox,ai-crawler,paid-trial
 EBAY_COUPON_DISCOVERY_INTERVAL=6h
 EBAY_PAID_BROWSER_ENABLED=true
+EBAY_PAID_BROWSER_MAX_CALLS_PER_RUN=1
+EBAY_PAID_BROWSER_MAX_CALLS_PER_DAY=6
 ```
 
 `paid-trial` is the Browserless adapter and only runs when explicitly enabled.
@@ -164,6 +166,12 @@ Run scrape-lab with Postgres-backed targets for experimentation:
 
 ```powershell
 go run ./cmd/scrape-lab -from-store -sites ebay,memoryexpress,bestbuy -ebay-limit 3
+```
+
+Report any old subscription values before cleaning them from Postgres:
+
+```powershell
+go run ./cmd/cleanup-legacy-subscriptions
 ```
 
 Postgres is the only runtime store. Manual JSON/env scrape-lab targets are still

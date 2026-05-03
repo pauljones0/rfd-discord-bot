@@ -110,15 +110,13 @@ func (c *Client) RemoveMemExpressSubscription(ctx context.Context, guildID, chan
 
 // GetMemExpressSubscriptions retrieves all active Memory Express subscriptions.
 func (c *Client) GetMemExpressSubscriptions(ctx context.Context) ([]models.Subscription, error) {
-	return c.subscriptionsWhere(ctx, func(row Document) bool {
-		return documentString(row.Data, "subscriptionType") == "memoryexpress"
-	})
+	return c.subscriptionsMatching(ctx, map[string]any{"subscriptionType": "memoryexpress"}, nil)
 }
 
 // GetMemExpressSubscriptionsByGuild retrieves all Memory Express subscriptions for a guild.
 func (c *Client) GetMemExpressSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
-	return c.subscriptionsWhere(ctx, func(row Document) bool {
-		return documentString(row.Data, "guildID") == guildID &&
-			documentString(row.Data, "subscriptionType") == "memoryexpress"
-	})
+	return c.subscriptionsMatching(ctx, map[string]any{
+		"guildID":          guildID,
+		"subscriptionType": "memoryexpress",
+	}, nil)
 }

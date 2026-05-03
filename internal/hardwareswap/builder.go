@@ -75,8 +75,8 @@ func BuildDealButtons(permalink string) []interface{} {
 			"type": 1, // ActionRow
 			"components": []interface{}{
 				map[string]interface{}{
-					"type":  2,     // Button
-					"style": 5,     // Link
+					"type":  2, // Button
+					"style": 5, // Link
 					"label": "Open in Reddit",
 					"url":   "https://www.reddit.com" + permalink,
 				},

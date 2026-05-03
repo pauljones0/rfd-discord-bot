@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/productmonitor"
 )
 
 const (
@@ -39,11 +40,12 @@ type Notifier interface {
 
 // Processor handles the Memory Express clearance processing pipeline.
 type Processor struct {
-	store    Store
-	analyzer Analyzer
-	notifier Notifier
-	scrape   func(context.Context, string) ([]Product, error)
-	mu       sync.Mutex
+	store     Store
+	analyzer  Analyzer
+	notifier  Notifier
+	scrape    func(context.Context, string) ([]Product, error)
+	beforeRun func()
+	mu        sync.Mutex
 }
 
 // ProcessorOption customizes a Memory Express processor.
@@ -55,6 +57,12 @@ func WithScrapeFunc(scrape func(context.Context, string) ([]Product, error)) Pro
 		if scrape != nil {
 			p.scrape = scrape
 		}
+	}
+}
+
+func WithBeforeRun(fn func()) ProcessorOption {
+	return func(p *Processor) {
+		p.beforeRun = fn
 	}
 }
 
@@ -81,6 +89,9 @@ func (p *Processor) ProcessMemExpressDeals(ctx context.Context) error {
 		return nil
 	}
 	defer p.mu.Unlock()
+	if p.beforeRun != nil {
+		p.beforeRun()
+	}
 
 	start := time.Now()
 	runID := start.Format("20060102-150405")
@@ -299,261 +310,79 @@ func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, sto
 
 // processBatch handles a single batch through both AI tiers.
 func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *slog.Logger) ([]AnalyzedProduct, int, error) {
-	var results []AnalyzedProduct
-
-	if p.analyzer == nil {
-		logger.Warn("AI analyzer not available, saving products without analysis")
-		for _, product := range batch {
-			analyzed := AnalyzedProduct{
-				Product:     product,
-				CleanTitle:  product.Title,
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
+	cfg := productmonitor.Config[Product, BatchScreenResult, BatchAnalyzeResult, AnalyzedProduct]{
+		ProductKey: func(product Product) string { return product.SKU },
+		ScreenKey:  func(screen BatchScreenResult) string { return screen.SKU },
+		AnalyzeKey: func(result BatchAnalyzeResult) string { return result.SKU },
+		IsTopDeal:  func(screen BatchScreenResult) bool { return screen.IsTopDeal },
+		IsWarmHot:  func(product AnalyzedProduct) bool { return product.IsWarm || product.IsLavaHot },
+		Tier1Limit: Tier1SelectionLimit,
+		ReturnSaved: func(product AnalyzedProduct) bool {
+			return product.IsWarm || product.IsLavaHot
+		},
+		Fallback:     memExpressFallback,
+		FromScreen:   memExpressFromScreen,
+		FromAnalysis: memExpressFromAnalysis,
+		Save:         p.store.SaveMemExpressProduct,
+	}
+	if p.analyzer != nil {
+		cfg.ScreenBatch = p.analyzer.ScreenMemExpressBatch
+		cfg.AnalyzeBatch = p.analyzer.AnalyzeMemExpressBatch
+		cfg.AnalyzeOne = func(ctx context.Context, product Product) (*BatchAnalyzeResult, error) {
+			result, err := p.analyzer.AnalyzeMemExpressProduct(ctx, product)
+			if err != nil || result == nil {
+				return nil, err
 			}
-			if err := p.store.SaveMemExpressProduct(ctx, analyzed); err != nil {
-				logger.Error("Failed to save product", "sku", product.SKU, "error", err)
-			}
+			return &BatchAnalyzeResult{
+				SKU:        product.SKU,
+				CleanTitle: result.CleanTitle,
+				IsWarm:     result.IsWarm,
+				IsLavaHot:  result.IsLavaHot,
+				Summary:    result.Summary,
+			}, nil
 		}
-		return results, 0, nil
 	}
 
-	// Tier 1: Batch screening
-	screenResults, err := p.analyzer.ScreenMemExpressBatch(ctx, batch)
-	if err != nil {
-		if strings.Contains(err.Error(), "all model tiers exhausted") {
-			logger.Warn("Tier-1 batch screening skipped, AI quota exhausted", "batch_size", len(batch))
-			// Save all without analysis
-			for _, product := range batch {
-				analyzed := AnalyzedProduct{
-					Product:     product,
-					CleanTitle:  product.Title,
-					ProcessedAt: time.Now(),
-					LastSeen:    time.Now(),
-				}
-				if saveErr := p.store.SaveMemExpressProduct(ctx, analyzed); saveErr != nil {
-					logger.Error("Failed to save product", "sku", product.SKU, "error", saveErr)
-				}
-			}
-			return results, 0, err
-		}
-		logger.Error("Tier-1 batch screening failed", "batch_size", len(batch), "error", err)
-		// Save all without analysis on screening failure
-		for _, product := range batch {
-			analyzed := AnalyzedProduct{
-				Product:     product,
-				CleanTitle:  product.Title,
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
-			if saveErr := p.store.SaveMemExpressProduct(ctx, analyzed); saveErr != nil {
-				logger.Error("Failed to save product", "sku", product.SKU, "error", saveErr)
-			}
-		}
-		return results, 0, nil
-	}
-
-	// Build screen map by SKU
-	screenMap := make(map[string]BatchScreenResult)
-	for _, r := range screenResults {
-		screenMap[r.SKU] = r
-	}
-
-	type tier1Candidate struct {
-		product      Product
-		screenResult BatchScreenResult
-	}
-	var tier1Passed []tier1Candidate
-
-	// Save non-top-deal products and collect tier-1 candidates
-	for _, product := range batch {
-		screen, ok := screenMap[product.SKU]
-		if !ok || !screen.IsTopDeal {
-			// Save with screen title if available
-			analyzed := AnalyzedProduct{
-				Product:     product,
-				CleanTitle:  product.Title,
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
-			if ok && screen.CleanTitle != "" {
-				analyzed.CleanTitle = screen.CleanTitle
-			}
-			if err := p.store.SaveMemExpressProduct(ctx, analyzed); err != nil {
-				logger.Error("Failed to save product", "sku", product.SKU, "error", err)
-			}
-			continue
-		}
-		tier1Passed = append(tier1Passed, tier1Candidate{product, screen})
-	}
-
-	maxTier1 := Tier1SelectionLimit(len(batch))
-	if len(tier1Passed) > maxTier1 {
-		overflow := tier1Passed[maxTier1:]
-		tier1Passed = tier1Passed[:maxTier1]
-		logger.Info("Tier-1 candidate cap applied",
-			"batch_size", len(batch),
-			"candidate_limit", maxTier1,
-			"candidates_selected", len(tier1Passed),
-			"candidates_dropped", len(overflow),
+	result, err := productmonitor.ProcessBatch(ctx, batch, cfg, logger)
+	for _, item := range result.Items {
+		logger.Info("Memory Express deal labeled warm/hot",
+			"sku", item.SKU,
+			"clean_title", item.CleanTitle,
+			"is_warm", item.IsWarm,
+			"is_lava_hot", item.IsLavaHot,
+			"discount_pct", item.DiscountPct,
+			"store", item.StoreName,
 		)
-		for _, candidate := range overflow {
-			analyzed := AnalyzedProduct{
-				Product:     candidate.product,
-				CleanTitle:  candidate.screenResult.CleanTitle,
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
-			if saveErr := p.store.SaveMemExpressProduct(ctx, analyzed); saveErr != nil {
-				logger.Error("Failed to save capped tier-1 product", "sku", candidate.product.SKU, "error", saveErr)
-			}
-		}
 	}
+	return result.Items, result.Tier1Passed, err
+}
 
-	logger.Info("Tier-1 screening results",
-		"batch_size", len(batch),
-		"passed_tier1", len(tier1Passed),
-		"tier1_limit", maxTier1,
-	)
-
-	if len(tier1Passed) == 0 {
-		return results, 0, nil
+func memExpressFallback(product Product) AnalyzedProduct {
+	return AnalyzedProduct{
+		Product:     product,
+		CleanTitle:  product.Title,
+		ProcessedAt: time.Now(),
+		LastSeen:    time.Now(),
 	}
+}
 
-	tier1Products := make([]Product, 0, len(tier1Passed))
-	for _, candidate := range tier1Passed {
-		tier1Products = append(tier1Products, candidate.product)
+func memExpressFromScreen(product Product, screen BatchScreenResult) AnalyzedProduct {
+	analyzed := memExpressFallback(product)
+	if screen.CleanTitle != "" {
+		analyzed.CleanTitle = screen.CleanTitle
 	}
+	return analyzed
+}
 
-	batchResults, batchErr := p.analyzer.AnalyzeMemExpressBatch(ctx, tier1Products)
-	batchFailedExhausted := false
-	batchResultMap := make(map[string]BatchAnalyzeResult, len(batchResults))
-	if batchErr != nil {
-		if strings.Contains(batchErr.Error(), "all model tiers exhausted") {
-			logger.Warn("Tier-2 batch verification skipped, AI quota exhausted", "candidate_count", len(tier1Passed))
-			batchFailedExhausted = true
-		} else {
-			logger.Warn("Tier-2 batch verification failed, falling back to individual verification",
-				"candidate_count", len(tier1Passed),
-				"error", batchErr,
-			)
-		}
-	} else {
-		for _, result := range batchResults {
-			batchResultMap[result.SKU] = result
-		}
+func memExpressFromAnalysis(product Product, screen BatchScreenResult, result BatchAnalyzeResult) AnalyzedProduct {
+	analyzed := memExpressFromScreen(product, screen)
+	if result.CleanTitle != "" {
+		analyzed.CleanTitle = result.CleanTitle
 	}
-
-	// Tier 2: Prefer batched verification, then fall back to individual verification as needed.
-	for _, candidate := range tier1Passed {
-		if ctx.Err() != nil {
-			logger.Warn("Context cancelled, stopping tier-2 verification")
-			break
-		}
-
-		var analyzeResult *AnalyzeResult
-		if batchFailedExhausted {
-			analyzed := AnalyzedProduct{
-				Product:     candidate.product,
-				CleanTitle:  candidate.screenResult.CleanTitle,
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
-			if saveErr := p.store.SaveMemExpressProduct(ctx, analyzed); saveErr != nil {
-				logger.Error("Failed to save product", "sku", candidate.product.SKU, "error", saveErr)
-			}
-			continue
-		}
-
-		if batchResult, ok := batchResultMap[candidate.product.SKU]; ok {
-			analyzeResult = &AnalyzeResult{
-				CleanTitle: batchResult.CleanTitle,
-				IsWarm:     batchResult.IsWarm,
-				IsLavaHot:  batchResult.IsLavaHot,
-				Summary:    batchResult.Summary,
-			}
-		} else {
-			if batchErr == nil {
-				logger.Warn("Tier-2 batch verification missing product, falling back to individual verification",
-					"sku", candidate.product.SKU,
-					"title", candidate.product.Title,
-				)
-			}
-			var err error
-			analyzeResult, err = p.analyzer.AnalyzeMemExpressProduct(ctx, candidate.product)
-			if err != nil {
-				logger.Warn("Tier-2 verification failed",
-					"sku", candidate.product.SKU,
-					"title", candidate.product.Title,
-					"error", err,
-				)
-				// Save with tier-1 title
-				analyzed := AnalyzedProduct{
-					Product:     candidate.product,
-					CleanTitle:  candidate.screenResult.CleanTitle,
-					ProcessedAt: time.Now(),
-					LastSeen:    time.Now(),
-				}
-				if saveErr := p.store.SaveMemExpressProduct(ctx, analyzed); saveErr != nil {
-					logger.Error("Failed to save product", "sku", candidate.product.SKU, "error", saveErr)
-				}
-				continue
-			}
-		}
-
-		if analyzeResult == nil {
-			logger.Info("Item failed tier-2 verification (nil result)",
-				"sku", candidate.product.SKU,
-				"title", candidate.product.Title,
-			)
-			analyzed := AnalyzedProduct{
-				Product:     candidate.product,
-				CleanTitle:  candidate.screenResult.CleanTitle,
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
-			if saveErr := p.store.SaveMemExpressProduct(ctx, analyzed); saveErr != nil {
-				logger.Error("Failed to save product", "sku", candidate.product.SKU, "error", saveErr)
-			}
-			continue
-		}
-
-		analyzed := AnalyzedProduct{
-			Product:     candidate.product,
-			CleanTitle:  analyzeResult.CleanTitle,
-			IsWarm:      analyzeResult.IsWarm,
-			IsLavaHot:   analyzeResult.IsLavaHot,
-			Summary:     analyzeResult.Summary,
-			ProcessedAt: time.Now(),
-			LastSeen:    time.Now(),
-		}
-
-		if err := p.store.SaveMemExpressProduct(ctx, analyzed); err != nil {
-			logger.Error("Failed to save analyzed product", "sku", candidate.product.SKU, "error", err)
-			continue
-		}
-
-		if !analyzed.IsWarm && !analyzed.IsLavaHot {
-			logger.Info("Item failed tier-2 verification (not warm/hot)",
-				"sku", candidate.product.SKU,
-				"title", candidate.product.Title,
-				"clean_title", analyzeResult.CleanTitle,
-			)
-			continue
-		}
-
-		logger.Info("Deal passed both tiers",
-			"sku", candidate.product.SKU,
-			"clean_title", analyzed.CleanTitle,
-			"is_warm", analyzed.IsWarm,
-			"is_lava_hot", analyzed.IsLavaHot,
-			"discount_pct", candidate.product.DiscountPct,
-			"store", candidate.product.StoreName,
-		)
-
-		results = append(results, analyzed)
-	}
-
-	return results, len(tier1Passed), nil
+	analyzed.IsWarm = result.IsWarm
+	analyzed.IsLavaHot = result.IsLavaHot
+	analyzed.Summary = result.Summary
+	return analyzed
 }
 
 // filterEligibleSubs returns subscriptions that should receive this deal based on their filter.
@@ -569,16 +398,5 @@ func filterEligibleSubs(product AnalyzedProduct, subs []models.Subscription) []m
 
 // isMemExpressEligible checks whether a deal should be sent to a given subscription.
 func isMemExpressEligible(product AnalyzedProduct, sub models.Subscription) bool {
-	switch sub.DealType {
-	case "me_warm_hot":
-		return product.IsWarm || product.IsLavaHot
-	case "me_hot":
-		return product.IsLavaHot
-	default:
-		// Unknown filter — only send hot deals to be safe
-		if strings.HasPrefix(sub.DealType, "me_") {
-			return product.IsLavaHot
-		}
-		return false
-	}
+	return dealtypes.MemoryExpressEligible(sub.DealType, product.IsWarm, product.IsLavaHot)
 }

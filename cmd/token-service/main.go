@@ -1,7 +1,7 @@
 // Token Service — generates reCAPTCHA v3 tokens from a real headed Chrome browser.
 //
-// This service runs alongside a headed Chrome instance (with a virtual display on
-// a GCE VM, or a real display on a local machine). It maintains a persistent page
+// This service runs alongside a headed Chrome instance (with a virtual display
+// on a home server, or a real display on a local machine). It maintains a persistent page
 // on carfax.ca and exposes an HTTP endpoint to generate reCAPTCHA tokens on demand.
 //
 // Architecture:
@@ -13,28 +13,19 @@
 // entirely because the Chrome instance is a real headed browser.
 //
 // ─────────────────────────────────────────────────────────────────────────────────
-// Remote VM setup (optional):
+// Headless home-server setup (optional):
 //
-//  1. Create a VM:
-//     gcloud compute instances create carfax-token-service \
-//     --machine-type=e2-micro --zone=us-central1-a \
-//     --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud
-//
-//  2. Install Chrome + Xvfb:
+//  1. Install Chrome + Xvfb:
 //     sudo apt update && sudo apt install -y google-chrome-stable xvfb
 //
-//  3. Start Xvfb (virtual display):
+//  2. Start Xvfb (virtual display):
 //     Xvfb :99 -screen 0 1920x1080x24 &
 //     export DISPLAY=:99
 //
-//  4. Run the service:
+//  3. Run the service:
 //     TOKEN_SERVICE_SECRET=your-secret-here ./token-service
 //
-//  5. Firewall rule (restrict to the bot host if possible):
-//     gcloud compute firewall-rules create allow-token-service \
-//     --allow=tcp:8081 --source-ranges=0.0.0.0/0 --target-tags=token-service
-//
-//  6. Systemd service (auto-restart):
+//  4. Systemd service (auto-restart):
 //     See the [Service] section comments below for a systemd unit template.
 //
 // ─────────────────────────────────────────────────────────────────────────────────

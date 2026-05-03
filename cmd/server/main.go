@@ -23,6 +23,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
+	"github.com/pauljones0/rfd-discord-bot/internal/paidbrowser"
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
 	"github.com/pauljones0/rfd-discord-bot/internal/reddit"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
@@ -59,7 +60,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	store, err := storage.New(ctx, cfg.ProjectID)
+	store, err := storage.New(ctx)
 	if err != nil {
 		slog.Error("Critical error initializing storage client", "error", err)
 		os.Exit(1)
@@ -96,6 +97,7 @@ func main() {
 		ebayClient.SetPaidBrowserEnabled(cfg.EbayPaidBrowserEnabled)
 		ebayProc = ebay.NewProcessor(store, ebayClient, n)
 		ebayProc.SetCouponDiscoveryInterval(cfg.EbayCouponDiscoveryInterval)
+		ebayProc.SetPaidLimiter(paidbrowser.NewLimiter(store, "ebay", cfg.EbayPaidBrowserMaxPerRun, cfg.EbayPaidBrowserMaxPerDay))
 		slog.Info("eBay deal processor initialized", "coupon_backends", cfg.EbayCouponBackends)
 	} else {
 		slog.Info("eBay features disabled (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set)")
@@ -120,11 +122,13 @@ func main() {
 	}
 
 	// Initialize Memory Express processor (always available — no special credentials needed)
+	memexpressPaidLimiter := paidbrowser.NewLimiter(store, "memoryexpress", cfg.MemoryExpressPaidMaxPerRun, cfg.MemoryExpressPaidMaxPerDay)
 	meProc := memoryexpress.NewProcessor(
 		store,
 		aiClient,
 		n,
-		memoryexpress.WithScrapeFunc(memoryexpress.ScrapeWithConfiguredBackends(cfg.MemoryExpressBackends, cfg.MemoryExpressChromeProfile, cfg.MemoryExpressPaidBrowserEnabled)),
+		memoryexpress.WithScrapeFunc(memoryexpress.ScrapeWithConfiguredBackends(cfg.MemoryExpressBackends, cfg.MemoryExpressChromeProfile, cfg.MemoryExpressPaidBrowserEnabled, memexpressPaidLimiter.BeforeAttempt)),
+		memoryexpress.WithBeforeRun(memexpressPaidLimiter.BeginRun),
 	)
 	slog.Info("Memory Express clearance processor initialized", "backends", cfg.MemoryExpressBackends)
 
@@ -177,16 +181,16 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", rootHandler)
-	mux.HandleFunc("/process-deals", srv.ProcessDealsHandler)
-	mux.HandleFunc("/process-ebay", srv.ProcessEbayHandler)
+	mux.HandleFunc("GET /process-deals", srv.ProcessDealsHandler)
+	mux.HandleFunc("GET /process-ebay", srv.ProcessEbayHandler)
 	if cfg.FacebookEnabled {
-		mux.HandleFunc("/process-facebook", srv.ProcessFacebookHandler)
+		mux.HandleFunc("GET /process-facebook", srv.ProcessFacebookHandler)
 	}
-	mux.HandleFunc("/process-memoryexpress", srv.ProcessMemoryExpressHandler)
-	mux.HandleFunc("/process-bestbuy", srv.ProcessBestBuyHandler)
+	mux.HandleFunc("GET /process-memoryexpress", srv.ProcessMemoryExpressHandler)
+	mux.HandleFunc("GET /process-bestbuy", srv.ProcessBestBuyHandler)
 	mux.HandleFunc("POST /prime-bestbuy-baseline", srv.PrimeBestBuyBaselineHandler)
 	if cfg.HardwareSwapEnabled {
-		mux.HandleFunc("/process-hardwareswap", srv.ProcessHardwareSwapHandler)
+		mux.HandleFunc("GET /process-hardwareswap", srv.ProcessHardwareSwapHandler)
 	}
 	mux.Handle("/discord/interactions", apiHandler)
 	mux.HandleFunc("POST /register-token-service", func(w http.ResponseWriter, r *http.Request) {
@@ -565,6 +569,10 @@ func loggingMiddleware(next http.Handler) http.Handler {
 }
 
 func rootHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {

@@ -202,8 +202,8 @@ func TestIntegration_MockStoreRoundtrip(t *testing.T) {
 	ctx := context.Background()
 
 	deal := models.DealInfo{
-		FirestoreID: "test-id",
-		Title:       "Test Deal",
+		DocumentID: "test-id",
+		Title:      "Test Deal",
 		Threads: []models.ThreadContext{
 			{LikeCount: 10},
 		},

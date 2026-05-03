@@ -4,30 +4,30 @@ import "time"
 
 // Product represents a single clearance item scraped from the Memory Express Clearance Centre.
 type Product struct {
-	SKU            string  `firestore:"sku"`
-	ILC            string  `firestore:"ilc,omitempty"`
-	Title          string  `firestore:"title"`
-	URL            string  `firestore:"url"`
-	ImageURL       string  `firestore:"imageURL,omitempty"`
-	RegularPrice   float64 `firestore:"regularPrice"`
-	ClearancePrice float64 `firestore:"clearancePrice"`
-	SalePrice      float64 `firestore:"salePrice"`
-	DiscountPct    float64 `firestore:"discountPct"`
-	Stock          int     `firestore:"stock"`
-	Category       string  `firestore:"category"`
-	StoreCode      string  `firestore:"storeCode"`
-	StoreName      string  `firestore:"storeName"`
+	SKU            string  `docstore:"sku"`
+	ILC            string  `docstore:"ilc,omitempty"`
+	Title          string  `docstore:"title"`
+	URL            string  `docstore:"url"`
+	ImageURL       string  `docstore:"imageURL,omitempty"`
+	RegularPrice   float64 `docstore:"regularPrice"`
+	ClearancePrice float64 `docstore:"clearancePrice"`
+	SalePrice      float64 `docstore:"salePrice"`
+	DiscountPct    float64 `docstore:"discountPct"`
+	Stock          int     `docstore:"stock"`
+	Category       string  `docstore:"category"`
+	StoreCode      string  `docstore:"storeCode"`
+	StoreName      string  `docstore:"storeName"`
 }
 
 // AnalyzedProduct extends Product with AI analysis results.
 type AnalyzedProduct struct {
 	Product
-	CleanTitle  string    `firestore:"cleanTitle"`
-	IsWarm      bool      `firestore:"isWarm"`
-	IsLavaHot   bool      `firestore:"isLavaHot"`
-	Summary     string    `firestore:"summary,omitempty"`
-	ProcessedAt time.Time `firestore:"processedAt"`
-	LastSeen    time.Time `firestore:"lastSeen"`
+	CleanTitle  string    `docstore:"cleanTitle"`
+	IsWarm      bool      `docstore:"isWarm"`
+	IsLavaHot   bool      `docstore:"isLavaHot"`
+	Summary     string    `docstore:"summary,omitempty"`
+	ProcessedAt time.Time `docstore:"processedAt"`
+	LastSeen    time.Time `docstore:"lastSeen"`
 }
 
 // AnalyzeResult is the JSON structure returned by Gemini for a clearance product.
