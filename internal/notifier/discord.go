@@ -228,27 +228,34 @@ func formatDealToEmbed(deal models.DealInfo) discordEmbed {
 }
 
 func preferredDealURL(deal models.DealInfo) string {
-	if isDiscordEmbedURL(deal.ActualDealURL) {
-		return deal.ActualDealURL
+	if safeURL, ok := discordEmbedURL(deal.ActualDealURL); ok {
+		return safeURL
 	}
-	if isDiscordEmbedURL(deal.PostURL) {
-		return deal.PostURL
+	if safeURL, ok := discordEmbedURL(deal.PostURL); ok {
+		return safeURL
 	}
 	return ""
 }
 
-func isDiscordEmbedURL(raw string) bool {
+func discordEmbedURL(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return false
+		return "", false
+	}
+	if strings.ContainsAny(raw, " \t\r\n<>") {
+		return "", false
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return false
+		return "", false
 	}
 	if parsed.Host == "" {
-		return false
+		return "", false
 	}
-	return parsed.Scheme == "http" || parsed.Scheme == "https"
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", false
+	}
+	return parsed.String(), true
 }
 
 // doRequest handles the shared retry/rate-limit/backoff loop for Discord API calls.

@@ -89,6 +89,28 @@ func TestFormatDealToEmbed_FallsBackToPostURLWhenActualDealURLInvalid(t *testing
 	}
 }
 
+func TestFormatDealToEmbed_FallsBackWhenActualDealURLContainsSpaces(t *testing.T) {
+	deal := models.DealInfo{
+		Title:         "Great Deal",
+		PostURL:       "https://forums.redflagdeals.com/deal-1",
+		ActualDealURL: "https://example.com/not encoded",
+		Threads: []models.ThreadContext{
+			{
+				PostURL:            "https://forums.redflagdeals.com/deal-1",
+				LikeCount:          10,
+				CommentCount:       5,
+				ViewCount:          100,
+				ViewCountAvailable: true,
+			},
+		},
+	}
+
+	embed := formatDealToEmbed(deal)
+	if embed.URL != deal.PostURL {
+		t.Fatalf("URL incorrect. Got: %s, Want fallback: %s", embed.URL, deal.PostURL)
+	}
+}
+
 func TestFormatDealToEmbed_OmitsViewsWhenUnavailable(t *testing.T) {
 	deal := models.DealInfo{
 		Title:   "Great Deal",
