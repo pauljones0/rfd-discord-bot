@@ -260,6 +260,16 @@ func calculateSimilarity(tokensA, tokensB []string) float64 {
 		return 0.0
 	}
 
+	matchCount := tokenOverlapCount(tokensA, tokensB)
+	minLen := min(len(tokensA), len(tokensB))
+	if minLen == 0 {
+		return 0.0
+	}
+
+	return float64(matchCount) / float64(minLen)
+}
+
+func tokenOverlapCount(tokensA, tokensB []string) int {
 	matchCount := 0
 	for _, a := range tokensA {
 		for _, b := range tokensB {
@@ -269,17 +279,17 @@ func calculateSimilarity(tokensA, tokensB []string) float64 {
 			}
 		}
 	}
+	return matchCount
+}
 
-	// Calculate Jaccard-like similarity or simple intersection over min length
-	// We use intersection over min length because one deal might have extra fluff tokens
-	// "Freedom 40 250gb" vs "Freedom 40 250gb roam beyond bonus"
-	minLen := min(len(tokensA), len(tokensB))
-
-	if minLen == 0 {
-		return 0.0
+func isFuzzyDealMatch(tokensA, tokensB []string) bool {
+	// Title-only dedupe runs before outbound product links are available, so it
+	// must be conservative. A one- or two-token subset match is too easy to hit
+	// accidentally on deal-board titles that share prices, sale words, or brands.
+	if tokenOverlapCount(tokensA, tokensB) < 3 {
+		return false
 	}
-
-	return float64(matchCount) / float64(minLen)
+	return calculateSimilarity(tokensA, tokensB) >= 0.75
 }
 
 // deduplicateDeals merges valid scraped deals with existing recent deals or other scraped deals.
@@ -333,8 +343,7 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 			}
 
 			// Fuzzy Match
-			similarity := calculateSimilarity(dealA.SearchTokens, rDeal.SearchTokens)
-			if similarity >= 0.80 { // 80% overlap of valuable tokens
+			if isFuzzyDealMatch(dealA.SearchTokens, rDeal.SearchTokens) {
 				matchedExisting = rDeal
 				break
 			}
@@ -366,8 +375,7 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 			if sameCanonicalDealURL(dealA.ActualDealURL, dealB.ActualDealURL) {
 				isMatch = true
 			} else {
-				sim := calculateSimilarity(dealA.SearchTokens, dealB.SearchTokens)
-				if sim >= 0.80 {
+				if isFuzzyDealMatch(dealA.SearchTokens, dealB.SearchTokens) {
 					isMatch = true
 				}
 			}

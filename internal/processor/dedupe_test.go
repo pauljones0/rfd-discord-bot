@@ -94,6 +94,45 @@ func TestCalculateSimilarity(t *testing.T) {
 	}
 }
 
+func TestFuzzyDealMatchRequiresMeaningfulOverlap(t *testing.T) {
+	if isFuzzyDealMatch([]string{"10"}, []string{"10", "coupon", "burger"}) {
+		t.Fatal("one shared token should not be enough for fuzzy deal dedupe")
+	}
+	if isFuzzyDealMatch([]string{"iniu", "power", "bank", "10000mah"}, []string{"burger", "mother", "markham", "50"}) {
+		t.Fatal("unrelated product titles should not fuzzy match")
+	}
+	if !isFuzzyDealMatch([]string{"samsung", "galaxy", "s24", "512gb"}, []string{"galaxy", "s24", "512gb", "sale"}) {
+		t.Fatal("strong multi-token product overlap should still fuzzy match")
+	}
+}
+
+func TestDeduplicateDeals_DoesNotFuzzyMatchUnrelatedDeals(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+	existingDeals := make(map[string]*models.DealInfo)
+	recentDeals := []models.DealInfo{
+		{
+			DocumentID:    "burger-post",
+			Title:         "All burgers 50% off for Mother's Day (Markham, ON)",
+			ActualDealURL: "http://www.6ixburgers.com",
+		},
+	}
+	scrapedDeals := []models.DealInfo{
+		{
+			DocumentID: "iniu-post",
+			Title:      "INIU Power Bank Ultra Slim 10000mah - Green - $10",
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, recentDeals, logger)
+	if len(deduped) != 1 {
+		t.Fatalf("expected one deal, got %d", len(deduped))
+	}
+	if deduped[0].DocumentID != "iniu-post" {
+		t.Fatalf("unrelated burger deal should not capture INIU post, got %q", deduped[0].DocumentID)
+	}
+}
+
 func TestDeduplicateDeals_ScrapedWithExisting(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
