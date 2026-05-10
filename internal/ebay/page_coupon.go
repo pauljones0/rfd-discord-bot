@@ -11,18 +11,20 @@ import (
 )
 
 var (
-	pageCouponFixedRe               = regexp.MustCompile(`(?i)(?:(?:save|get|extra|coupon|discount)\s*(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)|(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)\s*(?:off|coupon|discount|savings))`)
+	pageCouponFixedRe               = regexp.MustCompile(`(?i)(?:(?:save|get|extra|coupon|discount)\s*(?:c\s*\$|ca\s*\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)|(?:c\s*\$|ca\s*\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)\s*(?:off|coupon|discount|savings))`)
 	pageCouponPercentRe             = regexp.MustCompile(`(?i)(?:save|get|extra)?\s*([0-9]{1,2})\s*%\s*off`)
-	pageCouponCapRe                 = regexp.MustCompile(`(?i)(?:max(?:imum)?(?: discount)?(?:imum)?(?: of)?|up to)\s*(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)`)
+	pageCouponCapRe                 = regexp.MustCompile(`(?i)(?:max(?:imum)?(?: discount)?(?:imum)?(?: of)?|up to)\s*(?:c\s*\$|ca\s*\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)`)
 	pageCouponCodeRe                = regexp.MustCompile(`(?i)(?:code|coupon code|use code|with code)\s*[: ]+\s*([A-Z0-9][A-Z0-9_-]{2,24})`)
-	priceDetailsBareCodeRe          = regexp.MustCompile(`(?i)\b(?:coupon|promo(?:tion)?)\s+([A-Z0-9][A-Z0-9_-]{3,24})\b`)
+	priceDetailsBareCodeRe          = regexp.MustCompile(`(?i)\b(?:coupon|promo(?:tion)?|discounts?)\s+([A-Z0-9][A-Z0-9_-]{3,24})\b`)
+	priceDetailsAmountCodeRe        = regexp.MustCompile(`(?i)[-−]\s*(?:c\s*\$|ca\s*\$|\$)\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?\s+([A-Z0-9][A-Z0-9_-]{3,24})\b`)
 	pageCouponExpiryRe              = regexp.MustCompile(`(?i)(?:ends|expires|valid until|valid through)\s+([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}|\d{1,2}/\d{1,2}/\d{2,4})`)
 	priceDetailsMarkerRe            = regexp.MustCompile(`(?i)\b(price\s+details|item\s+price|order\s+total|subtotal|seller\s+coupon|store\s+coupon|coupon\s+savings)\b`)
-	priceDetailsNegativeDiscountRe  = regexp.MustCompile(`(?i)\b((?:seller\s+|store\s+)?(?:coupon|coupons?|promo(?:tion)?|discount|savings)[^$]{0,90}?[-−]\s*(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?))`)
-	priceDetailsCouponLabelAmountRe = regexp.MustCompile(`(?i)\b((?:seller\s+|store\s+)?(?:coupon|coupons?|promo(?:tion)?)[^$]{0,90}?(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?))`)
-	priceDetailsAmountCouponLabelRe = regexp.MustCompile(`(?i)((?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)[^a-zA-Z0-9]{0,12}(?:seller\s+|store\s+)?(?:coupon|coupons?|promo(?:tion)?|savings))`)
-	priceDetailsFormulaHintRe       = regexp.MustCompile(`(?i)(\d{1,2}(?:\.\d{1,2})?)\s*%\s*off|(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*off`)
-	priceDetailsSignatureCleanupRe  = regexp.MustCompile(`(?i)(?:[-−]?\s*)?(?:c\$|ca\$|\$)\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?`)
+	priceDetailsNegativeDiscountRe  = regexp.MustCompile(`(?i)\b((?:seller\s+|store\s+)?(?:coupon|coupons?|promo(?:tion)?|discounts?|savings)[^$]{0,90}?[-−]\s*(?:c\s*\$|ca\s*\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?))`)
+	priceDetailsCouponLabelAmountRe = regexp.MustCompile(`(?i)\b((?:seller\s+|store\s+)?(?:coupon|coupons?|promo(?:tion)?|discounts?)[^$]{0,90}?(?:c\s*\$|ca\s*\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?))`)
+	priceDetailsAmountCouponLabelRe = regexp.MustCompile(`(?i)((?:c\s*\$|ca\s*\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)[^a-zA-Z0-9]{0,12}(?:seller\s+|store\s+)?(?:coupon|coupons?|promo(?:tion)?|discounts?|savings))`)
+	priceDetailsDiscountedPriceRe   = regexp.MustCompile(`(?i)(?:c\s*\$|ca\s*\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s+with\s+coupon\s+code`)
+	priceDetailsFormulaHintRe       = regexp.MustCompile(`(?i)(\d{1,2}(?:\.\d{1,2})?)\s*%\s*off|(?:c\s*\$|ca\s*\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*off`)
+	priceDetailsSignatureCleanupRe  = regexp.MustCompile(`(?i)(?:[-−]?\s*)?(?:c\s*\$|ca\s*\$|\$)\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?`)
 	priceDetailsSignatureNonWordRe  = regexp.MustCompile(`[^a-z0-9%$]+`)
 )
 
@@ -152,6 +154,20 @@ func extractPriceDetailsCoupon(text string, basePrice float64) PageCoupon {
 			})
 		}
 	}
+	if len(discounts) == 0 && basePrice > 0 {
+		if match := priceDetailsDiscountedPriceRe.FindStringSubmatchIndex(text); len(match) >= 4 {
+			discountedPrice := parseCouponAmount(text[match[2]:match[3]])
+			discount := roundCents(basePrice - discountedPrice)
+			if discountedPrice > 0 && discount > 0 && discount < basePrice {
+				discounts = append(discounts, priceDetailsDiscount{
+					amount: discount,
+					label:  "coupon code",
+					start:  match[0],
+					end:    match[1],
+				})
+			}
+		}
+	}
 	if len(discounts) == 0 {
 		return PageCoupon{}
 	}
@@ -197,6 +213,11 @@ func extractPriceDetailsCoupon(text string, basePrice float64) PageCoupon {
 			coupon.Confidence += 0.04
 		}
 	} else if codeMatch := priceDetailsBareCodeRe.FindStringSubmatch(message); len(codeMatch) >= 2 {
+		coupon.Code = normalizeCouponCode(codeMatch[1])
+		if coupon.Code != "" {
+			coupon.Confidence += 0.04
+		}
+	} else if codeMatch := priceDetailsAmountCodeRe.FindStringSubmatch(text); len(codeMatch) >= 2 {
 		coupon.Code = normalizeCouponCode(codeMatch[1])
 		if coupon.Code != "" {
 			coupon.Confidence += 0.04
