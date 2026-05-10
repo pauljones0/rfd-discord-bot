@@ -49,6 +49,7 @@ If the store has no active Best Buy seller records yet, scrape-lab falls back to
 
 - `https://www.bestbuy.ca/en-ca/search?path=sellerName%3ATech+Outlet+Center`
 - `https://www.bestbuy.ca/en-ca/search?path=sellerName%3AParts+Search`
+- `https://www.bestbuy.ca/en-ca/search?path=sellerName%3AOpenBox`
 
 ## Target File
 
@@ -70,6 +71,11 @@ Create a JSON file with only the real targets you care about:
     "site": "bestbuy",
     "name": "Parts Search",
     "url": "https://www.bestbuy.ca/en-ca/search?path=sellerName%3AParts+Search"
+  },
+  {
+    "site": "bestbuy",
+    "name": "OpenBox",
+    "url": "https://www.bestbuy.ca/en-ca/search?path=sellerName%3AOpenBox"
   },
   {
     "site": "ebay",

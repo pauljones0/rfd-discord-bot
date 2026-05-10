@@ -97,14 +97,17 @@ func TestBestBuySellerPageURL(t *testing.T) {
 
 func TestBestBuyTargetsFromSellersFallsBackToDefaults(t *testing.T) {
 	targets := BestBuyTargetsFromSellers(nil)
-	if len(targets) != 2 {
-		t.Fatalf("expected 2 default bestbuy targets, got %d", len(targets))
+	if len(targets) != 3 {
+		t.Fatalf("expected 3 default bestbuy targets, got %d", len(targets))
 	}
 	if targets[0].URL != "https://www.bestbuy.ca/en-ca/search?path=sellerName%3ATech+Outlet+Center" {
 		t.Fatalf("unexpected first default URL: %q", targets[0].URL)
 	}
 	if targets[1].URL != "https://www.bestbuy.ca/en-ca/search?path=sellerName%3AParts+Search" {
 		t.Fatalf("unexpected second default URL: %q", targets[1].URL)
+	}
+	if targets[2].URL != "https://www.bestbuy.ca/en-ca/search?path=sellerName%3AOpenBox" {
+		t.Fatalf("unexpected third default URL: %q", targets[2].URL)
 	}
 }
 

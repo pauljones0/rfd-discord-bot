@@ -649,6 +649,24 @@ func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
 	}
 }
 
+func TestDealChanged_IgnoresCanonicalProductURLNoise(t *testing.T) {
+	p := &DealProcessor{}
+	existing := &models.DealInfo{
+		Title:          "Same title",
+		ThreadImageURL: "https://example.com/image.jpg",
+		ActualDealURL:  "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20",
+	}
+	scraped := &models.DealInfo{
+		Title:          "Same title",
+		ThreadImageURL: "https://example.com/image.jpg",
+		ActualDealURL:  "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1",
+	}
+
+	if p.dealChanged(existing, scraped) {
+		t.Fatal("dealChanged should ignore affiliate/variant URL noise for the same product ID")
+	}
+}
+
 // --- threadKey tests ---
 
 func TestThreadKey_RFDSlugVariants(t *testing.T) {

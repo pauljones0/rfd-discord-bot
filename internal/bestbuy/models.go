@@ -28,6 +28,13 @@ var DefaultSellers = []Seller{
 		SearchURL:  "https://www.bestbuy.ca/en-ca/search?path=sellerName%3AParts+Search",
 		IsActive:   true,
 	},
+	{
+		ID:         "418240",
+		Name:       "OpenBox",
+		SearchPath: "sellerName:OpenBox",
+		SearchURL:  "https://www.bestbuy.ca/en-ca/search?path=sellerName%3AOpenBox",
+		IsActive:   true,
+	},
 }
 
 // Product represents a single product from the Best Buy Canada search API.

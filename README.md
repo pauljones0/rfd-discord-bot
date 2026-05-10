@@ -106,6 +106,7 @@ Best Buy polls configured seller pages, currently seeded for:
 
 - Tech Outlet Center
 - Parts Search
+- OpenBox
 
 Every new product is saved and deduped. Discord subscription filters are now
 AI-labeled:

@@ -3,12 +3,12 @@ package processor
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"regexp"
 	"strings"
 
-	"net/url"
-
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
 var (
@@ -73,8 +73,8 @@ func GenerateSearchTokens(deal *models.DealInfo) []string {
 		}
 	}
 
-	// Tokenize ActualDealURL if available, filtering URL-specific noise
-	for _, word := range extractTokensFromURL(deal.ActualDealURL) {
+	// Tokenize the canonical product URL if available, filtering URL-specific noise.
+	for _, word := range extractTokensFromURL(canonicalDealURL(deal.ActualDealURL)) {
 		if urlNoiseTokens[word] {
 			continue
 		}
@@ -124,6 +124,87 @@ func extractTokensFromURL(urlStr string) []string {
 	urlStr = urlDelimReplacer.Replace(urlStr)
 
 	return extractWords(urlStr)
+}
+
+func canonicalDealURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	raw = unwrapReferralURL(raw)
+	cleaned := strings.TrimSpace(util.CleanProductURL(raw))
+	parsed, err := url.Parse(cleaned)
+	if err != nil || parsed.Hostname() == "" {
+		return strings.TrimRight(cleaned, "/")
+	}
+
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Fragment = ""
+	if strings.HasPrefix(parsed.Host, "www.") {
+		parsed.Host = strings.TrimPrefix(parsed.Host, "www.")
+	}
+	if parsed.Path != "/" {
+		parsed.Path = strings.TrimRight(parsed.Path, "/")
+	}
+
+	if isCanonicalProductHost(parsed.Hostname()) {
+		parsed.RawQuery = ""
+	}
+
+	return parsed.String()
+}
+
+func unwrapReferralURL(raw string) string {
+	for range 3 {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return raw
+		}
+
+		host := strings.ToLower(parsed.Hostname())
+		var target string
+		switch {
+		case host == "click.linksynergy.com":
+			target = parsed.Query().Get("murl")
+		case host == "go.redirectingat.com":
+			target = parsed.Query().Get("url")
+		case host == "bestbuyca.o93x.net" && strings.HasPrefix(parsed.Path, "/c/"):
+			target = parsed.Query().Get("u")
+		default:
+			return raw
+		}
+
+		target = strings.TrimSpace(target)
+		if target == "" {
+			return raw
+		}
+		if decoded, err := url.QueryUnescape(target); err == nil {
+			target = decoded
+		}
+		if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+			return raw
+		}
+		raw = target
+	}
+	return raw
+}
+
+func isCanonicalProductHost(host string) bool {
+	host = strings.ToLower(host)
+	return strings.Contains(host, "amazon.") ||
+		host == "ebay.ca" ||
+		host == "ebay.com" ||
+		strings.HasSuffix(host, ".ebay.ca") ||
+		strings.HasSuffix(host, ".ebay.com") ||
+		strings.Contains(host, "bestbuy.ca")
+}
+
+func sameCanonicalDealURL(left, right string) bool {
+	leftKey := canonicalDealURL(left)
+	rightKey := canonicalDealURL(right)
+	return leftKey != "" && leftKey == rightKey
 }
 
 // calculateSimilarity returns a score between 0.0 and 1.0 based on token overlap.
@@ -183,9 +264,12 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 		var matchedExisting *models.DealInfo
 		for rIdx := range recentDeals {
 			rDeal := &recentDeals[rIdx]
+			if len(rDeal.SearchTokens) == 0 {
+				rDeal.SearchTokens = GenerateSearchTokens(rDeal)
+			}
 
 			// Exact URL match (if not empty)
-			if dealA.ActualDealURL != "" && dealA.ActualDealURL == rDeal.ActualDealURL {
+			if sameCanonicalDealURL(dealA.ActualDealURL, rDeal.ActualDealURL) {
 				matchedExisting = rDeal
 				break
 			}
@@ -221,7 +305,7 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 			dealB.SearchTokens = GenerateSearchTokens(dealB)
 
 			isMatch := false
-			if dealA.ActualDealURL != "" && dealA.ActualDealURL == dealB.ActualDealURL {
+			if sameCanonicalDealURL(dealA.ActualDealURL, dealB.ActualDealURL) {
 				isMatch = true
 			} else {
 				sim := calculateSimilarity(dealA.SearchTokens, dealB.SearchTokens)
@@ -251,4 +335,65 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 	}
 
 	return dedupedScraped
+}
+
+// deduplicateDealsByDetailedURL runs after detail pages are fetched, when
+// ActualDealURL is finally available for new RFD posts. The initial list-page
+// dedupe can only use title/thread metadata, so this pass catches same-product
+// duplicates whose titles were too different to fuzzy match.
+func (p *DealProcessor) deduplicateDealsByDetailedURL(ctx context.Context, deals []models.DealInfo, existingDeals map[string]*models.DealInfo, recentDeals []models.DealInfo, logger *slog.Logger) []models.DealInfo {
+	if ctx.Err() != nil || len(deals) == 0 {
+		return deals
+	}
+
+	recentByURL := make(map[string]*models.DealInfo)
+	for i := range recentDeals {
+		recent := &recentDeals[i]
+		key := canonicalDealURL(recent.ActualDealURL)
+		if key == "" {
+			continue
+		}
+		if _, exists := recentByURL[key]; !exists {
+			recentByURL[key] = recent
+		}
+	}
+
+	firstScrapedByURL := make(map[string]string)
+	for i := range deals {
+		if _, alreadyKnown := existingDeals[deals[i].DocumentID]; alreadyKnown {
+			firstScrapedByURL[canonicalDealURL(deals[i].ActualDealURL)] = deals[i].DocumentID
+			continue
+		}
+
+		key := canonicalDealURL(deals[i].ActualDealURL)
+		if key == "" {
+			continue
+		}
+
+		if recent := recentByURL[key]; recent != nil && recent.DocumentID != deals[i].DocumentID {
+			logger.Info("Deal deduplicated by product URL after detail fetch",
+				"scrapedTitle", deals[i].Title,
+				"existingTitle", recent.Title,
+				"url", key,
+			)
+			deals[i].DocumentID = recent.DocumentID
+			if _, ok := existingDeals[recent.DocumentID]; !ok {
+				existingDeals[recent.DocumentID] = recent
+			}
+			firstScrapedByURL[key] = recent.DocumentID
+			continue
+		}
+
+		if documentID, exists := firstScrapedByURL[key]; exists && documentID != deals[i].DocumentID {
+			logger.Info("Scraped deal deduplicated by product URL after detail fetch",
+				"title", deals[i].Title,
+				"url", key,
+			)
+			deals[i].DocumentID = documentID
+			continue
+		}
+		firstScrapedByURL[key] = deals[i].DocumentID
+	}
+
+	return deals
 }

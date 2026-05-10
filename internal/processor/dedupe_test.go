@@ -229,6 +229,24 @@ func TestGenerateSearchTokens_URLDomainNoise(t *testing.T) {
 	}
 }
 
+func TestCanonicalDealURL_AmazonStripsAffiliateAndVariantNoise(t *testing.T) {
+	left := "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20"
+	right := "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&tag=oldtag-20&th=1"
+
+	if !sameCanonicalDealURL(left, right) {
+		t.Fatalf("expected Amazon ASIN URLs to match; left=%q right=%q", canonicalDealURL(left), canonicalDealURL(right))
+	}
+}
+
+func TestCanonicalDealURL_UnwrapsBestBuyAffiliate(t *testing.T) {
+	direct := "https://www.bestbuy.ca/en-ca/product/example-product/12345678?icmp=tracking"
+	wrapped := "https://bestbuyca.o93x.net/c/123456/999999/10209?u=https%3A%2F%2Fwww.bestbuy.ca%2Fen-ca%2Fproduct%2Fexample-product%2F12345678%3Fref%3Daffiliate"
+
+	if !sameCanonicalDealURL(direct, wrapped) {
+		t.Fatalf("expected wrapped Best Buy URL to match direct URL; direct=%q wrapped=%q", canonicalDealURL(direct), canonicalDealURL(wrapped))
+	}
+}
+
 func TestDeduplicateDeals_Layer1_ExactIDSkipsSilently(t *testing.T) {
 	// Layer 1: When a scraped deal's DocumentID already exists in existingDeals,
 	// it should be passed through without fuzzy matching or logging "deduplicated".
@@ -283,6 +301,59 @@ func TestDeduplicateDeals_Layer1_ExactIDSkipsSilently(t *testing.T) {
 	// SearchTokens should NOT be generated (Layer 1 skips before token generation)
 	if len(deduped[0].SearchTokens) > 0 {
 		t.Errorf("Layer 1 should skip token generation, but tokens were set: %v", deduped[0].SearchTokens)
+	}
+}
+
+func TestDeduplicateDeals_PostDetailCanonicalURLMatchesRecent(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+	existingDeals := make(map[string]*models.DealInfo)
+	recentDeals := []models.DealInfo{
+		{
+			DocumentID:    "existing-iniu",
+			Title:         "INIU power bank old post",
+			ActualDealURL: "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20",
+		},
+	}
+	validDeals := []models.DealInfo{
+		{
+			DocumentID:    "new-rfd-thread",
+			Title:         "Different title for the same INIU charger",
+			ActualDealURL: "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1",
+		},
+	}
+
+	deduped := p.deduplicateDealsByDetailedURL(context.Background(), validDeals, existingDeals, recentDeals, logger)
+	if len(deduped) != 1 {
+		t.Fatalf("expected one deal, got %d", len(deduped))
+	}
+	if deduped[0].DocumentID != "existing-iniu" {
+		t.Fatalf("DocumentID = %q, want existing-iniu", deduped[0].DocumentID)
+	}
+	if _, ok := existingDeals["existing-iniu"]; !ok {
+		t.Fatalf("expected matched recent deal to be added to existingDeals")
+	}
+}
+
+func TestDeduplicateDeals_PostDetailCanonicalURLMatchesSameBatch(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+	validDeals := []models.DealInfo{
+		{
+			DocumentID:    "thread-a",
+			Title:         "INIU power bank",
+			ActualDealURL: "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20",
+		},
+		{
+			DocumentID:    "thread-b",
+			Title:         "Different same-ASIN title",
+			ActualDealURL: "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1",
+		},
+	}
+
+	deduped := p.deduplicateDealsByDetailedURL(context.Background(), validDeals, map[string]*models.DealInfo{}, nil, logger)
+	if deduped[0].DocumentID != deduped[1].DocumentID {
+		t.Fatalf("expected same-batch URL variants to share DocumentID, got %q and %q", deduped[0].DocumentID, deduped[1].DocumentID)
 	}
 }
 

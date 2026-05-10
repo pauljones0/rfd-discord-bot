@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/bestbuy"
@@ -32,17 +33,30 @@ func (c *Client) GetActiveBestBuySellers(ctx context.Context) ([]bestbuy.Seller,
 	return sellers, nil
 }
 
-// SeedBestBuySellers populates the seller target collection if empty.
+// SeedBestBuySellers backfills any missing default seller targets.
 func (c *Client) SeedBestBuySellers(ctx context.Context) (bool, error) {
 	rows, err := c.ListDocuments(ctx, bestbuySellersCollection)
 	if err != nil {
 		return false, err
 	}
-	if len(rows) > 0 {
-		return false, nil
+
+	existingIDs := make(map[string]struct{}, len(rows))
+	existingNames := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		existingIDs[row.ID] = struct{}{}
+		var seller bestbuy.Seller
+		if err := decodeDocument(row.Data, &seller); err != nil {
+			slog.Warn("Failed to decode existing bestbuy seller while seeding", "processor", "bestbuy", "id", row.ID, "error", err)
+			continue
+		}
+		if name := strings.ToLower(strings.TrimSpace(seller.Name)); name != "" {
+			existingNames[name] = struct{}{}
+		}
 	}
+
 	now := time.Now()
 	var errs []error
+	created := false
 	for _, seller := range bestbuy.DefaultSellers {
 		seller.AddedAt = now
 		if !seller.IsActive {
@@ -52,11 +66,19 @@ func (c *Client) SeedBestBuySellers(ctx context.Context) (bool, error) {
 		if docID == "" {
 			docID = seller.Name
 		}
+		if _, ok := existingIDs[docID]; ok {
+			continue
+		}
+		if _, ok := existingNames[strings.ToLower(strings.TrimSpace(seller.Name))]; ok {
+			continue
+		}
 		if err := c.CreateDocument(ctx, bestbuySellersCollection, docID, seller); err != nil {
 			errs = append(errs, fmt.Errorf("seed %s: %w", docID, err))
+			continue
 		}
+		created = true
 	}
-	return true, errors.Join(errs...)
+	return created, errors.Join(errs...)
 }
 
 // bestBuyDocID generates a unique document ID for a Best Buy product.

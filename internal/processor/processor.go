@@ -99,6 +99,7 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 
 	// 4. Fetch Details for New/Changed Deals
 	p.enrichDealsWithDetails(ctx, validDeals, existingDeals, logger)
+	validDeals = p.deduplicateDealsByDetailedURL(ctx, validDeals, existingDeals, recentDeals, logger)
 
 	// 5. AI Analysis for New Deals
 	p.analyzeDeals(ctx, validDeals, existingDeals, logger, tracker)
@@ -213,9 +214,14 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 		// 2. The PostURL changed (new thread/link).
 		// 3. The Title changed (likely implies content update or significant edit).
 		// Note: If AIProcessed is true, we expect Description to be empty (cleared), so don't re-fetch.
+		existingPostURL := existing.PostURL
+		if existingPostURL == "" {
+			existingPostURL = existing.PrimaryPostURL()
+		}
+		postChanged := threadKey(existingPostURL) != threadKey(deal.PostURL)
 		needsDetails := existing.ActualDealURL == "" ||
 			(existing.Description == "" && !existing.AIProcessed) ||
-			existing.PostURL != deal.PostURL ||
+			postChanged ||
 			existing.Title != deal.Title
 
 		if needsDetails {
@@ -507,9 +513,13 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 
 func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.DealInfo) bool {
 	// Stats changes are handled by mergeThread now, so we only check content fields.
+	actualURLChanged := existing.ActualDealURL != scraped.ActualDealURL
+	if actualURLChanged && sameCanonicalDealURL(existing.ActualDealURL, scraped.ActualDealURL) {
+		actualURLChanged = false
+	}
 	return existing.Title != scraped.Title ||
 		existing.ThreadImageURL != scraped.ThreadImageURL ||
-		existing.ActualDealURL != scraped.ActualDealURL
+		actualURLChanged
 }
 
 // mergeThread updates the stats for an existing thread or appends a new one.
