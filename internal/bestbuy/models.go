@@ -2,6 +2,10 @@ package bestbuy
 
 import "time"
 
+const (
+	AlertKindPriceDrop = "price_drop"
+)
+
 // Seller represents a Best Buy Marketplace seller to monitor.
 type Seller struct {
 	ID         string    `docstore:"id"`
@@ -62,13 +66,27 @@ type Product struct {
 // AnalyzedProduct extends Product with AI analysis results and computed fields.
 type AnalyzedProduct struct {
 	Product
-	CleanTitle  string    `docstore:"cleanTitle"`
-	IsWarm      bool      `docstore:"isWarm"`
-	IsLavaHot   bool      `docstore:"isLavaHot"`
-	Summary     string    `docstore:"summary,omitempty"`
-	DiscountPct float64   `docstore:"discountPct"`
-	ProcessedAt time.Time `docstore:"processedAt"`
-	LastSeen    time.Time `docstore:"lastSeen"`
+	CleanTitle               string    `docstore:"cleanTitle"`
+	IsWarm                   bool      `docstore:"isWarm"`
+	IsLavaHot                bool      `docstore:"isLavaHot"`
+	Summary                  string    `docstore:"summary,omitempty"`
+	DiscountPct              float64   `docstore:"discountPct"`
+	ProcessedAt              time.Time `docstore:"processedAt"`
+	LastSeen                 time.Time `docstore:"lastSeen"`
+	InitialRegularPrice      float64   `docstore:"initialRegularPrice,omitempty"`
+	InitialSalePrice         float64   `docstore:"initialSalePrice,omitempty"`
+	InitialEffectivePrice    float64   `docstore:"initialEffectivePrice,omitempty"`
+	PreviousRegularPrice     float64   `docstore:"previousRegularPrice,omitempty"`
+	PreviousSalePrice        float64   `docstore:"previousSalePrice,omitempty"`
+	PreviousEffectivePrice   float64   `docstore:"previousEffectivePrice,omitempty"`
+	LowestSeenEffectivePrice float64   `docstore:"lowestSeenEffectivePrice,omitempty"`
+	LastPriceDropDetectedAt  time.Time `docstore:"lastPriceDropDetectedAt,omitempty"`
+	LastPriceDropAlertPrice  float64   `docstore:"lastPriceDropAlertPrice,omitempty"`
+	LastPriceDropAlertAt     time.Time `docstore:"lastPriceDropAlertAt,omitempty"`
+	LastPriceDropAlertKey    string    `docstore:"lastPriceDropAlertKey,omitempty"`
+	AlertKind                string    `docstore:"-"`
+	PriceDropAmount          float64   `docstore:"-"`
+	PriceDropPct             float64   `docstore:"-"`
 }
 
 // AnalyzeResult is the JSON structure returned by Gemini for a Best Buy product.

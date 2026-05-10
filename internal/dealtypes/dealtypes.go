@@ -51,9 +51,9 @@ var MemoryExpressChoices = []Choice{
 }
 
 var BestBuyChoices = []Choice{
-	{Name: "All new listings + AI labels", Value: BestBuyNew},
-	{Name: "AI warm + hot deals only", Value: BestBuyWarmHot},
-	{Name: "AI hot deals only", Value: BestBuyHot},
+	{Name: "All new listings only + AI labels", Value: BestBuyNew},
+	{Name: "AI warm + hot listings/drops", Value: BestBuyWarmHot},
+	{Name: "AI hot listings/drops only", Value: BestBuyHot},
 }
 
 var RemoveChoices = []Choice{
@@ -129,11 +129,11 @@ func Label(value string) string {
 	case MemoryExpressHot:
 		return "Memory Express hot deals only"
 	case BestBuyNew:
-		return "Best Buy all new listings + AI labels"
+		return "Best Buy all new listings only + AI labels"
 	case BestBuyWarmHot:
-		return "Best Buy AI warm + hot deals"
+		return "Best Buy AI warm + hot new listings and price drops"
 	case BestBuyHot:
-		return "Best Buy AI hot deals only"
+		return "Best Buy AI hot new listings and price drops only"
 	default:
 		return value
 	}

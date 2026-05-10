@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/bestbuy"
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -717,6 +718,39 @@ func TestFormatEbayEmbed_CouponIsQuiet(t *testing.T) {
 	}
 	if strings.Contains(embed.Description, "SAVE20") || strings.Contains(embed.Description, "page:") || strings.Contains(embed.Description, "after C$20.00 coupon") {
 		t.Fatalf("Description = %q, coupon details should stay out of the compact embed", embed.Description)
+	}
+}
+
+func TestFormatBestBuyEmbedPriceDrop(t *testing.T) {
+	embed := formatBestBuyEmbed(bestbuy.AnalyzedProduct{
+		Product: bestbuy.Product{
+			SKU:          "111",
+			Name:         "OLED TV",
+			URL:          "https://www.bestbuy.ca/en-ca/product/111",
+			RegularPrice: 1000,
+			SalePrice:    700,
+			SellerName:   "Tech Outlet Center",
+			Source:       "seller:591375",
+		},
+		CleanTitle:            "OLED TV",
+		IsWarm:                true,
+		InitialEffectivePrice: 1000,
+		PriceDropAmount:       300,
+		PriceDropPct:          30,
+		AlertKind:             bestbuy.AlertKindPriceDrop,
+	})
+
+	if embed.Footer.Text != "Best Buy Price Drop" {
+		t.Fatalf("Footer.Text = %q, want Best Buy Price Drop", embed.Footer.Text)
+	}
+	if len(embed.Fields) < 2 {
+		t.Fatalf("expected AI label and price fields, got %#v", embed.Fields)
+	}
+	if embed.Fields[0].Value != "Warm price drop" {
+		t.Fatalf("AI label = %q", embed.Fields[0].Value)
+	}
+	if embed.Fields[1].Name != "Price Drop" || !strings.Contains(embed.Fields[1].Value, "$300.00 / 30% drop") {
+		t.Fatalf("price field = %#v", embed.Fields[1])
 	}
 }
 

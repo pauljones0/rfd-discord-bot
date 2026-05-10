@@ -86,13 +86,14 @@ func bestBuyDocID(sku, source string) string {
 	return fmt.Sprintf("%s_%s", sku, source)
 }
 
-// BestBuyProductExists checks whether a product already exists.
-func (c *Client) BestBuyProductExists(ctx context.Context, sku, source string) (bool, error) {
+// GetBestBuyProduct returns a stored Best Buy product by SKU/source.
+func (c *Client) GetBestBuyProduct(ctx context.Context, sku, source string) (bestbuy.AnalyzedProduct, bool, error) {
+	var product bestbuy.AnalyzedProduct
 	if sku == "" || source == "" {
-		return false, nil
+		return product, false, nil
 	}
-	_, ok, err := c.GetRawDocument(ctx, bestbuyCollection, bestBuyDocID(sku, source))
-	return ok, err
+	ok, err := c.GetDocument(ctx, bestbuyCollection, bestBuyDocID(sku, source), &product)
+	return product, ok, err
 }
 
 // SaveBestBuyProduct saves a product.
@@ -100,20 +101,8 @@ func (c *Client) SaveBestBuyProduct(ctx context.Context, product bestbuy.Analyze
 	return c.SetDocument(ctx, bestbuyCollection, bestBuyDocID(product.SKU, product.Source), product)
 }
 
-func (c *Client) RefreshBestBuyProductLastSeen(ctx context.Context, product bestbuy.Product) error {
-	docID := bestBuyDocID(product.SKU, product.Source)
-	now := time.Now()
-	var existing bestbuy.AnalyzedProduct
-	ok, err := c.GetDocument(ctx, bestbuyCollection, docID, &existing)
-	if err != nil || !ok {
-		return err
-	}
-	existing.Product = product
-	existing.LastSeen = now
-	if existing.DiscountPct == 0 {
-		existing.DiscountPct = bestbuyDiscount(product)
-	}
-	return c.SetDocument(ctx, bestbuyCollection, docID, existing)
+func (c *Client) RefreshBestBuyProduct(ctx context.Context, product bestbuy.AnalyzedProduct) error {
+	return c.SetDocument(ctx, bestbuyCollection, bestBuyDocID(product.SKU, product.Source), product)
 }
 
 // PruneBestBuyProducts deletes products older than maxAgeDays or exceeding maxRecords.
@@ -166,11 +155,4 @@ func (c *Client) GetBestBuySubscriptionsByGuild(ctx context.Context, guildID str
 		"guildID":          guildID,
 		"subscriptionType": "bestbuy",
 	}, nil)
-}
-
-func bestbuyDiscount(p bestbuy.Product) float64 {
-	if p.RegularPrice > 0 && p.SalePrice > 0 && p.SalePrice < p.RegularPrice {
-		return (p.RegularPrice - p.SalePrice) / p.RegularPrice * 100
-	}
-	return 0
 }

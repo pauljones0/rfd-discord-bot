@@ -832,20 +832,33 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 
 	embedColor := colorColdDeal
 	aiLabel := "New listing"
+	if product.AlertKind == bestbuy.AlertKindPriceDrop {
+		aiLabel = "Price drop"
+	}
 	if product.IsWarm {
 		embedColor = colorWarmDeal
-		aiLabel = "Warm deal"
+		if product.AlertKind == bestbuy.AlertKindPriceDrop {
+			aiLabel = "Warm price drop"
+		} else {
+			aiLabel = "Warm deal"
+		}
 	}
 	if product.IsLavaHot {
 		embedColor = colorHotDeal
-		aiLabel = "Lava hot deal"
+		if product.AlertKind == bestbuy.AlertKindPriceDrop {
+			aiLabel = "Lava hot price drop"
+		} else {
+			aiLabel = "Lava hot deal"
+		}
 	}
 
 	var fields []discordEmbedField
 	fields = append(fields, discordEmbedField{Name: "AI Label", Value: aiLabel, Inline: true})
 
 	// Price field with strikethrough original
-	if product.SalePrice > 0 && product.SalePrice < product.RegularPrice {
+	if product.AlertKind == bestbuy.AlertKindPriceDrop {
+		fields = append(fields, discordEmbedField{Name: "Price Drop", Value: formatBestBuyPriceDrop(product)})
+	} else if product.SalePrice > 0 && product.SalePrice < product.RegularPrice {
 		priceVal := fmt.Sprintf("~~$%.2f~~ → **$%.2f**", product.RegularPrice, product.SalePrice)
 		if product.DiscountPct > 0 {
 			priceVal += fmt.Sprintf(" (%.0f%% off)", product.DiscountPct)
@@ -876,10 +889,11 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 	}
 
 	footerText := "Best Buy Marketplace"
-	if strings.HasPrefix(product.Source, "seller:") {
+	if product.AlertKind == bestbuy.AlertKindPriceDrop {
+		footerText = "Best Buy Price Drop"
+	} else if strings.HasPrefix(product.Source, "seller:") {
 		footerText = "Best Buy New Listing"
-	}
-	if product.Source == "openbox" || product.IsOpenBox {
+	} else if product.Source == "openbox" || product.IsOpenBox {
 		footerText = "Geek Squad Certified Open Box"
 	}
 
@@ -894,4 +908,41 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 			Text: footerText,
 		},
 	}
+}
+
+func formatBestBuyPriceDrop(product bestbuy.AnalyzedProduct) string {
+	baseline := product.InitialEffectivePrice
+	current := bestBuyEffectivePrice(product.Product)
+	if baseline <= 0 {
+		baseline = product.PreviousEffectivePrice
+	}
+	if current <= 0 {
+		current = product.SalePrice
+	}
+	if current <= 0 {
+		current = product.RegularPrice
+	}
+
+	amount := product.PriceDropAmount
+	if amount <= 0 && baseline > current {
+		amount = baseline - current
+	}
+	pct := product.PriceDropPct
+	if pct <= 0 && baseline > 0 && amount > 0 {
+		pct = amount / baseline * 100
+	}
+	if baseline > 0 && current > 0 && amount > 0 {
+		return fmt.Sprintf("~~$%.2f~~ -> **$%.2f** ($%.2f / %.0f%% drop)", baseline, current, amount, pct)
+	}
+	if current > 0 {
+		return fmt.Sprintf("**$%.2f**", current)
+	}
+	return "See Best Buy listing"
+}
+
+func bestBuyEffectivePrice(product bestbuy.Product) float64 {
+	if product.SalePrice > 0 {
+		return product.SalePrice
+	}
+	return product.RegularPrice
 }

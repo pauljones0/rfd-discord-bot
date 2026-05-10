@@ -668,7 +668,7 @@ func (h *Handler) handleSetupBestBuy(w http.ResponseWriter, req interactionReque
 		return
 	}
 
-	h.respondPrivateMessage(w, fmt.Sprintf("Best Buy AI-labeled seller alerts will be posted in <#%s> with filter **%s**.", channelID, dealTypeLabel(filter)))
+	h.respondPrivateMessage(w, fmt.Sprintf("Best Buy AI-labeled seller listings and qualifying price drops will be posted in <#%s> with filter **%s**.", channelID, dealTypeLabel(filter)))
 }
 
 // handleDealsRemove handles /deals remove type:<rfd|ebay|facebook>

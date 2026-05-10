@@ -15,17 +15,20 @@ import (
 
 const (
 	// batchSize is the number of items to send to Gemini tier-1 screening at once.
-	batchSize         = 10
-	bestBuyMaxRecords = 10000
+	batchSize              = 10
+	bestBuyMaxRecords      = 10000
+	priceDropMinPct        = 20
+	priceDropMinAmount     = 50
+	priceComparisonEpsilon = 0.005
 )
 
 // Store abstracts persistence operations for the Best Buy processor.
 type Store interface {
 	GetActiveBestBuySellers(ctx context.Context) ([]Seller, error)
 	SeedBestBuySellers(ctx context.Context) (bool, error)
-	BestBuyProductExists(ctx context.Context, sku, source string) (bool, error)
+	GetBestBuyProduct(ctx context.Context, sku, source string) (AnalyzedProduct, bool, error)
 	SaveBestBuyProduct(ctx context.Context, product AnalyzedProduct) error
-	RefreshBestBuyProductLastSeen(ctx context.Context, product Product) error
+	RefreshBestBuyProduct(ctx context.Context, product AnalyzedProduct) error
 	PruneBestBuyProducts(ctx context.Context, maxAgeDays, maxRecords int) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
 }
@@ -40,6 +43,16 @@ type Analyzer interface {
 // Notifier abstracts Discord notifications for Best Buy deals.
 type Notifier interface {
 	SendBestBuyDeal(ctx context.Context, product AnalyzedProduct, subs []models.Subscription) error
+}
+
+type priceDropEvaluation struct {
+	Candidate bool
+	Amount    float64
+	Pct       float64
+}
+
+type priceDropCandidate struct {
+	State AnalyzedProduct
 }
 
 // BaselineStats summarizes a no-notification Best Buy inventory prime.
@@ -140,7 +153,7 @@ func (p *Processor) PrimeBaseline(ctx context.Context) (BaselineStats, error) {
 				return stats, ctx.Err()
 			}
 
-			exists, err := p.store.BestBuyProductExists(ctx, product.SKU, product.Source)
+			_, exists, err := p.store.GetBestBuyProduct(ctx, product.SKU, product.Source)
 			if err != nil {
 				if ctx.Err() != nil {
 					stats.ExitReason = "context_cancelled"
@@ -162,13 +175,7 @@ func (p *Processor) PrimeBaseline(ctx context.Context) (BaselineStats, error) {
 				product.URL = p.affiliatePrefix + url.QueryEscape(product.URL)
 			}
 
-			item := AnalyzedProduct{
-				Product:     product,
-				CleanTitle:  product.Name,
-				DiscountPct: computeDiscount(product),
-				ProcessedAt: time.Now(),
-				LastSeen:    time.Now(),
-			}
+			item := bestBuyFallback(product)
 			if err := p.store.SaveBestBuyProduct(ctx, item); err != nil {
 				if ctx.Err() != nil {
 					stats.ExitReason = "context_cancelled"
@@ -215,15 +222,18 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 	logger := slog.With("processor", "bestbuy", "runID", runID)
 
 	var stats struct {
-		sellers      int
-		fetched      int
-		newItems     int
-		tier1Passed  int
-		tier2Passed  int
-		warmHot      int
-		notified     int
-		notifyErrors int
-		exitReason   string
+		sellers             int
+		fetched             int
+		newItems            int
+		tier1Passed         int
+		tier2Passed         int
+		warmHot             int
+		priceDropCandidates int
+		priceDropAnalyzed   int
+		priceDropNotified   int
+		notified            int
+		notifyErrors        int
+		exitReason          string
 	}
 
 	defer func() {
@@ -232,6 +242,9 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 			"sellers", stats.sellers,
 			"fetched", stats.fetched,
 			"new_items", stats.newItems,
+			"price_drop_candidates", stats.priceDropCandidates,
+			"price_drop_analyzed", stats.priceDropAnalyzed,
+			"price_drop_notified", stats.priceDropNotified,
 			"tier1_passed", stats.tier1Passed,
 			"tier2_passed", stats.tier2Passed,
 			"warm_hot", stats.warmHot,
@@ -321,6 +334,8 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 
 	// 4. Dedup — collect new products
 	var newProducts []Product
+	var priceDropCandidates []priceDropCandidate
+	hasPriceDropSubs := hasBestBuyPriceDropSubscriptions(bbSubs)
 	for _, product := range allProducts {
 		if ctx.Err() != nil {
 			stats.exitReason = "context_cancelled"
@@ -332,7 +347,7 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 			product.URL = p.affiliatePrefix + url.QueryEscape(product.URL)
 		}
 
-		exists, err := p.store.BestBuyProductExists(ctx, product.SKU, product.Source)
+		existing, exists, err := p.store.GetBestBuyProduct(ctx, product.SKU, product.Source)
 		if err != nil {
 			logger.Warn("Failed to check product existence",
 				"sku", product.SKU,
@@ -342,7 +357,18 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 			continue
 		}
 		if exists {
-			if err := p.store.RefreshBestBuyProductLastSeen(ctx, product); err != nil {
+			refreshed, eval := refreshExistingBestBuyProduct(existing, product, time.Now())
+			if eval.Candidate {
+				stats.priceDropCandidates++
+				if hasPriceDropSubs {
+					refreshed.AlertKind = AlertKindPriceDrop
+					refreshed.PriceDropAmount = eval.Amount
+					refreshed.PriceDropPct = eval.Pct
+					priceDropCandidates = append(priceDropCandidates, priceDropCandidate{State: refreshed})
+					continue
+				}
+			}
+			if err := p.store.RefreshBestBuyProduct(ctx, refreshed); err != nil {
 				logger.Warn("Failed to refresh existing Best Buy listing",
 					"sku", product.SKU,
 					"source", product.Source,
@@ -356,7 +382,7 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 	}
 	stats.newItems = len(newProducts)
 
-	if len(newProducts) == 0 {
+	if len(newProducts) == 0 && len(priceDropCandidates) == 0 {
 		stats.exitReason = "no_new_items"
 		// Still prune
 		if err := p.store.PruneBestBuyProducts(ctx, 30, bestBuyMaxRecords); err != nil {
@@ -367,8 +393,8 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 
 	// 5. AI-label each new item, save it, then notify according to subscription tier.
 	analyzedItems, tier1Passed, tier2Passed := p.analyzeNewItems(ctx, newProducts, logger)
-	stats.tier1Passed = tier1Passed
-	stats.tier2Passed = tier2Passed
+	stats.tier1Passed += tier1Passed
+	stats.tier2Passed += tier2Passed
 	for _, item := range analyzedItems {
 		if item.IsWarm || item.IsLavaHot {
 			stats.warmHot++
@@ -391,6 +417,53 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 				stats.notified++
 			}
 		}
+	}
+
+	analyzedDrops, dropTier1, dropTier2 := p.analyzePriceDropItems(ctx, priceDropCandidates, logger)
+	stats.tier1Passed += dropTier1
+	stats.tier2Passed += dropTier2
+	stats.priceDropAnalyzed = len(analyzedDrops)
+	for _, item := range analyzedDrops {
+		if item.IsWarm || item.IsLavaHot {
+			stats.warmHot++
+		}
+
+		eligibleSubs := filterPriceDropEligibleSubs(item, bbSubs)
+		if len(eligibleSubs) == 0 {
+			continue
+		}
+
+		if p.notifier != nil {
+			if err := p.notifier.SendBestBuyDeal(ctx, item, eligibleSubs); err != nil {
+				logger.Error("Failed to send price-drop notification",
+					"sku", item.SKU,
+					"title", item.CleanTitle,
+					"error", err,
+				)
+				stats.notifyErrors++
+				continue
+			}
+		}
+
+		now := time.Now()
+		currentPrice := effectivePrice(item.Product)
+		item.LastPriceDropAlertPrice = currentPrice
+		item.LastPriceDropAlertAt = now
+		item.LastPriceDropAlertKey = priceDropAlertKey(item.SKU, item.Source, currentPrice)
+		item.AlertKind = AlertKindPriceDrop
+		item.PriceDropAmount = item.InitialEffectivePrice - currentPrice
+		if item.InitialEffectivePrice > 0 {
+			item.PriceDropPct = item.PriceDropAmount / item.InitialEffectivePrice * 100
+		}
+		if err := p.store.SaveBestBuyProduct(ctx, item); err != nil {
+			logger.Warn("Failed to persist Best Buy price-drop alert state",
+				"sku", item.SKU,
+				"source", item.Source,
+				"error", err,
+			)
+		}
+		stats.priceDropNotified++
+		stats.notified++
 	}
 
 	// 6. Prune old records
@@ -440,18 +513,49 @@ func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, log
 			logger.Warn("Stopping batch analysis early, AI models exhausted", "processed", i+len(batch), "total", len(products))
 			// Save remaining products without analysis
 			for j := i + len(batch); j < len(products); j++ {
-				analyzed := AnalyzedProduct{
-					Product:     products[j],
-					CleanTitle:  products[j].Name,
-					DiscountPct: computeDiscount(products[j]),
-					ProcessedAt: time.Now(),
-					LastSeen:    time.Now(),
-				}
+				analyzed := bestBuyFallback(products[j])
 				if saveErr := p.store.SaveBestBuyProduct(ctx, analyzed); saveErr != nil {
 					logger.Error("Failed to save unanalyzed product", "sku", products[j].SKU, "error", saveErr)
 				}
 				analyzedItems = append(analyzedItems, analyzed)
 			}
+			break
+		}
+	}
+
+	return analyzedItems, totalTier1, totalTier2
+}
+
+func (p *Processor) analyzePriceDropItems(ctx context.Context, candidates []priceDropCandidate, logger *slog.Logger) ([]AnalyzedProduct, int, int) {
+	var analyzedItems []AnalyzedProduct
+	totalTier1 := 0
+	totalTier2 := 0
+
+	for i := 0; i < len(candidates); i += batchSize {
+		if ctx.Err() != nil {
+			logger.Warn("Context cancelled, stopping Best Buy price-drop analysis", "processed", i, "total", len(candidates))
+			break
+		}
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				logger.Warn("Context cancelled during price-drop inter-batch delay", "processed", i, "total", len(candidates))
+				return analyzedItems, totalTier1, totalTier2
+			case <-time.After(2 * time.Second):
+			}
+		}
+
+		end := i + batchSize
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		batch := candidates[i:end]
+		result, err := p.processPriceDropBatch(ctx, batch, logger)
+		analyzedItems = append(analyzedItems, result.Items...)
+		totalTier1 += result.Tier1Passed
+		totalTier2 += result.Tier2Passed
+		if err != nil {
+			logger.Warn("Stopping Best Buy price-drop analysis early, AI models exhausted", "processed", end, "total", len(candidates))
 			break
 		}
 	}
@@ -510,13 +614,76 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *s
 	return result.Items, result.Tier1Passed, result.Tier2Passed, err
 }
 
+func (p *Processor) processPriceDropBatch(ctx context.Context, batch []priceDropCandidate, logger *slog.Logger) (productmonitor.Result[AnalyzedProduct], error) {
+	cfg := productmonitor.Config[priceDropCandidate, BatchScreenResult, BatchAnalyzeResult, AnalyzedProduct]{
+		ProductKey:  func(candidate priceDropCandidate) string { return candidate.State.SKU },
+		ScreenKey:   func(screen BatchScreenResult) string { return screen.SKU },
+		AnalyzeKey:  func(result BatchAnalyzeResult) string { return result.SKU },
+		IsTopDeal:   func(screen BatchScreenResult) bool { return screen.IsTopDeal },
+		IsWarmHot:   func(product AnalyzedProduct) bool { return product.IsWarm || product.IsLavaHot },
+		ReturnSaved: func(AnalyzedProduct) bool { return true },
+		Fallback:    priceDropFallback,
+		FromScreen:  priceDropFromScreen,
+		FromAnalysis: func(candidate priceDropCandidate, screen BatchScreenResult, result BatchAnalyzeResult) AnalyzedProduct {
+			return priceDropFromAnalysis(candidate, screen, result)
+		},
+		Save: p.store.SaveBestBuyProduct,
+	}
+	if p.analyzer != nil {
+		cfg.ScreenBatch = func(ctx context.Context, candidates []priceDropCandidate) ([]BatchScreenResult, error) {
+			return p.analyzer.ScreenBestBuyBatch(ctx, priceDropCandidateProducts(candidates))
+		}
+		cfg.AnalyzeBatch = func(ctx context.Context, candidates []priceDropCandidate) ([]BatchAnalyzeResult, error) {
+			return p.analyzer.AnalyzeBestBuyBatch(ctx, priceDropCandidateProducts(candidates))
+		}
+		cfg.AnalyzeOne = func(ctx context.Context, candidate priceDropCandidate) (*BatchAnalyzeResult, error) {
+			result, err := p.analyzer.AnalyzeBestBuyProduct(ctx, candidate.State.Product)
+			if err != nil || result == nil {
+				return nil, err
+			}
+			return &BatchAnalyzeResult{
+				SKU:        candidate.State.SKU,
+				CleanTitle: result.CleanTitle,
+				IsWarm:     result.IsWarm,
+				IsLavaHot:  result.IsLavaHot,
+				Summary:    result.Summary,
+			}, nil
+		}
+	}
+	result, err := productmonitor.ProcessBatch(ctx, batch, cfg, logger)
+	for _, item := range result.Items {
+		if item.IsWarm || item.IsLavaHot {
+			logger.Info("Best Buy price drop labeled warm/hot",
+				"sku", item.SKU,
+				"clean_title", item.CleanTitle,
+				"is_warm", item.IsWarm,
+				"is_lava_hot", item.IsLavaHot,
+				"discount_pct", item.DiscountPct,
+				"price_drop_pct", item.PriceDropPct,
+				"seller", item.SellerName,
+				"source", item.Source,
+			)
+		}
+	}
+	return result, err
+}
+
 func bestBuyFallback(product Product) AnalyzedProduct {
+	now := time.Now()
+	price := effectivePrice(product)
 	return AnalyzedProduct{
-		Product:     product,
-		CleanTitle:  product.Name,
-		DiscountPct: computeDiscount(product),
-		ProcessedAt: time.Now(),
-		LastSeen:    time.Now(),
+		Product:                  product,
+		CleanTitle:               product.Name,
+		DiscountPct:              computeDiscount(product),
+		ProcessedAt:              now,
+		LastSeen:                 now,
+		InitialRegularPrice:      product.RegularPrice,
+		InitialSalePrice:         product.SalePrice,
+		InitialEffectivePrice:    price,
+		PreviousRegularPrice:     product.RegularPrice,
+		PreviousSalePrice:        product.SalePrice,
+		PreviousEffectivePrice:   price,
+		LowestSeenEffectivePrice: price,
 	}
 }
 
@@ -537,12 +704,135 @@ func bestBuyFromAnalysis(product Product, screen BatchScreenResult, result Batch
 	return analyzed
 }
 
+func priceDropCandidateProducts(candidates []priceDropCandidate) []Product {
+	products := make([]Product, 0, len(candidates))
+	for _, candidate := range candidates {
+		products = append(products, candidate.State.Product)
+	}
+	return products
+}
+
+func priceDropFallback(candidate priceDropCandidate) AnalyzedProduct {
+	analyzed := candidate.State
+	analyzed.AlertKind = AlertKindPriceDrop
+	analyzed.ProcessedAt = time.Now()
+	if analyzed.CleanTitle == "" {
+		analyzed.CleanTitle = analyzed.Name
+	}
+	return analyzed
+}
+
+func priceDropFromScreen(candidate priceDropCandidate, screen BatchScreenResult) AnalyzedProduct {
+	analyzed := priceDropFallback(candidate)
+	if screen.CleanTitle != "" {
+		analyzed.CleanTitle = screen.CleanTitle
+	}
+	return analyzed
+}
+
+func priceDropFromAnalysis(candidate priceDropCandidate, screen BatchScreenResult, result BatchAnalyzeResult) AnalyzedProduct {
+	analyzed := priceDropFromScreen(candidate, screen)
+	analyzed.CleanTitle = firstNonEmpty(result.CleanTitle, analyzed.CleanTitle, candidate.State.Name)
+	analyzed.IsWarm = result.IsWarm
+	analyzed.IsLavaHot = result.IsLavaHot
+	analyzed.Summary = result.Summary
+	return analyzed
+}
+
 // computeDiscount calculates the discount percentage for a product.
 func computeDiscount(p Product) float64 {
 	if p.RegularPrice > 0 && p.SalePrice > 0 && p.SalePrice < p.RegularPrice {
 		return (p.RegularPrice - p.SalePrice) / p.RegularPrice * 100
 	}
 	return 0
+}
+
+func effectivePrice(p Product) float64 {
+	if p.SalePrice > 0 {
+		return p.SalePrice
+	}
+	return p.RegularPrice
+}
+
+func refreshExistingBestBuyProduct(existing AnalyzedProduct, current Product, now time.Time) (AnalyzedProduct, priceDropEvaluation) {
+	existing = ensureBestBuyPriceState(existing)
+	eval := evaluateBestBuyPriceDrop(existing, current)
+
+	lastRegular := existing.RegularPrice
+	lastSale := existing.SalePrice
+	lastEffective := effectivePrice(existing.Product)
+	currentEffective := effectivePrice(current)
+
+	refreshed := existing
+	refreshed.Product = current
+	refreshed.LastSeen = now
+	refreshed.DiscountPct = computeDiscount(current)
+	refreshed.PreviousRegularPrice = lastRegular
+	refreshed.PreviousSalePrice = lastSale
+	refreshed.PreviousEffectivePrice = lastEffective
+	if currentEffective > 0 && (refreshed.LowestSeenEffectivePrice <= 0 || currentEffective < refreshed.LowestSeenEffectivePrice) {
+		refreshed.LowestSeenEffectivePrice = currentEffective
+	}
+	if eval.Candidate {
+		refreshed.LastPriceDropDetectedAt = now
+		refreshed.PriceDropAmount = eval.Amount
+		refreshed.PriceDropPct = eval.Pct
+	}
+	return refreshed, eval
+}
+
+func ensureBestBuyPriceState(product AnalyzedProduct) AnalyzedProduct {
+	current := effectivePrice(product.Product)
+	if product.InitialEffectivePrice <= 0 {
+		product.InitialRegularPrice = product.RegularPrice
+		product.InitialSalePrice = product.SalePrice
+		product.InitialEffectivePrice = current
+	}
+	if product.PreviousEffectivePrice <= 0 {
+		product.PreviousRegularPrice = product.RegularPrice
+		product.PreviousSalePrice = product.SalePrice
+		product.PreviousEffectivePrice = current
+	}
+	if product.LowestSeenEffectivePrice <= 0 {
+		product.LowestSeenEffectivePrice = current
+	}
+	if product.DiscountPct == 0 {
+		product.DiscountPct = computeDiscount(product.Product)
+	}
+	return product
+}
+
+func evaluateBestBuyPriceDrop(existing AnalyzedProduct, current Product) priceDropEvaluation {
+	baseline := existing.InitialEffectivePrice
+	lastSeen := effectivePrice(existing.Product)
+	currentPrice := effectivePrice(current)
+	if baseline <= 0 || lastSeen <= 0 || currentPrice <= 0 {
+		return priceDropEvaluation{}
+	}
+	if currentPrice >= lastSeen-priceComparisonEpsilon {
+		return priceDropEvaluation{}
+	}
+	amount := baseline - currentPrice
+	pct := amount / baseline * 100
+	if amount+priceComparisonEpsilon < priceDropMinAmount || pct+priceComparisonEpsilon < priceDropMinPct {
+		return priceDropEvaluation{}
+	}
+	if existing.LastPriceDropAlertPrice > 0 && currentPrice >= existing.LastPriceDropAlertPrice-priceComparisonEpsilon {
+		return priceDropEvaluation{}
+	}
+	key := priceDropAlertKey(current.SKU, current.Source, currentPrice)
+	if existing.LastPriceDropAlertKey == key {
+		return priceDropEvaluation{}
+	}
+	return priceDropEvaluation{
+		Candidate: true,
+		Amount:    amount,
+		Pct:       pct,
+	}
+}
+
+func priceDropAlertKey(sku, source string, price float64) string {
+	return fmt.Sprintf("%s|%s|%.2f", sku, source, price)
 }
 
 // filterEligibleSubs returns subscriptions that should receive this deal.
@@ -554,6 +844,32 @@ func filterEligibleSubs(product AnalyzedProduct, subs []models.Subscription) []m
 		}
 	}
 	return eligible
+}
+
+func filterPriceDropEligibleSubs(product AnalyzedProduct, subs []models.Subscription) []models.Subscription {
+	var eligible []models.Subscription
+	for _, sub := range subs {
+		switch sub.DealType {
+		case dealtypes.BestBuyWarmHot:
+			if product.IsWarm || product.IsLavaHot {
+				eligible = append(eligible, sub)
+			}
+		case dealtypes.BestBuyHot:
+			if product.IsLavaHot {
+				eligible = append(eligible, sub)
+			}
+		}
+	}
+	return eligible
+}
+
+func hasBestBuyPriceDropSubscriptions(subs []models.Subscription) bool {
+	for _, sub := range subs {
+		if sub.DealType == dealtypes.BestBuyWarmHot || sub.DealType == dealtypes.BestBuyHot {
+			return true
+		}
+	}
+	return false
 }
 
 // isBestBuyEligible checks whether a deal should be sent to a given subscription.
