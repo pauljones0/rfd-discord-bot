@@ -1,13 +1,72 @@
 package ebay
 
 import (
+	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
+
+type ebayProcessorTestStore struct {
+	coupons      []StoreCoupon
+	savedCoupons []StoreCoupon
+	observations []CouponObservation
+}
+
+func (s *ebayProcessorTestStore) GetActiveEbaySellers(context.Context) ([]EbaySeller, error) {
+	return nil, nil
+}
+
+func (s *ebayProcessorTestStore) SeedEbaySellers(context.Context) (bool, error) {
+	return false, nil
+}
+
+func (s *ebayProcessorTestStore) GetEbayPollState(context.Context) (*EbayPollState, error) {
+	return nil, nil
+}
+
+func (s *ebayProcessorTestStore) UpdateEbayPollState(context.Context, EbayPollState) error {
+	return nil
+}
+
+func (s *ebayProcessorTestStore) GetAllSubscriptions(context.Context) ([]models.Subscription, error) {
+	return nil, nil
+}
+
+func (s *ebayProcessorTestStore) GetTrackedEbayItems(context.Context) (map[string]TrackedItem, error) {
+	return nil, nil
+}
+
+func (s *ebayProcessorTestStore) BulkUpsertTrackedEbayItems(context.Context, []TrackedItem) error {
+	return nil
+}
+
+func (s *ebayProcessorTestStore) DeleteTrackedEbayItems(context.Context, []string) error {
+	return nil
+}
+
+func (s *ebayProcessorTestStore) GetEbayStoreCoupons(context.Context, string, string) ([]StoreCoupon, error) {
+	return append([]StoreCoupon(nil), s.coupons...), nil
+}
+
+func (s *ebayProcessorTestStore) SaveEbayStoreCoupon(_ context.Context, coupon StoreCoupon) error {
+	s.savedCoupons = append(s.savedCoupons, coupon)
+	return nil
+}
+
+func (s *ebayProcessorTestStore) GetEbayCouponObservations(context.Context, string, string, string) ([]CouponObservation, error) {
+	return append([]CouponObservation(nil), s.observations...), nil
+}
+
+func (s *ebayProcessorTestStore) SaveEbayCouponObservation(_ context.Context, observation CouponObservation) error {
+	s.observations = append(s.observations, observation)
+	return nil
+}
 
 func TestShouldNotifyPriceDrop(t *testing.T) {
 	tests := []struct {
@@ -328,6 +387,42 @@ func TestStoreCouponFromObservationPromotesOnlyAfterEnoughEvidence(t *testing.T)
 	}
 }
 
+func TestStoreCouponFromObservationDoesNotThrottleItemCouponUntilExpiry(t *testing.T) {
+	now := time.Date(2026, time.May, 10, 12, 0, 0, 0, time.UTC)
+	expires := now.Add(21 * 24 * time.Hour)
+	p := NewProcessor(nil, nil, nil)
+	pageCoupon := PageCoupon{
+		DiscountAmount: 111.50,
+		DiscountType:   "percent",
+		DiscountValue:  10,
+		Code:           "VIPOUTLETMAY26",
+		Message:        "EXTRA 10% OFF",
+		Signature:      "percent|10.00|vipoutletmay26",
+		Scope:          "unknown",
+		Confidence:     0.8,
+		ExpiresAt:      expires,
+	}
+	observations := []CouponObservation{{
+		Marketplace:    "EBAY_US",
+		Seller:         "vipoutlet",
+		Signature:      pageCoupon.Signature,
+		ItemID:         "127579938370",
+		BasePrice:      1115,
+		DiscountAmount: 111.50,
+		Code:           pageCoupon.Code,
+		ObservedAt:     now,
+		ExpiresAt:      expires,
+	}}
+
+	coupon := p.storeCouponFromObservation("EBAY_US", "vipoutlet", pageCoupon, observations, nil, now)
+	if coupon.Active || coupon.Scope != "item" {
+		t.Fatalf("active/scope = %v/%q, want inactive item coupon", coupon.Active, coupon.Scope)
+	}
+	if !coupon.NextCheckAt.Equal(now.Add(defaultCouponDiscoveryInterval)) {
+		t.Fatalf("NextCheckAt = %s, want 6h throttle instead of expiry %s", coupon.NextCheckAt, expires)
+	}
+}
+
 func TestNegativeCouponCheckThrottlesFutureChecks(t *testing.T) {
 	now := time.Now()
 	coupon := negativeCouponCheck("EBAY_CA", "seller", nil, now, 6*time.Hour)
@@ -336,6 +431,89 @@ func TestNegativeCouponCheckThrottlesFutureChecks(t *testing.T) {
 	}
 	if !coupon.NextCheckAt.Equal(now.Add(6 * time.Hour)) {
 		t.Fatalf("NextCheckAt = %s, want %s", coupon.NextCheckAt, now.Add(6*time.Hour))
+	}
+}
+
+func TestCouponCacheFreshIgnoresLegacyItemCouponExpiryThrottle(t *testing.T) {
+	now := time.Date(2026, time.May, 10, 12, 0, 0, 0, time.UTC)
+	legacyItemCoupon := StoreCoupon{
+		Signature:   "percent|10.00|vipoutletmay26",
+		Scope:       "item",
+		Active:      false,
+		LastChecked: now.Add(-6 * 24 * time.Hour),
+		NextCheckAt: time.Date(2026, time.June, 1, 0, 15, 0, 0, time.UTC),
+	}
+	if fresh, coupon := couponCacheFresh([]StoreCoupon{legacyItemCoupon}, now, 6*time.Hour); fresh {
+		t.Fatalf("fresh = true for legacy item coupon %#v; should not throttle seller until expiry", coupon)
+	}
+
+	recentItemCoupon := legacyItemCoupon
+	recentItemCoupon.LastChecked = now
+	recentItemCoupon.NextCheckAt = now.Add(6 * time.Hour)
+	if fresh, _ := couponCacheFresh([]StoreCoupon{recentItemCoupon}, now, 6*time.Hour); !fresh {
+		t.Fatalf("fresh = false for normal 6h item-coupon sampling throttle")
+	}
+
+	activeStoreCoupon := StoreCoupon{
+		Signature:              "percent|10.00|vipoutletmay26",
+		Scope:                  "store",
+		Active:                 true,
+		FormulaType:            "percent",
+		DiscountType:           "percent",
+		DiscountValue:          10,
+		Confidence:             0.95,
+		InferenceMaxErrorCents: 0,
+		LastChecked:            now.Add(-6 * 24 * time.Hour),
+		NextCheckAt:            time.Date(2026, time.June, 1, 0, 15, 0, 0, time.UTC),
+	}
+	if fresh, _ := couponCacheFresh([]StoreCoupon{activeStoreCoupon}, now, 6*time.Hour); !fresh {
+		t.Fatalf("fresh = false for active store-wide coupon")
+	}
+}
+
+func TestApplyCouponForPriceDropAppliesSingleItemPageCoupon(t *testing.T) {
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><body><h1>Apple iPhone 17 Pro Max</h1><div>Save $120.00 with coupon code SAVE120</div></body></html>`))
+	}))
+	defer page.Close()
+
+	store := &ebayProcessorTestStore{}
+	client := &Client{
+		httpClient:     page.Client(),
+		couponBackends: []string{"http"},
+	}
+	processor := NewProcessor(store, client, nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	apiItem := BrowseAPIItem{
+		ItemID:      "v1|127846479361|0",
+		Title:       "Apple iPhone 17 Pro Max 256GB Cosmic Orange LTE Cellular MFXH4LL/A",
+		Price:       &Price{Value: "1199.00", Currency: "USD"},
+		ItemWebURL:  page.URL,
+		Seller:      &SellerInfo{Username: "vipoutlet"},
+		Marketplace: "EBAY_US",
+	}
+	updated, newPrice, activated := processor.applyCouponForPriceDrop(context.Background(), apiItem, TrackedItem{
+		ItemID:        "127846479361",
+		Price:         4796,
+		BasePrice:     4796,
+		OriginalPrice: 4796,
+		Seller:        "vipoutlet",
+	}, 1199, 1199, map[string][]StoreCoupon{}, time.Now(), logger)
+
+	if activated != nil {
+		t.Fatalf("activated = %#v, want nil for one item-only observation", activated)
+	}
+	if updated.CouponDiscount != 120 || updated.CouponCode != "SAVE120" || updated.CouponSource != "page:http" {
+		t.Fatalf("coupon fields = discount %.2f code %q source %q", updated.CouponDiscount, updated.CouponCode, updated.CouponSource)
+	}
+	if newPrice != 1079 {
+		t.Fatalf("newPrice = %.2f, want 1079.00", newPrice)
+	}
+	if len(store.observations) != 1 {
+		t.Fatalf("observations = %d, want 1", len(store.observations))
+	}
+	if len(store.savedCoupons) != 1 || store.savedCoupons[0].Active {
+		t.Fatalf("saved coupon = %#v, want one inactive item coupon", store.savedCoupons)
 	}
 }
 

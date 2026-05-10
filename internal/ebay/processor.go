@@ -566,7 +566,16 @@ func (p *Processor) applyCouponForPriceDrop(ctx context.Context, apiItem BrowseA
 		return apiItem, currentPrice, nil
 	}
 
-	if couponCacheFresh(coupons, now) {
+	if fresh, freshCoupon := couponCacheFresh(coupons, now, p.couponDiscoveryIntervalOrDefault()); fresh {
+		logger.Info("Skipping eBay page coupon check; seller coupon cache is fresh",
+			"itemID", ExtractItemID(apiItem.ItemID),
+			"seller", seller,
+			"marketplace", marketplace,
+			"coupon_signature", freshCoupon.Signature,
+			"coupon_scope", freshCoupon.Scope,
+			"coupon_active", freshCoupon.Active,
+			"next_check_at", freshCoupon.NextCheckAt,
+		)
 		return apiItem, currentPrice, nil
 	}
 
@@ -636,6 +645,20 @@ func (p *Processor) applyCouponForPriceDrop(ctx context.Context, apiItem BrowseA
 		logger.Warn("Failed to save eBay seller coupon cache", "seller", seller, "marketplace", marketplace, "signature", refreshed.Signature, "error", err)
 	} else {
 		couponCache[key] = appendFreshCoupon(coupons, refreshed)
+	}
+
+	if pageSnapshot := pageCoupon.snapshot(source); pageSnapshot.DiscountAmount > apiItem.CouponDiscount {
+		applyCouponSnapshotToItem(&apiItem, pageSnapshot)
+		currentPrice = effectiveItemPrice(basePrice, apiItem.CouponDiscount)
+		logger.Info("Applied page eBay coupon to current item effective price",
+			"itemID", ExtractItemID(apiItem.ItemID),
+			"seller", seller,
+			"base_price", basePrice,
+			"coupon_discount", apiItem.CouponDiscount,
+			"coupon_source", apiItem.CouponSource,
+			"coupon_signature", apiItem.CouponSignature,
+			"effective_price", currentPrice,
+		)
 	}
 
 	if refreshed.Active {
@@ -721,9 +744,6 @@ func (p *Processor) storeCouponFromObservation(marketplace, seller string, pageC
 
 	itemIDs, itemURLs := sampledCouponItems(observations)
 	nextCheck := now.Add(p.couponDiscoveryIntervalOrDefault())
-	if !pageCoupon.ExpiresAt.IsZero() && pageCoupon.ExpiresAt.After(now) {
-		nextCheck = pageCoupon.ExpiresAt.Add(15 * time.Minute)
-	}
 
 	coupon := StoreCoupon{
 		Marketplace:               marketplace,
@@ -751,6 +771,9 @@ func (p *Processor) storeCouponFromObservation(marketplace, seller string, pageC
 		NextCheckAt:               nextCheck,
 	}
 	coupon.Active = storeCouponReadyForStoreWideUse(coupon, now)
+	if coupon.Active && !pageCoupon.ExpiresAt.IsZero() && pageCoupon.ExpiresAt.After(now) {
+		coupon.NextCheckAt = pageCoupon.ExpiresAt.Add(15 * time.Minute)
+	}
 	return coupon
 }
 
@@ -1002,13 +1025,25 @@ func sellerCouponKey(marketplace, seller string) string {
 	return strings.ToUpper(strings.TrimSpace(marketplace)) + "|" + strings.ToLower(strings.TrimSpace(seller))
 }
 
-func couponCacheFresh(coupons []StoreCoupon, now time.Time) bool {
+func couponCacheFresh(coupons []StoreCoupon, now time.Time, interval time.Duration) (bool, StoreCoupon) {
+	if interval <= 0 {
+		interval = defaultCouponDiscoveryInterval
+	}
 	for _, coupon := range coupons {
-		if coupon.NextCheckAt.After(now) {
-			return true
+		if !coupon.NextCheckAt.After(now) {
+			continue
+		}
+		if coupon.Signature == "none" || coupon.Signature == "blocked" {
+			return true, coupon
+		}
+		if storeCouponReadyForStoreWideUse(coupon, now) {
+			return true, coupon
+		}
+		if !coupon.LastChecked.IsZero() && coupon.NextCheckAt.Sub(coupon.LastChecked) <= interval+time.Minute {
+			return true, coupon
 		}
 	}
-	return false
+	return false, StoreCoupon{}
 }
 
 func bestCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot {
