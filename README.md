@@ -207,10 +207,11 @@ the watchdog timer after deploys so missing/stopped containers are reconciled
 automatically:
 
 ```bash
-sudo cp deploy/stormtrooper/systemd/rfd-discord-bot-watchdog.* /etc/systemd/system/
 chmod +x deploy/stormtrooper/rfd-bot-watchdog.sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now rfd-discord-bot-watchdog.timer
+mkdir -p ~/.config/systemd/user
+cp deploy/stormtrooper/systemd/rfd-discord-bot-watchdog.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now rfd-discord-bot-watchdog.timer
 ```
 
 ## Repository Hygiene

@@ -79,11 +79,12 @@ with other Stormtrooper stacks. Keep the watchdog timer enabled so Docker
 containers that are stopped or removed by a bad Compose run are brought back:
 
 ```bash
-sudo cp deploy/stormtrooper/systemd/rfd-discord-bot-watchdog.* /etc/systemd/system/
 chmod +x deploy/stormtrooper/rfd-bot-watchdog.sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now rfd-discord-bot-watchdog.timer
-systemctl list-timers rfd-discord-bot-watchdog.timer
+mkdir -p ~/.config/systemd/user
+cp deploy/stormtrooper/systemd/rfd-discord-bot-watchdog.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now rfd-discord-bot-watchdog.timer
+systemctl --user list-timers rfd-discord-bot-watchdog.timer
 ```
 
 - RFD
