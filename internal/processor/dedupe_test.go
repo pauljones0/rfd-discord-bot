@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -332,6 +333,52 @@ func TestDeduplicateDeals_PostDetailCanonicalURLMatchesRecent(t *testing.T) {
 	}
 	if _, ok := existingDeals["existing-iniu"]; !ok {
 		t.Fatalf("expected matched recent deal to be added to existingDeals")
+	}
+}
+
+func TestDeduplicateDeals_PostDetailCanonicalURLRemapsKnownDuplicate(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+	productURL := "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20"
+	variantURL := "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1"
+	originalTime := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	duplicateTime := originalTime.Add(2 * time.Hour)
+
+	recentDeals := []models.DealInfo{
+		{
+			DocumentID:         "canonical-original",
+			Title:              "Original INIU power bank post",
+			ActualDealURL:      productURL,
+			PublishedTimestamp: originalTime,
+			DiscordMessageIDs:  map[string]string{"channel": "message"},
+		},
+		{
+			DocumentID:         "known-duplicate",
+			Title:              "Known duplicate INIU post",
+			ActualDealURL:      variantURL,
+			PublishedTimestamp: duplicateTime,
+		},
+	}
+	existingDeals := map[string]*models.DealInfo{
+		"known-duplicate": &recentDeals[1],
+	}
+	validDeals := []models.DealInfo{
+		{
+			DocumentID:    "known-duplicate",
+			Title:         "Known duplicate INIU post",
+			ActualDealURL: variantURL,
+		},
+	}
+
+	deduped := p.deduplicateDealsByDetailedURL(context.Background(), validDeals, existingDeals, recentDeals, logger)
+	if len(deduped) != 1 {
+		t.Fatalf("expected one deal, got %d", len(deduped))
+	}
+	if deduped[0].DocumentID != "canonical-original" {
+		t.Fatalf("known duplicate should remap to canonical original, got %q", deduped[0].DocumentID)
+	}
+	if _, ok := existingDeals["canonical-original"]; !ok {
+		t.Fatal("expected canonical original to be loaded into existingDeals")
 	}
 }
 

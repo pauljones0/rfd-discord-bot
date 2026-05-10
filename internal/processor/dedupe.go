@@ -207,6 +207,53 @@ func sameCanonicalDealURL(left, right string) bool {
 	return leftKey != "" && leftKey == rightKey
 }
 
+func recentDealsByCanonicalURL(recentDeals []models.DealInfo) map[string]*models.DealInfo {
+	byURL := make(map[string]*models.DealInfo)
+	for i := range recentDeals {
+		deal := &recentDeals[i]
+		key := canonicalDealURL(deal.ActualDealURL)
+		if key == "" {
+			continue
+		}
+		if current := byURL[key]; current == nil || preferCanonicalDeal(deal, current) {
+			byURL[key] = deal
+		}
+	}
+	return byURL
+}
+
+func preferCanonicalDeal(candidate, current *models.DealInfo) bool {
+	if current == nil {
+		return true
+	}
+
+	candidateHasMessage := len(candidate.DiscordMessageIDs) > 0
+	currentHasMessage := len(current.DiscordMessageIDs) > 0
+	if candidateHasMessage != currentHasMessage {
+		return candidateHasMessage
+	}
+
+	if !candidate.PublishedTimestamp.Equal(current.PublishedTimestamp) {
+		if candidate.PublishedTimestamp.IsZero() {
+			return false
+		}
+		if current.PublishedTimestamp.IsZero() {
+			return true
+		}
+		return candidate.PublishedTimestamp.Before(current.PublishedTimestamp)
+	}
+
+	candidateLikes, candidateComments, _ := candidate.Stats()
+	currentLikes, currentComments, _ := current.Stats()
+	if candidateLikes != currentLikes {
+		return candidateLikes > currentLikes
+	}
+	if candidateComments != currentComments {
+		return candidateComments > currentComments
+	}
+	return candidate.DocumentID < current.DocumentID
+}
+
 // calculateSimilarity returns a score between 0.0 and 1.0 based on token overlap.
 func calculateSimilarity(tokensA, tokensB []string) float64 {
 	if len(tokensA) == 0 || len(tokensB) == 0 {
@@ -238,6 +285,7 @@ func calculateSimilarity(tokensA, tokensB []string) float64 {
 // deduplicateDeals merges valid scraped deals with existing recent deals or other scraped deals.
 func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, recentDeals []models.DealInfo, logger *slog.Logger) []models.DealInfo {
 	var dedupedScraped []models.DealInfo
+	canonicalRecentByURL := recentDealsByCanonicalURL(recentDeals)
 
 	// Map to keep track of matched scraped deals so we don't process them twice.
 	matchedScrapedIndices := make(map[int]bool)
@@ -248,6 +296,16 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 		}
 
 		dealA := &scrapedDeals[i]
+
+		if canonical := canonicalRecentByURL[canonicalDealURL(dealA.ActualDealURL)]; canonical != nil && canonical.DocumentID != dealA.DocumentID {
+			logger.Info("Deal deduplicated with canonical product record", "scrapedTitle", dealA.Title, "existingTitle", canonical.Title)
+			dealA.DocumentID = canonical.DocumentID
+			if _, ok := existingDeals[canonical.DocumentID]; !ok {
+				existingDeals[canonical.DocumentID] = canonical
+			}
+			dedupedScraped = append(dedupedScraped, *dealA)
+			continue
+		}
 
 		// Layer 1: Exact ID match — same PublishedTimestamp means same post, skip silently.
 		// This is the normal case: the same deal appears on the page every scrape cycle.
@@ -346,25 +404,9 @@ func (p *DealProcessor) deduplicateDealsByDetailedURL(ctx context.Context, deals
 		return deals
 	}
 
-	recentByURL := make(map[string]*models.DealInfo)
-	for i := range recentDeals {
-		recent := &recentDeals[i]
-		key := canonicalDealURL(recent.ActualDealURL)
-		if key == "" {
-			continue
-		}
-		if _, exists := recentByURL[key]; !exists {
-			recentByURL[key] = recent
-		}
-	}
-
+	recentByURL := recentDealsByCanonicalURL(recentDeals)
 	firstScrapedByURL := make(map[string]string)
 	for i := range deals {
-		if _, alreadyKnown := existingDeals[deals[i].DocumentID]; alreadyKnown {
-			firstScrapedByURL[canonicalDealURL(deals[i].ActualDealURL)] = deals[i].DocumentID
-			continue
-		}
-
 		key := canonicalDealURL(deals[i].ActualDealURL)
 		if key == "" {
 			continue

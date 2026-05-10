@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -414,6 +415,8 @@ func (p *DealProcessor) processNewDeal(ctx context.Context, dealToSave *models.D
 }
 
 func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *models.DealInfo, scrapedDuplicates []models.DealInfo, updatedDeals *[]models.DealInfo, subs []models.Subscription) error {
+	scrapedBase := contentBaseForExistingDeal(existing, scrapedDuplicates)
+
 	// Clean up any historical duplicate threads (same thread ID, different slugs)
 	changed := deduplicateThreadsByKey(existing)
 
@@ -426,9 +429,7 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		}
 	}
 
-	// Check if main content changed (use [0] deal since titles/urls are same for dupes within batch)
-	scrapedBase := &scrapedDuplicates[0]
-	if p.dealChanged(existing, scrapedBase) {
+	if p.dealChanged(existing, &scrapedBase) {
 		changed = true
 		// Merge changes into existing
 		existing.Title = scrapedBase.Title
@@ -509,6 +510,111 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 
 	*updatedDeals = append(*updatedDeals, *existing)
 	return nil
+}
+
+func contentBaseForExistingDeal(existing *models.DealInfo, scrapedDuplicates []models.DealInfo) models.DealInfo {
+	if len(scrapedDuplicates) == 0 {
+		return *existing
+	}
+
+	if sameThread := scrapeForExistingThread(existing, scrapedDuplicates); sameThread != nil {
+		base := *sameThread
+		preserveExistingDetails(&base, existing)
+		return base
+	}
+	if sameDocument := scrapeForExistingDocument(existing, scrapedDuplicates); sameDocument != nil {
+		base := *sameDocument
+		preserveExistingDetails(&base, existing)
+		return base
+	}
+
+	base := *existing
+	for _, scraped := range scrapedDuplicates {
+		fillMissingDetails(&base, scraped)
+	}
+	return base
+}
+
+func scrapeForExistingThread(existing *models.DealInfo, scrapedDuplicates []models.DealInfo) *models.DealInfo {
+	existingThreadKeys := make(map[string]struct{}, len(existing.Threads))
+	for _, thread := range existing.Threads {
+		if key := threadKey(thread.PostURL); key != "" {
+			existingThreadKeys[key] = struct{}{}
+		}
+	}
+
+	for i := range scrapedDuplicates {
+		for _, thread := range scrapedDuplicates[i].Threads {
+			if _, ok := existingThreadKeys[threadKey(thread.PostURL)]; ok {
+				return &scrapedDuplicates[i]
+			}
+		}
+	}
+	return nil
+}
+
+func scrapeForExistingDocument(existing *models.DealInfo, scrapedDuplicates []models.DealInfo) *models.DealInfo {
+	for i := range scrapedDuplicates {
+		if scrapedDuplicates[i].DocumentID != existing.DocumentID {
+			continue
+		}
+		if scrapeWasRemappedFromAnotherDocument(scrapedDuplicates[i], existing.DocumentID) {
+			continue
+		}
+		return &scrapedDuplicates[i]
+	}
+	return nil
+}
+
+func scrapeWasRemappedFromAnotherDocument(scraped models.DealInfo, documentID string) bool {
+	for _, thread := range scraped.Threads {
+		if thread.DocumentID != "" && thread.DocumentID != documentID {
+			return true
+		}
+	}
+	return false
+}
+
+func preserveExistingDetails(scraped *models.DealInfo, existing *models.DealInfo) {
+	if existing.ActualDealURL != "" && (scraped.ActualDealURL == "" || sameCanonicalDealURL(existing.ActualDealURL, scraped.ActualDealURL)) {
+		scraped.ActualDealURL = existing.ActualDealURL
+	}
+	if scraped.ThreadImageURL == "" {
+		scraped.ThreadImageURL = existing.ThreadImageURL
+	}
+	if scraped.Description == "" {
+		scraped.Description = existing.Description
+	}
+	if scraped.Comments == "" {
+		scraped.Comments = existing.Comments
+	}
+	if scraped.Summary == "" {
+		scraped.Summary = existing.Summary
+	}
+	if len(scraped.SearchTokens) == 0 {
+		scraped.SearchTokens = existing.SearchTokens
+	}
+}
+
+func fillMissingDetails(base *models.DealInfo, candidate models.DealInfo) {
+	if base.ActualDealURL == "" {
+		base.ActualDealURL = candidate.ActualDealURL
+	}
+	if base.ThreadImageURL == "" {
+		base.ThreadImageURL = candidate.ThreadImageURL
+	}
+	if base.Description == "" {
+		base.Description = candidate.Description
+	}
+	if base.Comments == "" {
+		base.Comments = candidate.Comments
+	}
+	if base.Summary == "" {
+		base.Summary = candidate.Summary
+	}
+	if len(base.SearchTokens) == 0 {
+		base.SearchTokens = candidate.SearchTokens
+	}
 }
 
 func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.DealInfo) bool {
@@ -599,10 +705,11 @@ func threadKey(rawURL string) string {
 
 	// For RFD URLs, extract the numeric thread ID as the canonical key.
 	// RFD thread URLs end with -{numeric_id}, e.g. /firehouse-subs-deal-2806520
-	if strings.Contains(rawURL, "redflagdeals.com/") {
-		lastSlash := strings.LastIndex(rawURL, "/")
+	if parsed, err := url.Parse(rawURL); err == nil && strings.Contains(strings.ToLower(parsed.Hostname()), "redflagdeals.com") {
+		path := strings.TrimRight(parsed.Path, "/")
+		lastSlash := strings.LastIndex(path, "/")
 		if lastSlash >= 0 {
-			slug := rawURL[lastSlash+1:]
+			slug := path[lastSlash+1:]
 			lastHyphen := strings.LastIndex(slug, "-")
 			if lastHyphen >= 0 && lastHyphen < len(slug)-1 {
 				candidate := slug[lastHyphen+1:]

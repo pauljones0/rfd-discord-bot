@@ -667,6 +667,85 @@ func TestDealChanged_IgnoresCanonicalProductURLNoise(t *testing.T) {
 	}
 }
 
+func TestProcessExistingDeal_DuplicateThreadDoesNotOverwriteCanonicalContent(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+	originalTime := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	duplicateTime := originalTime.Add(2 * time.Hour)
+	existing := &models.DealInfo{
+		DocumentID:         "canonical-original",
+		Title:              "Original INIU power bank post",
+		PublishedTimestamp: originalTime,
+		ActualDealURL:      "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20",
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/original-iniu-111111", LikeCount: 10},
+		},
+	}
+	scrapedDuplicates := []models.DealInfo{
+		{
+			DocumentID:         "canonical-original",
+			Title:              "Duplicate title should not become canonical",
+			PublishedTimestamp: duplicateTime,
+			ActualDealURL:      "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1",
+			Threads: []models.ThreadContext{
+				{DocumentID: "known-duplicate", PostURL: "https://forums.redflagdeals.com/duplicate-iniu-222222", LikeCount: 3},
+			},
+		},
+	}
+	var updates []models.DealInfo
+	if err := p.processExistingDeal(context.Background(), existing, scrapedDuplicates, &updates, nil); err != nil {
+		t.Fatalf("processExistingDeal returned error: %v", err)
+	}
+	if existing.Title != "Original INIU power bank post" {
+		t.Fatalf("duplicate thread overwrote canonical title: %q", existing.Title)
+	}
+	if !existing.PublishedTimestamp.Equal(originalTime) {
+		t.Fatalf("duplicate thread overwrote canonical timestamp: %s", existing.PublishedTimestamp)
+	}
+	if existing.ActualDealURL != "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20" {
+		t.Fatalf("duplicate thread overwrote canonical URL: %q", existing.ActualDealURL)
+	}
+	if len(existing.Threads) != 2 {
+		t.Fatalf("duplicate thread should still be merged, got %d threads", len(existing.Threads))
+	}
+	if len(updates) != 1 {
+		t.Fatalf("expected merged duplicate to be persisted, got %d updates", len(updates))
+	}
+}
+
+func TestProcessExistingDeal_SameThreadTitleEditPreservesExistingLinkWhenDetailMissing(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+	existing := &models.DealInfo{
+		DocumentID:         "same-thread",
+		Title:              "Old title",
+		PublishedTimestamp: testTime1,
+		ActualDealURL:      "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20",
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/old-slug-111111", LikeCount: 10},
+		},
+	}
+	scrapedDuplicates := []models.DealInfo{
+		{
+			DocumentID:         "same-thread",
+			Title:              "Updated title",
+			PublishedTimestamp: testTime1,
+			ActualDealURL:      "",
+			Threads: []models.ThreadContext{
+				{PostURL: "https://forums.redflagdeals.com/new-slug-111111", LikeCount: 12},
+			},
+		},
+	}
+	var updates []models.DealInfo
+	if err := p.processExistingDeal(context.Background(), existing, scrapedDuplicates, &updates, nil); err != nil {
+		t.Fatalf("processExistingDeal returned error: %v", err)
+	}
+	if existing.Title != "Updated title" {
+		t.Fatalf("same-thread title edit was not applied: %q", existing.Title)
+	}
+	if existing.ActualDealURL != "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20" {
+		t.Fatalf("existing product link should be preserved when detail scrape has no link, got %q", existing.ActualDealURL)
+	}
+}
+
 // --- threadKey tests ---
 
 func TestThreadKey_RFDSlugVariants(t *testing.T) {
@@ -694,6 +773,8 @@ func TestThreadKey_RFDWithFragmentAndTrailingSlash(t *testing.T) {
 		{"https://forums.redflagdeals.com/deal-slug-123456/", "rfd:123456"},
 		{"https://forums.redflagdeals.com/deal-slug-123456/#post999", "rfd:123456"},
 		{"https://forums.redflagdeals.com/deal-slug-123456#p100", "rfd:123456"},
+		{"https://forums.redflagdeals.com/deal-slug-123456?utm_source=discord", "rfd:123456"},
+		{"https://forums.redflagdeals.com/deal-slug-123456?p=123#p123", "rfd:123456"},
 	}
 	for _, tt := range tests {
 		got := threadKey(tt.url)
