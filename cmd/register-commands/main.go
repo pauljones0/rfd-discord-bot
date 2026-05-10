@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
@@ -25,6 +28,10 @@ func stringChoices(choices []dealtypes.Choice) []map[string]interface{} {
 }
 
 func main() {
+	var guildIDsRaw string
+	flag.StringVar(&guildIDsRaw, "guild-ids", os.Getenv("DISCORD_GUILD_IDS"), "comma-separated Discord guild IDs to register commands in immediately; empty registers global commands")
+	flag.Parse()
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -33,10 +40,6 @@ func main() {
 	if cfg.DiscordAppID == "" || cfg.DiscordBotToken == "" {
 		log.Fatalf("DISCORD_APP_ID and DISCORD_BOT_TOKEN must be set")
 	}
-
-	fmt.Println("Registering /deals global command...")
-
-	url := fmt.Sprintf("https://discord.com/api/v10/applications/%s/commands", cfg.DiscordAppID)
 
 	// Command definition
 	// Restrict to admins: Manage Server permission is 0x20
@@ -263,29 +266,64 @@ func main() {
 		log.Fatalf("Failed to marshal payload: %v", err)
 	}
 
+	for label, url := range registrationURLs(cfg.DiscordAppID, guildIDsRaw) {
+		fmt.Printf("Registering Discord commands for %s...\n", label)
+		if err := register(url, payloadBytes, cfg.DiscordBotToken); err != nil {
+			log.Fatalf("Failed to register commands for %s: %v", label, err)
+		}
+		fmt.Printf("Successfully registered commands for %s.\n", label)
+	}
+}
+
+func registrationURLs(appID, guildIDsRaw string) map[string]string {
+	guildIDs := csv(guildIDsRaw)
+	if len(guildIDs) == 0 {
+		return map[string]string{
+			"global": fmt.Sprintf("https://discord.com/api/v10/applications/%s/commands", appID),
+		}
+	}
+
+	urls := make(map[string]string, len(guildIDs))
+	for _, guildID := range guildIDs {
+		urls["guild "+guildID] = fmt.Sprintf("https://discord.com/api/v10/applications/%s/guilds/%s/commands", appID, guildID)
+	}
+	return urls
+}
+
+func csv(raw string) []string {
+	var out []string
+	for _, value := range strings.Split(raw, ",") {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func register(url string, payloadBytes []byte, token string) error {
 	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(payloadBytes))
 	if err != nil {
-		log.Fatalf("Failed to create request: %v", err)
+		return fmt.Errorf("create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bot "+cfg.DiscordBotToken)
+	req.Header.Set("Authorization", "Bot "+token)
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatalf("Request failed: %v", err)
+		return fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatalf("Failed to read response body: %v", err)
+		return fmt.Errorf("read response body: %w", err)
 	}
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		fmt.Println("Successfully registered command.")
-	} else {
-		log.Fatalf("Failed to register command: HTTP %d\nBody: %s", resp.StatusCode, string(body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
+	return nil
 }

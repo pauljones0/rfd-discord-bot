@@ -80,9 +80,41 @@ async def fetch(args: argparse.Namespace) -> str:
     try:
         page = await browser.get(args.url)
         await page.sleep(args.wait_seconds)
+        if args.ebay_price_details:
+            clicked = await click_ebay_price_details(page)
+            print(f"ebay_price_details_clicked={clicked}", file=sys.stderr)
+            if clicked:
+                await page.sleep(1.5)
         return await page.get_content()
     finally:
         browser.stop()
+
+
+async def click_ebay_price_details(page) -> bool:
+    script = r"""
+    (() => {
+        const rx = /price\s*details/i;
+        const nodes = Array.from(document.querySelectorAll('button,a,[role="button"]'));
+        const el = nodes.find((node) => {
+            const text = [
+                node.innerText,
+                node.textContent,
+                node.getAttribute('aria-label'),
+                node.getAttribute('title')
+            ].filter(Boolean).join(' ');
+            return rx.test(text);
+        });
+        if (!el) return false;
+        el.scrollIntoView({block: 'center', inline: 'center'});
+        el.click();
+        return true;
+    })()
+    """
+    try:
+        return bool(await page.evaluate(script))
+    except Exception as exc:
+        print(f"price details click failed: {exc}", file=sys.stderr)
+        return False
 
 
 def main() -> int:
@@ -94,6 +126,7 @@ def main() -> int:
     parser.add_argument("--user-agent", default=os.getenv("NODRIVER_USER_AGENT", ""))
     parser.add_argument("--wait-seconds", type=float, default=float(os.getenv("NODRIVER_WAIT_SECONDS", "5")))
     parser.add_argument("--headless", action="store_true", default=truthy(os.getenv("NODRIVER_HEADLESS")))
+    parser.add_argument("--ebay-price-details", action="store_true", help="click eBay's Price details control before returning HTML")
     args = parser.parse_args()
 
     if not args.url:

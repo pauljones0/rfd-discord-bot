@@ -39,8 +39,38 @@ def endpoint_with_token(endpoint: str, token: str) -> str:
     return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
 
 
-def build_query(url: str, wait_ms: float, timeout_ms: float) -> str:
+PRICE_DETAILS_SCRIPT = r"""
+const rx = /price\s*details/i;
+const nodes = Array.from(document.querySelectorAll('button,a,[role="button"]'));
+const el = nodes.find((node) => {
+  const text = [
+    node.innerText,
+    node.textContent,
+    node.getAttribute('aria-label'),
+    node.getAttribute('title')
+  ].filter(Boolean).join(' ');
+  return rx.test(text);
+});
+if (!el) return 'not-found';
+el.scrollIntoView({block: 'center', inline: 'center'});
+el.click();
+return 'clicked';
+"""
+
+
+def build_query(url: str, wait_ms: float, timeout_ms: float, ebay_price_details: bool) -> str:
     url_json = json.dumps(url)
+    price_details_block = ""
+    if ebay_price_details:
+        script_json = json.dumps(PRICE_DETAILS_SCRIPT)
+        price_details_block = f"""
+  priceDetails: evaluate(content: {script_json}, timeout: 5000) {{
+    value
+  }}
+  waitAfterPriceDetails: waitForTimeout(time: 1500) {{
+    time
+  }}
+"""
     return f"""
 mutation EbayCouponPageTrial {{
   goto(url: {url_json}, waitUntil: firstMeaningfulPaint, timeout: {timeout_ms}) {{
@@ -49,6 +79,7 @@ mutation EbayCouponPageTrial {{
   waitForTimeout(time: {wait_ms}) {{
     time
   }}
+{price_details_block}
   html {{
     html
   }}
@@ -77,6 +108,7 @@ def main() -> int:
     parser.add_argument("--endpoint", default=os.getenv("BROWSERLESS_BQL_ENDPOINT", DEFAULT_ENDPOINT))
     parser.add_argument("--wait-ms", type=float, default=env_float("BROWSERLESS_WAIT_MS", 5000))
     parser.add_argument("--timeout-ms", type=float, default=env_float("BROWSERLESS_TIMEOUT_MS", 60000))
+    parser.add_argument("--ebay-price-details", action="store_true", help="click eBay's Price details control before returning HTML")
     args = parser.parse_args()
 
     token = os.getenv("BROWSERLESS_TOKEN", "").strip()
@@ -88,7 +120,7 @@ def main() -> int:
         return 2
 
     url = endpoint_with_token(args.endpoint, token)
-    body = json.dumps({"query": build_query(args.url, args.wait_ms, args.timeout_ms)}).encode("utf-8")
+    body = json.dumps({"query": build_query(args.url, args.wait_ms, args.timeout_ms, args.ebay_price_details)}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,

@@ -11,11 +11,19 @@ import (
 )
 
 var (
-	pageCouponFixedRe   = regexp.MustCompile(`(?i)(?:(?:save|get|extra|coupon|discount)\s*(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)|(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)\s*(?:off|coupon|discount|savings))`)
-	pageCouponPercentRe = regexp.MustCompile(`(?i)(?:save|get|extra)?\s*([0-9]{1,2})\s*%\s*off`)
-	pageCouponCapRe     = regexp.MustCompile(`(?i)(?:max(?:imum)?(?: discount)?(?:imum)?(?: of)?|up to)\s*(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)`)
-	pageCouponCodeRe    = regexp.MustCompile(`(?i)(?:code|coupon code|use code|with code)\s*[: ]+\s*([A-Z0-9][A-Z0-9_-]{2,24})`)
-	pageCouponExpiryRe  = regexp.MustCompile(`(?i)(?:ends|expires|valid until|valid through)\s+([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}|\d{1,2}/\d{1,2}/\d{2,4})`)
+	pageCouponFixedRe               = regexp.MustCompile(`(?i)(?:(?:save|get|extra|coupon|discount)\s*(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)|(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)\s*(?:off|coupon|discount|savings))`)
+	pageCouponPercentRe             = regexp.MustCompile(`(?i)(?:save|get|extra)?\s*([0-9]{1,2})\s*%\s*off`)
+	pageCouponCapRe                 = regexp.MustCompile(`(?i)(?:max(?:imum)?(?: discount)?(?:imum)?(?: of)?|up to)\s*(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{2})?)`)
+	pageCouponCodeRe                = regexp.MustCompile(`(?i)(?:code|coupon code|use code|with code)\s*[: ]+\s*([A-Z0-9][A-Z0-9_-]{2,24})`)
+	priceDetailsBareCodeRe          = regexp.MustCompile(`(?i)\b(?:coupon|promo(?:tion)?)\s+([A-Z0-9][A-Z0-9_-]{3,24})\b`)
+	pageCouponExpiryRe              = regexp.MustCompile(`(?i)(?:ends|expires|valid until|valid through)\s+([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}|\d{1,2}/\d{1,2}/\d{2,4})`)
+	priceDetailsMarkerRe            = regexp.MustCompile(`(?i)\b(price\s+details|item\s+price|order\s+total|subtotal|seller\s+coupon|store\s+coupon|coupon\s+savings)\b`)
+	priceDetailsNegativeDiscountRe  = regexp.MustCompile(`(?i)\b((?:seller\s+|store\s+)?(?:coupon|coupons?|promo(?:tion)?|discount|savings)[^$]{0,90}?[-−]\s*(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?))`)
+	priceDetailsCouponLabelAmountRe = regexp.MustCompile(`(?i)\b((?:seller\s+|store\s+)?(?:coupon|coupons?|promo(?:tion)?)[^$]{0,90}?(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?))`)
+	priceDetailsAmountCouponLabelRe = regexp.MustCompile(`(?i)((?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)[^a-zA-Z0-9]{0,12}(?:seller\s+|store\s+)?(?:coupon|coupons?|promo(?:tion)?|savings))`)
+	priceDetailsFormulaHintRe       = regexp.MustCompile(`(?i)(\d{1,2}(?:\.\d{1,2})?)\s*%\s*off|(?:c\$|ca\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*off`)
+	priceDetailsSignatureCleanupRe  = regexp.MustCompile(`(?i)(?:[-−]?\s*)?(?:c\$|ca\$|\$)\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?`)
+	priceDetailsSignatureNonWordRe  = regexp.MustCompile(`[^a-z0-9%$]+`)
 )
 
 // PageCoupon is a buyer-visible coupon discovered from an eBay listing page.
@@ -51,6 +59,10 @@ func ExtractPageCoupon(html string, basePrice float64) PageCoupon {
 	normalized := strings.Join(strings.Fields(text), " ")
 	if normalized == "" {
 		return PageCoupon{}
+	}
+
+	if coupon := extractPriceDetailsCoupon(normalized, basePrice); coupon.DiscountAmount > 0 {
+		return coupon
 	}
 
 	best := PageCoupon{}
@@ -102,6 +114,166 @@ func ExtractPageCoupon(html string, basePrice float64) PageCoupon {
 	return best
 }
 
+type priceDetailsDiscount struct {
+	amount float64
+	label  string
+	start  int
+	end    int
+}
+
+func extractPriceDetailsCoupon(text string, basePrice float64) PageCoupon {
+	if !priceDetailsMarkerRe.MatchString(text) {
+		return PageCoupon{}
+	}
+
+	var discounts []priceDetailsDiscount
+	for _, re := range []*regexp.Regexp{
+		priceDetailsNegativeDiscountRe,
+		priceDetailsCouponLabelAmountRe,
+		priceDetailsAmountCouponLabelRe,
+	} {
+		for _, match := range re.FindAllStringSubmatchIndex(text, -1) {
+			if len(match) < 6 {
+				continue
+			}
+			raw := text[match[2]:match[3]]
+			amount := parseCouponAmount(text[match[4]:match[5]])
+			if amount <= 0 {
+				continue
+			}
+			if basePrice > 0 && amount >= basePrice {
+				continue
+			}
+			discounts = appendPriceDetailsDiscount(discounts, priceDetailsDiscount{
+				amount: amount,
+				label:  cleanPriceDetailsLabel(raw),
+				start:  match[0],
+				end:    match[1],
+			})
+		}
+	}
+	if len(discounts) == 0 {
+		return PageCoupon{}
+	}
+
+	var total float64
+	var labels []string
+	for _, discount := range discounts {
+		total += discount.amount
+		if discount.label != "" {
+			labels = append(labels, discount.label)
+		}
+	}
+	total = roundCents(total)
+	if total <= 0 || (basePrice > 0 && total >= basePrice) {
+		return PageCoupon{}
+	}
+
+	message := strings.Join(uniqueStrings(labels), "; ")
+	if message == "" {
+		message = "Price details coupon savings"
+	}
+	if hint := priceDetailsFormulaHintRe.FindString(text); hint != "" && !strings.Contains(strings.ToLower(message), strings.ToLower(hint)) {
+		message = strings.TrimSpace(message + " (" + hint + ")")
+	}
+	anchor := message
+	if len(labels) > 0 {
+		anchor = labels[0]
+	}
+
+	coupon := PageCoupon{
+		DiscountAmount: total,
+		DiscountType:   "fixed",
+		DiscountValue:  total,
+		Message:        message,
+		EvidenceText:   couponEvidenceWindow(text, anchor),
+		ExpiresAt:      parseCouponExpiry(text),
+		Scope:          inferCouponScope(text),
+		Confidence:     0.86,
+	}
+	if codeMatch := pageCouponCodeRe.FindStringSubmatch(text); len(codeMatch) >= 2 {
+		coupon.Code = normalizeCouponCode(codeMatch[1])
+		if coupon.Code != "" {
+			coupon.Confidence += 0.04
+		}
+	} else if codeMatch := priceDetailsBareCodeRe.FindStringSubmatch(message); len(codeMatch) >= 2 {
+		coupon.Code = normalizeCouponCode(codeMatch[1])
+		if coupon.Code != "" {
+			coupon.Confidence += 0.04
+		}
+	}
+	if coupon.Scope == "store" {
+		coupon.Confidence += 0.05
+	}
+	if coupon.Confidence > 0.95 {
+		coupon.Confidence = 0.95
+	}
+	coupon.Signature = priceDetailsSignature(coupon, labels)
+	return coupon
+}
+
+func appendPriceDetailsDiscount(discounts []priceDetailsDiscount, candidate priceDetailsDiscount) []priceDetailsDiscount {
+	for _, existing := range discounts {
+		overlaps := candidate.start < existing.end && existing.start < candidate.end
+		sameNearAmount := existing.amount == candidate.amount && absInt(existing.start-candidate.start) < 40
+		if overlaps || sameNearAmount {
+			return discounts
+		}
+	}
+	return append(discounts, candidate)
+}
+
+func cleanPriceDetailsLabel(raw string) string {
+	label := priceDetailsSignatureCleanupRe.ReplaceAllString(raw, "")
+	label = strings.Join(strings.Fields(label), " ")
+	label = strings.Trim(label, " :-•|")
+	if len(label) > 80 {
+		label = strings.TrimSpace(label[:80])
+	}
+	return label
+}
+
+func priceDetailsSignature(coupon PageCoupon, labels []string) string {
+	if coupon.Code != "" {
+		return "price-details|" + strings.ToLower(coupon.Code)
+	}
+	parts := make([]string, 0, len(labels))
+	for _, label := range uniqueStrings(labels) {
+		label = strings.ToLower(priceDetailsSignatureCleanupRe.ReplaceAllString(label, ""))
+		label = priceDetailsSignatureNonWordRe.ReplaceAllString(label, "-")
+		label = strings.Trim(label, "-")
+		if label != "" {
+			parts = append(parts, label)
+		}
+	}
+	if len(parts) == 0 {
+		return "price-details|coupon"
+	}
+	return "price-details|" + strings.Join(parts, "|")
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		key := strings.ToLower(value)
+		if value == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
 func couponEvidenceWindow(text, anchor string) string {
 	if strings.TrimSpace(anchor) == "" {
 		return text
@@ -128,7 +300,7 @@ func normalizeCouponCode(raw string) string {
 	code = strings.TrimSuffix(code, "SEE")
 	code = strings.TrimSuffix(code, "DETAILS")
 	switch code {
-	case "", "AND", "THE", "USE", "CODE", "OFF", "SAVE", "GET", "WITH", "COUPON":
+	case "", "AND", "THE", "USE", "CODE", "OFF", "SAVE", "GET", "WITH", "COUPON", "SAVINGS", "PRICE", "DETAIL", "DETAILS":
 		return ""
 	default:
 		return code

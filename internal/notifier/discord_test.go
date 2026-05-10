@@ -696,6 +696,30 @@ func TestFormatEbayEmbed_MarketplaceFallbackFromItemURL(t *testing.T) {
 	}
 }
 
+func TestFormatEbayEmbed_CouponIsQuiet(t *testing.T) {
+	item := ebay.EbayItem{
+		Title:          "Dell Latitude",
+		CurrentPrice:   180,
+		PreviousPrice:  240,
+		PriceDrop:      60,
+		PercentDrop:    25,
+		CouponDiscount: 20,
+		CouponCode:     "SAVE20",
+		CouponSource:   "page:paid-trial",
+		Currency:       "CAD",
+		ItemURL:        "https://www.ebay.ca/itm/123456789012",
+	}
+
+	embed := formatEbayEmbed(item)
+
+	if !strings.Contains(embed.Description, "coupon included") {
+		t.Fatalf("Description = %q, expected compact coupon marker", embed.Description)
+	}
+	if strings.Contains(embed.Description, "SAVE20") || strings.Contains(embed.Description, "page:") || strings.Contains(embed.Description, "after C$20.00 coupon") {
+		t.Fatalf("Description = %q, coupon details should stay out of the compact embed", embed.Description)
+	}
+}
+
 func TestOrdinal(t *testing.T) {
 	tests := map[int]string{
 		1:  "1st",

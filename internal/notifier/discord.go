@@ -608,13 +608,7 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		if descBuilder.Len() > 0 {
 			descBuilder.WriteString("  •  ")
 		}
-		descBuilder.WriteString(fmt.Sprintf("after %s coupon", formatEbayMoney(item.CouponDiscount, item.Currency)))
-		if item.CouponCode != "" {
-			descBuilder.WriteString(fmt.Sprintf(" `%s`", item.CouponCode))
-		}
-		if strings.HasPrefix(item.CouponSource, "page:") {
-			descBuilder.WriteString(" (page)")
-		}
+		descBuilder.WriteString("coupon included")
 	}
 
 	var meta []string

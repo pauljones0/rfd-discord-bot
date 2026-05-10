@@ -298,6 +298,12 @@ func (h *Handler) handleCommand(w http.ResponseWriter, req interactionRequest) {
 		return
 	}
 
+	subcommand := ""
+	if len(req.Data.Options) > 0 {
+		subcommand = req.Data.Options[0].Name
+	}
+	slog.Info("Discord application command received", "command", req.Data.Name, "subcommand", subcommand, "guild", req.GuildID)
+
 	switch req.Data.Name {
 	case "deals":
 		h.handleDealsCommand(w, req)
