@@ -292,6 +292,18 @@ func isFuzzyDealMatch(tokensA, tokensB []string) bool {
 	return calculateSimilarity(tokensA, tokensB) >= 0.75
 }
 
+func retailersCompatible(left, right string) bool {
+	left = normalizeRetailerForDedupe(left)
+	right = normalizeRetailerForDedupe(right)
+	return left == "" || right == "" || left == right
+}
+
+func normalizeRetailerForDedupe(retailer string) string {
+	retailer = strings.ToLower(strings.TrimSpace(retailer))
+	retailer = strings.Join(strings.Fields(retailer), " ")
+	return retailer
+}
+
 // deduplicateDeals merges valid scraped deals with existing recent deals or other scraped deals.
 func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, recentDeals []models.DealInfo, logger *slog.Logger) []models.DealInfo {
 	var dedupedScraped []models.DealInfo
@@ -343,7 +355,7 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 			}
 
 			// Fuzzy Match
-			if isFuzzyDealMatch(dealA.SearchTokens, rDeal.SearchTokens) {
+			if retailersCompatible(dealA.Retailer, rDeal.Retailer) && isFuzzyDealMatch(dealA.SearchTokens, rDeal.SearchTokens) {
 				matchedExisting = rDeal
 				break
 			}
@@ -375,7 +387,7 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 			if sameCanonicalDealURL(dealA.ActualDealURL, dealB.ActualDealURL) {
 				isMatch = true
 			} else {
-				if isFuzzyDealMatch(dealA.SearchTokens, dealB.SearchTokens) {
+				if retailersCompatible(dealA.Retailer, dealB.Retailer) && isFuzzyDealMatch(dealA.SearchTokens, dealB.SearchTokens) {
 					isMatch = true
 				}
 			}

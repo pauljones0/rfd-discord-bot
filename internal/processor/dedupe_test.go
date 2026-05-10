@@ -115,12 +115,14 @@ func TestDeduplicateDeals_DoesNotFuzzyMatchUnrelatedDeals(t *testing.T) {
 			DocumentID:    "burger-post",
 			Title:         "All burgers 50% off for Mother's Day (Markham, ON)",
 			ActualDealURL: "http://www.6ixburgers.com",
+			Retailer:      "6ix Burgers",
 		},
 	}
 	scrapedDeals := []models.DealInfo{
 		{
 			DocumentID: "iniu-post",
 			Title:      "INIU Power Bank Ultra Slim 10000mah - Green - $10",
+			Retailer:   "Amazon.caAmazon.ca",
 		},
 	}
 
