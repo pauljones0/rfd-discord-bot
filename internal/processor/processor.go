@@ -433,6 +433,12 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		changed = true
 		// Merge changes into existing
 		existing.Title = scrapedBase.Title
+		existing.PostURL = scrapedBase.PostURL
+		existing.Retailer = scrapedBase.Retailer
+		existing.Category = scrapedBase.Category
+		existing.Price = scrapedBase.Price
+		existing.OriginalPrice = scrapedBase.OriginalPrice
+		existing.Savings = scrapedBase.Savings
 		existing.ThreadImageURL = scrapedBase.ThreadImageURL
 		existing.PublishedTimestamp = scrapedBase.PublishedTimestamp
 		existing.ActualDealURL = scrapedBase.ActualDealURL
@@ -576,6 +582,24 @@ func scrapeWasRemappedFromAnotherDocument(scraped models.DealInfo, documentID st
 }
 
 func preserveExistingDetails(scraped *models.DealInfo, existing *models.DealInfo) {
+	if scraped.PostURL == "" {
+		scraped.PostURL = existing.PostURL
+	}
+	if scraped.Retailer == "" {
+		scraped.Retailer = existing.Retailer
+	}
+	if scraped.Category == "" {
+		scraped.Category = existing.Category
+	}
+	if scraped.Price == "" {
+		scraped.Price = existing.Price
+	}
+	if scraped.OriginalPrice == "" {
+		scraped.OriginalPrice = existing.OriginalPrice
+	}
+	if scraped.Savings == "" {
+		scraped.Savings = existing.Savings
+	}
 	if existing.ActualDealURL != "" && (scraped.ActualDealURL == "" || sameCanonicalDealURL(existing.ActualDealURL, scraped.ActualDealURL)) {
 		scraped.ActualDealURL = existing.ActualDealURL
 	}
@@ -597,6 +621,24 @@ func preserveExistingDetails(scraped *models.DealInfo, existing *models.DealInfo
 }
 
 func fillMissingDetails(base *models.DealInfo, candidate models.DealInfo) {
+	if base.PostURL == "" {
+		base.PostURL = candidate.PostURL
+	}
+	if base.Retailer == "" {
+		base.Retailer = candidate.Retailer
+	}
+	if base.Category == "" {
+		base.Category = candidate.Category
+	}
+	if base.Price == "" {
+		base.Price = candidate.Price
+	}
+	if base.OriginalPrice == "" {
+		base.OriginalPrice = candidate.OriginalPrice
+	}
+	if base.Savings == "" {
+		base.Savings = candidate.Savings
+	}
 	if base.ActualDealURL == "" {
 		base.ActualDealURL = candidate.ActualDealURL
 	}
@@ -624,6 +666,12 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 		actualURLChanged = false
 	}
 	return existing.Title != scraped.Title ||
+		existing.PostURL != scraped.PostURL ||
+		existing.Retailer != scraped.Retailer ||
+		existing.Category != scraped.Category ||
+		existing.Price != scraped.Price ||
+		existing.OriginalPrice != scraped.OriginalPrice ||
+		existing.Savings != scraped.Savings ||
 		existing.ThreadImageURL != scraped.ThreadImageURL ||
 		actualURLChanged
 }

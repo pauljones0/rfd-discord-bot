@@ -746,6 +746,57 @@ func TestProcessExistingDeal_SameThreadTitleEditPreservesExistingLinkWhenDetailM
 	}
 }
 
+func TestProcessExistingDeal_CorrectsStoredRetailerMetadata(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+	existing := &models.DealInfo{
+		DocumentID:         "same-thread",
+		Title:              "INIU Power Bank",
+		PostURL:            "https://forums.redflagdeals.com/bad-slug-111111",
+		Retailer:           "Amazon.caAmazon.ca",
+		Category:           "Old Category",
+		Price:              "$11.00",
+		PublishedTimestamp: testTime1,
+		ActualDealURL:      "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20",
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/bad-slug-111111", LikeCount: 10},
+		},
+	}
+	scrapedDuplicates := []models.DealInfo{
+		{
+			DocumentID:         "same-thread",
+			Title:              "INIU Power Bank",
+			PostURL:            "https://forums.redflagdeals.com/good-slug-111111",
+			Retailer:           "Amazon.ca",
+			Category:           "Computers & Electronics",
+			Price:              "$10.19",
+			PublishedTimestamp: testTime1,
+			ActualDealURL:      "https://www.amazon.ca/dp/B0DFLGW8MF?tag=beauahrens0d-20",
+			Threads: []models.ThreadContext{
+				{DocumentID: "same-thread", PostURL: "https://forums.redflagdeals.com/good-slug-111111", LikeCount: 10},
+			},
+		},
+	}
+	var updates []models.DealInfo
+	if err := p.processExistingDeal(context.Background(), existing, scrapedDuplicates, &updates, nil); err != nil {
+		t.Fatalf("processExistingDeal returned error: %v", err)
+	}
+	if existing.Retailer != "Amazon.ca" {
+		t.Fatalf("Retailer = %q, want Amazon.ca", existing.Retailer)
+	}
+	if existing.Category != "Computers & Electronics" {
+		t.Fatalf("Category = %q, want Computers & Electronics", existing.Category)
+	}
+	if existing.Price != "$10.19" {
+		t.Fatalf("Price = %q, want $10.19", existing.Price)
+	}
+	if existing.PostURL != "https://forums.redflagdeals.com/good-slug-111111" {
+		t.Fatalf("PostURL = %q, want corrected slug", existing.PostURL)
+	}
+	if len(updates) != 1 {
+		t.Fatalf("expected corrected metadata to be persisted, got %d updates", len(updates))
+	}
+}
+
 // --- threadKey tests ---
 
 func TestThreadKey_RFDSlugVariants(t *testing.T) {

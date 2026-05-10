@@ -186,19 +186,16 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 	// Retailer (Store)
 	retailerSel := s.Find(elems.Retailer)
 	if retailerSel.Length() > 0 {
-		retailer := strings.TrimSpace(retailerSel.First().Text())
-		// Clean up "at " prefix
-		retailer = strings.TrimPrefix(retailer, "at ")
-		deal.Retailer = strings.TrimSpace(retailer)
+		deal.Retailer = cleanRetailerName(retailerSel.First().Text())
 	}
 	if deal.Retailer == "" {
 		if retailerAttr, exists := s.Attr("data-dealer-name"); exists {
-			deal.Retailer = strings.TrimSpace(retailerAttr)
+			deal.Retailer = cleanRetailerName(retailerAttr)
 		}
 	}
 	if deal.Retailer == "" {
 		if retailerAttr, exists := s.Find("[data-dealer-name]").First().Attr("data-dealer-name"); exists {
-			deal.Retailer = strings.TrimSpace(retailerAttr)
+			deal.Retailer = cleanRetailerName(retailerAttr)
 		}
 	}
 
@@ -457,19 +454,19 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (deal
 
 	// Extract Retailer and Category
 	if badge := doc.Find(".retailer_badge"); badge.Length() > 0 {
-		retailer = strings.TrimSpace(badge.Text())
+		retailer = cleanRetailerName(badge.First().Text())
 	}
 	if retailer == "" {
 		doc.Find("dt").Each(func(i int, s *goquery.Selection) {
 			if strings.TrimSpace(s.Text()) == "Retailer:" {
-				retailer = strings.TrimSpace(s.Next().Text())
+				retailer = cleanRetailerName(s.Next().Text())
 			}
 		})
 	}
 
 	// JSON-LD Fallback for Retailer
 	if retailer == "" && ldRetailer != "" {
-		retailer = ldRetailer
+		retailer = cleanRetailerName(ldRetailer)
 	}
 
 	// Extract Category
@@ -498,6 +495,43 @@ func (c *Client) scrapeDealDetailPage(ctx context.Context, dealURL string) (deal
 		Retailer:      retailer,
 		Category:      category,
 	}, nil
+}
+
+func cleanRetailerName(raw string) string {
+	retailer := strings.TrimSpace(raw)
+	retailer = strings.Join(strings.Fields(retailer), " ")
+	for {
+		if !strings.HasPrefix(strings.ToLower(retailer), "at ") {
+			break
+		}
+		retailer = strings.TrimSpace(retailer[3:])
+	}
+	return collapseRepeatedRetailer(retailer)
+}
+
+func collapseRepeatedRetailer(retailer string) string {
+	if retailer == "" {
+		return ""
+	}
+
+	if len(retailer)%2 == 0 {
+		half := len(retailer) / 2
+		if strings.EqualFold(retailer[:half], retailer[half:]) {
+			return strings.TrimSpace(retailer[:half])
+		}
+	}
+
+	parts := strings.Fields(retailer)
+	if len(parts)%2 == 0 {
+		half := len(parts) / 2
+		left := strings.Join(parts[:half], " ")
+		right := strings.Join(parts[half:], " ")
+		if strings.EqualFold(left, right) {
+			return left
+		}
+	}
+
+	return retailer
 }
 
 // cleanHTMLText allows stripping HTML tags from a string.

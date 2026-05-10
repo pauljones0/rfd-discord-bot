@@ -532,6 +532,55 @@ func TestParseDealFromSelection_RetailerCleanup(t *testing.T) {
 	}
 }
 
+func TestParseDealFromSelection_CollapsesRepeatedRetailerText(t *testing.T) {
+	html := `
+	<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal">
+			<div class="pill thread_dealer">Amazon.caAmazon.ca</div>
+			<h3 class="thread_title">Title</h3>
+		</a>
+	</li>`
+	doc, _ := goquery.NewDocumentFromReader(strings.NewReader(html))
+
+	defaults := DefaultSelectors()
+	c := &Client{
+		selectors: defaults,
+		config: &config.Config{
+			RFDBaseURL: "https://forums.redflagdeals.com",
+		},
+	}
+	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
+
+	if deal.Retailer != "Amazon.ca" {
+		t.Errorf("Retailer = %q, want %q", deal.Retailer, "Amazon.ca")
+	}
+}
+
+func TestScrapeDealDetailPage_CollapsesRepeatedRetailerText(t *testing.T) {
+	html := `<!DOCTYPE html><html><body>
+		<a class="retailer_badge">Amazon.caAmazon.ca</a>
+		<h1 class="thread_title">Deal</h1>
+	</body></html>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if detail.Retailer != "Amazon.ca" {
+		t.Errorf("Retailer = %q, want %q", detail.Retailer, "Amazon.ca")
+	}
+}
+
 func TestScrapeDealDetailPage_JSONLDFallback(t *testing.T) {
 	html := getMockSnippetHTML(t, "json-ld-fallback")
 
