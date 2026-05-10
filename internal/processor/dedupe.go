@@ -295,7 +295,7 @@ func isFuzzyDealMatch(tokensA, tokensB []string) bool {
 func retailersCompatible(left, right string) bool {
 	left = normalizeRetailerForDedupe(left)
 	right = normalizeRetailerForDedupe(right)
-	return left == "" || right == "" || left == right
+	return left != "" && right != "" && left == right
 }
 
 func normalizeRetailerForDedupe(retailer string) string {

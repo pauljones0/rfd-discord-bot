@@ -147,6 +147,7 @@ func TestDeduplicateDeals_ScrapedWithExisting(t *testing.T) {
 			DocumentID:    "existing-1",
 			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
 			ActualDealURL: "https://samsung.com/ca/s24",
+			Retailer:      "Samsung",
 			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
 		},
 	}
@@ -156,12 +157,14 @@ func TestDeduplicateDeals_ScrapedWithExisting(t *testing.T) {
 			DocumentID:    "scraped-new-id-1",
 			Title:         "[Samsung] Galaxy S24 Ultra 512gb (Price Drop)",
 			ActualDealURL: "https://samsung.com/ca/s24",
+			Retailer:      "Samsung",
 			Threads:       []models.ThreadContext{{PostURL: "url1"}},
 		},
 		{
 			DocumentID:    "scraped-new-id-2", // different URL, but very similar title
 			Title:         "Galaxy S24 Ultra 512GB - $1099 (SPC/Perkopolis)",
 			ActualDealURL: "",
+			Retailer:      "Samsung",
 			Threads:       []models.ThreadContext{{PostURL: "url2"}},
 		},
 	}
