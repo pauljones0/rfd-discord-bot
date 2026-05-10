@@ -1,0 +1,10 @@
+[Unit]
+Description=RFD Discord Bot health watchdog
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User=paul
+WorkingDirectory=/home/paul/rfd-discord-bot/deploy/stormtrooper
+ExecStart=/home/paul/rfd-discord-bot/deploy/stormtrooper/rfd-bot-watchdog.sh

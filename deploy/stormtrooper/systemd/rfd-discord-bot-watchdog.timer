@@ -1,0 +1,11 @@
+[Unit]
+Description=Run RFD Discord Bot health watchdog every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=rfd-discord-bot-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -74,6 +74,18 @@ Healthy production should report:
 Scheduler logs should mention only these active loops unless a feature is
 explicitly re-enabled:
 
+The Compose project is explicitly named `rfd-discord-bot` to avoid collisions
+with other Stormtrooper stacks. Keep the watchdog timer enabled so Docker
+containers that are stopped or removed by a bad Compose run are brought back:
+
+```bash
+sudo cp deploy/stormtrooper/systemd/rfd-discord-bot-watchdog.* /etc/systemd/system/
+chmod +x deploy/stormtrooper/rfd-bot-watchdog.sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now rfd-discord-bot-watchdog.timer
+systemctl list-timers rfd-discord-bot-watchdog.timer
+```
+
 - RFD
 - eBay
 - Memory Express

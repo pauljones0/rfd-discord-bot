@@ -1,3 +1,5 @@
+name: rfd-discord-bot
+
 services:
   postgres:
     image: postgres:17-alpine

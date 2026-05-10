@@ -201,6 +201,18 @@ docker compose -f deploy/stormtrooper/docker-compose.yml logs --tail=200 bot
 curl -s http://127.0.0.1:18080/health
 ```
 
+The Compose file pins the project name to `rfd-discord-bot` so other stacks in
+directories named `stormtrooper` cannot replace its `postgres` service. Install
+the watchdog timer after deploys so missing/stopped containers are reconciled
+automatically:
+
+```bash
+sudo cp deploy/stormtrooper/systemd/rfd-discord-bot-watchdog.* /etc/systemd/system/
+chmod +x deploy/stormtrooper/rfd-bot-watchdog.sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now rfd-discord-bot-watchdog.timer
+```
+
 ## Repository Hygiene
 
 Do not commit:
