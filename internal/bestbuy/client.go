@@ -28,6 +28,9 @@ const (
 	defaultAlgoliaAppID   = "NSQ22WGR1E"
 	defaultAlgoliaAPIKey  = "e24267dce0d612e5641fdc4949dd9c7c"
 	defaultAlgoliaIndexEN = "prod_products_en"
+
+	algoliaIndexTimestampMinParam = "_indexTimestampMin"
+	recentIndexSweepWindow        = 48 * time.Hour
 )
 
 // searchResponse is the top-level JSON returned by the Best Buy search API.
@@ -41,19 +44,22 @@ type searchResponse struct {
 
 // apiProduct maps the fields we care about from the search API product JSON.
 type apiProduct struct {
-	SKU            string  `json:"sku"`
-	Name           string  `json:"name"`
-	ProductURL     string  `json:"productUrl"`
-	ThumbnailImage string  `json:"thumbnailImage"`
-	RegularPrice   float64 `json:"regularPrice"`
-	SalePrice      float64 `json:"salePrice"`
-	SaleEndDate    string  `json:"saleEndDate"`
-	CategoryName   string  `json:"categoryName"`
-	SellerID       string  `json:"sellerId"`
-	Seller         string  `json:"seller"`
-	CustomerRating float64 `json:"customerRating"`
-	IsMarketplace  bool    `json:"isMarketplace"`
-	IsClearance    bool    `json:"isClearance"`
+	SKU             string  `json:"sku"`
+	Name            string  `json:"name"`
+	ProductURL      string  `json:"productUrl"`
+	ThumbnailImage  string  `json:"thumbnailImage"`
+	RegularPrice    float64 `json:"regularPrice"`
+	SalePrice       float64 `json:"salePrice"`
+	SaleEndDate     string  `json:"saleEndDate"`
+	CategoryName    string  `json:"categoryName"`
+	SellerID        string  `json:"sellerId"`
+	Seller          string  `json:"seller"`
+	CustomerRating  float64 `json:"customerRating"`
+	IsMarketplace   bool    `json:"isMarketplace"`
+	IsClearance     bool    `json:"isClearance"`
+	LastIndex       string  `json:"lastIndex"`
+	IndexTimestamp  int64   `json:"indexTimestamp"`
+	SearchStartDate int64   `json:"searchStartDate"`
 }
 
 type algoliaResponse struct {
@@ -73,6 +79,9 @@ type algoliaHit struct {
 	SeoText           string `json:"seoText"`
 	Clearance         bool   `json:"clearance"`
 	InStock           bool   `json:"inStock"`
+	LastIndex         string `json:"lastIndex"`
+	IndexTimestamp    int64  `json:"indexTimestamp"`
+	SearchStartDate   int64  `json:"searchStartDate"`
 	PreorderStartDate string `json:"preorderStartDate"`
 	Seller            struct {
 		SellerID    string `json:"sellerId"`
@@ -120,8 +129,27 @@ func (c *Client) FetchSellerProducts(ctx context.Context, seller Seller) ([]Prod
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch seller %s products: %w", seller.Name, err)
 	}
+	c.tagSellerProducts(products, seller)
 
-	// Tag the seller ID since the API might not always return it
+	if c.hasBackend(BackendAlgolia) {
+		recent, err := c.fetchRecentlyIndexedSellerProducts(ctx, params, seller)
+		if err != nil {
+			slog.Warn("Best Buy recent index sweep failed",
+				"processor", "bestbuy",
+				"seller", seller.Name,
+				"sellerID", seller.ID,
+				"error", err,
+			)
+		} else if len(recent) > 0 {
+			c.tagSellerProducts(recent, seller)
+			products = mergeSellerProducts(products, recent)
+		}
+	}
+
+	return products, nil
+}
+
+func (c *Client) tagSellerProducts(products []Product, seller Seller) {
 	for i := range products {
 		if products[i].SellerID == "" {
 			products[i].SellerID = seller.ID
@@ -133,8 +161,6 @@ func (c *Client) FetchSellerProducts(ctx context.Context, seller Seller) ([]Prod
 			products[i].Source = "seller:" + seller.ID
 		}
 	}
-
-	return products, nil
 }
 
 // FetchOpenBoxProducts fetches Geek Squad Certified Open Box products via keyword search.
@@ -207,6 +233,62 @@ func (c *Client) fetchAllPages(ctx context.Context, baseParams url.Values, sourc
 			"totalProducts", resp.Total,
 		)
 
+		if page >= resp.TotalPages {
+			break
+		}
+	}
+
+	return allProducts, nil
+}
+
+func (c *Client) fetchRecentlyIndexedSellerProducts(ctx context.Context, baseParams url.Values, seller Seller) ([]Product, error) {
+	params := url.Values{}
+	for k, v := range baseParams {
+		params[k] = append([]string(nil), v...)
+	}
+	params.Set(algoliaIndexTimestampMinParam, strconv.FormatInt(time.Now().Add(-recentIndexSweepWindow).UnixMilli(), 10))
+
+	products, err := c.fetchAlgoliaPages(ctx, params, "marketplace")
+	if err != nil {
+		return nil, err
+	}
+	if len(products) > 0 {
+		slog.Info("Best Buy recent index sweep fetched products",
+			"processor", "bestbuy",
+			"seller", seller.Name,
+			"count", len(products),
+			"window", recentIndexSweepWindow.String(),
+		)
+	}
+	return products, nil
+}
+
+func (c *Client) fetchAlgoliaPages(ctx context.Context, baseParams url.Values, source string) ([]Product, error) {
+	var allProducts []Product
+
+	for page := 1; page <= maxPages; page++ {
+		if ctx.Err() != nil {
+			return allProducts, ctx.Err()
+		}
+		if page > 1 {
+			select {
+			case <-ctx.Done():
+				return allProducts, ctx.Err()
+			case <-time.After(1500 * time.Millisecond):
+			}
+		}
+
+		params := url.Values{}
+		for k, v := range baseParams {
+			params[k] = append([]string(nil), v...)
+		}
+		params.Set("page", fmt.Sprintf("%d", page))
+
+		resp, err := c.doAlgoliaSearch(ctx, params)
+		if err != nil {
+			return allProducts, fmt.Errorf("page %d: %w", page, err)
+		}
+		allProducts = append(allProducts, convertProducts(resp.Products, source)...)
 		if page >= resp.TotalPages {
 			break
 		}
@@ -297,6 +379,9 @@ func (c *Client) doAlgoliaSearch(ctx context.Context, params url.Values) (*searc
 		}
 		algoliaParams.Set("facetFilters", string(encodedFacet))
 	}
+	if minIndexTimestamp := strings.TrimSpace(params.Get(algoliaIndexTimestampMinParam)); minIndexTimestamp != "" {
+		algoliaParams.Set("filters", "indexTimestamp >= "+minIndexTimestamp)
+	}
 
 	body, err := json.Marshal(map[string]string{"params": algoliaParams.Encode()})
 	if err != nil {
@@ -368,18 +453,21 @@ func algoliaSearchResponse(resp algoliaResponse) *searchResponse {
 
 		imageURL := firstNonEmpty(hit.ImageURL, hit.HighResImageURL)
 		products = append(products, apiProduct{
-			SKU:            sku,
-			Name:           hit.Title,
-			ProductURL:     bestBuyProductURL(hit, sku),
-			ThumbnailImage: imageURL,
-			RegularPrice:   regularPrice,
-			SalePrice:      currentPrice,
-			CategoryName:   hit.CategoryName,
-			SellerID:       hit.Seller.SellerID,
-			Seller:         hit.Seller.SellerName,
-			CustomerRating: hit.Rating.CustomerRating,
-			IsMarketplace:  hit.Seller.Marketplace,
-			IsClearance:    hit.Clearance,
+			SKU:             sku,
+			Name:            hit.Title,
+			ProductURL:      bestBuyProductURL(hit, sku),
+			ThumbnailImage:  imageURL,
+			RegularPrice:    regularPrice,
+			SalePrice:       currentPrice,
+			CategoryName:    hit.CategoryName,
+			SellerID:        hit.Seller.SellerID,
+			Seller:          hit.Seller.SellerName,
+			CustomerRating:  hit.Rating.CustomerRating,
+			IsMarketplace:   hit.Seller.Marketplace,
+			IsClearance:     hit.Clearance,
+			LastIndex:       hit.LastIndex,
+			IndexTimestamp:  hit.IndexTimestamp,
+			SearchStartDate: hit.SearchStartDate,
 		})
 	}
 
@@ -390,6 +478,83 @@ func algoliaSearchResponse(resp algoliaResponse) *searchResponse {
 		PageSize:    len(products),
 		Products:    products,
 	}
+}
+
+func (c *Client) hasBackend(backend string) bool {
+	for _, candidate := range c.backends {
+		if candidate == backend {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeSellerProducts(products, recent []Product) []Product {
+	merged := make([]Product, 0, len(products)+len(recent))
+	index := make(map[string]int, len(products)+len(recent))
+	add := func(product Product) {
+		key := product.SKU + "|" + product.Source
+		if key == "|" {
+			key = product.Name + "|" + product.URL
+		}
+		if existingIndex, ok := index[key]; ok {
+			merged[existingIndex] = mergeSellerProduct(merged[existingIndex], product)
+			return
+		}
+		index[key] = len(merged)
+		merged = append(merged, product)
+	}
+	for _, product := range products {
+		add(product)
+	}
+	for _, product := range recent {
+		add(product)
+	}
+	return merged
+}
+
+func mergeSellerProduct(existing, incoming Product) Product {
+	merged := existing
+	if incoming.RegularPrice > 0 {
+		merged.RegularPrice = incoming.RegularPrice
+	}
+	if incoming.SalePrice > 0 {
+		merged.SalePrice = incoming.SalePrice
+	}
+	if merged.Name == "" {
+		merged.Name = incoming.Name
+	}
+	if merged.URL == "" {
+		merged.URL = incoming.URL
+	}
+	if merged.ImageURL == "" {
+		merged.ImageURL = incoming.ImageURL
+	}
+	if merged.CategoryName == "" {
+		merged.CategoryName = incoming.CategoryName
+	}
+	if merged.SellerID == "" {
+		merged.SellerID = incoming.SellerID
+	}
+	if merged.SellerName == "" {
+		merged.SellerName = incoming.SellerName
+	}
+	if incoming.CustomerRating > 0 {
+		merged.CustomerRating = incoming.CustomerRating
+	}
+	merged.IsMarketplace = merged.IsMarketplace || incoming.IsMarketplace
+	merged.IsClearance = merged.IsClearance || incoming.IsClearance
+	merged.IsOpenBox = merged.IsOpenBox || incoming.IsOpenBox
+	if incoming.LastIndex != "" {
+		merged.LastIndex = incoming.LastIndex
+	}
+	if incoming.IndexTimestamp > 0 {
+		merged.IndexTimestamp = incoming.IndexTimestamp
+	}
+	if incoming.SearchStartDate > 0 {
+		merged.SearchStartDate = incoming.SearchStartDate
+	}
+	return merged
 }
 
 func bestBuyProductURL(hit algoliaHit, sku string) string {
@@ -468,21 +633,24 @@ func convertProducts(apiProducts []apiProduct, source string) []Product {
 			strings.Contains(strings.ToLower(ap.Name), "geek squad")
 
 		products = append(products, Product{
-			SKU:            ap.SKU,
-			Name:           ap.Name,
-			URL:            productURL,
-			ImageURL:       imageURL,
-			RegularPrice:   ap.RegularPrice,
-			SalePrice:      ap.SalePrice,
-			SaleEndDate:    ap.SaleEndDate,
-			CategoryName:   ap.CategoryName,
-			SellerID:       ap.SellerID,
-			SellerName:     ap.Seller,
-			CustomerRating: ap.CustomerRating,
-			IsMarketplace:  ap.IsMarketplace,
-			IsClearance:    ap.IsClearance,
-			IsOpenBox:      isOpenBox,
-			Source:         source,
+			SKU:             ap.SKU,
+			Name:            ap.Name,
+			URL:             productURL,
+			ImageURL:        imageURL,
+			RegularPrice:    ap.RegularPrice,
+			SalePrice:       ap.SalePrice,
+			SaleEndDate:     ap.SaleEndDate,
+			CategoryName:    ap.CategoryName,
+			SellerID:        ap.SellerID,
+			SellerName:      ap.Seller,
+			CustomerRating:  ap.CustomerRating,
+			IsMarketplace:   ap.IsMarketplace,
+			IsClearance:     ap.IsClearance,
+			IsOpenBox:       isOpenBox,
+			Source:          source,
+			LastIndex:       ap.LastIndex,
+			IndexTimestamp:  ap.IndexTimestamp,
+			SearchStartDate: ap.SearchStartDate,
 		})
 	}
 	return products

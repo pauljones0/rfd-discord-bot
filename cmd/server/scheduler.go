@@ -26,7 +26,7 @@ func (s *Server) StartLocalScheduler(ctx context.Context, cfg *config.Config) {
 		s.startScheduledLoop(ctx, "memoryexpress", cfg.MemoryExpressPollInterval, 2*time.Minute, s.memexpressSem, s.memexpressProcessor.ProcessMemExpressDeals)
 	}
 	if s.bestbuyProcessor != nil {
-		s.startScheduledLoop(ctx, "bestbuy", cfg.BestBuyPollInterval, 3*time.Minute, s.bestbuySem, s.bestbuyProcessor.ProcessBestBuyDeals)
+		s.startScheduledLoop(ctx, "bestbuy", cfg.BestBuyPollInterval, 8*time.Minute, s.bestbuySem, s.bestbuyProcessor.ProcessBestBuyDeals)
 	}
 }
 

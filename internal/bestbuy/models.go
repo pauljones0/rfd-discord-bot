@@ -39,21 +39,24 @@ var DefaultSellers = []Seller{
 
 // Product represents a single product from the Best Buy Canada search API.
 type Product struct {
-	SKU            string  `docstore:"sku"`
-	Name           string  `docstore:"name"`
-	URL            string  `docstore:"url"`
-	ImageURL       string  `docstore:"imageURL,omitempty"`
-	RegularPrice   float64 `docstore:"regularPrice"`
-	SalePrice      float64 `docstore:"salePrice"`
-	SaleEndDate    string  `docstore:"saleEndDate,omitempty"`
-	CategoryName   string  `docstore:"categoryName,omitempty"`
-	SellerID       string  `docstore:"sellerID,omitempty"`
-	SellerName     string  `docstore:"sellerName,omitempty"`
-	CustomerRating float64 `docstore:"customerRating,omitempty"`
-	IsMarketplace  bool    `docstore:"isMarketplace"`
-	IsClearance    bool    `docstore:"isClearance"`
-	IsOpenBox      bool    `docstore:"isOpenBox"`
-	Source         string  `docstore:"source"` // "marketplace" or "openbox"
+	SKU             string  `docstore:"sku"`
+	Name            string  `docstore:"name"`
+	URL             string  `docstore:"url"`
+	ImageURL        string  `docstore:"imageURL,omitempty"`
+	RegularPrice    float64 `docstore:"regularPrice"`
+	SalePrice       float64 `docstore:"salePrice"`
+	SaleEndDate     string  `docstore:"saleEndDate,omitempty"`
+	CategoryName    string  `docstore:"categoryName,omitempty"`
+	SellerID        string  `docstore:"sellerID,omitempty"`
+	SellerName      string  `docstore:"sellerName,omitempty"`
+	CustomerRating  float64 `docstore:"customerRating,omitempty"`
+	IsMarketplace   bool    `docstore:"isMarketplace"`
+	IsClearance     bool    `docstore:"isClearance"`
+	IsOpenBox       bool    `docstore:"isOpenBox"`
+	Source          string  `docstore:"source"` // "marketplace" or "openbox"
+	LastIndex       string  `docstore:"lastIndex,omitempty"`
+	IndexTimestamp  int64   `docstore:"indexTimestamp,omitempty"`
+	SearchStartDate int64   `docstore:"searchStartDate,omitempty"`
 }
 
 // AnalyzedProduct extends Product with AI analysis results and computed fields.

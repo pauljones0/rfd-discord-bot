@@ -475,7 +475,7 @@ func (s *Server) ProcessBestBuyHandler(w http.ResponseWriter, r *http.Request) {
 		successText:   "Best Buy deal processing finished.",
 		busyDetails:   "previous run still active",
 		sem:           s.bestbuySem,
-		timeout:       3 * time.Minute,
+		timeout:       8 * time.Minute,
 		fn:            s.bestbuyProcessor.ProcessBestBuyDeals,
 		logAIState:    true,
 	})

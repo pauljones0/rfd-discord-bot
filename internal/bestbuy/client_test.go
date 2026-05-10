@@ -13,7 +13,9 @@ import (
 func TestFetchSellerProductsWithAlgoliaBackend(t *testing.T) {
 	client := NewClient()
 	client.SetBackends([]string{BackendAlgolia})
+	requests := 0
 	client.httpClient = &http.Client{Transport: bestBuyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
 		if got := req.Header.Get("X-Algolia-Application-Id"); got == "" {
 			t.Fatal("missing Algolia application header")
 		}
@@ -37,6 +39,7 @@ func TestFetchSellerProductsWithAlgoliaBackend(t *testing.T) {
 		if got := params.Get("page"); got != "0" {
 			t.Fatalf("page = %q, want zero-based Algolia page", got)
 		}
+		isRecentSweep := params.Get("filters") != ""
 
 		response := `{
 			"page":0,
@@ -55,6 +58,33 @@ func TestFetchSellerProductsWithAlgoliaBackend(t *testing.T) {
 				"rating":{"customerRating":4.2}
 			}]
 		}`
+		if isRecentSweep {
+			response = `{
+				"page":0,
+				"nbHits":1,
+				"nbPages":1,
+				"hits":[
+					{
+						"objectID":"123456",
+						"sku":"123456",
+						"title":"Refurbished Laptop",
+						"seller":{"sellerId":"591375","sellerName":"Tech Outlet Center","marketplace":true},
+						"price":{"regularPrice":500,"currentPrice":350}
+					},
+					{
+						"objectID":"789012",
+						"sku":"789012",
+						"title":"Newly Indexed Monitor",
+						"seoText":"newly-indexed-monitor",
+						"lastIndex":"2026-05-10T17:23:21Z",
+						"indexTimestamp":1778433804372,
+						"searchStartDate":1770413455000,
+						"seller":{"sellerId":"591375","sellerName":"Tech Outlet Center","marketplace":true},
+						"price":{"regularPrice":300,"currentPrice":200}
+					}
+				]
+			}`
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -71,8 +101,11 @@ func TestFetchSellerProductsWithAlgoliaBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchSellerProducts() error = %v", err)
 	}
-	if len(products) != 1 {
-		t.Fatalf("products = %d, want 1", len(products))
+	if requests != 2 {
+		t.Fatalf("requests = %d, want broad sweep plus recent-index sweep", requests)
+	}
+	if len(products) != 2 {
+		t.Fatalf("products = %d, want 2", len(products))
 	}
 	product := products[0]
 	if product.SKU != "123456" || product.Name != "Refurbished Laptop" {
@@ -89,6 +122,10 @@ func TestFetchSellerProductsWithAlgoliaBackend(t *testing.T) {
 	}
 	if product.Source != "seller:591375" {
 		t.Fatalf("Source = %q", product.Source)
+	}
+	recent := products[1]
+	if recent.SKU != "789012" || recent.IndexTimestamp != 1778433804372 || recent.LastIndex == "" {
+		t.Fatalf("recent sweep product not mapped: %#v", recent)
 	}
 }
 
