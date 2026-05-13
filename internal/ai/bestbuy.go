@@ -57,8 +57,18 @@ func (c *Client) ScreenBestBuyBatch(ctx context.Context, products []bestbuy.Prod
 		if p.Source == "openbox" {
 			source = "Open Box"
 		}
-		itemList.WriteString(fmt.Sprintf("%d. [SKU: %s] \"%s\" — Regular: $%.2f → Sale: $%.2f (%.0f%% off) — Seller: %s — Category: %s — %s\n",
+		itemList.WriteString(fmt.Sprintf("%d. [SKU: %s] \"%s\" — Regular: $%.2f → Sale: $%.2f (%.0f%% off) — Seller: %s — Category: %s — %s",
 			i+1, p.SKU, p.Name, p.RegularPrice, finalPrice, discountPct, p.SellerName, p.CategoryName, source))
+		if p.BrandName != "" || p.ModelNumber != "" || p.PrimaryUPC != "" {
+			itemList.WriteString(fmt.Sprintf(" — Brand/Model/UPC: %s / %s / %s",
+				firstNonEmptyString(p.BrandName, "unknown"),
+				firstNonEmptyString(p.ModelNumber, "unknown"),
+				firstNonEmptyString(p.PrimaryUPC, "unknown")))
+		}
+		if p.ComparableSummary != "" {
+			itemList.WriteString(" — " + p.ComparableSummary)
+		}
+		itemList.WriteString("\n")
 	}
 
 	prompt := fmt.Sprintf(`You are a Canadian tech deal expert analyzing Best Buy Canada marketplace and open-box products.
@@ -200,8 +210,18 @@ func (c *Client) AnalyzeBestBuyBatch(ctx context.Context, products []bestbuy.Pro
 		if finalPrice == 0 {
 			finalPrice = p.RegularPrice
 		}
-		itemList.WriteString(fmt.Sprintf("%d. [SKU: %s] \"%s\" — Category: %s — Regular: $%.2f — Current: $%.2f — %.0f%% off — Seller: %s\n",
+		itemList.WriteString(fmt.Sprintf("%d. [SKU: %s] \"%s\" — Category: %s — Regular: $%.2f — Current: $%.2f — %.0f%% off — Seller: %s",
 			i+1, p.SKU, p.Name, p.CategoryName, p.RegularPrice, finalPrice, discountPct, p.SellerName))
+		if p.BrandName != "" || p.ModelNumber != "" || p.PrimaryUPC != "" {
+			itemList.WriteString(fmt.Sprintf(" — Brand/Model/UPC: %s / %s / %s",
+				firstNonEmptyString(p.BrandName, "unknown"),
+				firstNonEmptyString(p.ModelNumber, "unknown"),
+				firstNonEmptyString(p.PrimaryUPC, "unknown")))
+		}
+		if p.ComparableSummary != "" {
+			itemList.WriteString(" — " + p.ComparableSummary)
+		}
+		itemList.WriteString("\n")
 	}
 
 	prompt := fmt.Sprintf(`You are a Canadian tech deal expert verifying Best Buy Canada marketplace products.
@@ -323,6 +343,7 @@ Sale Price: $%.2f CAD
 Discount: %.0f%% off
 Seller: %s
 Source: %s
+Best Buy comparable evidence: %s
 
 Task:
 1. Clean up the title to be concise (5-15 words, product name and key specs only, no marketing fluff, no "Refurbished (Excellent)" prefix).
@@ -335,7 +356,7 @@ Task:
 4. Determine if this is "Lava Hot" — be strict. Only if the price is absurdly good (50%%+ off on a popular, in-demand product, or a clear pricing error).
 
 Return JSON only: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool, "summary": "..."}
-`, product.Name, product.CategoryName, product.RegularPrice, finalPrice, discountPct, product.SellerName, sourceContext)
+`, product.Name, product.CategoryName, product.RegularPrice, finalPrice, discountPct, product.SellerName, sourceContext, firstNonEmptyString(product.ComparableSummary, "No active comparable summary available."))
 
 	slog.Debug("Best Buy tier-2 analysis prompt",
 		"processor", "bestbuy",
@@ -502,4 +523,13 @@ func parseBestBuyAnalyzeBatchResponse(resp *genai.GenerateContentResponse) ([]be
 	}
 	return nil, fmt.Errorf("no text response from gemini for Best Buy batch analysis (finish_reason=%s, parts=%d)",
 		resp.Candidates[0].FinishReason, len(resp.Candidates[0].Content.Parts))
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

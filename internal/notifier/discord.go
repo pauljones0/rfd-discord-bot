@@ -877,6 +877,13 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 	if product.CategoryName != "" {
 		fields = append(fields, discordEmbedField{Name: "Category", Value: product.CategoryName, Inline: true})
 	}
+	if product.ComparableCount > 0 && product.ComparableMedianPrice > 0 {
+		compValue := fmt.Sprintf("$%.2f median", product.ComparableMedianPrice)
+		if product.ComparableDiscountPct > 0 {
+			compValue += fmt.Sprintf(" • %.0f%% below comps", product.ComparableDiscountPct)
+		}
+		fields = append(fields, discordEmbedField{Name: "Best Buy Comps", Value: compValue, Inline: true})
+	}
 
 	var description string
 	if product.Summary != "" {

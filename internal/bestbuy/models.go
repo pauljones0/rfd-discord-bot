@@ -50,6 +50,7 @@ type Product struct {
 	RegularPrice    float64 `docstore:"regularPrice"`
 	SalePrice       float64 `docstore:"salePrice"`
 	SaleEndDate     string  `docstore:"saleEndDate,omitempty"`
+	CategoryID      string  `docstore:"categoryID,omitempty"`
 	CategoryName    string  `docstore:"categoryName,omitempty"`
 	SellerID        string  `docstore:"sellerID,omitempty"`
 	SellerName      string  `docstore:"sellerName,omitempty"`
@@ -61,6 +62,26 @@ type Product struct {
 	LastIndex       string  `docstore:"lastIndex,omitempty"`
 	IndexTimestamp  int64   `docstore:"indexTimestamp,omitempty"`
 	SearchStartDate int64   `docstore:"searchStartDate,omitempty"`
+	SearchEndDate   int64   `docstore:"searchEndDate,omitempty"`
+	InStock         bool    `docstore:"inStock,omitempty"`
+	InStockKnown    bool    `docstore:"inStockKnown,omitempty"`
+	IsVisible       bool    `docstore:"isVisible,omitempty"`
+	VisibilityKnown bool    `docstore:"visibilityKnown,omitempty"`
+	OnlineOnly      bool    `docstore:"onlineOnly,omitempty"`
+	InStoreOnly     bool    `docstore:"inStoreOnly,omitempty"`
+	IsOnSale        bool    `docstore:"isOnSale,omitempty"`
+	Advertised      bool    `docstore:"advertised,omitempty"`
+	BrandName       string  `docstore:"brandName,omitempty"`
+	ModelNumber     string  `docstore:"modelNumber,omitempty"`
+	PrimaryUPC      string  `docstore:"primaryUPC,omitempty"`
+	OfferEndDate    string  `docstore:"offerEndDate,omitempty"`
+
+	ComparableCount       int       `docstore:"comparableCount,omitempty"`
+	ComparableMedianPrice float64   `docstore:"comparableMedianPrice,omitempty"`
+	ComparableLowestPrice float64   `docstore:"comparableLowestPrice,omitempty"`
+	ComparableDiscountPct float64   `docstore:"comparableDiscountPct,omitempty"`
+	ComparableSummary     string    `docstore:"comparableSummary,omitempty"`
+	AvailabilityCheckedAt time.Time `docstore:"availabilityCheckedAt,omitempty"`
 }
 
 // AnalyzedProduct extends Product with AI analysis results and computed fields.

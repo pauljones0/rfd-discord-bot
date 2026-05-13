@@ -252,6 +252,62 @@ func TestProcessBestBuyDeals_PollsWithoutSubscriptions(t *testing.T) {
 	}
 }
 
+func TestProcessBestBuyDeals_SkipsExpiredSellerOfferBeforeAI(t *testing.T) {
+	store := &bestBuyTestStore{
+		sellers:  []Seller{{ID: "1247543", Name: "Parts Search", SearchPath: "sellerName:Parts Search", IsActive: true}},
+		products: make(map[string]AnalyzedProduct),
+		subs:     []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_warm_hot", ChannelID: "warm"}},
+	}
+	analyzer := &bestBuyTestAnalyzer{warm: map[string]bool{"17389711": true}, hot: map[string]bool{"17389711": true}}
+	notifier := &bestBuyTestNotifier{}
+	client := NewClient()
+	client.SetBackends([]string{BackendAlgolia})
+	client.httpClient = &http.Client{Transport: bestBuyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/offers") {
+			return bestBuyJSONResponse(req, `[{
+				"sku":"17389711",
+				"sellerId":"1247543",
+				"sellerNameEn":"Parts Search",
+				"regularPrice":259.99,
+				"salePrice":89.99,
+				"offerEndDate":"2023-10-11T17:00:05Z",
+				"isMarketplace":true
+			}]`), nil
+		}
+		return bestBuyJSONResponse(req, `{
+			"page":0,
+			"nbHits":1,
+			"nbPages":1,
+			"hits":[{
+				"objectID":"17389711",
+				"sku":"17389711",
+				"title":"Refurbished AMD Ryzen 5 5600X",
+				"imageUrl":"https://example.com/cpu.jpg",
+				"categoryName":"CPU / Computer Processors",
+				"inStock":true,
+				"isVisible":true,
+				"searchEndDate":253402214400000,
+				"seller":{"sellerId":"1247543","sellerName":"Parts Search","marketplace":true},
+				"price":{"regularPrice":259.99,"currentPrice":89.99}
+			}]
+		}`), nil
+	})}
+
+	processor := NewProcessor(store, client, analyzer, notifier, "")
+	if err := processor.ProcessBestBuyDeals(context.Background()); err != nil {
+		t.Fatalf("ProcessBestBuyDeals() error = %v", err)
+	}
+	if analyzer.screenCalls != 0 || analyzer.analyzeCalls != 0 {
+		t.Fatalf("expired offer should be skipped before AI, screen=%d analyze=%d", analyzer.screenCalls, analyzer.analyzeCalls)
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("sent = %d, want 0", len(notifier.sent))
+	}
+	if len(store.saved) != 0 {
+		t.Fatalf("saved = %d, want 0 for stale expired offer", len(store.saved))
+	}
+}
+
 func TestProcessBestBuyDeals_ExistingNoPriceChangeOnlyRefreshes(t *testing.T) {
 	existing := bestBuyFallback(Product{
 		SKU:          "111",

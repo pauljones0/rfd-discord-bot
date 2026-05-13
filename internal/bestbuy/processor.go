@@ -152,6 +152,14 @@ func (p *Processor) PrimeBaseline(ctx context.Context) (BaselineStats, error) {
 				stats.ExitReason = "context_cancelled"
 				return stats, ctx.Err()
 			}
+			if reason := rejectReasonFromIndexedState(product, time.Now()); reason != "" {
+				logger.Info("Skipping stale Best Buy baseline listing",
+					"sku", product.SKU,
+					"seller", product.SellerName,
+					"reason", reason,
+				)
+				continue
+			}
 
 			_, exists, err := p.store.GetBestBuyProduct(ctx, product.SKU, product.Source)
 			if err != nil {
@@ -231,6 +239,11 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		priceDropCandidates int
 		priceDropAnalyzed   int
 		priceDropNotified   int
+		filteredOutOfStock  int
+		filteredNotVisible  int
+		filteredExpired     int
+		validationSkipped   int
+		comparablesEnriched int
 		notified            int
 		notifyErrors        int
 		exitReason          string
@@ -245,6 +258,11 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 			"price_drop_candidates", stats.priceDropCandidates,
 			"price_drop_analyzed", stats.priceDropAnalyzed,
 			"price_drop_notified", stats.priceDropNotified,
+			"filtered_out_of_stock", stats.filteredOutOfStock,
+			"filtered_not_visible", stats.filteredNotVisible,
+			"filtered_expired", stats.filteredExpired,
+			"validation_skipped", stats.validationSkipped,
+			"comparables_enriched", stats.comparablesEnriched,
 			"tier1_passed", stats.tier1Passed,
 			"tier2_passed", stats.tier2Passed,
 			"warm_hot", stats.warmHot,
@@ -336,10 +354,22 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 	var newProducts []Product
 	var priceDropCandidates []priceDropCandidate
 	hasPriceDropSubs := hasBestBuyPriceDropSubscriptions(bbSubs)
+	now := time.Now()
 	for _, product := range allProducts {
 		if ctx.Err() != nil {
 			stats.exitReason = "context_cancelled"
 			return ctx.Err()
+		}
+		switch rejectReasonFromIndexedState(product, now) {
+		case "out_of_stock":
+			stats.filteredOutOfStock++
+			continue
+		case "not_visible":
+			stats.filteredNotVisible++
+			continue
+		case "search_expired":
+			stats.filteredExpired++
+			continue
 		}
 
 		// Wrap product URL with affiliate prefix before saving or refreshing.
@@ -392,6 +422,16 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 	}
 
 	// 5. AI-label each new item, save it, then notify according to subscription tier.
+	preparedNew, prepNewStats := p.prepareBestBuyProductsForAI(ctx, newProducts, logger)
+	newProducts = preparedNew
+	stats.validationSkipped += prepNewStats.ValidationSkipped
+	stats.comparablesEnriched += prepNewStats.ComparablesEnriched
+
+	preparedDrops, prepDropStats := p.prepareBestBuyPriceDropsForAI(ctx, priceDropCandidates, logger)
+	priceDropCandidates = preparedDrops
+	stats.validationSkipped += prepDropStats.ValidationSkipped
+	stats.comparablesEnriched += prepDropStats.ComparablesEnriched
+
 	analyzedItems, tier1Passed, tier2Passed := p.analyzeNewItems(ctx, newProducts, logger)
 	stats.tier1Passed += tier1Passed
 	stats.tier2Passed += tier2Passed
@@ -403,6 +443,20 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		eligibleSubs := filterEligibleSubs(item, bbSubs)
 		if len(eligibleSubs) == 0 {
 			continue
+		}
+
+		validated, ok := p.validateBestBuyNotification(ctx, item, logger)
+		if !ok {
+			stats.validationSkipped++
+			continue
+		}
+		item = validated
+		if err := p.store.SaveBestBuyProduct(ctx, item); err != nil {
+			logger.Warn("Failed to persist Best Buy final validation state",
+				"sku", item.SKU,
+				"source", item.Source,
+				"error", err,
+			)
 		}
 
 		if p.notifier != nil {
@@ -432,6 +486,13 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		if len(eligibleSubs) == 0 {
 			continue
 		}
+
+		validated, ok := p.validateBestBuyNotification(ctx, item, logger)
+		if !ok {
+			stats.validationSkipped++
+			continue
+		}
+		item = validated
 
 		if p.notifier != nil {
 			if err := p.notifier.SendBestBuyDeal(ctx, item, eligibleSubs); err != nil {
@@ -473,6 +534,168 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 
 	stats.exitReason = "success"
 	return nil
+}
+
+type bestBuyPrepStats struct {
+	ValidationSkipped   int
+	ComparablesEnriched int
+}
+
+func (p *Processor) prepareBestBuyProductsForAI(ctx context.Context, products []Product, logger *slog.Logger) ([]Product, bestBuyPrepStats) {
+	var stats bestBuyPrepStats
+	if len(products) == 0 || p.client == nil || !p.client.canValidateSellerOffers() {
+		return products, stats
+	}
+
+	prepared := make([]Product, 0, len(products))
+	for _, product := range products {
+		if ctx.Err() != nil {
+			return prepared, stats
+		}
+		validation, err := p.client.ValidateSellerOffer(ctx, product, time.Now())
+		if err != nil {
+			stats.ValidationSkipped++
+			logger.Warn("Best Buy candidate validation failed",
+				"sku", product.SKU,
+				"seller", product.SellerName,
+				"sellerID", product.SellerID,
+				"error", err,
+			)
+			continue
+		}
+		if !validation.Valid {
+			stats.ValidationSkipped++
+			logger.Info("Best Buy candidate skipped after validation",
+				"sku", product.SKU,
+				"seller", product.SellerName,
+				"sellerID", product.SellerID,
+				"reason", validation.Reason,
+			)
+			continue
+		}
+
+		enriched, err := p.client.EnrichComparables(ctx, validation.Product, time.Now())
+		if err != nil {
+			logger.Warn("Best Buy comparable enrichment failed",
+				"sku", validation.Product.SKU,
+				"seller", validation.Product.SellerName,
+				"sellerID", validation.Product.SellerID,
+				"error", err,
+			)
+			prepared = append(prepared, validation.Product)
+			continue
+		}
+		if enriched.ComparableCount > 0 {
+			stats.ComparablesEnriched++
+		}
+		prepared = append(prepared, enriched)
+	}
+	return prepared, stats
+}
+
+func (p *Processor) prepareBestBuyPriceDropsForAI(ctx context.Context, candidates []priceDropCandidate, logger *slog.Logger) ([]priceDropCandidate, bestBuyPrepStats) {
+	var stats bestBuyPrepStats
+	if len(candidates) == 0 || p.client == nil || !p.client.canValidateSellerOffers() {
+		return candidates, stats
+	}
+
+	prepared := make([]priceDropCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if ctx.Err() != nil {
+			return prepared, stats
+		}
+		validation, err := p.client.ValidateSellerOffer(ctx, candidate.State.Product, time.Now())
+		if err != nil {
+			stats.ValidationSkipped++
+			logger.Warn("Best Buy price-drop validation failed",
+				"sku", candidate.State.SKU,
+				"seller", candidate.State.SellerName,
+				"sellerID", candidate.State.SellerID,
+				"error", err,
+			)
+			continue
+		}
+		if !validation.Valid {
+			stats.ValidationSkipped++
+			logger.Info("Best Buy price-drop candidate skipped after validation",
+				"sku", candidate.State.SKU,
+				"seller", candidate.State.SellerName,
+				"sellerID", candidate.State.SellerID,
+				"reason", validation.Reason,
+			)
+			continue
+		}
+
+		candidate.State.Product = mergeSellerProduct(candidate.State.Product, validation.Product)
+		if current := effectivePrice(candidate.State.Product); current > 0 && candidate.State.InitialEffectivePrice > 0 {
+			candidate.State.PriceDropAmount = candidate.State.InitialEffectivePrice - current
+			candidate.State.PriceDropPct = candidate.State.PriceDropAmount / candidate.State.InitialEffectivePrice * 100
+		}
+
+		enriched, err := p.client.EnrichComparables(ctx, candidate.State.Product, time.Now())
+		if err != nil {
+			logger.Warn("Best Buy price-drop comparable enrichment failed",
+				"sku", candidate.State.SKU,
+				"seller", candidate.State.SellerName,
+				"sellerID", candidate.State.SellerID,
+				"error", err,
+			)
+		} else {
+			if enriched.ComparableCount > 0 {
+				stats.ComparablesEnriched++
+			}
+			candidate.State.Product = enriched
+		}
+		prepared = append(prepared, candidate)
+	}
+	return prepared, stats
+}
+
+func (p *Processor) validateBestBuyNotification(ctx context.Context, item AnalyzedProduct, logger *slog.Logger) (AnalyzedProduct, bool) {
+	if p.client == nil || !p.client.canValidateSellerOffers() {
+		return item, true
+	}
+	validation, err := p.client.ValidateSellerOffer(ctx, item.Product, time.Now())
+	if err != nil {
+		logger.Warn("Best Buy final notification validation failed",
+			"sku", item.SKU,
+			"seller", item.SellerName,
+			"sellerID", item.SellerID,
+			"error", err,
+		)
+		return item, false
+	}
+	if !validation.Valid {
+		logger.Info("Best Buy notification skipped after final validation",
+			"sku", item.SKU,
+			"seller", item.SellerName,
+			"sellerID", item.SellerID,
+			"reason", validation.Reason,
+		)
+		item.Product = mergeSellerProduct(item.Product, validation.Product)
+		item.LastSeen = time.Now()
+		if saveErr := p.store.SaveBestBuyProduct(ctx, item); saveErr != nil {
+			logger.Warn("Failed to persist Best Buy validation skip state",
+				"sku", item.SKU,
+				"source", item.Source,
+				"error", saveErr,
+			)
+		}
+		return item, false
+	}
+
+	item.Product = mergeSellerProduct(item.Product, validation.Product)
+	item.DiscountPct = computeDiscount(item.Product)
+	if item.AlertKind == AlertKindPriceDrop {
+		current := effectivePrice(item.Product)
+		if current > 0 {
+			item.PriceDropAmount = item.InitialEffectivePrice - current
+			if item.InitialEffectivePrice > 0 {
+				item.PriceDropPct = item.PriceDropAmount / item.InitialEffectivePrice * 100
+			}
+		}
+	}
+	return item, true
 }
 
 // analyzeNewItems runs the tiered AI analysis pipeline on new products.
