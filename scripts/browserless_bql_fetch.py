@@ -40,21 +40,23 @@ def endpoint_with_token(endpoint: str, token: str) -> str:
 
 
 PRICE_DETAILS_SCRIPT = r"""
-const rx = /price\s*details/i;
-const nodes = Array.from(document.querySelectorAll('button,a,[role="button"]'));
-const el = nodes.find((node) => {
-  const text = [
-    node.innerText,
-    node.textContent,
-    node.getAttribute('aria-label'),
-    node.getAttribute('title')
-  ].filter(Boolean).join(' ');
-  return rx.test(text);
-});
-if (!el) return 'not-found';
-el.scrollIntoView({block: 'center', inline: 'center'});
-el.click();
-return 'clicked';
+(() => {
+  const rx = /price\s*details/i;
+  const nodes = Array.from(document.querySelectorAll('button,a,[role="button"]'));
+  const el = nodes.find((node) => {
+    const text = [
+      node.innerText,
+      node.textContent,
+      node.getAttribute('aria-label'),
+      node.getAttribute('title')
+    ].filter(Boolean).join(' ');
+    return rx.test(text);
+  });
+  if (!el) return 'not-found';
+  el.scrollIntoView({block: 'center', inline: 'center'});
+  el.click();
+  return 'clicked';
+})()
 """
 
 

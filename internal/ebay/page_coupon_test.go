@@ -78,6 +78,23 @@ func TestExtractPageCoupon(t *testing.T) {
 			wantCode:  "MOTHERDAYS10",
 		},
 		{
+			name: "live ebay US price details discount row",
+			html: `<html><body>
+				<div role="dialog" aria-label="Price details">
+					<h2>Price details</h2>
+					<div>List price US $799.00 (65% off) -US $520.00</div>
+					<div>Item price US $279.00</div>
+					<div>Shipping FREE</div>
+					<div>Discounts -US $22.32 TAKE8OFFSALE Automatically applied during checkout</div>
+					<div>Estimated total US $256.68*</div>
+					<div>You save: US $542.32</div>
+				</div>
+			</body></html>`,
+			basePrice: 279,
+			want:      22.32,
+			wantCode:  "TAKE8OFFSALE",
+		},
+		{
 			name: "price transparency discounted price fallback",
 			html: `<html><body>
 				<div class="x-price-transparency">
@@ -87,6 +104,17 @@ func TestExtractPageCoupon(t *testing.T) {
 			</body></html>`,
 			basePrice: 201,
 			want:      20.10,
+		},
+		{
+			name: "US price transparency discounted price fallback",
+			html: `<html><body>
+				<div class="x-price-transparency">
+					<span>US $256.68 with coupon code</span>
+					<button>Price details</button>
+				</div>
+			</body></html>`,
+			basePrice: 279,
+			want:      22.32,
 		},
 		{
 			name: "price details does not treat final price as coupon",

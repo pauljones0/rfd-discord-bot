@@ -579,12 +579,13 @@ func (p *Processor) applyCouponForPriceDrop(ctx context.Context, apiItem BrowseA
 		return apiItem, currentPrice, nil
 	}
 
-	timeout := 30 * time.Second
-	if budget := p.couponDiscoveryBudgetOrDefault(); budget > 0 && budget < timeout {
-		timeout = budget
+	backendTimeout := 30 * time.Second
+	budget := p.couponDiscoveryBudgetOrDefault()
+	if budget > 0 && budget < backendTimeout {
+		backendTimeout = budget
 	}
-	sampleCtx, cancel := context.WithTimeout(ctx, timeout)
-	pageCoupon, source, err := p.client.FetchPageCouponWithTimeout(sampleCtx, apiItem, basePrice, timeout)
+	sampleCtx, cancel := context.WithTimeout(ctx, budget)
+	pageCoupon, source, err := p.client.FetchPageCouponWithTimeout(sampleCtx, apiItem, basePrice, backendTimeout)
 	cancel()
 	if err != nil {
 		logger.Warn("Failed to fetch eBay page coupon after API price drop",
