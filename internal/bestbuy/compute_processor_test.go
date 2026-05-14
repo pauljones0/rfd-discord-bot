@@ -79,6 +79,13 @@ func TestComputeProcessorBaselinesFirstSeenWithoutAlert(t *testing.T) {
 	if len(store.observations) != len(products) {
 		t.Fatalf("observations = %d, want %d", len(store.observations), len(products))
 	}
+
+	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
+		t.Fatalf("second ProcessComputeOutliers() error = %v", err)
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("sent after baseline repeat = %d, want no delayed first-seen alert", len(notifier.sent))
+	}
 }
 
 func TestComputeProcessorAlertsExistingOutlierOnce(t *testing.T) {
@@ -116,6 +123,38 @@ func TestComputeProcessorAlertsExistingOutlierOnce(t *testing.T) {
 	}
 	if len(notifier.sent) != 1 {
 		t.Fatalf("sent after duplicate run = %d, want still 1", len(notifier.sent))
+	}
+}
+
+func TestComputeProcessorNoSubscriptionBaselinesCurrentOutliers(t *testing.T) {
+	products := append([]Product{computeCandidate("candidate", "seller-a", 650)}, computeCompsForProcessor()...)
+	store := &computeTestStore{
+		observations: make(map[string]ComputeObservation),
+	}
+	for _, product := range products {
+		store.observations[computeObservationKey(product)] = ComputeObservation{
+			Product:   product,
+			Spec:      ParseComputeSpec(product),
+			FirstSeen: time.Now().Add(-time.Hour),
+			LastSeen:  time.Now().Add(-time.Hour),
+		}
+	}
+	notifier := &computeTestNotifier{}
+	processor := NewComputeProcessor(store, computeTestClient{products: products}, notifier, "", false, nil)
+
+	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
+		t.Fatalf("ProcessComputeOutliers() error = %v", err)
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("sent without subscriptions = %d, want 0", len(notifier.sent))
+	}
+
+	store.subs = []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_compute", ChannelID: "chan"}}
+	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
+		t.Fatalf("second ProcessComputeOutliers() error = %v", err)
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("sent after subscription enabled = %d, want existing baseline suppressed", len(notifier.sent))
 	}
 }
 

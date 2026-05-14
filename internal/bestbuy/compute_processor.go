@@ -171,7 +171,9 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 			stats.WarmHot++
 		}
 
-		if shouldNotifyCompute(observation, existingByKey[computeObservationKey(observation.Product)], p.alertFirstSeen) && len(computeSubs) > 0 {
+		prior := existingByKey[computeObservationKey(observation.Product)]
+		shouldNotify := shouldNotifyCompute(observation, prior, p.alertFirstSeen)
+		if shouldNotify && len(computeSubs) > 0 {
 			validation, err := p.client.ValidateSellerOffer(ctx, observation.Product, now)
 			if err != nil {
 				logger.Warn("Best Buy compute validation failed",
@@ -199,6 +201,8 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 					"reason", validation.Reason,
 				)
 			}
+		} else if shouldBaselineComputeAlertKey(observation, prior, len(computeSubs), p.alertFirstSeen) {
+			observation.LastAlertKey = computeAlertKey(observation)
 		}
 
 		if err := p.store.SaveBestBuyComputeObservation(ctx, observation); err != nil {
@@ -253,6 +257,19 @@ func shouldNotifyCompute(observation, prior ComputeObservation, alertFirstSeen b
 	}
 	key := computeAlertKey(observation)
 	return key != "" && key != prior.LastAlertKey
+}
+
+func shouldBaselineComputeAlertKey(observation, prior ComputeObservation, subscriptionCount int, alertFirstSeen bool) bool {
+	if !observation.IsWarm && !observation.IsLavaHot {
+		return false
+	}
+	if observation.LastAlertKey != "" {
+		return false
+	}
+	if computeAlertKey(observation) == "" {
+		return false
+	}
+	return subscriptionCount == 0 || (prior.SKU == "" && !alertFirstSeen)
 }
 
 func computeAnalyzedProduct(observation ComputeObservation) AnalyzedProduct {
