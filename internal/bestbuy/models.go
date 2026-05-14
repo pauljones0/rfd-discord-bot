@@ -3,7 +3,8 @@ package bestbuy
 import "time"
 
 const (
-	AlertKindPriceDrop = "price_drop"
+	AlertKindPriceDrop      = "price_drop"
+	AlertKindComputeOutlier = "compute_outlier"
 )
 
 // Seller represents a Best Buy Marketplace seller to monitor.
@@ -43,38 +44,39 @@ var DefaultSellers = []Seller{
 
 // Product represents a single product from the Best Buy Canada search API.
 type Product struct {
-	SKU             string  `docstore:"sku"`
-	Name            string  `docstore:"name"`
-	URL             string  `docstore:"url"`
-	ImageURL        string  `docstore:"imageURL,omitempty"`
-	RegularPrice    float64 `docstore:"regularPrice"`
-	SalePrice       float64 `docstore:"salePrice"`
-	SaleEndDate     string  `docstore:"saleEndDate,omitempty"`
-	CategoryID      string  `docstore:"categoryID,omitempty"`
-	CategoryName    string  `docstore:"categoryName,omitempty"`
-	SellerID        string  `docstore:"sellerID,omitempty"`
-	SellerName      string  `docstore:"sellerName,omitempty"`
-	CustomerRating  float64 `docstore:"customerRating,omitempty"`
-	IsMarketplace   bool    `docstore:"isMarketplace"`
-	IsClearance     bool    `docstore:"isClearance"`
-	IsOpenBox       bool    `docstore:"isOpenBox"`
-	Source          string  `docstore:"source"` // "marketplace" or "openbox"
-	LastIndex       string  `docstore:"lastIndex,omitempty"`
-	IndexTimestamp  int64   `docstore:"indexTimestamp,omitempty"`
-	SearchStartDate int64   `docstore:"searchStartDate,omitempty"`
-	SearchEndDate   int64   `docstore:"searchEndDate,omitempty"`
-	InStock         bool    `docstore:"inStock,omitempty"`
-	InStockKnown    bool    `docstore:"inStockKnown,omitempty"`
-	IsVisible       bool    `docstore:"isVisible,omitempty"`
-	VisibilityKnown bool    `docstore:"visibilityKnown,omitempty"`
-	OnlineOnly      bool    `docstore:"onlineOnly,omitempty"`
-	InStoreOnly     bool    `docstore:"inStoreOnly,omitempty"`
-	IsOnSale        bool    `docstore:"isOnSale,omitempty"`
-	Advertised      bool    `docstore:"advertised,omitempty"`
-	BrandName       string  `docstore:"brandName,omitempty"`
-	ModelNumber     string  `docstore:"modelNumber,omitempty"`
-	PrimaryUPC      string  `docstore:"primaryUPC,omitempty"`
-	OfferEndDate    string  `docstore:"offerEndDate,omitempty"`
+	SKU             string            `docstore:"sku"`
+	Name            string            `docstore:"name"`
+	URL             string            `docstore:"url"`
+	ImageURL        string            `docstore:"imageURL,omitempty"`
+	RegularPrice    float64           `docstore:"regularPrice"`
+	SalePrice       float64           `docstore:"salePrice"`
+	SaleEndDate     string            `docstore:"saleEndDate,omitempty"`
+	CategoryID      string            `docstore:"categoryID,omitempty"`
+	CategoryName    string            `docstore:"categoryName,omitempty"`
+	SellerID        string            `docstore:"sellerID,omitempty"`
+	SellerName      string            `docstore:"sellerName,omitempty"`
+	CustomerRating  float64           `docstore:"customerRating,omitempty"`
+	IsMarketplace   bool              `docstore:"isMarketplace"`
+	IsClearance     bool              `docstore:"isClearance"`
+	IsOpenBox       bool              `docstore:"isOpenBox"`
+	Source          string            `docstore:"source"` // "marketplace" or "openbox"
+	LastIndex       string            `docstore:"lastIndex,omitempty"`
+	IndexTimestamp  int64             `docstore:"indexTimestamp,omitempty"`
+	SearchStartDate int64             `docstore:"searchStartDate,omitempty"`
+	SearchEndDate   int64             `docstore:"searchEndDate,omitempty"`
+	InStock         bool              `docstore:"inStock,omitempty"`
+	InStockKnown    bool              `docstore:"inStockKnown,omitempty"`
+	IsVisible       bool              `docstore:"isVisible,omitempty"`
+	VisibilityKnown bool              `docstore:"visibilityKnown,omitempty"`
+	OnlineOnly      bool              `docstore:"onlineOnly,omitempty"`
+	InStoreOnly     bool              `docstore:"inStoreOnly,omitempty"`
+	IsOnSale        bool              `docstore:"isOnSale,omitempty"`
+	Advertised      bool              `docstore:"advertised,omitempty"`
+	BrandName       string            `docstore:"brandName,omitempty"`
+	ModelNumber     string            `docstore:"modelNumber,omitempty"`
+	PrimaryUPC      string            `docstore:"primaryUPC,omitempty"`
+	OfferEndDate    string            `docstore:"offerEndDate,omitempty"`
+	Specs           map[string]string `docstore:"specs,omitempty"`
 
 	ComparableCount       int       `docstore:"comparableCount,omitempty"`
 	ComparableMedianPrice float64   `docstore:"comparableMedianPrice,omitempty"`

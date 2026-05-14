@@ -29,7 +29,7 @@ RUN apt-get update \
 
 RUN python3 -m venv /opt/scrape-venv \
     && /opt/scrape-venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/scrape-venv/bin/pip install --no-cache-dir camoufox nodriver crawl4ai \
+    && /opt/scrape-venv/bin/pip install --no-cache-dir camoufox nodriver crawl4ai fastembed \
     && /opt/scrape-venv/bin/python -m camoufox fetch
 
 ENV PATH="/opt/scrape-venv/bin:${PATH}"

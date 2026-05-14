@@ -37,6 +37,7 @@ type Server struct {
 	facebookProcessor   *facebook.Processor
 	memexpressProcessor *memoryexpress.Processor
 	bestbuyProcessor    *bestbuy.Processor
+	bestbuyCompute      *bestbuy.ComputeProcessor
 	hwProcessor         *hardwareswap.Processor
 	aiClient            *ai.Client
 	store               processor.DealStore
@@ -47,6 +48,7 @@ type Server struct {
 	facebookRunStart    atomic.Int64  // Unix timestamp (seconds) when the current Facebook run started
 	memexpressSem       chan struct{} // Semaphore to limit concurrent Memory Express processing requests
 	bestbuySem          chan struct{} // Semaphore to limit concurrent Best Buy processing requests
+	bestbuyComputeSem   chan struct{} // Semaphore to limit concurrent Best Buy compute sweeps
 	hwSem               chan struct{} // Semaphore to limit concurrent HardwareSwap processing requests
 }
 
@@ -136,7 +138,13 @@ func main() {
 	bbClient := bestbuy.NewClient()
 	bbClient.SetBackends(cfg.BestBuyBackends)
 	bbProc := bestbuy.NewProcessor(store, bbClient, aiClient, n, cfg.BestBuyAffiliatePrefix)
+	bbComputeProc := bestbuy.NewComputeProcessor(store, bbClient, n, cfg.BestBuyAffiliatePrefix, cfg.BestBuyComputeAlertFirstSeen, bestbuy.NewComputeEmbedder(cfg.BestBuyComputeEmbedCommand))
 	slog.Info("Best Buy Marketplace processor initialized", "backends", cfg.BestBuyBackends)
+	slog.Info("Best Buy compute outlier processor initialized",
+		"enabled", cfg.BestBuyComputeEnabled,
+		"interval", cfg.BestBuyComputePollInterval.String(),
+		"alert_first_seen", cfg.BestBuyComputeAlertFirstSeen,
+	)
 
 	// Initialize HardwareSwap processor only when explicitly enabled.
 	var hwProc *hardwareswap.Processor
@@ -157,6 +165,7 @@ func main() {
 		facebookProcessor:   fbProc,
 		memexpressProcessor: meProc,
 		bestbuyProcessor:    bbProc,
+		bestbuyCompute:      bbComputeProc,
 		hwProcessor:         hwProc,
 		aiClient:            aiClient,
 		store:               store,
@@ -165,6 +174,7 @@ func main() {
 		facebookSem:         make(chan struct{}, 1), // Allow 1 concurrent Facebook processing attempt
 		memexpressSem:       make(chan struct{}, 1), // Allow 1 concurrent Memory Express processing attempt
 		bestbuySem:          make(chan struct{}, 1), // Allow 1 concurrent Best Buy processing attempt
+		bestbuyComputeSem:   make(chan struct{}, 1), // Allow 1 concurrent Best Buy compute sweep
 		hwSem:               make(chan struct{}, 1), // Allow 1 concurrent HardwareSwap processing attempt
 	}
 
@@ -188,6 +198,7 @@ func main() {
 	}
 	mux.HandleFunc("GET /process-memoryexpress", srv.ProcessMemoryExpressHandler)
 	mux.HandleFunc("GET /process-bestbuy", srv.ProcessBestBuyHandler)
+	mux.HandleFunc("GET /process-bestbuy-compute", srv.ProcessBestBuyComputeHandler)
 	mux.HandleFunc("POST /prime-bestbuy-baseline", srv.PrimeBestBuyBaselineHandler)
 	if cfg.HardwareSwapEnabled {
 		mux.HandleFunc("GET /process-hardwareswap", srv.ProcessHardwareSwapHandler)
@@ -478,6 +489,22 @@ func (s *Server) ProcessBestBuyHandler(w http.ResponseWriter, r *http.Request) {
 		timeout:       8 * time.Minute,
 		fn:            s.bestbuyProcessor.ProcessBestBuyDeals,
 		logAIState:    true,
+	})
+}
+
+func (s *Server) ProcessBestBuyComputeHandler(w http.ResponseWriter, r *http.Request) {
+	s.runManualProcess(w, r, manualProcessOptions{
+		processorName: "bestbuy_compute",
+		startMessage:  "Starting Best Buy compute outlier processing",
+		finishMessage: "Best Buy compute outlier processing finished",
+		errorMessage:  "Best Buy compute outlier processing",
+		panicMessage:  "Panic in ProcessBestBuyComputeOutliers",
+		successText:   "Best Buy compute outlier processing finished.",
+		busyDetails:   "previous run still active",
+		sem:           s.bestbuyComputeSem,
+		timeout:       20 * time.Minute,
+		fn:            s.bestbuyCompute.ProcessComputeOutliers,
+		logAIState:    false,
 	})
 }
 

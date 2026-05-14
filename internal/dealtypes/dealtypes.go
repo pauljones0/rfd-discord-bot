@@ -29,6 +29,7 @@ const (
 	BestBuyNew     = "bb_new"
 	BestBuyWarmHot = "bb_warm_hot"
 	BestBuyHot     = "bb_hot"
+	BestBuyCompute = "bb_compute"
 )
 
 var RFDChoices = []Choice{
@@ -54,6 +55,7 @@ var BestBuyChoices = []Choice{
 	{Name: "All new listings only + AI labels", Value: BestBuyNew},
 	{Name: "AI warm + hot listings/drops", Value: BestBuyWarmHot},
 	{Name: "AI hot listings/drops only", Value: BestBuyHot},
+	{Name: "High-compute outliers", Value: BestBuyCompute},
 }
 
 var RemoveChoices = []Choice{
@@ -134,6 +136,8 @@ func Label(value string) string {
 		return "Best Buy AI warm + hot new listings and price drops"
 	case BestBuyHot:
 		return "Best Buy AI hot new listings and price drops only"
+	case BestBuyCompute:
+		return "Best Buy high-compute workstation/server outliers"
 	default:
 		return value
 	}
@@ -188,6 +192,8 @@ func BestBuyEligible(dealType string, isWarm, isLavaHot bool) bool {
 		return isWarm || isLavaHot
 	case BestBuyHot:
 		return isLavaHot
+	case BestBuyCompute:
+		return false
 	default:
 		return false
 	}

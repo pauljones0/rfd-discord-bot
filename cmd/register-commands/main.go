@@ -159,7 +159,7 @@ func main() {
 				// setup-bestbuy subcommand
 				{
 					"name":        "setup-bestbuy",
-					"description": "Subscribe this channel to AI-labeled Best Buy seller listings and qualifying price drops.",
+					"description": "Subscribe this channel to Best Buy seller alerts, price drops, or compute outliers.",
 					"type":        1, // SUB_COMMAND
 					"options": []map[string]interface{}{
 						{
@@ -171,7 +171,7 @@ func main() {
 						},
 						{
 							"name":        "filter",
-							"description": "Which Best Buy new listings or qualifying price drops to publish.",
+							"description": "Which Best Buy alerts to publish.",
 							"type":        3, // STRING
 							"required":    true,
 							"choices":     stringChoices(dealtypes.BestBuyChoices),

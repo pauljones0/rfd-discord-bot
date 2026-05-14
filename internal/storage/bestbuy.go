@@ -14,6 +14,7 @@ import (
 
 const bestbuyCollection = "bestbuy_deals"
 const bestbuySellersCollection = "bestbuy_sellers"
+const bestbuyComputeCollection = "bestbuy_compute_observations"
 
 // GetActiveBestBuySellers returns active Best Buy seller targets.
 func (c *Client) GetActiveBestBuySellers(ctx context.Context) ([]bestbuy.Seller, error) {
@@ -103,6 +104,59 @@ func (c *Client) SaveBestBuyProduct(ctx context.Context, product bestbuy.Analyze
 
 func (c *Client) RefreshBestBuyProduct(ctx context.Context, product bestbuy.AnalyzedProduct) error {
 	return c.SetDocument(ctx, bestbuyCollection, bestBuyDocID(product.SKU, product.Source), product)
+}
+
+func bestBuyComputeDocID(sku, source string) string {
+	return fmt.Sprintf("%s_%s", sku, source)
+}
+
+func (c *Client) SaveBestBuyComputeObservation(ctx context.Context, observation bestbuy.ComputeObservation) error {
+	return c.SetDocument(ctx, bestbuyComputeCollection, bestBuyComputeDocID(observation.SKU, observation.Source), observation)
+}
+
+func (c *Client) ListBestBuyComputeObservations(ctx context.Context) ([]bestbuy.ComputeObservation, error) {
+	rows, err := c.ListDocuments(ctx, bestbuyComputeCollection)
+	if err != nil {
+		return nil, err
+	}
+	observations := make([]bestbuy.ComputeObservation, 0, len(rows))
+	for _, row := range rows {
+		var observation bestbuy.ComputeObservation
+		if err := decodeDocument(row.Data, &observation); err != nil {
+			slog.Warn("Failed to decode bestbuy compute observation", "processor", "bestbuy_compute", "id", row.ID, "error", err)
+			continue
+		}
+		observations = append(observations, observation)
+	}
+	return observations, nil
+}
+
+func (c *Client) PruneBestBuyComputeObservations(ctx context.Context, maxAgeDays, maxRecords int) error {
+	rows, err := c.ListDocuments(ctx, bestbuyComputeCollection)
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
+	for _, row := range rows {
+		if !documentTime(row.Data, "lastSeen").IsZero() && documentTime(row.Data, "lastSeen").Before(cutoff) {
+			if err := c.DeleteDocument(ctx, bestbuyComputeCollection, row.ID); err != nil {
+				slog.Warn("Failed to delete old bestbuy compute observation", "processor", "bestbuy_compute", "id", row.ID, "error", err)
+			}
+		}
+	}
+	rows, err = c.ListDocuments(ctx, bestbuyComputeCollection)
+	if err != nil {
+		return err
+	}
+	if len(rows) > maxRecords {
+		sortDocumentsByTime(rows, "lastSeen", true)
+		for _, row := range rows[:len(rows)-maxRecords] {
+			if err := c.DeleteDocument(ctx, bestbuyComputeCollection, row.ID); err != nil {
+				slog.Warn("Failed to delete excess bestbuy compute observation", "processor", "bestbuy_compute", "id", row.ID, "error", err)
+			}
+		}
+	}
+	return nil
 }
 
 // PruneBestBuyProducts deletes products older than maxAgeDays or exceeding maxRecords.

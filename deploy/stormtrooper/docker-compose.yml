@@ -36,6 +36,7 @@ services:
       EBAY_COUPON_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000 --ebay-price-details
       EBAY_COUPON_AI_CRAWLER_COMMAND: /opt/scrape-venv/bin/python /root/scripts/crawl4ai_fetch.py "{url}" --headless --wait-ms 7000
       EBAY_COUPON_PAID_TRIAL_COMMAND: /opt/scrape-venv/bin/python /root/scripts/browserless_bql_fetch.py "{url}" --wait-ms 5000 --ebay-price-details
+      BESTBUY_COMPUTE_EMBED_COMMAND: /opt/scrape-venv/bin/python /root/scripts/local_embed.py
       MEMEXPRESS_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
       MEMEXPRESS_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000
       MEMEXPRESS_AI_CRAWLER_COMMAND: /opt/scrape-venv/bin/python /root/scripts/crawl4ai_fetch.py "{url}" --headless --wait-ms 7000

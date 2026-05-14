@@ -43,6 +43,12 @@ func TestLoad(t *testing.T) {
 	if cfg.BestBuyPollInterval != 30*time.Minute {
 		t.Errorf("Expected default Best Buy poll interval 30m, got %s", cfg.BestBuyPollInterval)
 	}
+	if cfg.BestBuyComputePollInterval != time.Hour {
+		t.Errorf("Expected default Best Buy compute poll interval 1h, got %s", cfg.BestBuyComputePollInterval)
+	}
+	if cfg.BestBuyComputeEnabled {
+		t.Errorf("Expected Best Buy compute scheduler to be disabled by default")
+	}
 	if cfg.EbayCouponDiscoveryInterval != 6*time.Hour {
 		t.Errorf("Expected default eBay coupon discovery interval 6h, got %s", cfg.EbayCouponDiscoveryInterval)
 	}
@@ -171,6 +177,9 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	t.Setenv("EBAY_POLL_INTERVAL", "45m")
 	t.Setenv("MEMEXPRESS_POLL_INTERVAL", "35m")
 	t.Setenv("BESTBUY_POLL_INTERVAL", "20m")
+	t.Setenv("BESTBUY_COMPUTE_ENABLED", "true")
+	t.Setenv("BESTBUY_COMPUTE_POLL_INTERVAL", "2h")
+	t.Setenv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -191,6 +200,15 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	}
 	if cfg.BestBuyPollInterval != 20*time.Minute {
 		t.Fatalf("BestBuyPollInterval = %s, want 20m", cfg.BestBuyPollInterval)
+	}
+	if !cfg.BestBuyComputeEnabled {
+		t.Fatal("BestBuyComputeEnabled = false, want true")
+	}
+	if cfg.BestBuyComputePollInterval != 2*time.Hour {
+		t.Fatalf("BestBuyComputePollInterval = %s, want 2h", cfg.BestBuyComputePollInterval)
+	}
+	if !cfg.BestBuyComputeAlertFirstSeen {
+		t.Fatal("BestBuyComputeAlertFirstSeen = false, want true")
 	}
 }
 

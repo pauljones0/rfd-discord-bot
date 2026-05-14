@@ -56,8 +56,12 @@ type Config struct {
 	MemoryExpressPaidMaxPerDay      int
 
 	// Best Buy scraping backend configuration.
-	BestBuyBackends     []string
-	BestBuyPollInterval time.Duration
+	BestBuyBackends              []string
+	BestBuyPollInterval          time.Duration
+	BestBuyComputeEnabled        bool
+	BestBuyComputePollInterval   time.Duration
+	BestBuyComputeAlertFirstSeen bool
+	BestBuyComputeEmbedCommand   string
 
 	// Carfax Token Service (optional — if not set, Carfax falls back to Playwright UI automation)
 	// The token service runs a real headed Chrome that generates high-scoring reCAPTCHA v3 tokens.
@@ -138,6 +142,11 @@ func Load() (*Config, error) {
 	}
 
 	bestBuyPollInterval, err := durationEnv("BESTBUY_POLL_INTERVAL", 30*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	bestBuyComputePollInterval, err := durationEnv("BESTBUY_COMPUTE_POLL_INTERVAL", time.Hour)
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +234,10 @@ func Load() (*Config, error) {
 		MemoryExpressPaidMaxPerDay:      intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
 		BestBuyBackends:                 csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
 		BestBuyPollInterval:             bestBuyPollInterval,
+		BestBuyComputeEnabled:           boolEnv("BESTBUY_COMPUTE_ENABLED", false),
+		BestBuyComputePollInterval:      bestBuyComputePollInterval,
+		BestBuyComputeAlertFirstSeen:    boolEnv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", false),
+		BestBuyComputeEmbedCommand:      os.Getenv("BESTBUY_COMPUTE_EMBED_COMMAND"),
 		LocalSchedulerEnabled:           boolEnv("LOCAL_SCHEDULER_ENABLED", false),
 		CarfaxTokenServiceURL:           os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
 		CarfaxTokenServiceSecret:        os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),

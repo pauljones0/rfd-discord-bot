@@ -28,6 +28,9 @@ func (s *Server) StartLocalScheduler(ctx context.Context, cfg *config.Config) {
 	if s.bestbuyProcessor != nil {
 		s.startScheduledLoop(ctx, "bestbuy", cfg.BestBuyPollInterval, 8*time.Minute, s.bestbuySem, s.bestbuyProcessor.ProcessBestBuyDeals)
 	}
+	if cfg.BestBuyComputeEnabled && s.bestbuyCompute != nil {
+		s.startScheduledLoop(ctx, "bestbuy_compute", cfg.BestBuyComputePollInterval, 20*time.Minute, s.bestbuyComputeSem, s.bestbuyCompute.ProcessComputeOutliers)
+	}
 }
 
 func (s *Server) startScheduledLoop(ctx context.Context, processorName string, interval, timeout time.Duration, sem chan struct{}, fn func(context.Context) error) {

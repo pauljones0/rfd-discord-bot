@@ -3,6 +3,7 @@ package bestbuy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -48,33 +49,34 @@ type searchResponse struct {
 
 // apiProduct maps the fields we care about from the search API product JSON.
 type apiProduct struct {
-	SKU             string  `json:"sku"`
-	Name            string  `json:"name"`
-	ProductURL      string  `json:"productUrl"`
-	ThumbnailImage  string  `json:"thumbnailImage"`
-	RegularPrice    float64 `json:"regularPrice"`
-	SalePrice       float64 `json:"salePrice"`
-	SaleEndDate     string  `json:"saleEndDate"`
-	CategoryID      string  `json:"categoryId"`
-	CategoryName    string  `json:"categoryName"`
-	SellerID        string  `json:"sellerId"`
-	Seller          string  `json:"seller"`
-	CustomerRating  float64 `json:"customerRating"`
-	IsMarketplace   bool    `json:"isMarketplace"`
-	IsClearance     bool    `json:"isClearance"`
-	LastIndex       string  `json:"lastIndex"`
-	IndexTimestamp  int64   `json:"indexTimestamp"`
-	SearchStartDate int64   `json:"searchStartDate"`
-	SearchEndDate   int64   `json:"searchEndDate"`
-	InStock         *bool   `json:"inStock"`
-	IsVisible       *bool   `json:"isVisible"`
-	OnlineOnly      bool    `json:"onlineOnly"`
-	InStoreOnly     bool    `json:"inStoreOnly"`
-	IsOnSale        bool    `json:"isOnSale"`
-	Advertised      bool    `json:"advertised"`
-	BrandName       string  `json:"brandName"`
-	ModelNumber     string  `json:"modelNumber"`
-	PrimaryUPC      string  `json:"primaryUPC"`
+	SKU             string            `json:"sku"`
+	Name            string            `json:"name"`
+	ProductURL      string            `json:"productUrl"`
+	ThumbnailImage  string            `json:"thumbnailImage"`
+	RegularPrice    float64           `json:"regularPrice"`
+	SalePrice       float64           `json:"salePrice"`
+	SaleEndDate     string            `json:"saleEndDate"`
+	CategoryID      string            `json:"categoryId"`
+	CategoryName    string            `json:"categoryName"`
+	SellerID        string            `json:"sellerId"`
+	Seller          string            `json:"seller"`
+	CustomerRating  float64           `json:"customerRating"`
+	IsMarketplace   bool              `json:"isMarketplace"`
+	IsClearance     bool              `json:"isClearance"`
+	LastIndex       string            `json:"lastIndex"`
+	IndexTimestamp  int64             `json:"indexTimestamp"`
+	SearchStartDate int64             `json:"searchStartDate"`
+	SearchEndDate   int64             `json:"searchEndDate"`
+	InStock         *bool             `json:"inStock"`
+	IsVisible       *bool             `json:"isVisible"`
+	OnlineOnly      bool              `json:"onlineOnly"`
+	InStoreOnly     bool              `json:"inStoreOnly"`
+	IsOnSale        bool              `json:"isOnSale"`
+	Advertised      bool              `json:"advertised"`
+	BrandName       string            `json:"brandName"`
+	ModelNumber     string            `json:"modelNumber"`
+	PrimaryUPC      string            `json:"primaryUPC"`
+	Specs           map[string]string `json:"specs"`
 }
 
 type algoliaResponse struct {
@@ -120,6 +122,7 @@ type algoliaHit struct {
 	Rating struct {
 		CustomerRating float64 `json:"customerRating"`
 	} `json:"rating"`
+	Specs map[string]string `json:"specs"`
 }
 
 type offerProduct struct {
@@ -149,6 +152,13 @@ type ComparableListing struct {
 	RegularPrice float64
 	Condition    string
 	Source       string
+}
+
+type ComputeSearchTarget struct {
+	Name         string
+	Query        string
+	FacetFilters string
+	Filters      string
 }
 
 // Client handles HTTP requests to the Best Buy Canada search API.
@@ -229,6 +239,87 @@ func (c *Client) FetchOpenBoxProducts(ctx context.Context) ([]Product, error) {
 	}
 
 	return c.fetchAllPages(ctx, params, "openbox")
+}
+
+func (c *Client) FetchComputeProducts(ctx context.Context) ([]Product, error) {
+	if !c.hasBackend(BackendAlgolia) {
+		return nil, nil
+	}
+	seen := make(map[string]Product)
+	var errs []error
+	for _, target := range DefaultComputeSearchTargets() {
+		params := url.Values{
+			"query":    {target.Query},
+			"pageSize": {"1000"},
+			"page":     {"1"},
+		}
+		if target.FacetFilters != "" {
+			params.Set("facetFilters", target.FacetFilters)
+		}
+		if target.Filters != "" {
+			params.Set("filters", target.Filters)
+		}
+		products, err := c.fetchAlgoliaPages(ctx, params, "compute")
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", target.Name, err))
+			continue
+		}
+		slog.Info("Best Buy compute target fetched",
+			"processor", "bestbuy_compute",
+			"target", target.Name,
+			"count", len(products),
+		)
+		for _, product := range products {
+			if product.SellerID != "" {
+				product.Source = "seller:" + product.SellerID
+			}
+			key := product.SKU + "|" + product.Source
+			if key == "|" {
+				key = product.Name + "|" + product.URL
+			}
+			if existing, ok := seen[key]; ok {
+				seen[key] = mergeSellerProduct(existing, product)
+				continue
+			}
+			seen[key] = product
+		}
+	}
+	out := make([]Product, 0, len(seen))
+	for _, product := range seen {
+		out = append(out, product)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return effectiveProductPrice(out[i]) < effectiveProductPrice(out[j])
+	})
+	return out, errors.Join(errs...)
+}
+
+func DefaultComputeSearchTargets() []ComputeSearchTarget {
+	ram32 := `["specs.custom0ramsize:32","specs.custom0ramsize:32.00","specs.custom0ramsize:64","specs.custom0ramsize:96","specs.custom0ramsize:128","specs.custom0ramsize:192","specs.custom0ramsize:256","specs.custom0ramsize:512","specs.custom0ramsize:1000"]`
+	ram64 := `["specs.custom0ramsize:64","specs.custom0ramsize:96","specs.custom0ramsize:128","specs.custom0ramsize:192","specs.custom0ramsize:256","specs.custom0ramsize:512","specs.custom0ramsize:1000"]`
+	core12 := `["specs.custom0processorcores:12","specs.custom0processorcores:14","specs.custom0processorcores:16","specs.custom0processorcores:20","specs.custom0processorcores:24","specs.custom0processorcores:28","specs.custom0processorcores:32","specs.custom0processorcores:36","specs.custom0processorcores:48","specs.custom0processorcores:64"]`
+	return []ComputeSearchTarget{
+		{Name: "ram32-under-500", FacetFilters: "[" + ram32 + "]", Filters: "price.currentPrice <= 500"},
+		{Name: "ram32-500-1000", FacetFilters: "[" + ram32 + "]", Filters: "price.currentPrice > 500 AND price.currentPrice <= 1000"},
+		{Name: "ram32-1000-1500", FacetFilters: "[" + ram32 + "]", Filters: "price.currentPrice > 1000 AND price.currentPrice <= 1500"},
+		{Name: "ram32-1500-2000", FacetFilters: "[" + ram32 + "]", Filters: "price.currentPrice > 1500 AND price.currentPrice <= 2000"},
+		{Name: "ram64-all", FacetFilters: "[" + ram64 + "]"},
+		{Name: "core12-under-1500", FacetFilters: "[" + core12 + "]", Filters: "price.currentPrice <= 1500"},
+		{Name: "core12-1500-2500", FacetFilters: "[" + core12 + "]", Filters: "price.currentPrice > 1500 AND price.currentPrice <= 2500"},
+		{Name: "servers-category", FacetFilters: `["categoryIds:26200"]`},
+		{Name: "commercial-servers-category", FacetFilters: `["categoryIds:32381"]`},
+		{Name: "poweredge-server", Query: "PowerEdge server"},
+		{Name: "proliant-server", Query: "ProLiant server"},
+		{Name: "thinksystem-server", Query: "ThinkSystem server"},
+		{Name: "dell-precision-workstation", Query: "Dell Precision workstation"},
+		{Name: "hp-z-workstation", Query: "HP Z workstation"},
+		{Name: "lenovo-thinkstation", Query: "Lenovo ThinkStation"},
+		{Name: "xeon-workstation", Query: "Xeon workstation"},
+		{Name: "xeon-desktop", Query: "Xeon desktop"},
+		{Name: "threadripper-workstation", Query: "Threadripper workstation"},
+		{Name: "quadro-workstation", Query: "Quadro workstation"},
+		{Name: "rtx-a-workstation", Query: "RTX A4000 workstation"},
+	}
 }
 
 func (c *Client) sellerSearchParams(seller Seller) url.Values {
@@ -544,6 +635,7 @@ func algoliaSearchResponse(resp algoliaResponse) *searchResponse {
 			BrandName:       hit.BrandName,
 			ModelNumber:     hit.ModelNumber,
 			PrimaryUPC:      hit.PrimaryUPC,
+			Specs:           hit.Specs,
 		})
 	}
 
@@ -660,6 +752,9 @@ func mergeSellerProduct(existing, incoming Product) Product {
 	if merged.OfferEndDate == "" {
 		merged.OfferEndDate = incoming.OfferEndDate
 	}
+	if len(merged.Specs) == 0 && len(incoming.Specs) > 0 {
+		merged.Specs = cloneStringMap(incoming.Specs)
+	}
 	return merged
 }
 
@@ -770,9 +865,21 @@ func convertProducts(apiProducts []apiProduct, source string) []Product {
 			BrandName:       ap.BrandName,
 			ModelNumber:     ap.ModelNumber,
 			PrimaryUPC:      ap.PrimaryUPC,
+			Specs:           cloneStringMap(ap.Specs),
 		})
 	}
 	return products
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func boolPtrValue(value *bool) bool {
@@ -1020,6 +1127,7 @@ func apiProductFromAlgoliaHit(hit algoliaHit) apiProduct {
 		BrandName:       hit.BrandName,
 		ModelNumber:     hit.ModelNumber,
 		PrimaryUPC:      hit.PrimaryUPC,
+		Specs:           hit.Specs,
 	}
 }
 

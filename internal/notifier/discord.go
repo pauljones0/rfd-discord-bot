@@ -834,11 +834,15 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 	aiLabel := "New listing"
 	if product.AlertKind == bestbuy.AlertKindPriceDrop {
 		aiLabel = "Price drop"
+	} else if product.AlertKind == bestbuy.AlertKindComputeOutlier {
+		aiLabel = "Compute outlier"
 	}
 	if product.IsWarm {
 		embedColor = colorWarmDeal
 		if product.AlertKind == bestbuy.AlertKindPriceDrop {
 			aiLabel = "Warm price drop"
+		} else if product.AlertKind == bestbuy.AlertKindComputeOutlier {
+			aiLabel = "Warm compute outlier"
 		} else {
 			aiLabel = "Warm deal"
 		}
@@ -847,6 +851,8 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 		embedColor = colorHotDeal
 		if product.AlertKind == bestbuy.AlertKindPriceDrop {
 			aiLabel = "Lava hot price drop"
+		} else if product.AlertKind == bestbuy.AlertKindComputeOutlier {
+			aiLabel = "Lava hot compute outlier"
 		} else {
 			aiLabel = "Lava hot deal"
 		}
@@ -898,6 +904,8 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 	footerText := "Best Buy Marketplace"
 	if product.AlertKind == bestbuy.AlertKindPriceDrop {
 		footerText = "Best Buy Price Drop"
+	} else if product.AlertKind == bestbuy.AlertKindComputeOutlier {
+		footerText = "Best Buy Compute Outlier"
 	} else if strings.HasPrefix(product.Source, "seller:") {
 		footerText = "Best Buy New Listing"
 	} else if product.Source == "openbox" || product.IsOpenBox {
