@@ -49,34 +49,34 @@ type searchResponse struct {
 
 // apiProduct maps the fields we care about from the search API product JSON.
 type apiProduct struct {
-	SKU             string            `json:"sku"`
-	Name            string            `json:"name"`
-	ProductURL      string            `json:"productUrl"`
-	ThumbnailImage  string            `json:"thumbnailImage"`
-	RegularPrice    float64           `json:"regularPrice"`
-	SalePrice       float64           `json:"salePrice"`
-	SaleEndDate     string            `json:"saleEndDate"`
-	CategoryID      string            `json:"categoryId"`
-	CategoryName    string            `json:"categoryName"`
-	SellerID        string            `json:"sellerId"`
-	Seller          string            `json:"seller"`
-	CustomerRating  float64           `json:"customerRating"`
-	IsMarketplace   bool              `json:"isMarketplace"`
-	IsClearance     bool              `json:"isClearance"`
-	LastIndex       string            `json:"lastIndex"`
-	IndexTimestamp  int64             `json:"indexTimestamp"`
-	SearchStartDate int64             `json:"searchStartDate"`
-	SearchEndDate   int64             `json:"searchEndDate"`
-	InStock         *bool             `json:"inStock"`
-	IsVisible       *bool             `json:"isVisible"`
-	OnlineOnly      bool              `json:"onlineOnly"`
-	InStoreOnly     bool              `json:"inStoreOnly"`
-	IsOnSale        bool              `json:"isOnSale"`
-	Advertised      bool              `json:"advertised"`
-	BrandName       string            `json:"brandName"`
-	ModelNumber     string            `json:"modelNumber"`
-	PrimaryUPC      string            `json:"primaryUPC"`
-	Specs           map[string]string `json:"specs"`
+	SKU             string         `json:"sku"`
+	Name            string         `json:"name"`
+	ProductURL      string         `json:"productUrl"`
+	ThumbnailImage  string         `json:"thumbnailImage"`
+	RegularPrice    float64        `json:"regularPrice"`
+	SalePrice       float64        `json:"salePrice"`
+	SaleEndDate     string         `json:"saleEndDate"`
+	CategoryID      string         `json:"categoryId"`
+	CategoryName    string         `json:"categoryName"`
+	SellerID        string         `json:"sellerId"`
+	Seller          string         `json:"seller"`
+	CustomerRating  float64        `json:"customerRating"`
+	IsMarketplace   bool           `json:"isMarketplace"`
+	IsClearance     bool           `json:"isClearance"`
+	LastIndex       string         `json:"lastIndex"`
+	IndexTimestamp  int64          `json:"indexTimestamp"`
+	SearchStartDate int64          `json:"searchStartDate"`
+	SearchEndDate   int64          `json:"searchEndDate"`
+	InStock         *bool          `json:"inStock"`
+	IsVisible       *bool          `json:"isVisible"`
+	OnlineOnly      bool           `json:"onlineOnly"`
+	InStoreOnly     bool           `json:"inStoreOnly"`
+	IsOnSale        bool           `json:"isOnSale"`
+	Advertised      bool           `json:"advertised"`
+	BrandName       string         `json:"brandName"`
+	ModelNumber     string         `json:"modelNumber"`
+	PrimaryUPC      string         `json:"primaryUPC"`
+	Specs           map[string]any `json:"specs"`
 }
 
 type algoliaResponse struct {
@@ -122,7 +122,7 @@ type algoliaHit struct {
 	Rating struct {
 		CustomerRating float64 `json:"customerRating"`
 	} `json:"rating"`
-	Specs map[string]string `json:"specs"`
+	Specs map[string]any `json:"specs"`
 }
 
 type offerProduct struct {
@@ -865,7 +865,7 @@ func convertProducts(apiProducts []apiProduct, source string) []Product {
 			BrandName:       ap.BrandName,
 			ModelNumber:     ap.ModelNumber,
 			PrimaryUPC:      ap.PrimaryUPC,
-			Specs:           cloneStringMap(ap.Specs),
+			Specs:           normalizeSpecMap(ap.Specs),
 		})
 	}
 	return products
@@ -878,6 +878,32 @@ func cloneStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for key, value := range in {
 		out[key] = value
+	}
+	return out
+}
+
+func normalizeSpecMap(in map[string]any) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		switch typed := value.(type) {
+		case string:
+			out[key] = typed
+		case float64:
+			out[key] = strconv.FormatFloat(typed, 'f', -1, 64)
+		case bool:
+			out[key] = strconv.FormatBool(typed)
+		case []any:
+			parts := make([]string, 0, len(typed))
+			for _, item := range typed {
+				parts = append(parts, strings.TrimSpace(fmt.Sprint(item)))
+			}
+			out[key] = strings.Join(compactStrings(parts), ", ")
+		default:
+			out[key] = strings.TrimSpace(fmt.Sprint(typed))
+		}
 	}
 	return out
 }
