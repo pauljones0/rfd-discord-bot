@@ -512,6 +512,94 @@ func TestRefreshExistingBestBuyProduct_BaselinesLegacyRecordFromStoredPrice(t *t
 	}
 }
 
+func TestBestBuyComparableGuardDowngradesOptimisticWarm(t *testing.T) {
+	product := Product{
+		SKU:                   "111",
+		Name:                  "Refurbished Laptop",
+		SalePrice:             900,
+		ComparableCount:       3,
+		ComparableMedianPrice: 1000,
+		ComparableDiscountPct: 10,
+	}
+
+	analyzed := bestBuyFromAnalysis(product, BatchScreenResult{}, BatchAnalyzeResult{
+		IsWarm:  true,
+		Summary: "AI liked the seller discount",
+	})
+
+	if analyzed.IsWarm || analyzed.IsLavaHot {
+		t.Fatalf("optimistic comp-backed label was not downgraded: %#v", analyzed)
+	}
+	if !strings.Contains(analyzed.Summary, "Not enough below comps") {
+		t.Fatalf("Summary = %q, want comp downgrade note", analyzed.Summary)
+	}
+}
+
+func TestBestBuyComparableGuardKeepsWarmWhenEnoughBelowComps(t *testing.T) {
+	product := Product{
+		SKU:                   "111",
+		Name:                  "Refurbished Laptop",
+		SalePrice:             700,
+		ComparableCount:       3,
+		ComparableMedianPrice: 1000,
+		ComparableDiscountPct: 30,
+	}
+
+	analyzed := bestBuyFromAnalysis(product, BatchScreenResult{}, BatchAnalyzeResult{
+		IsWarm:  true,
+		Summary: "Well below comps",
+	})
+
+	if !analyzed.IsWarm || analyzed.IsLavaHot {
+		t.Fatalf("warm comp-backed label changed unexpectedly: %#v", analyzed)
+	}
+}
+
+func TestBestBuyComparableGuardDowngradesHotToWarm(t *testing.T) {
+	product := Product{
+		SKU:                   "111",
+		Name:                  "Refurbished Laptop",
+		SalePrice:             760,
+		ComparableCount:       3,
+		ComparableMedianPrice: 1000,
+		ComparableDiscountPct: 24,
+	}
+
+	analyzed := bestBuyFromAnalysis(product, BatchScreenResult{}, BatchAnalyzeResult{
+		IsWarm:    true,
+		IsLavaHot: true,
+		Summary:   "AI called it hot",
+	})
+
+	if !analyzed.IsWarm || analyzed.IsLavaHot {
+		t.Fatalf("hot label was not downgraded to warm: %#v", analyzed)
+	}
+	if !strings.Contains(analyzed.Summary, "Hot label downgraded by comps") {
+		t.Fatalf("Summary = %q, want hot downgrade note", analyzed.Summary)
+	}
+}
+
+func TestBestBuyComparableGuardKeepsLavaHotWhenDeepBelowComps(t *testing.T) {
+	product := Product{
+		SKU:                   "111",
+		Name:                  "Refurbished Laptop",
+		SalePrice:             500,
+		ComparableCount:       3,
+		ComparableMedianPrice: 1000,
+		ComparableDiscountPct: 50,
+	}
+
+	analyzed := bestBuyFromAnalysis(product, BatchScreenResult{}, BatchAnalyzeResult{
+		IsWarm:    true,
+		IsLavaHot: true,
+		Summary:   "Deeply below comps",
+	})
+
+	if !analyzed.IsWarm || !analyzed.IsLavaHot {
+		t.Fatalf("lava-hot comp-backed label changed unexpectedly: %#v", analyzed)
+	}
+}
+
 func bestBuyTestClient(body string) *Client {
 	client := NewClient()
 	client.httpClient = &http.Client{Transport: bestBuyRoundTripFunc(func(req *http.Request) (*http.Response, error) {

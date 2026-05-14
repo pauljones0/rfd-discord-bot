@@ -294,6 +294,65 @@ func TestEnrichComparablesUsesOffersAndAlgolia(t *testing.T) {
 	}
 }
 
+func TestEnrichComparablesExcludesSameSellerByIDAndName(t *testing.T) {
+	client := NewClient()
+	client.SetBackends([]string{BackendAlgolia})
+	client.httpClient = &http.Client{Transport: bestBuyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/offers") {
+			return bestBuyJSONResponse(req, `[
+				{"sku":"19867564","sellerId":"1247543","sellerNameEn":"Parts Search","regularPrice":499,"salePrice":300,"offerEndDate":"9999-12-31T00:00:00Z","isMarketplace":true},
+				{"sku":"19867564","sellerId":"other","sellerNameEn":"Other Seller","regularPrice":499,"salePrice":450,"offerEndDate":"9999-12-31T00:00:00Z","isMarketplace":true}
+			]`), nil
+		}
+		return bestBuyJSONResponse(req, `{
+			"page":0,
+			"nbHits":2,
+			"nbPages":1,
+			"hits":[{
+				"objectID":"999",
+				"sku":"999",
+				"title":"Refurbished (Good) Apple MacBook Air M1 512GB",
+				"inStock":true,
+				"isVisible":true,
+				"searchEndDate":253402214400000,
+				"seller":{"sellerName":"Parts Search","marketplace":true},
+				"price":{"regularPrice":599,"currentPrice":299}
+			},{
+				"objectID":"998",
+				"sku":"998",
+				"title":"Refurbished (Good) Apple MacBook Air M1 512GB",
+				"inStock":true,
+				"isVisible":true,
+				"searchEndDate":253402214400000,
+				"seller":{"sellerId":"seller2","sellerName":"Seller 2","marketplace":true},
+				"price":{"regularPrice":599,"currentPrice":500}
+			}]
+		}`), nil
+	})}
+
+	product, err := client.EnrichComparables(context.Background(), Product{
+		SKU:        "19867564",
+		Name:       "Refurbished (Good) Apple MacBook Air M1 16GB 512GB",
+		SalePrice:  300,
+		SellerName: "Parts Search",
+		Source:     "seller:1247543",
+		PrimaryUPC: "upc",
+	}, time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("EnrichComparables() error = %v", err)
+	}
+	if product.ComparableCount != 2 {
+		t.Fatalf("ComparableCount = %d, want only two other-seller comps; summary=%q", product.ComparableCount, product.ComparableSummary)
+	}
+	if product.ComparableLowestPrice != 450 || product.ComparableMedianPrice != 475 {
+		t.Fatalf("same-seller comps were not excluded; median=%.2f low=%.2f summary=%q",
+			product.ComparableMedianPrice, product.ComparableLowestPrice, product.ComparableSummary)
+	}
+	if !strings.Contains(product.ComparableSummary, "excluding this seller") {
+		t.Fatalf("ComparableSummary = %q, want same-seller exclusion called out", product.ComparableSummary)
+	}
+}
+
 func TestAlgoliaFacetFilterFromPath(t *testing.T) {
 	tests := map[string]string{
 		"sellerName:Parts Search":        "seller.sellerName:Parts Search",

@@ -869,7 +869,7 @@ func (c *Client) FindComparableListings(ctx context.Context, product Product, no
 			if price <= 0 {
 				continue
 			}
-			if offer.SellerID == product.SellerID && offer.SellerID != "" {
+			if sameBestBuySeller(product, offer.SellerID, offer.SellerNameEn) {
 				continue
 			}
 			comps = append(comps, ComparableListing{
@@ -926,6 +926,9 @@ func (c *Client) FindComparableListings(ctx context.Context, product Product, no
 		}
 		price := effectiveProductPrice(hitProduct)
 		if price <= 0 {
+			continue
+		}
+		if sameBestBuySeller(product, hitProduct.SellerID, hitProduct.SellerName) {
 			continue
 		}
 		if !comparableCondition(candidateCondition, productCondition(hitProduct.Name)) {
@@ -1090,6 +1093,19 @@ func sellerIDFromProduct(product Product) string {
 	return strings.TrimPrefix(product.Source, "seller:")
 }
 
+func sameBestBuySeller(product Product, sellerID, sellerName string) bool {
+	productSellerID := strings.TrimSpace(sellerIDFromProduct(product))
+	if productSellerID != "" && strings.TrimSpace(sellerID) == productSellerID {
+		return true
+	}
+	productSellerName := normalizeSellerName(product.SellerName)
+	return productSellerName != "" && normalizeSellerName(sellerName) == productSellerName
+}
+
+func normalizeSellerName(name string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(name))), " ")
+}
+
 func rejectReasonFromIndexedState(product Product, now time.Time) string {
 	if product.InStockKnown && !product.InStock {
 		return "out_of_stock"
@@ -1223,7 +1239,7 @@ func applyComparableSummary(product *Product, comps []ComparableListing) {
 	product.ComparableLowestPrice = lowest
 	product.ComparableMedianPrice = median
 	product.ComparableDiscountPct = discountPct
-	product.ComparableSummary = fmt.Sprintf("Best Buy comps: $%.2f median / $%.2f low across %d active comparable%s; candidate is %.0f%% below median.",
+	product.ComparableSummary = fmt.Sprintf("Best Buy comps: $%.2f median / $%.2f low across %d active comparable%s excluding this seller; candidate is %.0f%% below median.",
 		median, lowest, len(prices), pluralSuffix(len(prices)), discountPct)
 }
 

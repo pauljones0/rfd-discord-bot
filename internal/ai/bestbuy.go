@@ -75,8 +75,10 @@ func (c *Client) ScreenBestBuyBatch(ctx context.Context, products []bestbuy.Prod
 
 Review these %d products and select the top %d items that are most likely to be genuinely good deals.
 Focus on items where the price appears significantly below typical Canadian retail/market value.
-For marketplace items, compare against new retail pricing.
-For open-box items, consider the condition discount vs typical market value.
+For marketplace items, same-seller regular/list prices are weak evidence because marketplace sellers can inflate them.
+When Best Buy comparable evidence is present, it already excludes the current seller. Treat that as stronger than the seller's own regular price.
+Do not mark an item as a top deal from discount percentage alone. With comps, prefer items at least 20%% and $50 below the median comparable price. Lava-hot candidates should look 40%%+ and $100+ below comps.
+For open-box items, consider the condition discount vs typical market value, but still prefer external/current-comparable evidence.
 Ignore generic accessories, low-value items, and items where the discount is unremarkable.
 
 Items:
@@ -227,8 +229,10 @@ func (c *Client) AnalyzeBestBuyBatch(ctx context.Context, products []bestbuy.Pro
 	prompt := fmt.Sprintf(`You are a Canadian tech deal expert verifying Best Buy Canada marketplace products.
 
 For each item, determine whether the price is a genuinely good Canadian tech deal.
-Use "warm" for meaningfully below market or unusually attractive.
+Use "warm" only when it is meaningfully below market or unusually attractive.
 Use "lava hot" only for absurdly good prices, likely pricing errors, or 50%%+ off on broadly desirable products.
+Treat same-seller regular/list prices as weak evidence. Best Buy comparable evidence, when present, excludes the current seller and should be weighted heavily.
+If comps exist, do not call an item warm unless it is roughly 20%%+ and $50+ below the median comparable. Do not call it lava hot unless it is roughly 40%%+ and $100+ below comps.
 Return all items, including non-deals, with concise product-focused clean titles and one-line summaries.
 
 Items:
@@ -351,9 +355,12 @@ Task:
 3. Determine if this is a "warm" deal:
    - The price is significantly below typical Canadian retail for this product.
    - The product has broad appeal or is a desirable tech item.
-   - 30%%+ discount on a quality product with general demand qualifies as warm.
-   - For marketplace/open-box items, compare against new retail pricing.
+   - Do not trust the seller's own regular/list price by itself.
+   - Best Buy comparable evidence, when present, excludes this seller and is the strongest signal.
+   - With comps, warm usually requires 20%%+ and $50+ below median comparable pricing.
+   - For marketplace/open-box items, compare against new retail pricing and active comparable listings.
 4. Determine if this is "Lava Hot" — be strict. Only if the price is absurdly good (50%%+ off on a popular, in-demand product, or a clear pricing error).
+   - With comps, lava hot usually requires 40%%+ and $100+ below comparable pricing.
 
 Return JSON only: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool, "summary": "..."}
 `, product.Name, product.CategoryName, product.RegularPrice, finalPrice, discountPct, product.SellerName, sourceContext, firstNonEmptyString(product.ComparableSummary, "No active comparable summary available."))

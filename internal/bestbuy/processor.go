@@ -20,6 +20,14 @@ const (
 	priceDropMinPct        = 20
 	priceDropMinAmount     = 50
 	priceComparisonEpsilon = 0.005
+
+	comparableWarmMinCount        = 2
+	comparableWarmMinPct          = 20.0
+	comparableWarmMinAmount       = 50.0
+	comparableLavaHotMinPct       = 40.0
+	comparableLavaHotMinAmount    = 100.0
+	singleComparableWarmMinPct    = 30.0
+	singleComparableWarmMinAmount = 75.0
 )
 
 // Store abstracts persistence operations for the Best Buy processor.
@@ -924,7 +932,7 @@ func bestBuyFromAnalysis(product Product, screen BatchScreenResult, result Batch
 	analyzed.IsWarm = result.IsWarm
 	analyzed.IsLavaHot = result.IsLavaHot
 	analyzed.Summary = result.Summary
-	return analyzed
+	return applyBestBuyComparableGuard(analyzed)
 }
 
 func priceDropCandidateProducts(candidates []priceDropCandidate) []Product {
@@ -959,7 +967,62 @@ func priceDropFromAnalysis(candidate priceDropCandidate, screen BatchScreenResul
 	analyzed.IsWarm = result.IsWarm
 	analyzed.IsLavaHot = result.IsLavaHot
 	analyzed.Summary = result.Summary
-	return analyzed
+	return applyBestBuyComparableGuard(analyzed)
+}
+
+func applyBestBuyComparableGuard(product AnalyzedProduct) AnalyzedProduct {
+	if product.ComparableCount <= 0 || product.ComparableMedianPrice <= 0 {
+		return product
+	}
+
+	warmOK := bestBuyComparableWarmEligible(product.Product)
+	lavaOK := bestBuyComparableLavaHotEligible(product.Product)
+	if product.IsLavaHot && !lavaOK {
+		product.IsLavaHot = false
+		if warmOK {
+			product.IsWarm = true
+			product.Summary = compactBestBuySummary(product.Summary, "Hot label downgraded by comps")
+		}
+	}
+	if product.IsWarm && !warmOK {
+		product.IsWarm = false
+		product.IsLavaHot = false
+		product.Summary = compactBestBuySummary(product.Summary, "Not enough below comps")
+	}
+	return product
+}
+
+func bestBuyComparableWarmEligible(product Product) bool {
+	current := effectivePrice(product)
+	if current <= 0 || product.ComparableMedianPrice <= 0 || current >= product.ComparableMedianPrice-priceComparisonEpsilon {
+		return false
+	}
+	savings := product.ComparableMedianPrice - current
+	if product.ComparableCount < comparableWarmMinCount {
+		return product.ComparableDiscountPct >= singleComparableWarmMinPct && savings >= singleComparableWarmMinAmount
+	}
+	return product.ComparableDiscountPct >= comparableWarmMinPct && savings >= comparableWarmMinAmount
+}
+
+func bestBuyComparableLavaHotEligible(product Product) bool {
+	current := effectivePrice(product)
+	if current <= 0 || product.ComparableMedianPrice <= 0 || current >= product.ComparableMedianPrice-priceComparisonEpsilon {
+		return false
+	}
+	savings := product.ComparableMedianPrice - current
+	return product.ComparableDiscountPct >= comparableLavaHotMinPct && savings >= comparableLavaHotMinAmount
+}
+
+func compactBestBuySummary(existing, note string) string {
+	existing = firstNonEmpty(existing, note)
+	if existing == note {
+		return existing
+	}
+	summary := existing + "; " + note
+	if len(summary) > 100 {
+		return summary[:97] + "..."
+	}
+	return summary
 }
 
 // computeDiscount calculates the discount percentage for a product.
