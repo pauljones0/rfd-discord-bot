@@ -408,7 +408,10 @@ func rejectComputeReason(lower string) string {
 		"tray caddy":            "server_part",
 		"hdd tray":              "server_part",
 		"ac adapter":            "power_accessory",
+		"ac charger":            "power_accessory",
 		"power cord":            "power_accessory",
+		"power adapter":         "power_accessory",
+		"charger fit":           "power_accessory",
 		"cable":                 "accessory",
 		"battery":               "accessory",
 		"lcd screen":            "accessory",
@@ -432,11 +435,40 @@ func rejectComputeReason(lower string) string {
 	if strings.Contains(lower, "processor upgrade") && !strings.Contains(lower, "desktop") {
 		return "component"
 	}
+	if strings.Contains(lower, " processor") && !containsComputeSystemTerm(lower) {
+		return "processor_component"
+	}
 	if regexp.MustCompile(`(?i)\b\d+\s*(?:gb|tb)\s+(?:ssd|hdd|hard drive|sas|sata)\b`).MatchString(lower) &&
 		!strings.Contains(lower, "desktop") && !strings.Contains(lower, "workstation") && !strings.Contains(lower, "server") && !strings.Contains(lower, "laptop") {
 		return "storage_component"
 	}
 	return ""
+}
+
+func containsComputeSystemTerm(lower string) bool {
+	terms := []string{
+		"desktop",
+		"workstation",
+		"server",
+		"laptop",
+		"notebook",
+		"chromebook",
+		"mini pc",
+		"gaming pc",
+		"computer",
+		"tower",
+		"poweredge",
+		"proliant",
+		"thinksystem",
+		"thinkstation",
+		"zbook",
+	}
+	for _, term := range terms {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func computeClassFromText(text string, spec ComputeSpec) string {

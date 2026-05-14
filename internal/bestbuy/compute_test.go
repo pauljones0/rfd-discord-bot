@@ -64,8 +64,10 @@ func TestParseComputeSpecRejectsAccessories(t *testing.T) {
 		{Name: `OWC 64GB DDR4 Server ECC Registered RDIMM Memory RAM Compatible with Lenovo ThinkSystem`},
 		{Name: `Dell PowerEdge R730 3.5" Drive Tray Caddy`},
 		{Name: `HP ZBook 150W AC Adapter Power Cord`},
+		{Name: `240W 180W AC Charger Fit for Dell Precision 7760 Mobile Workstation`},
 		{Name: `MSI Gaming Mouse 26000 DPI Optical Sensor`},
 		{Name: `Dell Precision 7730 Replacement LCD Screen`},
+		{Name: `Intel Xeon E3-1220 V3 Quad-core (4 Core) 3.10 Ghz Processor`},
 	}
 	for _, product := range products {
 		spec := ParseComputeSpec(product)
