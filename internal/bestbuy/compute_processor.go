@@ -154,7 +154,7 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 			}
 			continue
 		}
-		score := ScoreComputeOutlier(observation.Product, observation.Spec, compPool)
+		score := ScoreComputeObservationOutlier(observation, compPool)
 		observation.ComparableCount = score.ComparableCount
 		observation.ComparableMedianPrice = score.MedianPrice
 		observation.ComparableP25Price = score.P25Price

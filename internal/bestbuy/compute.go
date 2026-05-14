@@ -25,6 +25,10 @@ const (
 	defaultComputeWarmMinGapAmount = 300.0
 	defaultComputeHotMinGapPct     = 40.0
 	defaultComputeHotMinGapAmount  = 700.0
+
+	computeEmbeddingMinComparableCount = 3
+	computeEmbeddingSimilarityCutoff   = 0.35
+	computeEmbeddingMaxComparableCount = 60
 )
 
 var (
@@ -147,21 +151,17 @@ func ComputeEmbeddingText(product Product, spec ComputeSpec) string {
 }
 
 func ScoreComputeOutlier(product Product, spec ComputeSpec, comps []ComputeObservation) ComputeScore {
+	return ScoreComputeObservationOutlier(ComputeObservation{Product: product, Spec: spec}, comps)
+}
+
+func ScoreComputeObservationOutlier(observation ComputeObservation, comps []ComputeObservation) ComputeScore {
+	product := observation.Product
+	spec := observation.Spec
 	price := effectiveProductPrice(product)
 	if price <= 0 || !spec.IsCompute {
 		return ComputeScore{}
 	}
-	var prices []float64
-	for _, comp := range comps {
-		if !compatibleComputeComp(product, spec, comp) {
-			continue
-		}
-		compPrice := effectiveProductPrice(comp.Product)
-		if compPrice <= 0 {
-			continue
-		}
-		prices = append(prices, compPrice)
-	}
+	prices := computeComparablePrices(observation, comps)
 	if len(prices) < 3 {
 		return ComputeScore{ComparableCount: len(prices)}
 	}
@@ -208,6 +208,85 @@ func ScoreComputeOutlier(product Product, spec ComputeSpec, comps []ComputeObser
 	}
 }
 
+type computeComparablePrice struct {
+	price      float64
+	similarity float64
+	hasVector  bool
+}
+
+func computeComparablePrices(observation ComputeObservation, comps []ComputeObservation) []float64 {
+	values := make([]computeComparablePrice, 0, len(comps))
+	vectorComparableCount := 0
+	seen := make(map[string]bool, len(comps))
+	for _, comp := range comps {
+		if !compatibleComputeComp(observation.Product, observation.Spec, comp) {
+			continue
+		}
+		key := computeObservationKey(comp.Product)
+		if key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		compPrice := effectiveProductPrice(comp.Product)
+		if compPrice <= 0 {
+			continue
+		}
+		value := computeComparablePrice{price: compPrice}
+		if similarity, ok := vectorSimilarity(observation.EmbeddingVector, comp.EmbeddingVector); ok {
+			value.similarity = similarity
+			value.hasVector = true
+			vectorComparableCount++
+		}
+		values = append(values, value)
+	}
+	if len(values) == 0 {
+		return nil
+	}
+
+	if vectorComparableCount >= computeEmbeddingMinComparableCount {
+		nearest := make([]computeComparablePrice, 0, len(values))
+		for _, value := range values {
+			if value.hasVector && value.similarity >= computeEmbeddingSimilarityCutoff {
+				nearest = append(nearest, value)
+			}
+		}
+		if len(nearest) >= computeEmbeddingMinComparableCount {
+			sort.Slice(nearest, func(i, j int) bool {
+				if nearest[i].similarity == nearest[j].similarity {
+					return nearest[i].price < nearest[j].price
+				}
+				return nearest[i].similarity > nearest[j].similarity
+			})
+			if len(nearest) > computeEmbeddingMaxComparableCount {
+				nearest = nearest[:computeEmbeddingMaxComparableCount]
+			}
+			return comparablePriceValues(nearest)
+		}
+	}
+	return comparablePriceValues(values)
+}
+
+func comparablePriceValues(values []computeComparablePrice) []float64 {
+	prices := make([]float64, 0, len(values))
+	for _, value := range values {
+		prices = append(prices, value.price)
+	}
+	return prices
+}
+
+func vectorSimilarity(a, b []float64) (float64, bool) {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0, false
+	}
+	var dot float64
+	for i := range a {
+		dot += a[i] * b[i]
+	}
+	return dot, true
+}
+
 func compatibleComputeComp(product Product, spec ComputeSpec, comp ComputeObservation) bool {
 	if comp.SKU == product.SKU && comp.Source == product.Source {
 		return false
@@ -230,6 +309,17 @@ func compatibleComputeComp(product Product, spec ComputeSpec, comp ComputeObserv
 	if spec.Model != "" && compSpec.Model != "" && spec.Model != compSpec.Model {
 		return false
 	}
+	if spec.Family == "" && compSpec.Family == "" {
+		if !similarCPUClass(spec.CPUModel, compSpec.CPUModel) && !similarResourceBand(spec, compSpec) {
+			return false
+		}
+	}
+	if spec.Family != "" && compSpec.Family == "" && !similarResourceBand(spec, compSpec) {
+		return false
+	}
+	if spec.Family == "" && compSpec.Family != "" && !similarResourceBand(spec, compSpec) {
+		return false
+	}
 	if spec.RAMGB > 0 && compSpec.RAMGB > 0 {
 		ratio := compSpec.RAMGB / spec.RAMGB
 		if ratio < 0.5 || ratio > 2.0 {
@@ -243,6 +333,49 @@ func compatibleComputeComp(product Product, spec ComputeSpec, comp ComputeObserv
 		}
 	}
 	return true
+}
+
+func similarResourceBand(a, b ComputeSpec) bool {
+	if a.RAMGB <= 0 || b.RAMGB <= 0 {
+		return false
+	}
+	ramRatio := b.RAMGB / a.RAMGB
+	if ramRatio < 0.75 || ramRatio > 1.5 {
+		return false
+	}
+	if a.CoreCount > 0 && b.CoreCount > 0 {
+		diff := math.Abs(float64(a.CoreCount - b.CoreCount))
+		return diff <= math.Max(4, float64(a.CoreCount)/3)
+	}
+	return similarCPUClass(a.CPUModel, b.CPUModel)
+}
+
+func similarCPUClass(a, b string) bool {
+	a = cpuClass(a)
+	b = cpuClass(b)
+	return a != "" && a == b
+}
+
+func cpuClass(cpu string) string {
+	cpu = strings.ToLower(cpu)
+	switch {
+	case strings.Contains(cpu, "xeon"):
+		return "xeon"
+	case strings.Contains(cpu, "threadripper"):
+		return "threadripper"
+	case strings.Contains(cpu, "epyc"):
+		return "epyc"
+	case strings.Contains(cpu, "core i9") || strings.Contains(cpu, "ultra 9"):
+		return "core_i9"
+	case strings.Contains(cpu, "core i7") || strings.Contains(cpu, "ultra 7"):
+		return "core_i7"
+	case strings.Contains(cpu, "ryzen 9"):
+		return "ryzen_9"
+	case strings.Contains(cpu, "ryzen 7"):
+		return "ryzen_7"
+	default:
+		return ""
+	}
 }
 
 func computeHaystack(product Product) string {
@@ -271,6 +404,20 @@ func rejectComputeReason(lower string) string {
 		"riser kit":             "server_part",
 		"power supply":          "server_part",
 		"drive bay":             "server_part",
+		"drive tray":            "server_part",
+		"tray caddy":            "server_part",
+		"hdd tray":              "server_part",
+		"ac adapter":            "power_accessory",
+		"power cord":            "power_accessory",
+		"cable":                 "accessory",
+		"battery":               "accessory",
+		"lcd screen":            "accessory",
+		"screen replacement":    "accessory",
+		"keyboard":              "accessory",
+		"gaming mouse":          "accessory",
+		"optical sensor":        "accessory",
+		"duster filter":         "accessory",
+		"compatible with":       "component",
 		"enablement kit":        "server_part",
 		"memory ram compatible": "component",
 		"bench buffer":          "not_compute",
@@ -305,6 +452,8 @@ func computeClassFromText(text string, spec ComputeSpec) string {
 		return ComputeClassWorkstationLaptop
 	case strings.Contains(lower, "workstation") || strings.Contains(lower, "precision") || strings.Contains(lower, "thinkstation") || strings.Contains(lower, " hp z") || strings.Contains(lower, "mac pro"):
 		return ComputeClassWorkstationDesktop
+	case strings.Contains(lower, "laptop") || strings.Contains(lower, "notebook") || strings.Contains(lower, "chromebook"):
+		return ComputeClassOther
 	case strings.Contains(lower, "desktop") || strings.Contains(lower, "gaming pc") || strings.Contains(lower, "mini pc"):
 		return ComputeClassDesktop
 	case spec.CPUModel != "" || spec.RAMGB >= 64 || spec.CoreCount >= 12:

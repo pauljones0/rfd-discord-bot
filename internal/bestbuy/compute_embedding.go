@@ -78,6 +78,9 @@ func (e commandComputeEmbedder) Embed(ctx context.Context, texts []string) (stri
 	if len(response.Vectors) != len(texts) {
 		return "", nil, fmt.Errorf("embedding response vector count %d != text count %d", len(response.Vectors), len(texts))
 	}
+	for i := range response.Vectors {
+		normalizeVector(response.Vectors[i])
+	}
 	if response.Model == "" {
 		response.Model = "external-local-embedding"
 	}
