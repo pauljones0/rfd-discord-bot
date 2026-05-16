@@ -104,25 +104,37 @@ func TestParseComputeSpecIncludesHighComputeLaptopsAndApple(t *testing.T) {
 			Name: "Apple Mac Studio M2 Ultra 128GB RAM 2TB SSD",
 		},
 		{
-			Name: "Apple MacBook Pro M4 Max 48GB RAM 1TB SSD",
+			Name: "Apple MacBook Pro M4 Max 96GB RAM 1TB SSD",
 		},
 		{
-			Name: "Apple MacBook Pro 14 Apple M5 Pro 24GB RAM 1TB SSD",
+			Name: "Snapdragon X Elite Laptop 64GB RAM 1TB SSD",
 		},
 		{
-			Name: "Snapdragon X Elite Laptop 32GB RAM 1TB SSD",
+			Name: "Lenovo Yoga Pro Laptop Core Ultra 9 64GB RAM 1TB SSD",
 		},
 		{
-			Name: "Lenovo Yoga Pro Laptop Core Ultra 9 32GB RAM 1TB SSD",
-		},
-		{
-			Name: "ASUS ROG Flow Z13 Laptop Ryzen AI Max 32GB RAM 1TB SSD",
+			Name: "ASUS ROG Flow Z13 Laptop Ryzen AI Max 128GB RAM 1TB SSD",
 		},
 	}
 	for _, product := range products {
 		spec := ParseComputeSpec(product)
 		if !spec.IsCompute {
 			t.Fatalf("%q parsed as not compute: %#v", product.Name, spec)
+		}
+	}
+}
+
+func TestParseComputeSpecRejectsSub64GBLaptops(t *testing.T) {
+	products := []Product{
+		{Name: "Apple MacBook Pro 14 Apple M5 Pro 24GB RAM 1TB SSD"},
+		{Name: "Apple MacBook Pro M4 Max 48GB RAM 1TB SSD"},
+		{Name: "Snapdragon X Elite Laptop 32GB RAM 1TB SSD"},
+		{Name: "Lenovo ThinkPad P Workstation Laptop Core i9 32GB RAM 1TB SSD"},
+	}
+	for _, product := range products {
+		spec := ParseComputeSpec(product)
+		if spec.IsCompute {
+			t.Fatalf("%q parsed as compute below 64GB cutoff: %#v", product.Name, spec)
 		}
 	}
 }

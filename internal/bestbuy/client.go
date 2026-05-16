@@ -295,13 +295,12 @@ func (c *Client) FetchComputeProducts(ctx context.Context) ([]Product, error) {
 }
 
 func DefaultComputeSearchTargets() []ComputeSearchTarget {
-	ram64 := `["specs.custom0ramsize:64","specs.custom0ramsize:96","specs.custom0ramsize:128","specs.custom0ramsize:192","specs.custom0ramsize:256","specs.custom0ramsize:512","specs.custom0ramsize:1000"]`
-	performanceLaptopRAM := `["specs.custom0ramsize:24","specs.custom0ramsize:32","specs.custom0ramsize:36","specs.custom0ramsize:40","specs.custom0ramsize:48"]`
+	ram64 := `["specs.custom0ramsize:64","specs.custom0ramsize:96","specs.custom0ramsize:128","specs.custom0ramsize:192","specs.custom0ramsize:256","specs.custom0ramsize:512","specs.custom0ramsize:1000","specs.custom0ramsize:1024","specs.custom0ramsize:1536","specs.custom0ramsize:2048"]`
 	core12 := `["specs.custom0processorcores:12","specs.custom0processorcores:14","specs.custom0processorcores:16","specs.custom0processorcores:20","specs.custom0processorcores:24","specs.custom0processorcores:28","specs.custom0processorcores:32","specs.custom0processorcores:36","specs.custom0processorcores:48","specs.custom0processorcores:64"]`
 	return []ComputeSearchTarget{
 		{Name: "ram64-all", FacetFilters: "[" + ram64 + "]"},
+		{Name: "windows-laptops-category", FacetFilters: `["categoryIds:36711"]`},
 		{Name: "windows-laptops-ram64", FacetFilters: "[" + ram64 + `,"categoryIds:36711"]`},
-		{Name: "windows-laptops-performance-ram", FacetFilters: "[" + performanceLaptopRAM + `,"categoryIds:36711"]`},
 		{Name: "core12-under-1500", FacetFilters: "[" + core12 + "]", Filters: "price.currentPrice <= 1500"},
 		{Name: "core12-1500-2500", FacetFilters: "[" + core12 + "]", Filters: "price.currentPrice > 1500 AND price.currentPrice <= 2500"},
 		{Name: "servers-category", FacetFilters: `["categoryIds:26200"]`},
@@ -323,13 +322,6 @@ func DefaultComputeSearchTargets() []ComputeSearchTarget {
 		{Name: "rtx-a-workstation", Query: "RTX A4000 workstation"},
 		{Name: "mac-studio", Query: "Mac Studio"},
 		{Name: "macbook-pro", Query: "MacBook Pro"},
-		{Name: "core-ultra-9-laptop", Query: "Core Ultra 9 laptop"},
-		{Name: "intel-i9-laptop", Query: "i9 laptop"},
-		{Name: "ryzen-9-laptop", Query: "Ryzen 9 laptop"},
-		{Name: "ryzen-ai-max-laptop", Query: "Ryzen AI Max laptop"},
-		{Name: "snapdragon-x-elite-laptop", Query: "Snapdragon X Elite laptop"},
-		{Name: "laptop-64gb-ram", Query: "laptop 64GB RAM"},
-		{Name: "laptop-128gb-ram", Query: "laptop 128GB RAM"},
 	}
 }
 
@@ -546,8 +538,15 @@ func (c *Client) doRawAlgoliaSearch(ctx context.Context, params url.Values) (*al
 	if facetFilters := strings.TrimSpace(params.Get("facetFilters")); facetFilters != "" {
 		algoliaParams.Set("facetFilters", facetFilters)
 	}
+	var filters []string
+	if rawFilters := strings.TrimSpace(params.Get("filters")); rawFilters != "" {
+		filters = append(filters, rawFilters)
+	}
 	if minIndexTimestamp := strings.TrimSpace(params.Get(algoliaIndexTimestampMinParam)); minIndexTimestamp != "" {
-		algoliaParams.Set("filters", "indexTimestamp >= "+minIndexTimestamp)
+		filters = append(filters, "indexTimestamp >= "+minIndexTimestamp)
+	}
+	if len(filters) > 0 {
+		algoliaParams.Set("filters", strings.Join(filters, " AND "))
 	}
 
 	body, err := json.Marshal(map[string]string{"params": algoliaParams.Encode()})

@@ -368,6 +368,39 @@ func TestAlgoliaFacetFilterFromPath(t *testing.T) {
 	}
 }
 
+func TestAlgoliaSearchPreservesTargetAndRecentFilters(t *testing.T) {
+	client := NewClient()
+	client.httpClient = &http.Client{Transport: bestBuyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		rawBody, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		var body struct {
+			Params string `json:"params"`
+		}
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			t.Fatalf("request body is not JSON: %v", err)
+		}
+		params, err := url.ParseQuery(body.Params)
+		if err != nil {
+			t.Fatalf("Algolia params are invalid: %v", err)
+		}
+		want := "price.currentPrice <= 1500 AND indexTimestamp >= 1778433804372"
+		if got := params.Get("filters"); got != want {
+			t.Fatalf("filters = %q, want %q", got, want)
+		}
+		return bestBuyJSONResponse(req, `{"page":0,"nbHits":0,"nbPages":0,"hits":[]}`), nil
+	})}
+
+	params := url.Values{
+		"filters":                     {"price.currentPrice <= 1500"},
+		algoliaIndexTimestampMinParam: {"1778433804372"},
+	}
+	if _, err := client.doRawAlgoliaSearch(context.Background(), params); err != nil {
+		t.Fatalf("doRawAlgoliaSearch() error = %v", err)
+	}
+}
+
 func TestDefaultComputeSearchTargetsCoverAppleAndHighRAMLaptops(t *testing.T) {
 	targets := map[string]ComputeSearchTarget{}
 	for _, target := range DefaultComputeSearchTargets() {
@@ -400,24 +433,22 @@ func TestDefaultComputeSearchTargetsCoverAppleAndHighRAMLaptops(t *testing.T) {
 	if !strings.Contains(laptopTarget.FacetFilters, "specs.custom0ramsize:128") {
 		t.Fatalf("windows laptop target facet = %q, want high-RAM facet group", laptopTarget.FacetFilters)
 	}
-	performanceRAMTarget, ok := targets["windows-laptops-performance-ram"]
+	if !strings.Contains(laptopTarget.FacetFilters, "specs.custom0ramsize:2048") {
+		t.Fatalf("windows laptop target facet = %q, want 2TB RAM facet", laptopTarget.FacetFilters)
+	}
+	categoryTarget, ok := targets["windows-laptops-category"]
 	if !ok {
-		t.Fatal("missing windows-laptops-performance-ram compute target")
+		t.Fatal("missing windows-laptops-category compute target")
 	}
-	if !strings.Contains(performanceRAMTarget.FacetFilters, "categoryIds:36711") {
-		t.Fatalf("performance laptop target facet = %q, want Windows Laptops category", performanceRAMTarget.FacetFilters)
-	}
-	for _, ram := range []string{"24", "32", "36", "40", "48"} {
-		if !strings.Contains(performanceRAMTarget.FacetFilters, "specs.custom0ramsize:"+ram) {
-			t.Fatalf("performance laptop target facet = %q, want %sGB RAM facet", performanceRAMTarget.FacetFilters, ram)
-		}
+	if categoryTarget.FacetFilters != `["categoryIds:36711"]` {
+		t.Fatalf("windows-laptops-category facet = %q, want broad Windows Laptops category", categoryTarget.FacetFilters)
 	}
 	if target, ok := targets["macbook-pro"]; !ok || target.Query != "MacBook Pro" {
 		t.Fatalf("macbook-pro target = %#v, want broad query fallback", target)
 	}
 	for _, name := range []string{"core-ultra-9-laptop", "intel-i9-laptop", "ryzen-9-laptop", "ryzen-ai-max-laptop"} {
-		if _, ok := targets[name]; !ok {
-			t.Fatalf("missing compute target %q", name)
+		if _, ok := targets[name]; ok {
+			t.Fatalf("legacy narrow laptop target %q should be removed in favor of category parsing", name)
 		}
 	}
 }

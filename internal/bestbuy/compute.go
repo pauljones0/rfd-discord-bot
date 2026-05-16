@@ -639,11 +639,11 @@ func isHighComputeSpec(spec ComputeSpec) bool {
 	if spec.Class == ComputeClassRackServer || spec.Class == ComputeClassTowerServer {
 		return true
 	}
-	if spec.Class == ComputeClassWorkstationDesktop || spec.Class == ComputeClassWorkstationLaptop {
+	if spec.Class == ComputeClassWorkstationDesktop {
 		return spec.RAMGB >= 32 || spec.CoreCount >= 12 || highValueCPU(spec.CPUModel) || spec.GPU != ""
 	}
-	if spec.Class == ComputeClassLaptop {
-		return spec.RAMGB >= 64 || spec.CoreCount >= 12 || (spec.RAMGB >= 24 && highValueCPU(spec.CPUModel))
+	if spec.Class == ComputeClassWorkstationLaptop || spec.Class == ComputeClassLaptop {
+		return spec.RAMGB >= 64
 	}
 	return spec.RAMGB >= 64 || spec.CoreCount >= 16 || highValueCPU(spec.CPUModel) || spec.GPU != ""
 }
