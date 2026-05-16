@@ -2,6 +2,7 @@ package bestbuy
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -59,6 +60,35 @@ type computeTestNotifier struct {
 func (n *computeTestNotifier) SendBestBuyDeal(_ context.Context, product AnalyzedProduct, _ []models.Subscription) error {
 	n.sent = append(n.sent, product)
 	return nil
+}
+
+type computeTestSoldVerifier struct {
+	verification EbaySoldVerification
+	beginRuns    int
+	calls        []ComputeObservation
+}
+
+func (v *computeTestSoldVerifier) BeginRun() {
+	v.beginRuns++
+}
+
+func (v *computeTestSoldVerifier) Verify(_ context.Context, observation ComputeObservation, _ ComputeObservation, now time.Time, _ *slog.Logger) EbaySoldVerification {
+	v.calls = append(v.calls, observation)
+	verification := v.verification
+	if verification.AlertKey == "" {
+		verification.AlertKey = computeAlertKey(observation)
+	}
+	if verification.CheckedAt.IsZero() {
+		verification.CheckedAt = now
+	}
+	if verification.Verdict == "" {
+		if verification.Pass {
+			verification.Verdict = ebaySoldVerdictPass
+		} else {
+			verification.Verdict = ebaySoldVerdictFail
+		}
+	}
+	return verification
 }
 
 func TestComputeProcessorBaselinesFirstSeenWithoutAlert(t *testing.T) {
@@ -123,6 +153,90 @@ func TestComputeProcessorAlertsExistingOutlierOnce(t *testing.T) {
 	}
 	if len(notifier.sent) != 1 {
 		t.Fatalf("sent after duplicate run = %d, want still 1", len(notifier.sent))
+	}
+}
+
+func TestComputeProcessorSoldVerifierRejectsNotification(t *testing.T) {
+	products := append([]Product{computeCandidate("candidate", "seller-a", 650)}, computeCompsForProcessor()...)
+	store := &computeTestStore{
+		observations: make(map[string]ComputeObservation),
+		subs:         []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_compute", ChannelID: "chan"}},
+	}
+	for _, product := range products {
+		store.observations[computeObservationKey(product)] = ComputeObservation{
+			Product:   product,
+			Spec:      ParseComputeSpec(product),
+			FirstSeen: time.Now().Add(-time.Hour),
+			LastSeen:  time.Now().Add(-time.Hour),
+		}
+	}
+	notifier := &computeTestNotifier{}
+	verifier := &computeTestSoldVerifier{verification: EbaySoldVerification{
+		Pass:            false,
+		Verdict:         ebaySoldVerdictFail,
+		Query:           "Dell Precision 5820",
+		ComparableCount: 2,
+		Error:           "not enough matching sold comps",
+	}}
+	processor := NewComputeProcessor(store, computeTestClient{products: products}, notifier, "", false, nil)
+	processor.SetSoldVerifier(verifier)
+
+	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
+		t.Fatalf("ProcessComputeOutliers() error = %v", err)
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("sent = %d, want 0 after sold verifier rejection", len(notifier.sent))
+	}
+	if verifier.beginRuns != 1 || len(verifier.calls) != 1 {
+		t.Fatalf("verifier begin/calls = %d/%d, want 1/1", verifier.beginRuns, len(verifier.calls))
+	}
+	saved := store.observations[computeObservationKey(products[0])]
+	if saved.EbaySoldVerdict != ebaySoldVerdictFail {
+		t.Fatalf("EbaySoldVerdict = %q, want %q", saved.EbaySoldVerdict, ebaySoldVerdictFail)
+	}
+	if saved.LastAlertKey != "" {
+		t.Fatalf("LastAlertKey = %q, want empty so rejected item can be retried after cache TTL", saved.LastAlertKey)
+	}
+}
+
+func TestComputeProcessorSoldVerifierAllowsNotification(t *testing.T) {
+	products := append([]Product{computeCandidate("candidate", "seller-a", 650)}, computeCompsForProcessor()...)
+	store := &computeTestStore{
+		observations: make(map[string]ComputeObservation),
+		subs:         []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_compute", ChannelID: "chan"}},
+	}
+	for _, product := range products {
+		store.observations[computeObservationKey(product)] = ComputeObservation{
+			Product:   product,
+			Spec:      ParseComputeSpec(product),
+			FirstSeen: time.Now().Add(-time.Hour),
+			LastSeen:  time.Now().Add(-time.Hour),
+		}
+	}
+	notifier := &computeTestNotifier{}
+	verifier := &computeTestSoldVerifier{verification: EbaySoldVerification{
+		Pass:            true,
+		Verdict:         ebaySoldVerdictPass,
+		Query:           "Dell Precision 5820",
+		ComparableCount: 4,
+		MedianPrice:     2500,
+		GapPct:          74,
+	}}
+	processor := NewComputeProcessor(store, computeTestClient{products: products}, notifier, "", false, nil)
+	processor.SetSoldVerifier(verifier)
+
+	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
+		t.Fatalf("ProcessComputeOutliers() error = %v", err)
+	}
+	if len(notifier.sent) != 1 {
+		t.Fatalf("sent = %d, want 1 after sold verifier pass", len(notifier.sent))
+	}
+	saved := store.observations[computeObservationKey(products[0])]
+	if saved.EbaySoldVerdict != ebaySoldVerdictPass {
+		t.Fatalf("EbaySoldVerdict = %q, want %q", saved.EbaySoldVerdict, ebaySoldVerdictPass)
+	}
+	if saved.LastAlertKey == "" {
+		t.Fatalf("LastAlertKey is empty after successful send")
 	}
 }
 

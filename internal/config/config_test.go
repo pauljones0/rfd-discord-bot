@@ -49,6 +49,21 @@ func TestLoad(t *testing.T) {
 	if cfg.BestBuyComputeEnabled {
 		t.Errorf("Expected Best Buy compute scheduler to be disabled by default")
 	}
+	if !cfg.BestBuyComputeSoldVerifyEnabled {
+		t.Errorf("Expected Best Buy compute eBay sold verification to be enabled by default")
+	}
+	if !reflect.DeepEqual(cfg.BestBuyComputeSoldBackends, []string{"http", "external-stealth", "camoufox", "ai-crawler"}) {
+		t.Errorf("Expected default Best Buy compute sold backends, got %v", cfg.BestBuyComputeSoldBackends)
+	}
+	if cfg.BestBuyComputeSoldCacheTTL != 24*time.Hour {
+		t.Errorf("Expected default Best Buy compute sold cache TTL 24h, got %s", cfg.BestBuyComputeSoldCacheTTL)
+	}
+	if cfg.BestBuyComputeSoldPaidEnabled {
+		t.Errorf("Expected Best Buy compute sold paid browser to be disabled by default")
+	}
+	if cfg.BestBuyComputeSoldPaidMaxPerRun != 0 || cfg.BestBuyComputeSoldPaidMaxPerDay != 0 {
+		t.Errorf("Expected Best Buy compute sold paid caps disabled, got %d/%d", cfg.BestBuyComputeSoldPaidMaxPerRun, cfg.BestBuyComputeSoldPaidMaxPerDay)
+	}
 	if cfg.EbayCouponDiscoveryInterval != 6*time.Hour {
 		t.Errorf("Expected default eBay coupon discovery interval 6h, got %s", cfg.EbayCouponDiscoveryInterval)
 	}
@@ -153,6 +168,7 @@ func TestLoad_BackendFallbackConfig(t *testing.T) {
 	t.Setenv("EBAY_COUPON_BACKENDS", "http, chromedp-cloudrun")
 	t.Setenv("MEMEXPRESS_BACKENDS", "http,chromedp-persistent, paid-trial")
 	t.Setenv("BESTBUY_BACKENDS", "http,playwright")
+	t.Setenv("BESTBUY_COMPUTE_SOLD_BACKENDS", "http, camoufox, paid-trial")
 
 	cfg, err := Load()
 	if err != nil {
@@ -168,6 +184,9 @@ func TestLoad_BackendFallbackConfig(t *testing.T) {
 	if !reflect.DeepEqual(cfg.BestBuyBackends, []string{"http", "playwright"}) {
 		t.Fatalf("BestBuyBackends = %v", cfg.BestBuyBackends)
 	}
+	if !reflect.DeepEqual(cfg.BestBuyComputeSoldBackends, []string{"http", "camoufox", "paid-trial"}) {
+		t.Fatalf("BestBuyComputeSoldBackends = %v", cfg.BestBuyComputeSoldBackends)
+	}
 }
 
 func TestLoad_CustomSchedulerConfig(t *testing.T) {
@@ -180,6 +199,11 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	t.Setenv("BESTBUY_COMPUTE_ENABLED", "true")
 	t.Setenv("BESTBUY_COMPUTE_POLL_INTERVAL", "2h")
 	t.Setenv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", "true")
+	t.Setenv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", "false")
+	t.Setenv("BESTBUY_COMPUTE_SOLD_CACHE_TTL", "12h")
+	t.Setenv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_ENABLED", "true")
+	t.Setenv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_RUN", "1")
+	t.Setenv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_DAY", "2")
 
 	cfg, err := Load()
 	if err != nil {
@@ -209,6 +233,18 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	}
 	if !cfg.BestBuyComputeAlertFirstSeen {
 		t.Fatal("BestBuyComputeAlertFirstSeen = false, want true")
+	}
+	if cfg.BestBuyComputeSoldVerifyEnabled {
+		t.Fatal("BestBuyComputeSoldVerifyEnabled = true, want false")
+	}
+	if cfg.BestBuyComputeSoldCacheTTL != 12*time.Hour {
+		t.Fatalf("BestBuyComputeSoldCacheTTL = %s, want 12h", cfg.BestBuyComputeSoldCacheTTL)
+	}
+	if !cfg.BestBuyComputeSoldPaidEnabled {
+		t.Fatal("BestBuyComputeSoldPaidEnabled = false, want true")
+	}
+	if cfg.BestBuyComputeSoldPaidMaxPerRun != 1 || cfg.BestBuyComputeSoldPaidMaxPerDay != 2 {
+		t.Fatalf("BestBuyComputeSoldPaid caps = %d/%d, want 1/2", cfg.BestBuyComputeSoldPaidMaxPerRun, cfg.BestBuyComputeSoldPaidMaxPerDay)
 	}
 }
 

@@ -56,12 +56,18 @@ type Config struct {
 	MemoryExpressPaidMaxPerDay      int
 
 	// Best Buy scraping backend configuration.
-	BestBuyBackends              []string
-	BestBuyPollInterval          time.Duration
-	BestBuyComputeEnabled        bool
-	BestBuyComputePollInterval   time.Duration
-	BestBuyComputeAlertFirstSeen bool
-	BestBuyComputeEmbedCommand   string
+	BestBuyBackends                 []string
+	BestBuyPollInterval             time.Duration
+	BestBuyComputeEnabled           bool
+	BestBuyComputePollInterval      time.Duration
+	BestBuyComputeAlertFirstSeen    bool
+	BestBuyComputeEmbedCommand      string
+	BestBuyComputeSoldVerifyEnabled bool
+	BestBuyComputeSoldBackends      []string
+	BestBuyComputeSoldCacheTTL      time.Duration
+	BestBuyComputeSoldPaidEnabled   bool
+	BestBuyComputeSoldPaidMaxPerRun int
+	BestBuyComputeSoldPaidMaxPerDay int
 
 	// Carfax Token Service (optional — if not set, Carfax falls back to Playwright UI automation)
 	// The token service runs a real headed Chrome that generates high-scoring reCAPTCHA v3 tokens.
@@ -147,6 +153,11 @@ func Load() (*Config, error) {
 	}
 
 	bestBuyComputePollInterval, err := durationEnv("BESTBUY_COMPUTE_POLL_INTERVAL", time.Hour)
+	if err != nil {
+		return nil, err
+	}
+
+	bestBuyComputeSoldCacheTTL, err := durationEnv("BESTBUY_COMPUTE_SOLD_CACHE_TTL", 24*time.Hour)
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +249,12 @@ func Load() (*Config, error) {
 		BestBuyComputePollInterval:      bestBuyComputePollInterval,
 		BestBuyComputeAlertFirstSeen:    boolEnv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", false),
 		BestBuyComputeEmbedCommand:      os.Getenv("BESTBUY_COMPUTE_EMBED_COMMAND"),
+		BestBuyComputeSoldVerifyEnabled: boolEnv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", true),
+		BestBuyComputeSoldBackends:      csvEnv("BESTBUY_COMPUTE_SOLD_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler"}),
+		BestBuyComputeSoldCacheTTL:      bestBuyComputeSoldCacheTTL,
+		BestBuyComputeSoldPaidEnabled:   boolEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_ENABLED", false),
+		BestBuyComputeSoldPaidMaxPerRun: intEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
+		BestBuyComputeSoldPaidMaxPerDay: intEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
 		LocalSchedulerEnabled:           boolEnv("LOCAL_SCHEDULER_ENABLED", false),
 		CarfaxTokenServiceURL:           os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
 		CarfaxTokenServiceSecret:        os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),

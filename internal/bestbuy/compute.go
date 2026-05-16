@@ -75,23 +75,34 @@ type ComputeSpec struct {
 
 type ComputeObservation struct {
 	Product
-	Spec                  ComputeSpec `docstore:"spec"`
-	EmbeddingText         string      `docstore:"embeddingText,omitempty"`
-	EmbeddingModel        string      `docstore:"embeddingModel,omitempty"`
-	EmbeddingVector       []float64   `docstore:"embeddingVector,omitempty"`
-	ComparableCount       int         `docstore:"computeComparableCount,omitempty"`
-	ComparableMedianPrice float64     `docstore:"computeComparableMedianPrice,omitempty"`
-	ComparableP25Price    float64     `docstore:"computeComparableP25Price,omitempty"`
-	OutlierScore          float64     `docstore:"outlierScore,omitempty"`
-	OutlierGapPct         float64     `docstore:"outlierGapPct,omitempty"`
-	OutlierGapAmount      float64     `docstore:"outlierGapAmount,omitempty"`
-	IsWarm                bool        `docstore:"isWarm"`
-	IsLavaHot             bool        `docstore:"isLavaHot"`
-	Summary               string      `docstore:"summary,omitempty"`
-	FirstSeen             time.Time   `docstore:"firstSeen,omitempty"`
-	LastSeen              time.Time   `docstore:"lastSeen,omitempty"`
-	LastAlertAt           time.Time   `docstore:"lastAlertAt,omitempty"`
-	LastAlertKey          string      `docstore:"lastAlertKey,omitempty"`
+	Spec                    ComputeSpec `docstore:"spec"`
+	EmbeddingText           string      `docstore:"embeddingText,omitempty"`
+	EmbeddingModel          string      `docstore:"embeddingModel,omitempty"`
+	EmbeddingVector         []float64   `docstore:"embeddingVector,omitempty"`
+	ComparableCount         int         `docstore:"computeComparableCount,omitempty"`
+	ComparableMedianPrice   float64     `docstore:"computeComparableMedianPrice,omitempty"`
+	ComparableP25Price      float64     `docstore:"computeComparableP25Price,omitempty"`
+	OutlierScore            float64     `docstore:"outlierScore,omitempty"`
+	OutlierGapPct           float64     `docstore:"outlierGapPct,omitempty"`
+	OutlierGapAmount        float64     `docstore:"outlierGapAmount,omitempty"`
+	IsWarm                  bool        `docstore:"isWarm"`
+	IsLavaHot               bool        `docstore:"isLavaHot"`
+	Summary                 string      `docstore:"summary,omitempty"`
+	EbaySoldQuery           string      `docstore:"ebaySoldQuery,omitempty"`
+	EbaySoldBackend         string      `docstore:"ebaySoldBackend,omitempty"`
+	EbaySoldComparableCount int         `docstore:"ebaySoldComparableCount,omitempty"`
+	EbaySoldMedianPrice     float64     `docstore:"ebaySoldMedianPrice,omitempty"`
+	EbaySoldP25Price        float64     `docstore:"ebaySoldP25Price,omitempty"`
+	EbaySoldGapPct          float64     `docstore:"ebaySoldGapPct,omitempty"`
+	EbaySoldGapAmount       float64     `docstore:"ebaySoldGapAmount,omitempty"`
+	EbaySoldVerdict         string      `docstore:"ebaySoldVerdict,omitempty"`
+	EbaySoldCheckedAt       time.Time   `docstore:"ebaySoldCheckedAt,omitempty"`
+	EbaySoldAlertKey        string      `docstore:"ebaySoldAlertKey,omitempty"`
+	EbaySoldError           string      `docstore:"ebaySoldError,omitempty"`
+	FirstSeen               time.Time   `docstore:"firstSeen,omitempty"`
+	LastSeen                time.Time   `docstore:"lastSeen,omitempty"`
+	LastAlertAt             time.Time   `docstore:"lastAlertAt,omitempty"`
+	LastAlertKey            string      `docstore:"lastAlertKey,omitempty"`
 }
 
 type ComputeScore struct {

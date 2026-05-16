@@ -38,6 +38,7 @@ type ComputeProcessor struct {
 	affiliatePrefix string
 	alertFirstSeen  bool
 	embedder        ComputeEmbedder
+	soldVerifier    ComputeSoldVerifier
 }
 
 type ComputeStats struct {
@@ -46,6 +47,8 @@ type ComputeStats struct {
 	Rejected      int    `json:"rejected"`
 	Scored        int    `json:"scored"`
 	WarmHot       int    `json:"warmHot"`
+	SoldVerified  int    `json:"soldVerified"`
+	SoldRejected  int    `json:"soldRejected"`
 	Notified      int    `json:"notified"`
 	NotifyErrors  int    `json:"notifyErrors"`
 	Subscriptions int    `json:"subscriptions"`
@@ -66,11 +69,18 @@ func NewComputeProcessor(store ComputeStore, client ComputeClient, notifier Comp
 	}
 }
 
+func (p *ComputeProcessor) SetSoldVerifier(verifier ComputeSoldVerifier) {
+	p.soldVerifier = verifier
+}
+
 func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 	start := time.Now()
 	runID := start.Format("20060102-150405")
 	logger := slog.With("processor", "bestbuy_compute", "runID", runID)
 	stats := ComputeStats{}
+	if p.soldVerifier != nil {
+		p.soldVerifier.BeginRun()
+	}
 	defer func() {
 		logger.Info("Best Buy compute outlier run complete",
 			"duration", time.Since(start).Round(time.Millisecond).String(),
@@ -79,6 +89,8 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 			"rejected", stats.Rejected,
 			"scored", stats.Scored,
 			"warm_hot", stats.WarmHot,
+			"sold_verified", stats.SoldVerified,
+			"sold_rejected", stats.SoldRejected,
 			"notified", stats.Notified,
 			"notify_errors", stats.NotifyErrors,
 			"subscriptions", stats.Subscriptions,
@@ -186,13 +198,37 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 				if p.affiliatePrefix != "" && observation.URL != "" {
 					observation.URL = p.affiliatePrefix + url.QueryEscape(observation.URL)
 				}
-				if err := p.notifier.SendBestBuyDeal(ctx, computeAnalyzedProduct(observation), computeSubs); err != nil {
-					stats.NotifyErrors++
-					logger.Warn("Failed to send Best Buy compute outlier", "sku", observation.SKU, "error", err)
-				} else {
-					stats.Notified++
-					observation.LastAlertAt = now
-					observation.LastAlertKey = computeAlertKey(observation)
+				verified := true
+				if p.soldVerifier != nil {
+					verification := p.soldVerifier.Verify(ctx, observation, prior, now, logger)
+					applyEbaySoldVerification(&observation, verification)
+					verified = verification.Pass
+					if verified {
+						stats.SoldVerified++
+					} else {
+						stats.SoldRejected++
+						logger.Info("Best Buy compute outlier skipped after eBay sold verification",
+							"sku", observation.SKU,
+							"sellerID", observation.SellerID,
+							"query", verification.Query,
+							"backend", verification.Backend,
+							"verdict", verification.Verdict,
+							"error", verification.Error,
+							"sold_comps", verification.ComparableCount,
+							"sold_median", verification.MedianPrice,
+							"sold_gap_pct", verification.GapPct,
+						)
+					}
+				}
+				if verified {
+					if err := p.notifier.SendBestBuyDeal(ctx, computeAnalyzedProduct(observation), computeSubs); err != nil {
+						stats.NotifyErrors++
+						logger.Warn("Failed to send Best Buy compute outlier", "sku", observation.SKU, "error", err)
+					} else {
+						stats.Notified++
+						observation.LastAlertAt = now
+						observation.LastAlertKey = computeAlertKey(observation)
+					}
 				}
 			} else {
 				logger.Info("Best Buy compute outlier skipped after validation",

@@ -139,11 +139,25 @@ func main() {
 	bbClient.SetBackends(cfg.BestBuyBackends)
 	bbProc := bestbuy.NewProcessor(store, bbClient, aiClient, n, cfg.BestBuyAffiliatePrefix)
 	bbComputeProc := bestbuy.NewComputeProcessor(store, bbClient, n, cfg.BestBuyAffiliatePrefix, cfg.BestBuyComputeAlertFirstSeen, bestbuy.NewComputeEmbedder(cfg.BestBuyComputeEmbedCommand))
+	if cfg.BestBuyComputeSoldVerifyEnabled {
+		bbComputeSoldPaidLimiter := paidbrowser.NewLimiter(store, "bestbuy_compute_ebay_sold", cfg.BestBuyComputeSoldPaidMaxPerRun, cfg.BestBuyComputeSoldPaidMaxPerDay)
+		bbComputeProc.SetSoldVerifier(bestbuy.NewEbaySoldVerifier(bestbuy.EbaySoldVerifierOptions{
+			Enabled:     true,
+			Backends:    cfg.BestBuyComputeSoldBackends,
+			CacheTTL:    cfg.BestBuyComputeSoldCacheTTL,
+			PaidEnabled: cfg.BestBuyComputeSoldPaidEnabled,
+			PaidAttempt: bbComputeSoldPaidLimiter.BeforeAttempt,
+			BeforeRun:   bbComputeSoldPaidLimiter.BeginRun,
+		}))
+	}
 	slog.Info("Best Buy Marketplace processor initialized", "backends", cfg.BestBuyBackends)
 	slog.Info("Best Buy compute outlier processor initialized",
 		"enabled", cfg.BestBuyComputeEnabled,
 		"interval", cfg.BestBuyComputePollInterval.String(),
 		"alert_first_seen", cfg.BestBuyComputeAlertFirstSeen,
+		"ebay_sold_verify_enabled", cfg.BestBuyComputeSoldVerifyEnabled,
+		"ebay_sold_backends", cfg.BestBuyComputeSoldBackends,
+		"ebay_sold_paid_enabled", cfg.BestBuyComputeSoldPaidEnabled,
 	)
 
 	// Initialize HardwareSwap processor only when explicitly enabled.
