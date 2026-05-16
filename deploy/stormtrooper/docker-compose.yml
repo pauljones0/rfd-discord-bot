@@ -39,7 +39,7 @@ services:
       EBAY_SOLD_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
       EBAY_SOLD_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000
       EBAY_SOLD_AI_CRAWLER_COMMAND: /opt/scrape-venv/bin/python /root/scripts/crawl4ai_fetch.py "{url}" --headless --wait-ms 7000
-      EBAY_SOLD_PAID_TRIAL_COMMAND: /opt/scrape-venv/bin/python /root/scripts/browserless_bql_fetch.py "{url}" --wait-ms 5000
+      EBAY_SOLD_PAID_TRIAL_COMMAND: /opt/scrape-venv/bin/python /root/scripts/browserless_bql_fetch.py "{url}" --wait-ms 5000 --solve-captcha
       BESTBUY_COMPUTE_EMBED_COMMAND: /opt/scrape-venv/bin/python /root/scripts/local_embed.py
       MEMEXPRESS_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
       MEMEXPRESS_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000

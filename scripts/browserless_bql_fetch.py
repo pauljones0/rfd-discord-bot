@@ -60,8 +60,20 @@ PRICE_DETAILS_SCRIPT = r"""
 """
 
 
-def build_query(url: str, wait_ms: float, timeout_ms: float, ebay_price_details: bool) -> str:
+def build_query(url: str, wait_ms: float, timeout_ms: float, ebay_price_details: bool, solve_captcha: bool) -> str:
     url_json = json.dumps(url)
+    solve_block = ""
+    if solve_captcha:
+        solve_block = """
+  captcha: solve {
+    found
+    solved
+    time
+  }
+  waitAfterCaptcha: waitForTimeout(time: 1500) {
+    time
+  }
+"""
     price_details_block = ""
     if ebay_price_details:
         script_json = json.dumps(PRICE_DETAILS_SCRIPT)
@@ -81,6 +93,7 @@ mutation EbayCouponPageTrial {{
   waitForTimeout(time: {wait_ms}) {{
     time
   }}
+{solve_block}
 {price_details_block}
   html {{
     html
@@ -111,6 +124,7 @@ def main() -> int:
     parser.add_argument("--wait-ms", type=float, default=env_float("BROWSERLESS_WAIT_MS", 5000))
     parser.add_argument("--timeout-ms", type=float, default=env_float("BROWSERLESS_TIMEOUT_MS", 60000))
     parser.add_argument("--ebay-price-details", action="store_true", help="click eBay's Price details control before returning HTML")
+    parser.add_argument("--solve-captcha", action="store_true", help="ask BrowserQL to solve a CAPTCHA before returning HTML")
     args = parser.parse_args()
 
     token = os.getenv("BROWSERLESS_TOKEN", "").strip()
@@ -122,7 +136,7 @@ def main() -> int:
         return 2
 
     url = endpoint_with_token(args.endpoint, token)
-    body = json.dumps({"query": build_query(args.url, args.wait_ms, args.timeout_ms, args.ebay_price_details)}).encode("utf-8")
+    body = json.dumps({"query": build_query(args.url, args.wait_ms, args.timeout_ms, args.ebay_price_details, args.solve_captcha)}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,
@@ -131,7 +145,7 @@ def main() -> int:
     )
 
     print(
-        f"browserless_bql_fetch url={args.url!r} endpoint={args.endpoint!r} wait_ms={args.wait_ms}",
+        f"browserless_bql_fetch url={args.url!r} endpoint={args.endpoint!r} wait_ms={args.wait_ms} solve_captcha={args.solve_captcha}",
         file=sys.stderr,
     )
     start = time.monotonic()
