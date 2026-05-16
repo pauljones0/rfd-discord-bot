@@ -127,6 +127,29 @@ func TestEbaySoldListingRequiresGPUMatch(t *testing.T) {
 	}
 }
 
+func TestEbaySoldVerificationAllowsLowerRAMForExtremeServers(t *testing.T) {
+	product := Product{
+		SKU:       "extreme",
+		Name:      "Dell PowerEdge R740 768GB RAM 24 Core Xeon Server",
+		SalePrice: 1,
+		Source:    "seller:test",
+	}
+	observation := ComputeObservation{Product: product, Spec: ParseComputeSpec(product)}
+	listings := []ebaySoldListing{
+		{Title: "Dell PowerEdge R740 128GB RAM 24 Core Xeon Server", Price: 1500},
+		{Title: "Dell PowerEdge R740 256GB RAM 24 Core Xeon Server", Price: 2000},
+		{Title: "Dell PowerEdge R740 384GB RAM 24 Core Xeon Server", Price: 2500},
+	}
+
+	got := scoreEbaySoldVerification(observation, listings, 3, 25, 100)
+	if !got.Pass {
+		t.Fatalf("Pass = false for extreme lower-RAM floor comps, verdict=%s error=%s count=%d", got.Verdict, got.Error, got.ComparableCount)
+	}
+	if len(got.Comparables) != 3 {
+		t.Fatalf("Comparables = %d, want stored parsed comparables", len(got.Comparables))
+	}
+}
+
 func TestBuildEbaySoldQueryUsesStructuredSpec(t *testing.T) {
 	observation := soldVerifierObservation(650)
 	query := buildEbaySoldQuery(observation)

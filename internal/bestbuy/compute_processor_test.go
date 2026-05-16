@@ -240,6 +240,54 @@ func TestComputeProcessorSoldVerifierAllowsNotification(t *testing.T) {
 	}
 }
 
+func TestComputeProcessorExtremeSpecCanUseEbaySoldFallback(t *testing.T) {
+	product := Product{
+		SKU:       "extreme",
+		Name:      "Dell PowerEdge R740 768GB RAM 24 Core Xeon Server",
+		SalePrice: 1,
+		SellerID:  "seller-a",
+		Source:    "seller:seller-a",
+		URL:       "https://www.bestbuy.ca/en-ca/product/extreme",
+	}
+	store := &computeTestStore{
+		observations: make(map[string]ComputeObservation),
+		subs:         []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_compute", ChannelID: "chan"}},
+	}
+	notifier := &computeTestNotifier{}
+	verifier := &computeTestSoldVerifier{verification: EbaySoldVerification{
+		Pass:            true,
+		Verdict:         ebaySoldVerdictPass,
+		Query:           "PowerEdge R740",
+		ComparableCount: 3,
+		MedianPrice:     2000,
+		P25Price:        1500,
+		GapPct:          99.95,
+		GapAmount:       1999,
+		Comparables: []ComputeExternalComparable{
+			{Title: "Dell PowerEdge R740 256GB RAM 24 Core Xeon Server", Price: 1500, Source: "ebay-sold"},
+		},
+	}}
+	processor := NewComputeProcessor(store, computeTestClient{products: []Product{product}}, notifier, "", true, nil)
+	processor.SetSoldVerifier(verifier)
+
+	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
+		t.Fatalf("ProcessComputeOutliers() error = %v", err)
+	}
+	if len(notifier.sent) != 1 {
+		t.Fatalf("sent = %d, want 1 extreme fallback alert", len(notifier.sent))
+	}
+	if !notifier.sent[0].IsWarm || !notifier.sent[0].IsLavaHot {
+		t.Fatalf("sent product warm/hot = %v/%v, want lava-hot", notifier.sent[0].IsWarm, notifier.sent[0].IsLavaHot)
+	}
+	saved := store.observations[computeObservationKey(product)]
+	if saved.EbaySoldVerdict != ebaySoldVerdictPass {
+		t.Fatalf("EbaySoldVerdict = %q, want pass", saved.EbaySoldVerdict)
+	}
+	if len(saved.EbaySoldComparables) != 1 {
+		t.Fatalf("EbaySoldComparables = %d, want saved comparables", len(saved.EbaySoldComparables))
+	}
+}
+
 func TestComputeProcessorNoSubscriptionBaselinesCurrentOutliers(t *testing.T) {
 	products := append([]Product{computeCandidate("candidate", "seller-a", 650)}, computeCompsForProcessor()...)
 	store := &computeTestStore{

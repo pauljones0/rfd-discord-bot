@@ -86,15 +86,34 @@ func TestParseComputeSpecRejectsConsumerLaptops(t *testing.T) {
 			Name:      `Dell Chromebook 3120 32GB SSD - 96GB RAM`,
 			SalePrice: 89,
 		},
-		{
-			Name:      `Lenovo IdeaPad Laptop Intel Core i7 64GB RAM 1TB SSD`,
-			SalePrice: 699,
-		},
 	}
 	for _, product := range products {
 		spec := ParseComputeSpec(product)
 		if spec.IsCompute {
 			t.Fatalf("%q parsed as compute: %#v", product.Name, spec)
+		}
+	}
+}
+
+func TestParseComputeSpecIncludesHighComputeLaptopsAndApple(t *testing.T) {
+	products := []Product{
+		{
+			Name: "Lenovo IdeaPad Laptop Intel Core i7 64GB RAM 1TB SSD",
+		},
+		{
+			Name: "Apple Mac Studio M2 Ultra 128GB RAM 2TB SSD",
+		},
+		{
+			Name: "Apple MacBook Pro M4 Max 48GB RAM 1TB SSD",
+		},
+		{
+			Name: "Snapdragon X Elite Laptop 32GB RAM 1TB SSD",
+		},
+	}
+	for _, product := range products {
+		spec := ParseComputeSpec(product)
+		if !spec.IsCompute {
+			t.Fatalf("%q parsed as not compute: %#v", product.Name, spec)
 		}
 	}
 }
@@ -210,6 +229,62 @@ func TestScoreComputeOutlierIgnoresSameSeller(t *testing.T) {
 	}
 	if score.IsWarm {
 		t.Fatalf("IsWarm = true with too few independent comps: %#v", score)
+	}
+}
+
+func TestScoreComputeOutlierAllowsSameSKUDifferentSeller(t *testing.T) {
+	candidate := Product{
+		SKU:        "same-sku",
+		Name:       "Dell Precision 5820 Xeon W-2133 32GB RAM 512GB NVMe Quadro P4000",
+		SalePrice:  650,
+		SellerID:   "seller-a",
+		SellerName: "Seller A",
+		Source:     "seller:seller-a",
+	}
+	spec := ParseComputeSpec(candidate)
+	comps := []ComputeObservation{
+		computeComp("same-sku", "seller-b", 2500),
+		computeComp("same-sku", "seller-c", 2600),
+		computeComp("same-sku", "seller-d", 2700),
+		computeComp("same-sku", "seller-e", 2800),
+		computeComp("same-sku", "seller-f", 2900),
+	}
+
+	score := ScoreComputeOutlier(candidate, spec, comps)
+	if score.ComparableCount != 5 {
+		t.Fatalf("ComparableCount = %d, want same SKU from different sellers included", score.ComparableCount)
+	}
+}
+
+func TestScoreComputeOutlierUsesStoredEbaySoldComparables(t *testing.T) {
+	candidate := Product{
+		SKU:       "extreme",
+		Name:      "Dell PowerEdge R740 768GB RAM 24 Core Xeon Server",
+		SalePrice: 1,
+		SellerID:  "seller-a",
+		Source:    "seller:seller-a",
+	}
+	observation := ComputeObservation{Product: candidate, Spec: ParseComputeSpec(candidate)}
+	comps := []ComputeObservation{
+		{
+			Product: Product{SKU: "prior", Name: "Prior PowerEdge", SalePrice: 1000, SellerID: "seller-b", Source: "seller:seller-b"},
+			Spec:    ParseComputeSpec(Product{Name: "Dell PowerEdge R740 256GB RAM 24 Core Xeon Server"}),
+			EbaySoldComparables: []ComputeExternalComparable{
+				{Title: "Dell PowerEdge R740 256GB RAM 24 Core Xeon Server", Price: 1800, Source: "ebay-sold"},
+				{Title: "Dell PowerEdge R740 384GB RAM 24 Core Xeon Server", Price: 2200, Source: "ebay-sold"},
+				{Title: "Dell PowerEdge R740 512GB RAM 24 Core Xeon Server", Price: 2600, Source: "ebay-sold"},
+				{Title: "Dell PowerEdge R740 768GB RAM 24 Core Xeon Server", Price: 3000, Source: "ebay-sold"},
+				{Title: "Dell PowerEdge R740 1TB RAM 24 Core Xeon Server", Price: 3400, Source: "ebay-sold"},
+			},
+		},
+	}
+
+	score := ScoreComputeObservationOutlier(observation, comps)
+	if !score.IsWarm {
+		t.Fatalf("IsWarm = false using stored eBay sold comps: %#v", score)
+	}
+	if score.ComparableCount != 5 {
+		t.Fatalf("ComparableCount = %d, want 5 stored eBay sold comps", score.ComparableCount)
 	}
 }
 

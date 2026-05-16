@@ -16,6 +16,7 @@ const (
 	ComputeClassWorkstationDesktop = "workstation_desktop"
 	ComputeClassWorkstationLaptop  = "workstation_laptop"
 	ComputeClassDesktop            = "desktop"
+	ComputeClassLaptop             = "laptop"
 	ComputeClassNAS                = "nas"
 	ComputeClassComponent          = "component"
 	ComputeClassAccessory          = "accessory"
@@ -75,34 +76,46 @@ type ComputeSpec struct {
 
 type ComputeObservation struct {
 	Product
-	Spec                    ComputeSpec `docstore:"spec"`
-	EmbeddingText           string      `docstore:"embeddingText,omitempty"`
-	EmbeddingModel          string      `docstore:"embeddingModel,omitempty"`
-	EmbeddingVector         []float64   `docstore:"embeddingVector,omitempty"`
-	ComparableCount         int         `docstore:"computeComparableCount,omitempty"`
-	ComparableMedianPrice   float64     `docstore:"computeComparableMedianPrice,omitempty"`
-	ComparableP25Price      float64     `docstore:"computeComparableP25Price,omitempty"`
-	OutlierScore            float64     `docstore:"outlierScore,omitempty"`
-	OutlierGapPct           float64     `docstore:"outlierGapPct,omitempty"`
-	OutlierGapAmount        float64     `docstore:"outlierGapAmount,omitempty"`
-	IsWarm                  bool        `docstore:"isWarm"`
-	IsLavaHot               bool        `docstore:"isLavaHot"`
-	Summary                 string      `docstore:"summary,omitempty"`
-	EbaySoldQuery           string      `docstore:"ebaySoldQuery,omitempty"`
-	EbaySoldBackend         string      `docstore:"ebaySoldBackend,omitempty"`
-	EbaySoldComparableCount int         `docstore:"ebaySoldComparableCount,omitempty"`
-	EbaySoldMedianPrice     float64     `docstore:"ebaySoldMedianPrice,omitempty"`
-	EbaySoldP25Price        float64     `docstore:"ebaySoldP25Price,omitempty"`
-	EbaySoldGapPct          float64     `docstore:"ebaySoldGapPct,omitempty"`
-	EbaySoldGapAmount       float64     `docstore:"ebaySoldGapAmount,omitempty"`
-	EbaySoldVerdict         string      `docstore:"ebaySoldVerdict,omitempty"`
-	EbaySoldCheckedAt       time.Time   `docstore:"ebaySoldCheckedAt,omitempty"`
-	EbaySoldAlertKey        string      `docstore:"ebaySoldAlertKey,omitempty"`
-	EbaySoldError           string      `docstore:"ebaySoldError,omitempty"`
-	FirstSeen               time.Time   `docstore:"firstSeen,omitempty"`
-	LastSeen                time.Time   `docstore:"lastSeen,omitempty"`
-	LastAlertAt             time.Time   `docstore:"lastAlertAt,omitempty"`
-	LastAlertKey            string      `docstore:"lastAlertKey,omitempty"`
+	Spec                    ComputeSpec                 `docstore:"spec"`
+	EmbeddingText           string                      `docstore:"embeddingText,omitempty"`
+	EmbeddingModel          string                      `docstore:"embeddingModel,omitempty"`
+	EmbeddingVector         []float64                   `docstore:"embeddingVector,omitempty"`
+	ComparableCount         int                         `docstore:"computeComparableCount,omitempty"`
+	ComparableMedianPrice   float64                     `docstore:"computeComparableMedianPrice,omitempty"`
+	ComparableP25Price      float64                     `docstore:"computeComparableP25Price,omitempty"`
+	OutlierScore            float64                     `docstore:"outlierScore,omitempty"`
+	OutlierGapPct           float64                     `docstore:"outlierGapPct,omitempty"`
+	OutlierGapAmount        float64                     `docstore:"outlierGapAmount,omitempty"`
+	IsWarm                  bool                        `docstore:"isWarm"`
+	IsLavaHot               bool                        `docstore:"isLavaHot"`
+	Summary                 string                      `docstore:"summary,omitempty"`
+	EbaySoldQuery           string                      `docstore:"ebaySoldQuery,omitempty"`
+	EbaySoldBackend         string                      `docstore:"ebaySoldBackend,omitempty"`
+	EbaySoldComparableCount int                         `docstore:"ebaySoldComparableCount,omitempty"`
+	EbaySoldMedianPrice     float64                     `docstore:"ebaySoldMedianPrice,omitempty"`
+	EbaySoldP25Price        float64                     `docstore:"ebaySoldP25Price,omitempty"`
+	EbaySoldGapPct          float64                     `docstore:"ebaySoldGapPct,omitempty"`
+	EbaySoldGapAmount       float64                     `docstore:"ebaySoldGapAmount,omitempty"`
+	EbaySoldVerdict         string                      `docstore:"ebaySoldVerdict,omitempty"`
+	EbaySoldCheckedAt       time.Time                   `docstore:"ebaySoldCheckedAt,omitempty"`
+	EbaySoldAlertKey        string                      `docstore:"ebaySoldAlertKey,omitempty"`
+	EbaySoldError           string                      `docstore:"ebaySoldError,omitempty"`
+	EbaySoldComparables     []ComputeExternalComparable `docstore:"ebaySoldComparables,omitempty"`
+	FirstSeen               time.Time                   `docstore:"firstSeen,omitempty"`
+	LastSeen                time.Time                   `docstore:"lastSeen,omitempty"`
+	LastAlertAt             time.Time                   `docstore:"lastAlertAt,omitempty"`
+	LastAlertKey            string                      `docstore:"lastAlertKey,omitempty"`
+}
+
+type ComputeExternalComparable struct {
+	Title      string      `docstore:"title"`
+	CleanTitle string      `docstore:"cleanTitle,omitempty"`
+	Price      float64     `docstore:"price"`
+	Source     string      `docstore:"source"`
+	Query      string      `docstore:"query,omitempty"`
+	Backend    string      `docstore:"backend,omitempty"`
+	Spec       ComputeSpec `docstore:"spec,omitempty"`
+	ObservedAt time.Time   `docstore:"observedAt,omitempty"`
 }
 
 type ComputeScore struct {
@@ -264,6 +277,7 @@ func computeComparablePrices(observation ComputeObservation, comps []ComputeObse
 		}
 		values = append(values, value)
 	}
+	values = append(values, externalComparablePrices(observation, comps)...)
 	if len(values) == 0 {
 		return nil
 	}
@@ -291,12 +305,81 @@ func computeComparablePrices(observation ComputeObservation, comps []ComputeObse
 	return comparablePriceValues(values)
 }
 
+func externalComparablePrices(observation ComputeObservation, comps []ComputeObservation) []computeComparablePrice {
+	values := make([]computeComparablePrice, 0)
+	seen := make(map[string]bool)
+	for _, comp := range comps {
+		for _, external := range comp.EbaySoldComparables {
+			if external.Price <= 0 || strings.TrimSpace(external.Title) == "" {
+				continue
+			}
+			externalSpec := external.Spec
+			if externalSpec.ParsedAt.IsZero() || externalSpec.Class == "" {
+				externalSpec = ParseComputeSpec(Product{Name: external.Title, SalePrice: external.Price, Source: external.Source})
+			}
+			externalObservation := ComputeObservation{
+				Product: Product{
+					SKU:        "external:" + external.Source + ":" + external.Title,
+					Name:       external.Title,
+					SalePrice:  external.Price,
+					Source:     external.Source,
+					SellerID:   "external:" + external.Source,
+					SellerName: external.Source,
+				},
+				Spec: externalSpec,
+			}
+			if !compatibleExternalComputeComp(observation, externalObservation) {
+				continue
+			}
+			key := fmt.Sprintf("%s|%.2f", strings.ToLower(external.Title), external.Price)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			values = append(values, computeComparablePrice{price: external.Price})
+		}
+	}
+	return values
+}
+
 func comparablePriceValues(values []computeComparablePrice) []float64 {
 	prices := make([]float64, 0, len(values))
 	for _, value := range values {
 		prices = append(prices, value.price)
 	}
 	return prices
+}
+
+func compatibleExternalComputeComp(observation, comp ComputeObservation) bool {
+	if !comp.Spec.IsCompute {
+		return false
+	}
+	spec := observation.Spec
+	compSpec := comp.Spec
+	if spec.Class != "" && compSpec.Class != "" && spec.Class != compSpec.Class {
+		if !sameComputeClassGroup(spec.Class, compSpec.Class) {
+			return false
+		}
+	}
+	if spec.Family != "" && compSpec.Family != "" && spec.Family != compSpec.Family {
+		return false
+	}
+	if spec.Model != "" && compSpec.Model != "" && spec.Model != compSpec.Model {
+		return false
+	}
+	if spec.RAMGB > 0 && compSpec.RAMGB > 0 {
+		ratio := compSpec.RAMGB / spec.RAMGB
+		if ratio < minimumComparableRAMRatio(spec) || ratio > 2.0 {
+			return false
+		}
+	}
+	if spec.CoreCount > 0 && compSpec.CoreCount > 0 {
+		diff := math.Abs(float64(spec.CoreCount - compSpec.CoreCount))
+		if diff > math.Max(12, float64(spec.CoreCount)) {
+			return false
+		}
+	}
+	return true
 }
 
 func vectorSimilarity(a, b []float64) (float64, bool) {
@@ -356,6 +439,30 @@ func compatibleComputeComp(product Product, spec ComputeSpec, comp ComputeObserv
 		}
 	}
 	return true
+}
+
+func isExtremeComputeSpec(spec ComputeSpec, price float64) bool {
+	if price <= 0 {
+		return false
+	}
+	if price <= 100 {
+		return spec.RAMGB >= 128 || spec.CoreCount >= 16 || highValueCPU(spec.CPUModel)
+	}
+	if price <= 1000 {
+		return spec.RAMGB >= 256 || spec.CoreCount >= 24 || strings.Contains(strings.ToLower(spec.CPUModel), "epyc") || strings.Contains(strings.ToLower(spec.CPUModel), "threadripper")
+	}
+	return spec.RAMGB >= 512 || spec.CoreCount >= 32
+}
+
+func minimumComparableRAMRatio(spec ComputeSpec) float64 {
+	switch {
+	case spec.RAMGB >= 512:
+		return 0.125
+	case spec.RAMGB >= 256:
+		return 0.25
+	default:
+		return 0.75
+	}
 }
 
 func similarResourceBand(a, b ComputeSpec) bool {
@@ -463,7 +570,7 @@ func rejectComputeReason(lower string) string {
 		return "processor_component"
 	}
 	if regexp.MustCompile(`(?i)\b\d+\s*(?:gb|tb)\s+(?:ssd|hdd|hard drive|sas|sata)\b`).MatchString(lower) &&
-		!strings.Contains(lower, "desktop") && !strings.Contains(lower, "workstation") && !strings.Contains(lower, "server") && !strings.Contains(lower, "laptop") {
+		!containsComputeSystemTerm(lower) {
 		return "storage_component"
 	}
 	return ""
@@ -480,6 +587,9 @@ func containsComputeSystemTerm(lower string) bool {
 		"mini pc",
 		"gaming pc",
 		"tower",
+		"mac studio",
+		"macbook",
+		"mac pro",
 		"poweredge",
 		"proliant",
 		"thinksystem",
@@ -505,10 +615,14 @@ func computeClassFromText(text string, spec ComputeSpec) string {
 		return ComputeClassTowerServer
 	case strings.Contains(lower, "workstation laptop") || strings.Contains(lower, "zbook") || strings.Contains(lower, "precision 7") || strings.Contains(lower, "thinkpad p"):
 		return ComputeClassWorkstationLaptop
+	case strings.Contains(lower, "mac studio"):
+		return ComputeClassWorkstationDesktop
 	case strings.Contains(lower, "workstation") || strings.Contains(lower, "precision") || strings.Contains(lower, "thinkstation") || strings.Contains(lower, " hp z") || strings.Contains(lower, "mac pro"):
 		return ComputeClassWorkstationDesktop
-	case strings.Contains(lower, "laptop") || strings.Contains(lower, "notebook") || strings.Contains(lower, "chromebook"):
+	case strings.Contains(lower, "chromebook"):
 		return ComputeClassOther
+	case strings.Contains(lower, "laptop") || strings.Contains(lower, "notebook") || strings.Contains(lower, "macbook"):
+		return ComputeClassLaptop
 	case strings.Contains(lower, "desktop") || strings.Contains(lower, "gaming pc") || strings.Contains(lower, "mini pc"):
 		return ComputeClassDesktop
 	case spec.CPUModel != "" || spec.RAMGB >= 64 || spec.CoreCount >= 12:
@@ -528,6 +642,9 @@ func isHighComputeSpec(spec ComputeSpec) bool {
 	if spec.Class == ComputeClassWorkstationDesktop || spec.Class == ComputeClassWorkstationLaptop {
 		return spec.RAMGB >= 32 || spec.CoreCount >= 12 || highValueCPU(spec.CPUModel) || spec.GPU != ""
 	}
+	if spec.Class == ComputeClassLaptop {
+		return spec.RAMGB >= 64 || spec.CoreCount >= 12 || (spec.RAMGB >= 32 && highValueCPU(spec.CPUModel))
+	}
 	return spec.RAMGB >= 64 || spec.CoreCount >= 16 || highValueCPU(spec.CPUModel) || spec.GPU != ""
 }
 
@@ -543,6 +660,9 @@ func computeFamilyModel(text string) (string, string, string) {
 		{"dell_precision", regexp.MustCompile(`(?i)\bprecision\s+(\d{4})\b`), func(string) string { return "" }},
 		{"hp_z", regexp.MustCompile(`(?i)\bhp\s+z([2486]\s*g\d+|[0-9]\s*g\d+|[0-9]+)\b`), func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }},
 		{"lenovo_thinkstation", regexp.MustCompile(`(?i)\bthinkstation\s+([pst]\d+[a-z0-9]*)\b`), func(string) string { return "" }},
+		{"apple_mac_studio", regexp.MustCompile(`(?i)\bmac\s+studio\s*(m[1-9]\s*(?:max|ultra|pro)?)?\b`), func(string) string { return "" }},
+		{"apple_macbook_pro", regexp.MustCompile(`(?i)\bmacbook\s+pro\s*(m[1-9]\s*(?:max|ultra|pro)?)?\b`), func(string) string { return "" }},
+		{"apple_macbook_air", regexp.MustCompile(`(?i)\bmacbook\s+air\s*(m[1-9]\s*(?:max|ultra|pro)?)?\b`), func(string) string { return "" }},
 		{"apple_mac_pro", regexp.MustCompile(`(?i)\bmac\s+pro\s*(a\d{4}|late\s+\d{4})?\b`), func(string) string { return "" }},
 	}
 	for _, pattern := range patterns {
@@ -614,6 +734,9 @@ func cpuModelFromText(text string) string {
 		regexp.MustCompile(`(?i)\bepyc\s+\d{4}[a-z]?\b`),
 		regexp.MustCompile(`(?i)\bcore\s+(?:ultra\s+)?i[579][-\s]?\d{4,5}[a-z]*\b`),
 		regexp.MustCompile(`(?i)\bryzen\s+[579]\s+\d{4,5}[a-z0-9]*\b`),
+		regexp.MustCompile(`(?i)\bapple\s+m[1-9]\s*(?:pro|max|ultra)?\b`),
+		regexp.MustCompile(`(?i)\bm[1-9]\s*(?:pro|max|ultra)\b`),
+		regexp.MustCompile(`(?i)\bsnapdragon\s+x\s*(?:elite|plus)?(?:\s*x?\d+e?-\d+)?\b`),
 	}
 	for _, pattern := range patterns {
 		if value := pattern.FindString(text); value != "" {
@@ -865,12 +988,16 @@ func firstNumber(value string) float64 {
 
 func highValueCPU(cpu string) bool {
 	cpu = strings.ToLower(cpu)
-	return strings.Contains(cpu, "xeon") || strings.Contains(cpu, "threadripper") || strings.Contains(cpu, "epyc")
+	return strings.Contains(cpu, "xeon") ||
+		strings.Contains(cpu, "threadripper") ||
+		strings.Contains(cpu, "epyc") ||
+		regexp.MustCompile(`\bm[1-9]\s*(pro|max|ultra)\b`).MatchString(cpu) ||
+		strings.Contains(cpu, "snapdragon x elite")
 }
 
 func sameComputeClassGroup(a, b string) bool {
 	server := map[string]bool{ComputeClassRackServer: true, ComputeClassTowerServer: true}
-	workstation := map[string]bool{ComputeClassWorkstationDesktop: true, ComputeClassWorkstationLaptop: true, ComputeClassDesktop: true}
+	workstation := map[string]bool{ComputeClassWorkstationDesktop: true, ComputeClassWorkstationLaptop: true, ComputeClassDesktop: true, ComputeClassLaptop: true}
 	return (server[a] && server[b]) || (workstation[a] && workstation[b])
 }
 

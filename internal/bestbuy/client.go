@@ -314,6 +314,11 @@ func DefaultComputeSearchTargets() []ComputeSearchTarget {
 		{Name: "threadripper-workstation", Query: "Threadripper workstation"},
 		{Name: "quadro-workstation", Query: "Quadro workstation"},
 		{Name: "rtx-a-workstation", Query: "RTX A4000 workstation"},
+		{Name: "mac-studio", Query: "Mac Studio"},
+		{Name: "macbook-pro-64gb", Query: "MacBook Pro 64GB"},
+		{Name: "snapdragon-x-elite-laptop", Query: "Snapdragon X Elite laptop"},
+		{Name: "laptop-64gb-ram", Query: "laptop 64GB RAM"},
+		{Name: "laptop-128gb-ram", Query: "laptop 128GB RAM"},
 	}
 }
 

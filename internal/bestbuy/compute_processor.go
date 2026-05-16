@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
@@ -12,7 +13,8 @@ import (
 )
 
 const (
-	bestBuyComputeMaxRecords = 20000
+	bestBuyComputeMaxRecords                    = 20000
+	bestBuyComputeMaxExtremeSoldFallbacksPerRun = 1
 )
 
 type ComputeStore interface {
@@ -49,6 +51,7 @@ type ComputeStats struct {
 	WarmHot       int    `json:"warmHot"`
 	SoldVerified  int    `json:"soldVerified"`
 	SoldRejected  int    `json:"soldRejected"`
+	SoldFallbacks int    `json:"soldFallbacks"`
 	Notified      int    `json:"notified"`
 	NotifyErrors  int    `json:"notifyErrors"`
 	Subscriptions int    `json:"subscriptions"`
@@ -91,6 +94,7 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 			"warm_hot", stats.WarmHot,
 			"sold_verified", stats.SoldVerified,
 			"sold_rejected", stats.SoldRejected,
+			"sold_fallbacks", stats.SoldFallbacks,
 			"notified", stats.Notified,
 			"notify_errors", stats.NotifyErrors,
 			"subscriptions", stats.Subscriptions,
@@ -158,6 +162,7 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 
 	compPool := append([]ComputeObservation{}, existing...)
 	compPool = append(compPool, observations...)
+	extremeSoldFallbacks := 0
 	for i := range observations {
 		observation := observations[i]
 		if !observation.Spec.IsCompute {
@@ -184,6 +189,54 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 		}
 
 		prior := existingByKey[computeObservationKey(observation.Product)]
+		if shouldTryExtremeSoldFallback(observation, score, prior, len(computeSubs), extremeSoldFallbacks, p.alertFirstSeen, p.soldVerifier != nil) {
+			validation, err := p.client.ValidateSellerOffer(ctx, observation.Product, now)
+			if err != nil {
+				logger.Warn("Best Buy compute extreme fallback validation failed",
+					"sku", observation.SKU,
+					"sellerID", observation.SellerID,
+					"error", err,
+				)
+			} else if validation.Valid {
+				observation.Product = validation.Product
+				verification := p.soldVerifier.Verify(ctx, observation, prior, now, logger)
+				applyEbaySoldVerification(&observation, verification)
+				extremeSoldFallbacks++
+				stats.SoldFallbacks++
+				if verification.Pass {
+					applyEbaySoldFallbackScore(&observation, verification)
+					observation.EbaySoldAlertKey = computeAlertKey(observation)
+					stats.WarmHot++
+					stats.SoldVerified++
+					logger.Info("Best Buy compute extreme item promoted by eBay sold comps",
+						"sku", observation.SKU,
+						"sellerID", observation.SellerID,
+						"query", verification.Query,
+						"backend", verification.Backend,
+						"sold_comps", verification.ComparableCount,
+						"sold_median", verification.MedianPrice,
+						"sold_gap_pct", verification.GapPct,
+					)
+				} else {
+					stats.SoldRejected++
+					logger.Info("Best Buy compute extreme item skipped after eBay sold fallback",
+						"sku", observation.SKU,
+						"sellerID", observation.SellerID,
+						"query", verification.Query,
+						"backend", verification.Backend,
+						"verdict", verification.Verdict,
+						"error", verification.Error,
+						"sold_comps", verification.ComparableCount,
+					)
+				}
+			} else {
+				logger.Info("Best Buy compute extreme fallback skipped after validation",
+					"sku", observation.SKU,
+					"sellerID", observation.SellerID,
+					"reason", validation.Reason,
+				)
+			}
+		}
 		shouldNotify := shouldNotifyCompute(observation, prior, p.alertFirstSeen)
 		if shouldNotify && len(computeSubs) > 0 {
 			validation, err := p.client.ValidateSellerOffer(ctx, observation.Product, now)
@@ -199,13 +252,20 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 					observation.URL = p.affiliatePrefix + url.QueryEscape(observation.URL)
 				}
 				verified := true
+				verification := EbaySoldVerification{Pass: true, Verdict: "already_verified"}
+				alreadyVerified := false
 				if p.soldVerifier != nil {
-					verification := p.soldVerifier.Verify(ctx, observation, prior, now, logger)
-					applyEbaySoldVerification(&observation, verification)
-					verified = verification.Pass
-					if verified {
-						stats.SoldVerified++
+					if observation.EbaySoldVerdict == ebaySoldVerdictPass && observation.EbaySoldAlertKey == computeAlertKey(observation) {
+						alreadyVerified = true
+						verified = true
 					} else {
+						verification = p.soldVerifier.Verify(ctx, observation, prior, now, logger)
+						applyEbaySoldVerification(&observation, verification)
+						verified = verification.Pass
+					}
+					if verified && !alreadyVerified {
+						stats.SoldVerified++
+					} else if !verified {
 						stats.SoldRejected++
 						logger.Info("Best Buy compute outlier skipped after eBay sold verification",
 							"sku", observation.SKU,
@@ -293,6 +353,53 @@ func shouldNotifyCompute(observation, prior ComputeObservation, alertFirstSeen b
 	}
 	key := computeAlertKey(observation)
 	return key != "" && key != prior.LastAlertKey
+}
+
+func shouldTryExtremeSoldFallback(observation ComputeObservation, score ComputeScore, prior ComputeObservation, subscriptionCount, attempts int, alertFirstSeen, verifierEnabled bool) bool {
+	if !verifierEnabled || subscriptionCount == 0 || attempts >= bestBuyComputeMaxExtremeSoldFallbacksPerRun {
+		return false
+	}
+	if score.IsWarm || score.IsLavaHot || score.ComparableCount >= computeMinComparableCount {
+		return false
+	}
+	if prior.SKU == "" && !alertFirstSeen {
+		return false
+	}
+	if prior.LastAlertKey != "" && prior.LastAlertKey == computeAlertKey(observation) {
+		return false
+	}
+	return isExtremeComputeSpec(observation.Spec, effectiveProductPrice(observation.Product))
+}
+
+func applyEbaySoldFallbackScore(observation *ComputeObservation, verification EbaySoldVerification) {
+	if observation == nil || !verification.Pass {
+		return
+	}
+	observation.ComparableCount = verification.ComparableCount
+	observation.ComparableMedianPrice = verification.MedianPrice
+	observation.ComparableP25Price = verification.P25Price
+	observation.OutlierGapPct = verification.GapPct
+	observation.OutlierGapAmount = verification.GapAmount
+	observation.IsWarm = true
+	observation.IsLavaHot = verification.GapPct >= defaultComputeHotMinGapPct && verification.GapAmount >= defaultComputeHotMinGapAmount
+	observation.Summary = computeEbaySoldFallbackSummary(observation.Spec, verification)
+}
+
+func computeEbaySoldFallbackSummary(spec ComputeSpec, verification EbaySoldVerification) string {
+	details := []string{}
+	if spec.Model != "" {
+		details = append(details, spec.Model)
+	} else if spec.Family != "" {
+		details = append(details, strings.ReplaceAll(spec.Family, "_", " "))
+	}
+	if spec.RAMGB > 0 {
+		details = append(details, fmt.Sprintf("%.0fGB RAM", spec.RAMGB))
+	}
+	if spec.CoreCount > 0 {
+		details = append(details, fmt.Sprintf("%d cores", spec.CoreCount))
+	}
+	return fmt.Sprintf("%s looks %.0f%% ($%.0f) below %d eBay sold comps; median sold $%.0f.",
+		firstNonEmpty(strings.Join(details, ", "), "Extreme compute config"), verification.GapPct, verification.GapAmount, verification.ComparableCount, verification.MedianPrice)
 }
 
 func shouldBaselineComputeAlertKey(observation, prior ComputeObservation, subscriptionCount int, alertFirstSeen bool) bool {

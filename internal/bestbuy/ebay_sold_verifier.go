@@ -74,6 +74,7 @@ type EbaySoldVerification struct {
 	CheckedAt       time.Time
 	AlertKey        string
 	Error           string
+	Comparables     []ComputeExternalComparable
 }
 
 type ebaySoldListing struct {
@@ -140,61 +141,77 @@ func (v *EbaySoldVerifier) Verify(ctx context.Context, observation ComputeObserv
 		return cached
 	}
 
-	query := buildEbaySoldQuery(observation)
+	queries := buildEbaySoldQueries(observation)
 	verification := EbaySoldVerification{
-		Query:     query,
 		CheckedAt: now,
 		AlertKey:  alertKey,
 	}
-	if query == "" {
+	if len(queries) == 0 {
 		verification.Verdict = ebaySoldVerdictNoComps
 		verification.Error = "empty sold-search query"
 		return verification
 	}
 
-	searchURL := ebaySoldSearchURL(query)
 	var failures []string
-	for _, backend := range v.backends {
-		result := scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
-			Backend:          backend,
-			URL:              searchURL,
-			Timeout:          v.timeout,
-			ExternalCommand:  ebaySoldExternalCommand(),
-			CamoufoxCommand:  ebaySoldCamoufoxCommand(),
-			AICrawlerCommand: ebaySoldAICrawlerCommand(),
-			PaidCommand:      ebaySoldPaidCommand(),
-			PaidEnabled:      v.paidEnabled,
-			PaidAttempt:      v.paidAttempt,
-		})
-		if result.Error != "" || result.BlockSignal != "" {
-			failures = append(failures, fmt.Sprintf("%s: %s %s", backend, result.Error, result.BlockSignal))
-			continue
-		}
+	var bestVerification EbaySoldVerification
+	exactQuery := buildEbaySoldQueryWithRAM(observation, true)
+	for _, query := range queries {
+		searchURL := ebaySoldSearchURL(query)
+		for _, backend := range v.backends {
+			result := scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
+				Backend:          backend,
+				URL:              searchURL,
+				Timeout:          v.timeout,
+				ExternalCommand:  ebaySoldExternalCommand(),
+				CamoufoxCommand:  ebaySoldCamoufoxCommand(),
+				AICrawlerCommand: ebaySoldAICrawlerCommand(),
+				PaidCommand:      ebaySoldPaidCommand(),
+				PaidEnabled:      v.paidEnabled,
+				PaidAttempt:      v.paidAttempt,
+			})
+			if result.Error != "" || result.BlockSignal != "" {
+				failures = append(failures, fmt.Sprintf("%s/%s: %s %s", backend, query, result.Error, result.BlockSignal))
+				continue
+			}
 
-		listings, err := ParseEbaySoldListings(result.HTML)
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: parse: %s", backend, err))
-			continue
+			listings, err := ParseEbaySoldListings(result.HTML)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s/%s: parse: %s", backend, query, err))
+				continue
+			}
+			verification = scoreEbaySoldVerification(observation, listings, v.minComps, v.minGapPct, v.minGapDollars)
+			verification.Query = query
+			verification.Backend = backend
+			verification.CheckedAt = now
+			verification.AlertKey = alertKey
+			for i := range verification.Comparables {
+				verification.Comparables[i].Query = query
+				verification.Comparables[i].Backend = backend
+				verification.Comparables[i].ObservedAt = now
+			}
+			if logger != nil {
+				logger.Info("Best Buy compute eBay sold verification complete",
+					"sku", observation.SKU,
+					"query", query,
+					"backend", backend,
+					"verdict", verification.Verdict,
+					"sold_comps", verification.ComparableCount,
+					"sold_median", verification.MedianPrice,
+					"sold_gap_pct", verification.GapPct,
+				)
+			}
+			if verification.Pass || (verification.Verdict != ebaySoldVerdictNoComps && strings.EqualFold(query, exactQuery)) {
+				return verification
+			}
+			if verification.ComparableCount > bestVerification.ComparableCount || bestVerification.Query == "" {
+				bestVerification = verification
+			}
 		}
-		verification = scoreEbaySoldVerification(observation, listings, v.minComps, v.minGapPct, v.minGapDollars)
-		verification.Query = query
-		verification.Backend = backend
-		verification.CheckedAt = now
-		verification.AlertKey = alertKey
-		if logger != nil {
-			logger.Info("Best Buy compute eBay sold verification complete",
-				"sku", observation.SKU,
-				"query", query,
-				"backend", backend,
-				"verdict", verification.Verdict,
-				"sold_comps", verification.ComparableCount,
-				"sold_median", verification.MedianPrice,
-				"sold_gap_pct", verification.GapPct,
-			)
-		}
-		return verification
 	}
 
+	if bestVerification.Query != "" {
+		return bestVerification
+	}
 	verification.Verdict = ebaySoldVerdictFetchError
 	verification.Error = strings.Join(failures, "; ")
 	return verification
@@ -220,6 +237,7 @@ func (v *EbaySoldVerifier) cached(prior ComputeObservation, alertKey string, now
 		CheckedAt:       prior.EbaySoldCheckedAt,
 		AlertKey:        prior.EbaySoldAlertKey,
 		Error:           prior.EbaySoldError,
+		Comparables:     prior.EbaySoldComparables,
 	}
 	return verification, true
 }
@@ -239,9 +257,46 @@ func applyEbaySoldVerification(observation *ComputeObservation, verification Eba
 	observation.EbaySoldCheckedAt = verification.CheckedAt
 	observation.EbaySoldAlertKey = verification.AlertKey
 	observation.EbaySoldError = verification.Error
+	observation.EbaySoldComparables = verification.Comparables
 }
 
 func buildEbaySoldQuery(observation ComputeObservation) string {
+	queries := buildEbaySoldQueries(observation)
+	if len(queries) == 0 {
+		return ""
+	}
+	return queries[0]
+}
+
+func buildEbaySoldQueries(observation ComputeObservation) []string {
+	spec := observation.Spec
+	exact := buildEbaySoldQueryWithRAM(observation, true)
+	relaxed := buildEbaySoldQueryWithRAM(observation, false)
+	var queries []string
+	if isExtremeComputeSpec(spec, effectiveProductPrice(observation.Product)) {
+		queries = appendUniqueQuery(queries, relaxed)
+		queries = appendUniqueQuery(queries, exact)
+	} else {
+		queries = appendUniqueQuery(queries, exact)
+		queries = appendUniqueQuery(queries, relaxed)
+	}
+	return queries
+}
+
+func appendUniqueQuery(queries []string, query string) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return queries
+	}
+	for _, existing := range queries {
+		if strings.EqualFold(existing, query) {
+			return queries
+		}
+	}
+	return append(queries, query)
+}
+
+func buildEbaySoldQueryWithRAM(observation ComputeObservation, includeRAM bool) string {
 	spec := observation.Spec
 	parts := make([]string, 0, 8)
 	switch spec.Family {
@@ -266,7 +321,7 @@ func buildEbaySoldQuery(observation ComputeObservation) string {
 	if spec.CPUModel != "" && spec.CPUModel != "xeon" {
 		parts = append(parts, spec.CPUModel)
 	}
-	if spec.RAMGB > 0 {
+	if includeRAM && spec.RAMGB > 0 {
 		parts = append(parts, fmt.Sprintf("%.0fGB RAM", spec.RAMGB))
 	}
 	if spec.GPU != "" {
@@ -376,9 +431,11 @@ func scoreEbaySoldVerification(observation ComputeObservation, listings []ebaySo
 		return verification
 	}
 	var prices []float64
+	var comparables []ComputeExternalComparable
 	for _, listing := range listings {
 		if ebaySoldListingMatches(observation, listing) {
 			prices = append(prices, listing.Price)
+			comparables = append(comparables, ebaySoldExternalComparable(observation, listing))
 		}
 	}
 	if len(prices) < minComps {
@@ -399,6 +456,7 @@ func scoreEbaySoldVerification(observation ComputeObservation, listings []ebaySo
 	verification.P25Price = p25
 	verification.GapAmount = gap
 	verification.GapPct = gapPct
+	verification.Comparables = comparableLimitExternal(comparables, 20)
 	if gap >= minGapDollars && gapPct >= minGapPct {
 		verification.Pass = true
 		verification.Verdict = ebaySoldVerdictPass
@@ -407,6 +465,26 @@ func scoreEbaySoldVerification(observation ComputeObservation, listings []ebaySo
 		verification.Error = fmt.Sprintf("sold comps gap %.1f%%/$%.0f below threshold %.1f%%/$%.0f", gapPct, gap, minGapPct, minGapDollars)
 	}
 	return verification
+}
+
+func ebaySoldExternalComparable(observation ComputeObservation, listing ebaySoldListing) ComputeExternalComparable {
+	cleanTitle := cleanSoldQueryTitle(listing.Title)
+	spec := ParseComputeSpec(Product{Name: listing.Title, SalePrice: listing.Price, Source: "ebay-sold"})
+	return ComputeExternalComparable{
+		Title:      listing.Title,
+		CleanTitle: cleanTitle,
+		Price:      listing.Price,
+		Source:     "ebay-sold",
+		Query:      buildEbaySoldQuery(observation),
+		Spec:       spec,
+	}
+}
+
+func comparableLimitExternal(comparables []ComputeExternalComparable, limit int) []ComputeExternalComparable {
+	if len(comparables) <= limit || limit <= 0 {
+		return comparables
+	}
+	return append([]ComputeExternalComparable(nil), comparables[:limit]...)
 }
 
 func ebaySoldListingMatches(observation ComputeObservation, listing ebaySoldListing) bool {
@@ -424,7 +502,7 @@ func ebaySoldListingMatches(observation ComputeObservation, listing ebaySoldList
 	if spec.RAMGB > 0 {
 		if ram := ramGBFromText(title); ram > 0 {
 			ratio := ram / spec.RAMGB
-			if ratio < 0.75 || ratio > 1.5 {
+			if ratio < minimumComparableRAMRatio(spec) || ratio > 1.5 {
 				return false
 			}
 		}
