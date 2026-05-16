@@ -99,7 +99,72 @@ func TestParseComputeSpecRejectsConsumerLaptops(t *testing.T) {
 	}
 }
 
+func TestParseComputeSpecTitleWinsOverDetails(t *testing.T) {
+	product := Product{
+		Name: "Refurbished (Good) - HP Z640 Workstation | E5-2680 V3 12 Core | 32GB|256GB SSD+500GB HDD | K2000 | WIN 10P",
+		Specs: map[string]string{
+			"custom0ramsize":        "64",
+			"custom0processorcores": "20",
+			"custom0graphics":       "NVIDIA Quadro 4000",
+		},
+	}
+
+	spec := ParseComputeSpec(product)
+	if spec.RAMGB != 32 {
+		t.Fatalf("RAMGB = %.0f, want title RAM 32 over details", spec.RAMGB)
+	}
+	if spec.CoreCount != 12 {
+		t.Fatalf("CoreCount = %d, want title core count 12 over details", spec.CoreCount)
+	}
+	if !strings.Contains(strings.ToLower(spec.GPU), "k2000") {
+		t.Fatalf("GPU = %q, want title GPU K2000 over details Quadro 4000", spec.GPU)
+	}
+}
+
+func TestParseComputeSpecRejectsGenericLowComputeDesktop(t *testing.T) {
+	product := Product{
+		Name: "Refurbished (Excellent) Dell Optiplex 7070 Micro Tower Desktop | Core i5-8500 - 512GB SSD Hard Drive - 32GB RAM | 6 cores @ 4.1 GHz Win 11 Pro Black",
+	}
+	spec := ParseComputeSpec(product)
+	if spec.IsCompute {
+		t.Fatalf("generic 32GB office desktop parsed as compute: %#v", spec)
+	}
+}
+
 func TestScoreComputeOutlier(t *testing.T) {
+	candidate := Product{
+		SKU:        "candidate",
+		Name:       "Dell Precision 5820 Xeon W-2133 32GB RAM 512GB NVMe Quadro P4000",
+		SalePrice:  650,
+		SellerID:   "seller-a",
+		SellerName: "Seller A",
+		Source:     "seller:seller-a",
+	}
+	spec := ParseComputeSpec(candidate)
+	comps := []ComputeObservation{
+		computeComp("c1", "seller-b", 2500),
+		computeComp("c2", "seller-c", 2600),
+		computeComp("c3", "seller-d", 2700),
+		computeComp("c4", "seller-e", 2800),
+		computeComp("c5", "seller-f", 2900),
+	}
+
+	score := ScoreComputeOutlier(candidate, spec, comps)
+	if !score.IsWarm {
+		t.Fatalf("IsWarm = false, score=%#v", score)
+	}
+	if score.IsLavaHot {
+		t.Fatalf("IsLavaHot = true, want warm-only score=%#v", score)
+	}
+	if score.ComparableCount != 5 {
+		t.Fatalf("ComparableCount = %d, want 5", score.ComparableCount)
+	}
+	if score.GapPct < 70 {
+		t.Fatalf("GapPct = %.2f, want 70+ pct", score.GapPct)
+	}
+}
+
+func TestScoreComputeOutlierRequiresHugeGap(t *testing.T) {
 	candidate := Product{
 		SKU:        "candidate",
 		Name:       "Dell Precision 5820 Xeon W-2133 32GB RAM 512GB NVMe Quadro P4000",
@@ -114,20 +179,12 @@ func TestScoreComputeOutlier(t *testing.T) {
 		computeComp("c2", "seller-c", 1200),
 		computeComp("c3", "seller-d", 1250),
 		computeComp("c4", "seller-e", 1300),
+		computeComp("c5", "seller-f", 1350),
 	}
 
 	score := ScoreComputeOutlier(candidate, spec, comps)
-	if !score.IsWarm {
-		t.Fatalf("IsWarm = false, score=%#v", score)
-	}
-	if score.IsLavaHot {
-		t.Fatalf("IsLavaHot = true, want warm-only score=%#v", score)
-	}
-	if score.ComparableCount != 4 {
-		t.Fatalf("ComparableCount = %d, want 4", score.ComparableCount)
-	}
-	if score.GapAmount < 500 {
-		t.Fatalf("GapAmount = %.2f, want substantial gap", score.GapAmount)
+	if score.IsWarm {
+		t.Fatalf("IsWarm = true for merely-good comp gap: %#v", score)
 	}
 }
 

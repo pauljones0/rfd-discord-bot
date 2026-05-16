@@ -21,11 +21,12 @@ const (
 	ComputeClassAccessory          = "accessory"
 	ComputeClassOther              = "other"
 
-	defaultComputeWarmMinGapPct    = 25.0
-	defaultComputeWarmMinGapAmount = 300.0
-	defaultComputeHotMinGapPct     = 40.0
-	defaultComputeHotMinGapAmount  = 700.0
+	defaultComputeWarmMinGapPct    = 70.0
+	defaultComputeWarmMinGapAmount = 500.0
+	defaultComputeHotMinGapPct     = 80.0
+	defaultComputeHotMinGapAmount  = 1000.0
 
+	computeMinComparableCount          = 5
 	computeEmbeddingMinComparableCount = 3
 	computeEmbeddingSimilarityCutoff   = 0.35
 	computeEmbeddingMaxComparableCount = 60
@@ -36,6 +37,7 @@ var (
 		regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:gb|g)\s+(?:ddr\d+\s+)?(?:ecc\s+|registered\s+|rdimm\s+|sodimm\s+|lpddr\d+x?\s+)?ram\b`),
 		regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:gb|g)\s+(?:ddr\d+\s+)?memory\b`),
 		regexp.MustCompile(`(?i)\bram\s*[:/-]\s*(\d+(?:\.\d+)?)\s*(?:gb|g)\b`),
+		regexp.MustCompile(`(?i)\|\s*(\d+(?:\.\d+)?)\s*(?:gb|g)\s*\|`),
 		regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:gb|g)\s*(?:ddr\d+|lpddr\d+x?|ecc|rdimm)\b`),
 	}
 	storagePatterns = []*regexp.Regexp{
@@ -106,12 +108,13 @@ type ComputeScore struct {
 
 func ParseComputeSpec(product Product) ComputeSpec {
 	title := strings.TrimSpace(product.Name)
+	titleLower := strings.ToLower(title)
 	haystack := computeHaystack(product)
 	lower := strings.ToLower(haystack)
 	spec := ComputeSpec{
 		Class:     ComputeClassOther,
-		Brand:     normalizeBrand(firstNonEmpty(product.BrandName, brandFromText(haystack))),
-		Condition: conditionFromText(haystack),
+		Brand:     normalizeBrand(firstNonEmpty(product.BrandName, brandFromText(title), brandFromText(haystack))),
+		Condition: conditionFromText(firstNonEmpty(title, haystack)),
 		ParsedAt:  time.Now(),
 	}
 
@@ -122,15 +125,26 @@ func ParseComputeSpec(product Product) ComputeSpec {
 		return spec
 	}
 
-	spec.Family, spec.Model, spec.Generation = computeFamilyModel(haystack)
-	spec.CPUModel = cpuModelFromText(haystack)
+	spec.Family, spec.Model, spec.Generation = computeFamilyModel(title)
+	if spec.Family == "" && spec.Model == "" {
+		spec.Family, spec.Model, spec.Generation = computeFamilyModel(haystack)
+	}
+	spec.CPUModel = firstNonEmpty(cpuModelFromText(title), cpuModelFromText(haystack))
 	spec.CPUCount = cpuCountFromText(haystack)
-	spec.CoreCount = firstPositiveInt(intFromSpec(product.Specs, "processorcores"), coreCountFromText(haystack))
-	spec.RAMGB = firstPositiveFloat(floatFromSpec(product.Specs, "ramsize"), ramGBFromText(haystack))
-	spec.RAMType = ramTypeFromText(haystack)
-	spec.SSDTB, spec.HDDTB, spec.StorageSummary = storageFromText(haystack)
-	spec.GPU = gpuFromText(haystack)
+	spec.CoreCount = firstPositiveInt(coreCountFromText(title), intFromSpec(product.Specs, "processorcores"), coreCountFromText(haystack))
+	spec.RAMGB = firstPositiveFloat(ramGBFromText(title), floatFromSpec(product.Specs, "ramsize"), ramGBFromText(haystack))
+	spec.RAMType = firstNonEmpty(ramTypeFromText(title), ramTypeFromText(haystack))
+	spec.SSDTB, spec.HDDTB, spec.StorageSummary = storageFromText(title)
+	if spec.SSDTB == 0 && spec.HDDTB == 0 {
+		spec.SSDTB, spec.HDDTB, spec.StorageSummary = storageFromText(haystack)
+	}
+	spec.GPU = firstNonEmpty(gpuFromText(title), gpuFromText(haystack))
 	spec.Class = computeClassFromText(haystack, spec)
+	if titleLower != "" {
+		if titleClass := computeClassFromText(title, spec); titleClass != ComputeClassOther {
+			spec.Class = titleClass
+		}
+	}
 	spec.IsCompute = isHighComputeSpec(spec)
 	if !spec.IsCompute {
 		spec.RejectReason = "not_high_compute"
@@ -162,7 +176,7 @@ func ScoreComputeObservationOutlier(observation ComputeObservation, comps []Comp
 		return ComputeScore{}
 	}
 	prices := computeComparablePrices(observation, comps)
-	if len(prices) < 3 {
+	if len(prices) < computeMinComparableCount {
 		return ComputeScore{ComparableCount: len(prices)}
 	}
 	sort.Float64s(prices)
@@ -188,9 +202,7 @@ func ScoreComputeObservationOutlier(observation ComputeObservation, comps []Comp
 	}
 
 	warm := gapPct >= defaultComputeWarmMinGapPct && gapAmount >= defaultComputeWarmMinGapAmount && price <= p25Price+priceComparisonEpsilon
-	hot := (gapPct >= defaultComputeHotMinGapPct && gapAmount >= defaultComputeHotMinGapAmount) ||
-		(spec.RAMGB >= 128 && gapAmount >= 500 && gapPct >= 30) ||
-		(spec.CoreCount >= 24 && gapAmount >= 600 && gapPct >= 30)
+	hot := gapPct >= defaultComputeHotMinGapPct && gapAmount >= defaultComputeHotMinGapAmount
 	if hot {
 		warm = true
 	}
@@ -499,10 +511,13 @@ func isHighComputeSpec(spec ComputeSpec) bool {
 	if spec.Class == ComputeClassAccessory || spec.Class == ComputeClassComponent || spec.Class == ComputeClassOther {
 		return false
 	}
-	if spec.Class == ComputeClassRackServer || spec.Class == ComputeClassTowerServer || spec.Class == ComputeClassWorkstationDesktop || spec.Class == ComputeClassWorkstationLaptop {
+	if spec.Class == ComputeClassRackServer || spec.Class == ComputeClassTowerServer {
 		return true
 	}
-	return spec.RAMGB >= 32 || spec.CoreCount >= 12 || highValueCPU(spec.CPUModel) || spec.GPU != ""
+	if spec.Class == ComputeClassWorkstationDesktop || spec.Class == ComputeClassWorkstationLaptop {
+		return spec.RAMGB >= 32 || spec.CoreCount >= 12 || highValueCPU(spec.CPUModel) || spec.GPU != ""
+	}
+	return spec.RAMGB >= 64 || spec.CoreCount >= 16 || highValueCPU(spec.CPUModel) || spec.GPU != ""
 }
 
 func computeFamilyModel(text string) (string, string, string) {
@@ -689,6 +704,7 @@ func gpuFromText(text string) string {
 	patterns := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\brtx\s+a\d{4}\b`),
 		regexp.MustCompile(`(?i)\bquadro\s+[a-z]?\d{3,4}\b`),
+		regexp.MustCompile(`(?i)\b(?:nvidia\s+)?(?:quadro\s+)?[kmpt]\d{3,4}m?\b`),
 		regexp.MustCompile(`(?i)\bradeon\s+pro\s+[a-z0-9\s]+`),
 	}
 	for _, pattern := range patterns {

@@ -295,14 +295,9 @@ func (c *Client) FetchComputeProducts(ctx context.Context) ([]Product, error) {
 }
 
 func DefaultComputeSearchTargets() []ComputeSearchTarget {
-	ram32 := `["specs.custom0ramsize:32","specs.custom0ramsize:32.00","specs.custom0ramsize:64","specs.custom0ramsize:96","specs.custom0ramsize:128","specs.custom0ramsize:192","specs.custom0ramsize:256","specs.custom0ramsize:512","specs.custom0ramsize:1000"]`
 	ram64 := `["specs.custom0ramsize:64","specs.custom0ramsize:96","specs.custom0ramsize:128","specs.custom0ramsize:192","specs.custom0ramsize:256","specs.custom0ramsize:512","specs.custom0ramsize:1000"]`
 	core12 := `["specs.custom0processorcores:12","specs.custom0processorcores:14","specs.custom0processorcores:16","specs.custom0processorcores:20","specs.custom0processorcores:24","specs.custom0processorcores:28","specs.custom0processorcores:32","specs.custom0processorcores:36","specs.custom0processorcores:48","specs.custom0processorcores:64"]`
 	return []ComputeSearchTarget{
-		{Name: "ram32-under-500", FacetFilters: "[" + ram32 + "]", Filters: "price.currentPrice <= 500"},
-		{Name: "ram32-500-1000", FacetFilters: "[" + ram32 + "]", Filters: "price.currentPrice > 500 AND price.currentPrice <= 1000"},
-		{Name: "ram32-1000-1500", FacetFilters: "[" + ram32 + "]", Filters: "price.currentPrice > 1000 AND price.currentPrice <= 1500"},
-		{Name: "ram32-1500-2000", FacetFilters: "[" + ram32 + "]", Filters: "price.currentPrice > 1500 AND price.currentPrice <= 2000"},
 		{Name: "ram64-all", FacetFilters: "[" + ram64 + "]"},
 		{Name: "core12-under-1500", FacetFilters: "[" + core12 + "]", Filters: "price.currentPrice <= 1500"},
 		{Name: "core12-1500-2500", FacetFilters: "[" + core12 + "]", Filters: "price.currentPrice > 1500 AND price.currentPrice <= 2500"},

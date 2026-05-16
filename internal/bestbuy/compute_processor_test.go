@@ -172,9 +172,10 @@ func computeCandidate(sku, sellerID string, price float64) Product {
 
 func computeCompsForProcessor() []Product {
 	return []Product{
-		computeCandidate("c1", "seller-b", 1100),
-		computeCandidate("c2", "seller-c", 1200),
-		computeCandidate("c3", "seller-d", 1250),
-		computeCandidate("c4", "seller-e", 1300),
+		computeCandidate("c1", "seller-b", 2500),
+		computeCandidate("c2", "seller-c", 2600),
+		computeCandidate("c3", "seller-d", 2700),
+		computeCandidate("c4", "seller-e", 2800),
+		computeCandidate("c5", "seller-f", 2900),
 	}
 }
