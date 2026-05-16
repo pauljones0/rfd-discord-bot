@@ -37,6 +37,42 @@ func TestParseEbaySoldListings(t *testing.T) {
 	}
 }
 
+func TestParseEbaySoldListingsNewCardLayout(t *testing.T) {
+	html := `
+<ul>
+  <li>
+    <div class="su-card-container">
+      <a>
+        <div class="s-card__title">
+          <span class="su-styled-text primary default">Dell Precision 5820, Xeon W-2133, 32GB RAM, 512GB NVMe, P4000, Win 11 Pro</span>
+        </div>
+      </a>
+      <span class="su-styled-text primary bold large-1 s-card__price">C $619.00</span>
+    </div>
+  </li>
+  <li>
+    <div class="su-card-container">
+      <a><div class="s-card__title"><span class="su-styled-text primary default">Shop on eBay</span></div></a>
+      <span class="s-card__price">$20.00</span>
+    </div>
+  </li>
+</ul>`
+
+	listings, err := ParseEbaySoldListings(html)
+	if err != nil {
+		t.Fatalf("ParseEbaySoldListings() error = %v", err)
+	}
+	if len(listings) != 1 {
+		t.Fatalf("listings = %d, want 1: %#v", len(listings), listings)
+	}
+	if listings[0].Title != "Dell Precision 5820, Xeon W-2133, 32GB RAM, 512GB NVMe, P4000, Win 11 Pro" {
+		t.Fatalf("title = %q", listings[0].Title)
+	}
+	if listings[0].Price != 619 {
+		t.Fatalf("price = %.2f, want 619", listings[0].Price)
+	}
+}
+
 func TestEbaySoldVerificationPassesBelowSoldMedian(t *testing.T) {
 	observation := soldVerifierObservation(650)
 	listings := []ebaySoldListing{
