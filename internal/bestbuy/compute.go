@@ -643,7 +643,7 @@ func isHighComputeSpec(spec ComputeSpec) bool {
 		return spec.RAMGB >= 32 || spec.CoreCount >= 12 || highValueCPU(spec.CPUModel) || spec.GPU != ""
 	}
 	if spec.Class == ComputeClassLaptop {
-		return spec.RAMGB >= 64 || spec.CoreCount >= 12 || (spec.RAMGB >= 32 && highValueCPU(spec.CPUModel))
+		return spec.RAMGB >= 64 || spec.CoreCount >= 12 || (spec.RAMGB >= 24 && highValueCPU(spec.CPUModel))
 	}
 	return spec.RAMGB >= 64 || spec.CoreCount >= 16 || highValueCPU(spec.CPUModel) || spec.GPU != ""
 }
@@ -732,7 +732,10 @@ func cpuModelFromText(text string) string {
 		regexp.MustCompile(`(?i)\bxeon\s+(?:gold|silver|bronze|w|e|e5|e7)?[-\s]?\d{3,5}[a-z]?\b`),
 		regexp.MustCompile(`(?i)\bthreadripper(?:\s+pro)?\s+\d{4,5}wx\b`),
 		regexp.MustCompile(`(?i)\bepyc\s+\d{4}[a-z]?\b`),
+		regexp.MustCompile(`(?i)\b(?:intel\s+)?core\s+ultra\s+[579](?:\s+\d{3}[a-z0-9]*)?\b`),
 		regexp.MustCompile(`(?i)\bcore\s+(?:ultra\s+)?i[579][-\s]?\d{4,5}[a-z]*\b`),
+		regexp.MustCompile(`(?i)\bryzen\s+ai\s+max\b`),
+		regexp.MustCompile(`(?i)\bryzen\s+ai\s+(?:max\s+)?[3579](?:\s+\d{3,4}[a-z0-9]*)?\b`),
 		regexp.MustCompile(`(?i)\bryzen\s+[579]\s+\d{4,5}[a-z0-9]*\b`),
 		regexp.MustCompile(`(?i)\bapple\s+m[1-9]\s*(?:pro|max|ultra)?\b`),
 		regexp.MustCompile(`(?i)\bm[1-9]\s*(?:pro|max|ultra)\b`),
@@ -991,6 +994,11 @@ func highValueCPU(cpu string) bool {
 	return strings.Contains(cpu, "xeon") ||
 		strings.Contains(cpu, "threadripper") ||
 		strings.Contains(cpu, "epyc") ||
+		strings.Contains(cpu, "core ultra 9") ||
+		strings.Contains(cpu, "core i9") ||
+		strings.Contains(cpu, "ryzen 9") ||
+		strings.Contains(cpu, "ryzen ai max") ||
+		strings.Contains(cpu, "ryzen ai 9") ||
 		regexp.MustCompile(`\bm[1-9]\s*(pro|max|ultra)\b`).MatchString(cpu) ||
 		strings.Contains(cpu, "snapdragon x elite")
 }

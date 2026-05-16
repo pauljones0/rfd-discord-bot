@@ -107,7 +107,16 @@ func TestParseComputeSpecIncludesHighComputeLaptopsAndApple(t *testing.T) {
 			Name: "Apple MacBook Pro M4 Max 48GB RAM 1TB SSD",
 		},
 		{
+			Name: "Apple MacBook Pro 14 Apple M5 Pro 24GB RAM 1TB SSD",
+		},
+		{
 			Name: "Snapdragon X Elite Laptop 32GB RAM 1TB SSD",
+		},
+		{
+			Name: "Lenovo Yoga Pro Laptop Core Ultra 9 32GB RAM 1TB SSD",
+		},
+		{
+			Name: "ASUS ROG Flow Z13 Laptop Ryzen AI Max 32GB RAM 1TB SSD",
 		},
 	}
 	for _, product := range products {

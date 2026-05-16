@@ -400,8 +400,25 @@ func TestDefaultComputeSearchTargetsCoverAppleAndHighRAMLaptops(t *testing.T) {
 	if !strings.Contains(laptopTarget.FacetFilters, "specs.custom0ramsize:128") {
 		t.Fatalf("windows laptop target facet = %q, want high-RAM facet group", laptopTarget.FacetFilters)
 	}
+	performanceRAMTarget, ok := targets["windows-laptops-performance-ram"]
+	if !ok {
+		t.Fatal("missing windows-laptops-performance-ram compute target")
+	}
+	if !strings.Contains(performanceRAMTarget.FacetFilters, "categoryIds:36711") {
+		t.Fatalf("performance laptop target facet = %q, want Windows Laptops category", performanceRAMTarget.FacetFilters)
+	}
+	for _, ram := range []string{"24", "32", "36", "40", "48"} {
+		if !strings.Contains(performanceRAMTarget.FacetFilters, "specs.custom0ramsize:"+ram) {
+			t.Fatalf("performance laptop target facet = %q, want %sGB RAM facet", performanceRAMTarget.FacetFilters, ram)
+		}
+	}
 	if target, ok := targets["macbook-pro"]; !ok || target.Query != "MacBook Pro" {
 		t.Fatalf("macbook-pro target = %#v, want broad query fallback", target)
+	}
+	for _, name := range []string{"core-ultra-9-laptop", "intel-i9-laptop", "ryzen-9-laptop", "ryzen-ai-max-laptop"} {
+		if _, ok := targets[name]; !ok {
+			t.Fatalf("missing compute target %q", name)
+		}
 	}
 }
 
