@@ -368,6 +368,43 @@ func TestAlgoliaFacetFilterFromPath(t *testing.T) {
 	}
 }
 
+func TestDefaultComputeSearchTargetsCoverAppleAndHighRAMLaptops(t *testing.T) {
+	targets := map[string]ComputeSearchTarget{}
+	for _, target := range DefaultComputeSearchTargets() {
+		targets[target.Name] = target
+	}
+
+	required := map[string]string{
+		"apple-macbook-air-category": `["categoryIds:12746017"]`,
+		"apple-macbook-pro-category": `["categoryIds:12746019"]`,
+		"apple-macbook-category":     `["categoryIds:22156"]`,
+		"apple-mac-studio-category":  `["categoryIds:19862843"]`,
+	}
+	for name, facet := range required {
+		target, ok := targets[name]
+		if !ok {
+			t.Fatalf("missing compute target %q", name)
+		}
+		if target.FacetFilters != facet {
+			t.Fatalf("%s FacetFilters = %q, want %q", name, target.FacetFilters, facet)
+		}
+	}
+
+	laptopTarget, ok := targets["windows-laptops-ram64"]
+	if !ok {
+		t.Fatal("missing windows-laptops-ram64 compute target")
+	}
+	if !strings.Contains(laptopTarget.FacetFilters, "categoryIds:36711") {
+		t.Fatalf("windows laptop target facet = %q, want Windows Laptops category", laptopTarget.FacetFilters)
+	}
+	if !strings.Contains(laptopTarget.FacetFilters, "specs.custom0ramsize:128") {
+		t.Fatalf("windows laptop target facet = %q, want high-RAM facet group", laptopTarget.FacetFilters)
+	}
+	if target, ok := targets["macbook-pro"]; !ok || target.Query != "MacBook Pro" {
+		t.Fatalf("macbook-pro target = %#v, want broad query fallback", target)
+	}
+}
+
 func bestBuyJSONResponse(req *http.Request, body string) *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
