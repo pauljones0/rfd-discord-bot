@@ -359,19 +359,24 @@ func (p *DealProcessor) processNotificationsAndPrepareUpdates(ctx context.Contex
 			break
 		}
 
-		// Use the first deal in the group as the base
-		baseDeal := &dealsGroup[0]
 		existing := existingDeals[documentID]
 
 		if existing == nil {
-			if err := p.processNewDeal(ctx, baseDeal, dealsGroup, &newDeals, subs, tracker); err != nil {
+			liveDealsGroup := liveScrapedDeals(dealsGroup)
+			if len(liveDealsGroup) == 0 {
+				slog.Info("Skipping new deal because all scraped RFD threads are gone", "processor", "rfd", "id", documentID)
+				continue
+			}
+
+			baseDeal := &liveDealsGroup[0]
+			if err := p.processNewDeal(ctx, baseDeal, liveDealsGroup, &newDeals, subs, tracker); err != nil {
 				slog.Error("Failed to process new deal", "processor", "rfd", "title", baseDeal.Title, "error", err)
 				errorMessages = append(errorMessages, fmt.Sprintf("new deal error %s: %v", baseDeal.Title, err))
 			}
 		} else {
 			if err := p.processExistingDeal(ctx, existing, dealsGroup, &updatedDeals, subs); err != nil {
-				slog.Error("Failed to process existing deal", "processor", "rfd", "title", baseDeal.Title, "error", err)
-				errorMessages = append(errorMessages, fmt.Sprintf("existing deal error %s: %v", baseDeal.Title, err))
+				slog.Error("Failed to process existing deal", "processor", "rfd", "id", documentID, "error", err)
+				errorMessages = append(errorMessages, fmt.Sprintf("existing deal error %s: %v", documentID, err))
 			}
 		}
 	}
@@ -415,13 +420,19 @@ func (p *DealProcessor) processNewDeal(ctx context.Context, dealToSave *models.D
 }
 
 func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *models.DealInfo, scrapedDuplicates []models.DealInfo, updatedDeals *[]models.DealInfo, subs []models.Subscription) error {
-	scrapedBase := contentBaseForExistingDeal(existing, scrapedDuplicates)
-
 	// Clean up any historical duplicate threads (same thread ID, different slugs)
 	changed := deduplicateThreadsByKey(existing)
 
+	removedDeadThreads := removeNotFoundThreads(existing, scrapedDuplicates)
+	if removedDeadThreads {
+		changed = true
+	}
+
+	liveDuplicates := liveScrapedDeals(scrapedDuplicates)
+	scrapedBase := contentBaseForExistingDeal(existing, liveDuplicates)
+
 	// Merge all threads from the scraped group into existing
-	for _, scraped := range scrapedDuplicates {
+	for _, scraped := range liveDuplicates {
 		if len(scraped.Threads) > 0 {
 			if p.mergeThread(existing, scraped.Threads[0]) {
 				changed = true
@@ -459,6 +470,9 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 	}
 
 	p.sortThreads(existing)
+	if removedDeadThreads {
+		syncPrimaryPostURL(existing)
+	}
 
 	// Update historical rank tracking using aggregated stats
 	if !existing.HasBeenWarm && p.notifier.IsWarm(*existing) {
@@ -516,6 +530,79 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 
 	*updatedDeals = append(*updatedDeals, *existing)
 	return nil
+}
+
+func liveScrapedDeals(scrapedDeals []models.DealInfo) []models.DealInfo {
+	liveDeals := make([]models.DealInfo, 0, len(scrapedDeals))
+	for _, deal := range scrapedDeals {
+		if len(deal.Threads) == 0 {
+			liveDeals = append(liveDeals, deal)
+			continue
+		}
+
+		filtered := deal
+		filtered.Threads = nil
+		for _, thread := range deal.Threads {
+			if !thread.NotFound {
+				filtered.Threads = append(filtered.Threads, thread)
+			}
+		}
+		if len(filtered.Threads) == 0 {
+			continue
+		}
+		if removedPrimaryThread(deal, filtered) {
+			filtered.PostURL = filtered.Threads[0].PostURL
+		}
+		liveDeals = append(liveDeals, filtered)
+	}
+	return liveDeals
+}
+
+func removedPrimaryThread(original, filtered models.DealInfo) bool {
+	if len(original.Threads) == 0 || len(filtered.Threads) == 0 {
+		return false
+	}
+	originalPrimaryKey := threadKey(original.PrimaryPostURL())
+	return originalPrimaryKey != "" && originalPrimaryKey != threadKey(filtered.Threads[0].PostURL)
+}
+
+func removeNotFoundThreads(existing *models.DealInfo, scrapedDeals []models.DealInfo) bool {
+	notFoundKeys := make(map[string]struct{})
+	for _, deal := range scrapedDeals {
+		for _, thread := range deal.Threads {
+			if !thread.NotFound {
+				continue
+			}
+			if key := threadKey(thread.PostURL); key != "" {
+				notFoundKeys[key] = struct{}{}
+			}
+		}
+	}
+	if len(notFoundKeys) == 0 {
+		return false
+	}
+
+	filtered := existing.Threads[:0]
+	changed := false
+	for _, thread := range existing.Threads {
+		if _, ok := notFoundKeys[threadKey(thread.PostURL)]; ok {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, thread)
+	}
+	if changed {
+		existing.Threads = filtered
+	}
+	return changed
+}
+
+func syncPrimaryPostURL(deal *models.DealInfo) {
+	if len(deal.Threads) == 0 {
+		deal.PostURL = ""
+		return
+	}
+	deal.PostURL = deal.Threads[0].PostURL
 }
 
 func contentBaseForExistingDeal(existing *models.DealInfo, scrapedDuplicates []models.DealInfo) models.DealInfo {
@@ -679,6 +766,10 @@ func (p *DealProcessor) dealChanged(existing *models.DealInfo, scraped *models.D
 // mergeThread updates the stats for an existing thread or appends a new one.
 // Returns true if anything actually changed (stats or URL).
 func (p *DealProcessor) mergeThread(deal *models.DealInfo, newThread models.ThreadContext) bool {
+	if newThread.NotFound {
+		return false
+	}
+
 	newKey := threadKey(newThread.PostURL)
 	for i := range deal.Threads {
 		if threadKey(deal.Threads[i].PostURL) == newKey {

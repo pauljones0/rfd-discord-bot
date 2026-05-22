@@ -271,6 +271,7 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 			if err != nil {
 				failed.Add(1)
 				if strings.Contains(err.Error(), "status code 404") {
+					markPrimaryThreadNotFound(deal)
 					slog.Info("Failed to fetch detail page (404)", "processor", "rfd", "url", deal.PrimaryPostURL())
 				} else {
 					slog.Warn("Failed to fetch detail page", "processor", "rfd", "url", deal.PrimaryPostURL(), "error", err)
@@ -312,6 +313,21 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 	if f := failed.Load(); f > 0 {
 		slog.Warn("FetchDealDetails summary", "processor", "rfd", "total", len(deals), "failed", f)
 	}
+}
+
+func markPrimaryThreadNotFound(deal *models.DealInfo) {
+	if len(deal.Threads) == 0 {
+		return
+	}
+
+	primaryURL := deal.PrimaryPostURL()
+	for i := range deal.Threads {
+		if deal.Threads[i].PostURL == primaryURL {
+			deal.Threads[i].NotFound = true
+			return
+		}
+	}
+	deal.Threads[0].NotFound = true
 }
 
 func isExternalDealLink(raw string) bool {

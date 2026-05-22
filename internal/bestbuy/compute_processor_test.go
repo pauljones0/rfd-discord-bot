@@ -240,6 +240,45 @@ func TestComputeProcessorSoldVerifierAllowsNotification(t *testing.T) {
 	}
 }
 
+func TestComputeProcessorSoldVerifierFetchErrorFailsOpen(t *testing.T) {
+	products := append([]Product{computeCandidate("candidate", "seller-a", 650)}, computeCompsForProcessor()...)
+	store := &computeTestStore{
+		observations: make(map[string]ComputeObservation),
+		subs:         []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_compute", ChannelID: "chan"}},
+	}
+	for _, product := range products {
+		store.observations[computeObservationKey(product)] = ComputeObservation{
+			Product:   product,
+			Spec:      ParseComputeSpec(product),
+			FirstSeen: time.Now().Add(-time.Hour),
+			LastSeen:  time.Now().Add(-time.Hour),
+		}
+	}
+	notifier := &computeTestNotifier{}
+	verifier := &computeTestSoldVerifier{verification: EbaySoldVerification{
+		Pass:    true,
+		Verdict: ebaySoldVerdictFetchError,
+		Query:   "Dell Precision 5820",
+		Error:   "all backends blocked",
+	}}
+	processor := NewComputeProcessor(store, computeTestClient{products: products}, notifier, "", false, nil)
+	processor.SetSoldVerifier(verifier)
+
+	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
+		t.Fatalf("ProcessComputeOutliers() error = %v", err)
+	}
+	if len(notifier.sent) != 1 {
+		t.Fatalf("sent = %d, want fail-open notification", len(notifier.sent))
+	}
+	saved := store.observations[computeObservationKey(products[0])]
+	if saved.EbaySoldVerdict != ebaySoldVerdictFetchError {
+		t.Fatalf("EbaySoldVerdict = %q, want fetch_error", saved.EbaySoldVerdict)
+	}
+	if saved.LastAlertKey == "" {
+		t.Fatalf("LastAlertKey is empty after fail-open send")
+	}
+}
+
 func TestComputeProcessorExtremeSpecCanUseEbaySoldFallback(t *testing.T) {
 	product := Product{
 		SKU:       "extreme",
@@ -285,6 +324,44 @@ func TestComputeProcessorExtremeSpecCanUseEbaySoldFallback(t *testing.T) {
 	}
 	if len(saved.EbaySoldComparables) != 1 {
 		t.Fatalf("EbaySoldComparables = %d, want saved comparables", len(saved.EbaySoldComparables))
+	}
+}
+
+func TestComputeProcessorExtremeFallbackDoesNotPromoteFetchError(t *testing.T) {
+	product := Product{
+		SKU:       "extreme",
+		Name:      "Dell PowerEdge R740 768GB RAM 24 Core Xeon Server",
+		SalePrice: 1,
+		SellerID:  "seller-a",
+		Source:    "seller:seller-a",
+		URL:       "https://www.bestbuy.ca/en-ca/product/extreme",
+	}
+	store := &computeTestStore{
+		observations: make(map[string]ComputeObservation),
+		subs:         []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_compute", ChannelID: "chan"}},
+	}
+	notifier := &computeTestNotifier{}
+	verifier := &computeTestSoldVerifier{verification: EbaySoldVerification{
+		Pass:    true,
+		Verdict: ebaySoldVerdictFetchError,
+		Query:   "PowerEdge R740",
+		Error:   "all backends blocked",
+	}}
+	processor := NewComputeProcessor(store, computeTestClient{products: []Product{product}}, notifier, "", true, nil)
+	processor.SetSoldVerifier(verifier)
+
+	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
+		t.Fatalf("ProcessComputeOutliers() error = %v", err)
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("sent = %d, want no extreme fallback alert without decisive eBay comps", len(notifier.sent))
+	}
+	saved := store.observations[computeObservationKey(product)]
+	if saved.EbaySoldVerdict != ebaySoldVerdictFetchError {
+		t.Fatalf("EbaySoldVerdict = %q, want fetch_error", saved.EbaySoldVerdict)
+	}
+	if saved.IsWarm || saved.IsLavaHot {
+		t.Fatalf("saved warm/hot = %v/%v, want false without promotion", saved.IsWarm, saved.IsLavaHot)
 	}
 }
 

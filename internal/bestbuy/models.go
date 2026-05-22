@@ -80,10 +80,20 @@ type Product struct {
 
 	ComparableCount       int       `docstore:"comparableCount,omitempty"`
 	ComparableMedianPrice float64   `docstore:"comparableMedianPrice,omitempty"`
+	ComparableP25Price    float64   `docstore:"comparableP25Price,omitempty"`
 	ComparableLowestPrice float64   `docstore:"comparableLowestPrice,omitempty"`
 	ComparableDiscountPct float64   `docstore:"comparableDiscountPct,omitempty"`
 	ComparableSummary     string    `docstore:"comparableSummary,omitempty"`
 	AvailabilityCheckedAt time.Time `docstore:"availabilityCheckedAt,omitempty"`
+
+	SoldCompCount       int               `docstore:"ebaySoldCount,omitempty"`
+	SoldCompMedianPrice float64           `docstore:"ebaySoldMedianPrice,omitempty"`
+	SoldCompP25Price    float64           `docstore:"ebaySoldP25Price,omitempty"`
+	SoldCompGapAmount   float64           `docstore:"ebaySoldGapAmount,omitempty"`
+	SoldCompGapPct      float64           `docstore:"ebaySoldGapPct,omitempty"`
+	SoldCompSummary     string            `docstore:"ebaySoldSummary,omitempty"`
+	SoldCompCheckedAt   time.Time         `docstore:"ebaySoldCheckedAt,omitempty"`
+	SoldCompExamples    []SoldCompListing `docstore:"ebaySoldExamples,omitempty"`
 }
 
 // AnalyzedProduct extends Product with AI analysis results and computed fields.

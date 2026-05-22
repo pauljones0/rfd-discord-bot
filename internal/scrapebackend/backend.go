@@ -3,6 +3,7 @@ package scrapebackend
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,18 +35,22 @@ const (
 
 // FetchOptions describes one attempt to fetch browser-rendered or raw HTML.
 type FetchOptions struct {
-	Backend          string
-	URL              string
-	Timeout          time.Duration
-	ChromePath       string
-	ChromeProfile    string
-	UserAgent        string
-	ExternalCommand  string
-	CamoufoxCommand  string
-	AICrawlerCommand string
-	PaidCommand      string
-	PaidEnabled      bool
-	PaidAttempt      func(context.Context) error
+	Backend             string
+	URL                 string
+	Timeout             time.Duration
+	ChromePath          string
+	ChromeProfile       string
+	UserAgent           string
+	ExternalCommand     string
+	CamoufoxCommand     string
+	AICrawlerCommand    string
+	PaidCommand         string
+	ExternalCommandArgs []string
+	CamoufoxCommandArgs []string
+	AICrawlerArgs       []string
+	PaidCommandArgs     []string
+	PaidEnabled         bool
+	PaidAttempt         func(context.Context) error
 }
 
 // FetchResult captures the observable result from one backend attempt.
@@ -72,89 +78,274 @@ func FetchHTML(ctx context.Context, opts FetchOptions) FetchResult {
 	attemptCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
+	backendResult := fetchBackend(attemptCtx, opts)
 	result := FetchResult{
-		Backend: opts.Backend,
-		URL:     opts.URL,
+		Backend:     opts.Backend,
+		URL:         opts.URL,
+		FinalURL:    backendResult.finalURL,
+		StatusCode:  backendResult.statusCode,
+		HTML:        backendResult.html,
+		Duration:    time.Since(start),
+		BlockSignal: DetectBlockSignal(backendResult.statusCode, backendResult.html),
 	}
-
-	var html string
-	var finalURL string
-	var statusCode int
-	var err error
-
-	switch opts.Backend {
-	case BackendHTTP:
-		html, finalURL, statusCode, err = fetchHTTP(attemptCtx, opts)
-	case BackendChromedpCloudRun, BackendChromedpPersistent:
-		html, finalURL, err = fetchChromedp(attemptCtx, opts)
-	case BackendPlaywright:
-		html, finalURL, statusCode, err = fetchPlaywright(attemptCtx, opts)
-	case BackendExternalStealth:
-		html, err = fetchCommand(attemptCtx, opts.ExternalCommand, opts.URL)
-	case BackendCamoufox:
-		html, err = fetchCommand(attemptCtx, opts.CamoufoxCommand, opts.URL)
-	case BackendAICrawler:
-		html, err = fetchCommand(attemptCtx, opts.AICrawlerCommand, opts.URL)
-	case BackendPaidTrial:
-		if !opts.PaidEnabled {
-			err = fmt.Errorf("paid browser backend is disabled")
-		} else if opts.PaidAttempt != nil {
-			if attemptErr := opts.PaidAttempt(attemptCtx); attemptErr != nil {
-				slog.Warn("Paid browser attempt skipped", "backend", opts.Backend, "url", opts.URL, "reason", attemptErr)
-				err = attemptErr
-			} else {
-				html, err = fetchCommand(attemptCtx, opts.PaidCommand, opts.URL)
-			}
-		} else {
-			html, err = fetchCommand(attemptCtx, opts.PaidCommand, opts.URL)
-		}
-	default:
-		err = fmt.Errorf("unknown scraper backend %q", opts.Backend)
-	}
-
-	result.Duration = time.Since(start)
-	result.HTML = html
-	result.FinalURL = finalURL
-	result.StatusCode = statusCode
-	result.BlockSignal = DetectBlockSignal(statusCode, html)
-	if err != nil {
-		result.Error = err.Error()
+	if backendResult.err != nil {
+		result.Error = backendResult.err.Error()
 	}
 	return result
+}
+
+type backendFetchResult struct {
+	html       string
+	finalURL   string
+	statusCode int
+	err        error
+}
+
+func fetchBackend(ctx context.Context, opts FetchOptions) backendFetchResult {
+	switch opts.Backend {
+	case BackendHTTP:
+		html, finalURL, statusCode, err := fetchHTTP(ctx, opts)
+		return backendFetchResult{html: html, finalURL: finalURL, statusCode: statusCode, err: err}
+	case BackendChromedpCloudRun, BackendChromedpPersistent:
+		html, finalURL, err := fetchChromedp(ctx, opts)
+		return backendFetchResult{html: html, finalURL: finalURL, err: err}
+	case BackendPlaywright:
+		html, finalURL, statusCode, err := fetchPlaywright(ctx, opts)
+		return backendFetchResult{html: html, finalURL: finalURL, statusCode: statusCode, err: err}
+	case BackendExternalStealth:
+		html, err := fetchCommand(ctx, opts.ExternalCommand, opts.ExternalCommandArgs, opts.URL)
+		return backendFetchResult{html: html, err: err}
+	case BackendCamoufox:
+		html, err := fetchCommand(ctx, opts.CamoufoxCommand, opts.CamoufoxCommandArgs, opts.URL)
+		return backendFetchResult{html: html, err: err}
+	case BackendAICrawler:
+		html, err := fetchCommand(ctx, opts.AICrawlerCommand, opts.AICrawlerArgs, opts.URL)
+		return backendFetchResult{html: html, err: err}
+	case BackendPaidTrial:
+		html, err := fetchPaidCommand(ctx, opts)
+		return backendFetchResult{html: html, err: err}
+	default:
+		return backendFetchResult{err: fmt.Errorf("unknown scraper backend %q", opts.Backend)}
+	}
+}
+
+func fetchPaidCommand(ctx context.Context, opts FetchOptions) (string, error) {
+	if !opts.PaidEnabled {
+		return "", fmt.Errorf("paid browser backend is disabled")
+	}
+	if opts.PaidAttempt != nil {
+		if err := opts.PaidAttempt(ctx); err != nil {
+			slog.Warn("Paid browser attempt skipped", "backend", opts.Backend, "url", opts.URL, "reason", err)
+			return "", err
+		}
+	}
+	return fetchCommand(ctx, opts.PaidCommand, opts.PaidCommandArgs, opts.URL)
+}
+
+// FilterBackendsForPaidEnabled removes paid backends unless the caller
+// explicitly enables paid browser usage for that site.
+func FilterBackendsForPaidEnabled(backends []string, paidEnabled bool) []string {
+	if paidEnabled {
+		return append([]string(nil), backends...)
+	}
+	out := make([]string, 0, len(backends))
+	for _, backend := range backends {
+		if backend == BackendPaidTrial {
+			continue
+		}
+		out = append(out, backend)
+	}
+	return out
+}
+
+type AttemptCounter struct {
+	attempts    map[string]int
+	failures    map[string]int
+	errors      map[string]int
+	blocks      map[string]int
+	parseErrors map[string]int
+	verdicts    map[string]int
+}
+
+func NewAttemptCounter() *AttemptCounter {
+	return &AttemptCounter{}
+}
+
+func (c *AttemptCounter) RecordAttempt(backend string) {
+	if c == nil {
+		return
+	}
+	incrementCount(&c.attempts, backend)
+}
+
+func (c *AttemptCounter) RecordFetchResult(backend string, result FetchResult) string {
+	if c == nil {
+		return fetchResultIssue(result)
+	}
+	issue := fetchResultIssue(result)
+	if issue == "" {
+		return ""
+	}
+	incrementCount(&c.failures, backend)
+	if result.Error != "" {
+		incrementCount(&c.errors, backend)
+	}
+	if result.BlockSignal != "" {
+		incrementCount(&c.blocks, backend+":"+result.BlockSignal)
+	}
+	return issue
+}
+
+func (c *AttemptCounter) RecordError(backend string) {
+	if c == nil {
+		return
+	}
+	incrementCount(&c.failures, backend)
+	incrementCount(&c.errors, backend)
+}
+
+func (c *AttemptCounter) RecordParseError(backend string) {
+	if c == nil {
+		return
+	}
+	incrementCount(&c.failures, backend)
+	incrementCount(&c.parseErrors, backend)
+}
+
+func (c *AttemptCounter) RecordVerdict(backend, verdict string) {
+	if c == nil || strings.TrimSpace(verdict) == "" {
+		return
+	}
+	incrementCount(&c.verdicts, backend+":"+verdict)
+}
+
+func (c *AttemptCounter) TotalAttempts() int {
+	if c == nil {
+		return 0
+	}
+	total := 0
+	for _, count := range c.attempts {
+		total += count
+	}
+	return total
+}
+
+func (c *AttemptCounter) HasFailures() bool {
+	if c == nil {
+		return false
+	}
+	return len(c.failures) > 0 || len(c.errors) > 0 || len(c.blocks) > 0 || len(c.parseErrors) > 0
+}
+
+func (c *AttemptCounter) Attrs() []any {
+	if c == nil {
+		return nil
+	}
+	return []any{
+		"backend_attempts", FormatCounts(c.attempts),
+		"backend_failures", FormatCounts(c.failures),
+		"backend_errors", FormatCounts(c.errors),
+		"backend_blocks", FormatCounts(c.blocks),
+		"backend_parse_errors", FormatCounts(c.parseErrors),
+		"backend_verdicts", FormatCounts(c.verdicts),
+	}
+}
+
+func fetchResultIssue(result FetchResult) string {
+	switch {
+	case result.Error != "" && result.BlockSignal != "":
+		return strings.TrimSpace(result.Error + " " + result.BlockSignal)
+	case result.Error != "":
+		return result.Error
+	case result.BlockSignal != "":
+		return "blocked by " + result.BlockSignal
+	default:
+		return ""
+	}
+}
+
+func incrementCount(counts *map[string]int, key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		key = "unknown"
+	}
+	if *counts == nil {
+		*counts = make(map[string]int)
+	}
+	(*counts)[key]++
+}
+
+func FormatCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", key, counts[key]))
+	}
+	return strings.Join(parts, ",")
 }
 
 // DetectBlockSignal returns a compact label for common challenge/block pages.
 func DetectBlockSignal(statusCode int, body string) string {
 	lower := strings.ToLower(body)
-	switch {
-	case strings.Contains(lower, "cf-turnstile"):
-		return "cloudflare-turnstile"
-	case strings.Contains(lower, "/cdn-cgi/challenge-platform/") ||
-		strings.Contains(lower, "__cf_chl_") ||
-		(strings.Contains(lower, "just a moment") && strings.Contains(lower, "enable javascript and cookies")):
-		return "cloudflare-managed-challenge"
-	case strings.Contains(lower, "edgesuite.net") ||
-		strings.Contains(lower, "akamai") ||
-		(strings.Contains(lower, "access denied") && strings.Contains(lower, "you don't have permission to access")):
-		return "akamai-access-denied"
-	case strings.Contains(lower, "perimeterx") || strings.Contains(lower, "px-captcha"):
-		return "perimeterx-challenge"
-	case strings.Contains(lower, "g-recaptcha") ||
-		strings.Contains(lower, "hcaptcha") ||
-		strings.Contains(lower, "captcha-form") ||
-		strings.Contains(lower, "captcha-container") ||
-		strings.Contains(lower, "complete the security check") ||
-		strings.Contains(lower, "verify you are human") ||
-		strings.Contains(lower, "are you a robot") ||
-		strings.Contains(lower, "enter the characters you see"):
-		return "captcha"
-	case statusCode == http.StatusForbidden:
+	for _, rule := range blockSignalRules {
+		if rule.matches(lower) {
+			return rule.signal
+		}
+	}
+	switch statusCode {
+	case http.StatusForbidden:
 		return "http-403"
-	case statusCode == http.StatusTooManyRequests:
+	case http.StatusTooManyRequests:
 		return "http-429"
 	default:
 		return ""
 	}
+}
+
+type blockSignalRule struct {
+	signal string
+	any    []string
+	all    []string
+}
+
+var blockSignalRules = []blockSignalRule{
+	{signal: "cloudflare-turnstile", any: []string{"cf-turnstile"}},
+	{signal: "cloudflare-managed-challenge", any: []string{"/cdn-cgi/challenge-platform/", "__cf_chl_"}, all: []string{"just a moment", "enable javascript and cookies"}},
+	{signal: "akamai-access-denied", any: []string{"edgesuite.net", "akamai"}, all: []string{"access denied", "you don't have permission to access"}},
+	{signal: "perimeterx-challenge", any: []string{"perimeterx", "px-captcha"}},
+	{signal: "captcha", any: []string{"g-recaptcha", "hcaptcha", "captcha-form", "captcha-container", "complete the security check", "verify you are human", "are you a robot", "enter the characters you see"}},
+}
+
+func (r blockSignalRule) matches(body string) bool {
+	return containsAny(body, r.any) || containsAll(body, r.all)
+}
+
+func containsAny(value string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAll(value string, needles []string) bool {
+	if len(needles) == 0 {
+		return false
+	}
+	for _, needle := range needles {
+		if !strings.Contains(value, needle) {
+			return false
+		}
+	}
+	return true
 }
 
 func fetchHTTP(ctx context.Context, opts FetchOptions) (string, string, int, error) {
@@ -316,11 +507,36 @@ func fetchPlaywright(ctx context.Context, opts FetchOptions) (string, string, in
 	return html, page.URL(), status, err
 }
 
-func fetchCommand(ctx context.Context, command, targetURL string) (string, error) {
+func CommandArgsFromEnv(keys ...string) []string {
+	for _, key := range keys {
+		raw := strings.TrimSpace(os.Getenv(key))
+		if raw == "" {
+			continue
+		}
+		var args []string
+		if err := json.Unmarshal([]byte(raw), &args); err != nil {
+			slog.Warn("Invalid scraper command args env; expected JSON string array", "key", key, "error", err)
+			return nil
+		}
+		out := make([]string, 0, len(args))
+		for _, arg := range args {
+			if strings.TrimSpace(arg) != "" {
+				out = append(out, arg)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func fetchCommand(ctx context.Context, command string, args []string, targetURL string) (string, error) {
+	if len(args) > 0 {
+		return fetchCommandArgs(ctx, args, targetURL)
+	}
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("backend command is not configured")
 	}
-
+	slog.Warn("Using legacy shell-string scraper command; migrate to *_COMMAND_ARGS JSON argv env")
 	command = strings.ReplaceAll(command, "{url}", targetURL)
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
@@ -328,8 +544,32 @@ func fetchCommand(ctx context.Context, command, targetURL string) (string, error
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
-	cmd.Env = append(os.Environ(), "SCRAPELAB_TARGET_URL="+targetURL)
+	return runCommand(cmd, targetURL)
+}
 
+func fetchCommandArgs(ctx context.Context, args []string, targetURL string) (string, error) {
+	resolved := commandArgsWithTarget(args, targetURL)
+	if len(resolved) == 0 || strings.TrimSpace(resolved[0]) == "" {
+		return "", fmt.Errorf("backend command args are not configured")
+	}
+	cmd := exec.CommandContext(ctx, resolved[0], resolved[1:]...)
+	return runCommand(cmd, targetURL)
+}
+
+func commandArgsWithTarget(args []string, targetURL string) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "{url}" {
+			out = append(out, targetURL)
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+func runCommand(cmd *exec.Cmd, targetURL string) (string, error) {
+	cmd.Env = append(os.Environ(), "SCRAPELAB_TARGET_URL="+targetURL)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

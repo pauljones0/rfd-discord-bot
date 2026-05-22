@@ -21,13 +21,15 @@ const (
 	priceDropMinAmount     = 50
 	priceComparisonEpsilon = 0.005
 
-	comparableWarmMinCount        = 2
-	comparableWarmMinPct          = 20.0
-	comparableWarmMinAmount       = 50.0
-	comparableLavaHotMinPct       = 40.0
-	comparableLavaHotMinAmount    = 100.0
-	singleComparableWarmMinPct    = 30.0
-	singleComparableWarmMinAmount = 75.0
+	comparableWarmMinCount          = 2
+	comparableWarmMinPct            = 20.0
+	comparableWarmMinAmount         = 50.0
+	comparableLavaHotMinPct         = 40.0
+	comparableLavaHotMinAmount      = 100.0
+	singleComparableWarmMinPct      = 30.0
+	singleComparableWarmMinAmount   = 75.0
+	comparableSmallSetFloorMaxCount = 2
+	comparableHighSpreadMinPct      = 50.0
 )
 
 // Store abstracts persistence operations for the Best Buy processor.
@@ -38,6 +40,8 @@ type Store interface {
 	SaveBestBuyProduct(ctx context.Context, product AnalyzedProduct) error
 	RefreshBestBuyProduct(ctx context.Context, product AnalyzedProduct) error
 	PruneBestBuyProducts(ctx context.Context, maxAgeDays, maxRecords int) error
+	GetBestBuySoldCompSnapshot(ctx context.Context, key string) (SoldCompSnapshot, bool, error)
+	SaveBestBuySoldCompSnapshot(ctx context.Context, key string, snapshot SoldCompSnapshot) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
 }
 
@@ -75,12 +79,13 @@ type BaselineStats struct {
 
 // Processor handles the Best Buy deal processing pipeline.
 type Processor struct {
-	store           Store
-	client          *Client
-	analyzer        Analyzer
-	notifier        Notifier
-	affiliatePrefix string
-	mu              sync.Mutex
+	store            Store
+	client           *Client
+	analyzer         Analyzer
+	notifier         Notifier
+	affiliatePrefix  string
+	soldCompEnricher BestBuySoldCompEnricher
+	mu               sync.Mutex
 }
 
 // NewProcessor creates a new Best Buy deal processor.
@@ -92,6 +97,10 @@ func NewProcessor(store Store, client *Client, analyzer Analyzer, notifier Notif
 		notifier:        notifier,
 		affiliatePrefix: affiliatePrefix,
 	}
+}
+
+func (p *Processor) SetSoldCompEnricher(enricher BestBuySoldCompEnricher) {
+	p.soldCompEnricher = enricher
 }
 
 // PrimeBaseline saves the current configured-seller inventory without sending
@@ -236,6 +245,9 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 	start := time.Now()
 	runID := start.Format("20060102-150405")
 	logger := slog.With("processor", "bestbuy", "runID", runID)
+	if p.soldCompEnricher != nil {
+		p.soldCompEnricher.BeginRun()
+	}
 
 	var stats struct {
 		sellers             int
@@ -440,7 +452,7 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 	stats.validationSkipped += prepDropStats.ValidationSkipped
 	stats.comparablesEnriched += prepDropStats.ComparablesEnriched
 
-	analyzedItems, tier1Passed, tier2Passed := p.analyzeNewItems(ctx, newProducts, logger)
+	analyzedItems, tier1Passed, tier2Passed := p.analyzeNewItems(ctx, newProducts, len(bbSubs) > 0, logger)
 	stats.tier1Passed += tier1Passed
 	stats.tier2Passed += tier2Passed
 	for _, item := range analyzedItems {
@@ -481,7 +493,7 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		}
 	}
 
-	analyzedDrops, dropTier1, dropTier2 := p.analyzePriceDropItems(ctx, priceDropCandidates, logger)
+	analyzedDrops, dropTier1, dropTier2 := p.analyzePriceDropItems(ctx, priceDropCandidates, len(bbSubs) > 0, logger)
 	stats.tier1Passed += dropTier1
 	stats.tier2Passed += dropTier2
 	stats.priceDropAnalyzed = len(analyzedDrops)
@@ -709,7 +721,7 @@ func (p *Processor) validateBestBuyNotification(ctx context.Context, item Analyz
 // analyzeNewItems runs the tiered AI analysis pipeline on new products.
 // It returns every saved listing so bb_new can post all new inventory with
 // labels, while bb_warm_hot and bb_hot can filter on the same AI fields.
-func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, logger *slog.Logger) ([]AnalyzedProduct, int, int) {
+func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, enrichSoldComps bool, logger *slog.Logger) ([]AnalyzedProduct, int, int) {
 	var analyzedItems []AnalyzedProduct
 	totalTier1 := 0
 	totalTier2 := 0
@@ -736,7 +748,7 @@ func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, log
 		}
 		batch := products[i:end]
 
-		batchResults, t1Count, t2Count, err := p.processBatch(ctx, batch, logger)
+		batchResults, t1Count, t2Count, err := p.processBatch(ctx, batch, enrichSoldComps, logger)
 		analyzedItems = append(analyzedItems, batchResults...)
 		totalTier1 += t1Count
 		totalTier2 += t2Count
@@ -757,7 +769,7 @@ func (p *Processor) analyzeNewItems(ctx context.Context, products []Product, log
 	return analyzedItems, totalTier1, totalTier2
 }
 
-func (p *Processor) analyzePriceDropItems(ctx context.Context, candidates []priceDropCandidate, logger *slog.Logger) ([]AnalyzedProduct, int, int) {
+func (p *Processor) analyzePriceDropItems(ctx context.Context, candidates []priceDropCandidate, enrichSoldComps bool, logger *slog.Logger) ([]AnalyzedProduct, int, int) {
 	var analyzedItems []AnalyzedProduct
 	totalTier1 := 0
 	totalTier2 := 0
@@ -781,7 +793,7 @@ func (p *Processor) analyzePriceDropItems(ctx context.Context, candidates []pric
 			end = len(candidates)
 		}
 		batch := candidates[i:end]
-		result, err := p.processPriceDropBatch(ctx, batch, logger)
+		result, err := p.processPriceDropBatch(ctx, batch, enrichSoldComps, logger)
 		analyzedItems = append(analyzedItems, result.Items...)
 		totalTier1 += result.Tier1Passed
 		totalTier2 += result.Tier2Passed
@@ -795,7 +807,7 @@ func (p *Processor) analyzePriceDropItems(ctx context.Context, candidates []pric
 }
 
 // processBatch handles a single batch through both AI tiers.
-func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *slog.Logger) ([]AnalyzedProduct, int, int, error) {
+func (p *Processor) processBatch(ctx context.Context, batch []Product, enrichSoldComps bool, logger *slog.Logger) ([]AnalyzedProduct, int, int, error) {
 	cfg := productmonitor.Config[Product, BatchScreenResult, BatchAnalyzeResult, AnalyzedProduct]{
 		ProductKey:  func(product Product) string { return product.SKU },
 		ScreenKey:   func(screen BatchScreenResult) string { return screen.SKU },
@@ -809,6 +821,11 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *s
 			return bestBuyFromAnalysis(product, screen, result)
 		},
 		Save: p.store.SaveBestBuyProduct,
+	}
+	if enrichSoldComps && p.soldCompEnricher != nil {
+		cfg.BeforeAnalyze = func(ctx context.Context, products []Product) ([]Product, error) {
+			return p.soldCompEnricher.EnrichProducts(ctx, products, time.Now(), logger)
+		}
 	}
 	if p.analyzer != nil {
 		cfg.ScreenBatch = p.analyzer.ScreenBestBuyBatch
@@ -845,7 +862,7 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, logger *s
 	return result.Items, result.Tier1Passed, result.Tier2Passed, err
 }
 
-func (p *Processor) processPriceDropBatch(ctx context.Context, batch []priceDropCandidate, logger *slog.Logger) (productmonitor.Result[AnalyzedProduct], error) {
+func (p *Processor) processPriceDropBatch(ctx context.Context, batch []priceDropCandidate, enrichSoldComps bool, logger *slog.Logger) (productmonitor.Result[AnalyzedProduct], error) {
 	cfg := productmonitor.Config[priceDropCandidate, BatchScreenResult, BatchAnalyzeResult, AnalyzedProduct]{
 		ProductKey:  func(candidate priceDropCandidate) string { return candidate.State.SKU },
 		ScreenKey:   func(screen BatchScreenResult) string { return screen.SKU },
@@ -859,6 +876,22 @@ func (p *Processor) processPriceDropBatch(ctx context.Context, batch []priceDrop
 			return priceDropFromAnalysis(candidate, screen, result)
 		},
 		Save: p.store.SaveBestBuyProduct,
+	}
+	if enrichSoldComps && p.soldCompEnricher != nil {
+		cfg.BeforeAnalyze = func(ctx context.Context, candidates []priceDropCandidate) ([]priceDropCandidate, error) {
+			products, err := p.soldCompEnricher.EnrichProducts(ctx, priceDropCandidateProducts(candidates), time.Now(), logger)
+			if err != nil {
+				return candidates, err
+			}
+			if len(products) != len(candidates) {
+				return candidates, fmt.Errorf("sold comp enrichment returned %d products for %d candidates", len(products), len(candidates))
+			}
+			out := append([]priceDropCandidate(nil), candidates...)
+			for i := range out {
+				out[i].State.Product = products[i]
+			}
+			return out, nil
+		}
 	}
 	if p.analyzer != nil {
 		cfg.ScreenBatch = func(ctx context.Context, candidates []priceDropCandidate) ([]BatchScreenResult, error) {
@@ -932,7 +965,7 @@ func bestBuyFromAnalysis(product Product, screen BatchScreenResult, result Batch
 	analyzed.IsWarm = result.IsWarm
 	analyzed.IsLavaHot = result.IsLavaHot
 	analyzed.Summary = result.Summary
-	return applyBestBuyComparableGuard(analyzed)
+	return applySoldCompMarketGuard(applyBestBuyComparableGuard(analyzed))
 }
 
 func priceDropCandidateProducts(candidates []priceDropCandidate) []Product {
@@ -967,7 +1000,7 @@ func priceDropFromAnalysis(candidate priceDropCandidate, screen BatchScreenResul
 	analyzed.IsWarm = result.IsWarm
 	analyzed.IsLavaHot = result.IsLavaHot
 	analyzed.Summary = result.Summary
-	return applyBestBuyComparableGuard(analyzed)
+	return applySoldCompMarketGuard(applyBestBuyComparableGuard(analyzed))
 }
 
 func applyBestBuyComparableGuard(product AnalyzedProduct) AnalyzedProduct {
@@ -975,6 +1008,7 @@ func applyBestBuyComparableGuard(product AnalyzedProduct) AnalyzedProduct {
 		return product
 	}
 
+	wasWarmHot := product.IsWarm || product.IsLavaHot
 	warmOK := bestBuyComparableWarmEligible(product.Product)
 	lavaOK := bestBuyComparableLavaHotEligible(product.Product)
 	if product.IsLavaHot && !lavaOK {
@@ -987,7 +1021,49 @@ func applyBestBuyComparableGuard(product AnalyzedProduct) AnalyzedProduct {
 	if product.IsWarm && !warmOK {
 		product.IsWarm = false
 		product.IsLavaHot = false
+	}
+	if wasWarmHot && !product.IsWarm && !product.IsLavaHot {
 		product.Summary = compactBestBuySummary(product.Summary, "Not enough below comps")
+	}
+	return product
+}
+
+func applySoldCompMarketGuard(product AnalyzedProduct) AnalyzedProduct {
+	if product.SoldCompCount <= 0 || product.SoldCompMedianPrice <= 0 {
+		return product
+	}
+	verdict := soldCompMarketVerdictFromSummary(
+		effectivePrice(product.Product),
+		product.SoldCompCount,
+		product.SoldCompMedianPrice,
+		product.SoldCompP25Price,
+		bestBuySoldCompMinMatches(product.Product),
+	)
+	if !verdict.EnoughEvidence {
+		return product
+	}
+
+	switch verdict.Label {
+	case soldCompMarketHot:
+		if !product.IsLavaHot {
+			product.Summary = compactBestBuySummary(product.Summary, "Hot verified by eBay sold comps")
+		}
+		product.IsWarm = true
+		product.IsLavaHot = true
+	case soldCompMarketWarm:
+		if product.IsLavaHot {
+			product.Summary = compactBestBuySummary(product.Summary, "Hot label downgraded by eBay sold comps")
+		} else if !product.IsWarm {
+			product.Summary = compactBestBuySummary(product.Summary, "Warm verified by eBay sold comps")
+		}
+		product.IsWarm = true
+		product.IsLavaHot = false
+	default:
+		if product.IsWarm || product.IsLavaHot {
+			product.Summary = compactBestBuySummary(product.Summary, "Not enough below eBay sold comps")
+		}
+		product.IsWarm = false
+		product.IsLavaHot = false
 	}
 	return product
 }
@@ -995,6 +1071,9 @@ func applyBestBuyComparableGuard(product AnalyzedProduct) AnalyzedProduct {
 func bestBuyComparableWarmEligible(product Product) bool {
 	current := effectivePrice(product)
 	if current <= 0 || product.ComparableMedianPrice <= 0 || current >= product.ComparableMedianPrice-priceComparisonEpsilon {
+		return false
+	}
+	if !bestBuyComparableFloorEligible(product) {
 		return false
 	}
 	savings := product.ComparableMedianPrice - current
@@ -1009,8 +1088,43 @@ func bestBuyComparableLavaHotEligible(product Product) bool {
 	if current <= 0 || product.ComparableMedianPrice <= 0 || current >= product.ComparableMedianPrice-priceComparisonEpsilon {
 		return false
 	}
+	if !bestBuyComparableFloorEligible(product) {
+		return false
+	}
 	savings := product.ComparableMedianPrice - current
 	return product.ComparableDiscountPct >= comparableLavaHotMinPct && savings >= comparableLavaHotMinAmount
+}
+
+func bestBuyComparableFloorEligible(product Product) bool {
+	if !bestBuyComparableFloorRequired(product) {
+		return true
+	}
+	floor := bestBuyComparableFloorPrice(product)
+	if floor <= 0 {
+		return true
+	}
+	return effectivePrice(product) <= floor-priceComparisonEpsilon
+}
+
+func bestBuyComparableFloorRequired(product Product) bool {
+	if product.ComparableCount <= 0 {
+		return false
+	}
+	if product.ComparableCount <= comparableSmallSetFloorMaxCount {
+		return true
+	}
+	if product.ComparableMedianPrice <= 0 || product.ComparableLowestPrice <= 0 {
+		return false
+	}
+	spreadPct := (product.ComparableMedianPrice - product.ComparableLowestPrice) / product.ComparableMedianPrice * 100
+	return spreadPct >= comparableHighSpreadMinPct
+}
+
+func bestBuyComparableFloorPrice(product Product) float64 {
+	if product.ComparableCount <= comparableSmallSetFloorMaxCount || product.ComparableP25Price <= 0 {
+		return product.ComparableLowestPrice
+	}
+	return product.ComparableP25Price
 }
 
 func compactBestBuySummary(existing, note string) string {

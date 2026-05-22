@@ -3,6 +3,7 @@ package bestbuy
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseEbaySoldListings(t *testing.T) {
@@ -161,6 +162,47 @@ func TestBuildEbaySoldQueryUsesStructuredSpec(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(query), "open box") {
 		t.Fatalf("query %q should not include condition filler", query)
+	}
+}
+
+func TestEbaySoldVerifierCachedUnavailableVerdictsFailOpen(t *testing.T) {
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	observation := soldVerifierObservation(650)
+	alertKey := computeAlertKey(observation)
+	verifier := NewEbaySoldVerifier(EbaySoldVerifierOptions{Enabled: true})
+
+	for _, verdict := range []string{ebaySoldVerdictFetchError, ebaySoldVerdictNoComps} {
+		prior := observation
+		prior.EbaySoldAlertKey = alertKey
+		prior.EbaySoldCheckedAt = now.Add(-time.Hour)
+		prior.EbaySoldVerdict = verdict
+
+		got, ok := verifier.cached(prior, alertKey, now)
+		if !ok {
+			t.Fatalf("cached(%s) ok = false, want true", verdict)
+		}
+		if !got.Pass {
+			t.Fatalf("cached(%s).Pass = false, want fail-open true", verdict)
+		}
+	}
+}
+
+func TestEbaySoldVerifierCachedFailStillBlocks(t *testing.T) {
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	observation := soldVerifierObservation(2300)
+	alertKey := computeAlertKey(observation)
+	prior := observation
+	prior.EbaySoldAlertKey = alertKey
+	prior.EbaySoldCheckedAt = now.Add(-time.Hour)
+	prior.EbaySoldVerdict = ebaySoldVerdictFail
+	verifier := NewEbaySoldVerifier(EbaySoldVerifierOptions{Enabled: true})
+
+	got, ok := verifier.cached(prior, alertKey, now)
+	if !ok {
+		t.Fatal("cached() ok = false, want true")
+	}
+	if got.Pass {
+		t.Fatal("cached fail verdict Pass = true, want false")
 	}
 }
 

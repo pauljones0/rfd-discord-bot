@@ -35,15 +35,15 @@ const (
 
 var (
 	ramPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:gb|g)\s+(?:ddr\d+\s+)?(?:ecc\s+|registered\s+|rdimm\s+|sodimm\s+|lpddr\d+x?\s+)?ram\b`),
-		regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:gb|g)\s+(?:ddr\d+\s+)?memory\b`),
-		regexp.MustCompile(`(?i)\bram\s*[:/-]\s*(\d+(?:\.\d+)?)\s*(?:gb|g)\b`),
+		regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:gb|g)[\s|]+(?:ddr\d+[\s|]+)?(?:ecc\s+|registered\s+|rdimm\s+|sodimm\s+|lpddr\d+x?\s+)?ram\b`),
+		regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:gb|g)[\s|]+(?:ddr\d+[\s|]+)?memory\b`),
+		regexp.MustCompile(`(?i)\bram\s*[:/]\s*(\d+(?:\.\d+)?)\s*(?:gb|g)\b`),
 		regexp.MustCompile(`(?i)\|\s*(\d+(?:\.\d+)?)\s*(?:gb|g)\s*\|`),
-		regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:gb|g)\s*(?:ddr\d+|lpddr\d+x?|ecc|rdimm)\b`),
+		regexp.MustCompile(`(?i)\b(\d+(?:\.\d+)?)\s*(?:gb|g)[\s|]+(?:ddr\d+|lpddr\d+x?|ecc|rdimm)\b`),
 	}
 	storagePatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)(?:(\d+)\s*x\s*)?(\d+(?:\.\d+)?)\s*(tb|gb)\s*(nvme|ssd|hdd|hard drive|sata|sas)`),
-		regexp.MustCompile(`(?i)(?:(\d+)\s*x\s*)?(\d+(?:\.\d+)?)\s*(tb|gb)\s+(?:pcie\s+)?(?:4\.0\s+)?(?:solid state|storage)`),
+		regexp.MustCompile(`(?i)(?:(\d+)\s*x\s*)?(\d+(?:\.\d+)?)\s*(tb|gb)[\s|]*(nvme|ssd|hdd|hard drive|sata|sas)`),
+		regexp.MustCompile(`(?i)(?:(\d+)\s*x\s*)?(\d+(?:\.\d+)?)\s*(tb|gb)[\s|]+(?:pcie[\s|]+)?(?:4\.0[\s|]+)?(?:solid state|storage)`),
 	}
 	corePatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\b(\d+)\s*(?:-| )?core\b`),
@@ -226,7 +226,7 @@ func ScoreComputeObservationOutlier(observation ComputeObservation, comps []Comp
 	}
 
 	warm := gapPct >= defaultComputeWarmMinGapPct && gapAmount >= defaultComputeWarmMinGapAmount && price <= p25Price+priceComparisonEpsilon
-	hot := gapPct >= defaultComputeHotMinGapPct && gapAmount >= defaultComputeHotMinGapAmount
+	hot := gapPct >= defaultComputeHotMinGapPct && gapAmount >= defaultComputeHotMinGapAmount && price <= p25Price+priceComparisonEpsilon
 	if hot {
 		warm = true
 	}
@@ -542,6 +542,13 @@ func rejectComputeReason(lower string) string {
 		"power cord":            "power_accessory",
 		"power adapter":         "power_accessory",
 		"charger fit":           "power_accessory",
+		"battery pack":          "accessory",
+		"replacement battery":   "accessory",
+		"ink cartridge":         "not_compute",
+		"toner cartridge":       "not_compute",
+		"laptop bag":            "accessory",
+		"laptop case":           "accessory",
+		"laptop sleeve":         "accessory",
 		"cable":                 "accessory",
 		"battery":               "accessory",
 		"lcd screen":            "accessory",
@@ -771,20 +778,53 @@ func coreCountFromText(text string) int {
 }
 
 func ramGBFromText(text string) float64 {
-	best := 0.0
-	for _, pattern := range ramPatterns {
+	bestDirect := 0.0
+	bestPrefix := 0.0
+	bestMemory := 0.0
+	bestUnlabeled := 0.0
+
+	for i, pattern := range ramPatterns {
 		matches := pattern.FindAllStringSubmatch(text, -1)
 		for _, match := range matches {
 			if len(match) < 2 {
 				continue
 			}
 			value, err := strconv.ParseFloat(match[1], 64)
-			if err == nil && value > best && value <= 2048 {
-				best = value
+			if err != nil || value <= 0 || value > 2048 {
+				continue
+			}
+			switch i {
+			case 0, 4:
+				if value > bestDirect {
+					bestDirect = value
+				}
+			case 1:
+				if value > bestMemory {
+					bestMemory = value
+				}
+			case 2:
+				if value > bestPrefix {
+					bestPrefix = value
+				}
+			case 3:
+				// Pattern 3 is the unlabeled pipe pattern "| 16GB |"
+				if value > bestUnlabeled {
+					bestUnlabeled = value
+				}
 			}
 		}
 	}
-	return best
+
+	if bestDirect > 0 {
+		return bestDirect
+	}
+	if bestPrefix > 0 {
+		return bestPrefix
+	}
+	if bestMemory > 0 {
+		return bestMemory
+	}
+	return bestUnlabeled
 }
 
 func ramTypeFromText(text string) string {

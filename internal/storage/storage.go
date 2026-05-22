@@ -87,14 +87,14 @@ func (c *Client) GetDealByID(ctx context.Context, id string) (*models.DealInfo, 
 
 func (c *Client) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*models.DealInfo, error) {
 	result := make(map[string]*models.DealInfo, len(ids))
-	for _, id := range ids {
+	docs, err := c.GetRawDocuments(ctx, dealsCollection, ids)
+	if err != nil {
+		return nil, err
+	}
+	for id, doc := range docs {
 		var deal models.DealInfo
-		ok, err := c.GetDocument(ctx, dealsCollection, id, &deal)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
+		if err := decodeDocument(doc.Data, &deal); err != nil {
+			return nil, fmt.Errorf("decode deal %s: %w", id, err)
 		}
 		deal.DocumentID = id
 		result[id] = &deal
@@ -119,21 +119,9 @@ func (c *Client) UpdateDeal(ctx context.Context, deal models.DealInfo) error {
 }
 
 func (c *Client) TrimOldDeals(ctx context.Context, maxDeals int) error {
-	rows, err := c.ListDocuments(ctx, dealsCollection)
+	deleted, err := c.DeleteOldestDocuments(ctx, dealsCollection, "lastUpdated", maxDeals)
 	if err != nil {
 		return err
-	}
-	if len(rows) <= maxDeals {
-		return nil
-	}
-	sortDocumentsByTime(rows, "lastUpdated", true)
-	deleted := 0
-	for _, row := range rows[:len(rows)-maxDeals] {
-		if err := c.DeleteDocument(ctx, dealsCollection, row.ID); err != nil {
-			slog.Warn("TrimOldDeals: failed to delete postgres row", "id", row.ID, "error", err)
-			continue
-		}
-		deleted++
 	}
 	if deleted > 0 {
 		logger.Notice("TrimOldDeals: deleted old rows", "deleted", deleted)

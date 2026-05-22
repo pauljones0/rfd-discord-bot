@@ -754,6 +754,37 @@ func TestFormatBestBuyEmbedPriceDrop(t *testing.T) {
 	}
 }
 
+func TestFormatBestBuyEmbedShowsCompFloor(t *testing.T) {
+	embed := formatBestBuyEmbed(bestbuy.AnalyzedProduct{
+		Product: bestbuy.Product{
+			SKU:                   "16554105",
+			Name:                  "Apple Watch Series 8",
+			URL:                   "https://www.bestbuy.ca/en-ca/product/16554105",
+			RegularPrice:          529.99,
+			SalePrice:             229.99,
+			SellerName:            "OpenBox",
+			CategoryName:          "Apple Watch",
+			ComparableCount:       2,
+			ComparableMedianPrice: 1111.495,
+			ComparableP25Price:    667.74125,
+			ComparableLowestPrice: 223.99,
+			ComparableDiscountPct: 79.3,
+		},
+		CleanTitle: "Apple Watch Series 8 GPS 41mm",
+		IsWarm:     true,
+	})
+
+	for _, field := range embed.Fields {
+		if field.Name == "Best Buy Comps" {
+			if !strings.Contains(field.Value, "$223.99 low") || !strings.Contains(field.Value, "$667.74 p25") {
+				t.Fatalf("Best Buy Comps field = %q, want p25 and low prices", field.Value)
+			}
+			return
+		}
+	}
+	t.Fatalf("Best Buy Comps field missing: %#v", embed.Fields)
+}
+
 func TestOrdinal(t *testing.T) {
 	tests := map[int]string{
 		1:  "1st",

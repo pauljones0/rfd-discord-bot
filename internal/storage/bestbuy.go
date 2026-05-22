@@ -15,6 +15,7 @@ import (
 const bestbuyCollection = "bestbuy_deals"
 const bestbuySellersCollection = "bestbuy_sellers"
 const bestbuyComputeCollection = "bestbuy_compute_observations"
+const bestbuySoldCompCacheCollection = "bestbuy_sold_comp_cache"
 
 // GetActiveBestBuySellers returns active Best Buy seller targets.
 func (c *Client) GetActiveBestBuySellers(ctx context.Context) ([]bestbuy.Seller, error) {
@@ -106,6 +107,23 @@ func (c *Client) RefreshBestBuyProduct(ctx context.Context, product bestbuy.Anal
 	return c.SetDocument(ctx, bestbuyCollection, bestBuyDocID(product.SKU, product.Source), product)
 }
 
+func (c *Client) GetBestBuySoldCompSnapshot(ctx context.Context, key string) (bestbuy.SoldCompSnapshot, bool, error) {
+	var snapshot bestbuy.SoldCompSnapshot
+	if key == "" {
+		return snapshot, false, nil
+	}
+	ok, err := c.GetDocument(ctx, bestbuySoldCompCacheCollection, key, &snapshot)
+	return snapshot, ok, err
+}
+
+func (c *Client) SaveBestBuySoldCompSnapshot(ctx context.Context, key string, snapshot bestbuy.SoldCompSnapshot) error {
+	if key == "" {
+		return nil
+	}
+	snapshot.Key = key
+	return c.SetDocument(ctx, bestbuySoldCompCacheCollection, key, snapshot)
+}
+
 func bestBuyComputeDocID(sku, source string) string {
 	return fmt.Sprintf("%s_%s", sku, source)
 }
@@ -132,60 +150,16 @@ func (c *Client) ListBestBuyComputeObservations(ctx context.Context) ([]bestbuy.
 }
 
 func (c *Client) PruneBestBuyComputeObservations(ctx context.Context, maxAgeDays, maxRecords int) error {
-	rows, err := c.ListDocuments(ctx, bestbuyComputeCollection)
-	if err != nil {
-		return err
-	}
 	cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
-	for _, row := range rows {
-		if !documentTime(row.Data, "lastSeen").IsZero() && documentTime(row.Data, "lastSeen").Before(cutoff) {
-			if err := c.DeleteDocument(ctx, bestbuyComputeCollection, row.ID); err != nil {
-				slog.Warn("Failed to delete old bestbuy compute observation", "processor", "bestbuy_compute", "id", row.ID, "error", err)
-			}
-		}
-	}
-	rows, err = c.ListDocuments(ctx, bestbuyComputeCollection)
-	if err != nil {
-		return err
-	}
-	if len(rows) > maxRecords {
-		sortDocumentsByTime(rows, "lastSeen", true)
-		for _, row := range rows[:len(rows)-maxRecords] {
-			if err := c.DeleteDocument(ctx, bestbuyComputeCollection, row.ID); err != nil {
-				slog.Warn("Failed to delete excess bestbuy compute observation", "processor", "bestbuy_compute", "id", row.ID, "error", err)
-			}
-		}
-	}
-	return nil
+	_, err := c.PruneDocumentsByTime(ctx, bestbuyComputeCollection, "lastSeen", cutoff, maxRecords)
+	return err
 }
 
 // PruneBestBuyProducts deletes products older than maxAgeDays or exceeding maxRecords.
 func (c *Client) PruneBestBuyProducts(ctx context.Context, maxAgeDays, maxRecords int) error {
-	rows, err := c.ListDocuments(ctx, bestbuyCollection)
-	if err != nil {
-		return err
-	}
 	cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
-	for _, row := range rows {
-		if !documentTime(row.Data, "lastSeen").IsZero() && documentTime(row.Data, "lastSeen").Before(cutoff) {
-			if err := c.DeleteDocument(ctx, bestbuyCollection, row.ID); err != nil {
-				slog.Warn("Failed to delete old bestbuy product", "processor", "bestbuy", "id", row.ID, "error", err)
-			}
-		}
-	}
-	rows, err = c.ListDocuments(ctx, bestbuyCollection)
-	if err != nil {
-		return err
-	}
-	if len(rows) > maxRecords {
-		sortDocumentsByTime(rows, "lastSeen", true)
-		for _, row := range rows[:len(rows)-maxRecords] {
-			if err := c.DeleteDocument(ctx, bestbuyCollection, row.ID); err != nil {
-				slog.Warn("Failed to delete excess bestbuy record", "processor", "bestbuy", "id", row.ID, "error", err)
-			}
-		}
-	}
-	return nil
+	_, err := c.PruneDocumentsByTime(ctx, bestbuyCollection, "lastSeen", cutoff, maxRecords)
+	return err
 }
 
 // bestBuySubscriptionDocID generates a unique document ID for a Best Buy subscription.

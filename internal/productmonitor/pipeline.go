@@ -21,9 +21,10 @@ type Config[P any, S any, V any, A any] struct {
 	FromAnalysis func(P, S, V) A
 	Save         func(context.Context, A) error
 
-	ScreenBatch  func(context.Context, []P) ([]S, error)
-	AnalyzeBatch func(context.Context, []P) ([]V, error)
-	AnalyzeOne   func(context.Context, P) (*V, error)
+	ScreenBatch   func(context.Context, []P) ([]S, error)
+	BeforeAnalyze func(context.Context, []P) ([]P, error)
+	AnalyzeBatch  func(context.Context, []P) ([]V, error)
+	AnalyzeOne    func(context.Context, P) (*V, error)
 }
 
 type Result[A any] struct {
@@ -128,6 +129,20 @@ func ProcessBatch[P any, S any, V any, A any](ctx context.Context, batch []P, cf
 	verifyProducts := make([]P, 0, len(candidates))
 	for _, candidate := range candidates {
 		verifyProducts = append(verifyProducts, candidate.product)
+	}
+
+	if cfg.BeforeAnalyze != nil {
+		enrichedProducts, err := cfg.BeforeAnalyze(ctx, verifyProducts)
+		if err != nil {
+			logger.Warn("Pre-analysis enrichment failed; continuing with original candidates", "candidate_count", len(verifyProducts), "error", err)
+		} else if len(enrichedProducts) != len(verifyProducts) {
+			logger.Warn("Pre-analysis enrichment returned unexpected candidate count; continuing with original candidates", "candidate_count", len(verifyProducts), "enriched_count", len(enrichedProducts))
+		} else {
+			verifyProducts = enrichedProducts
+			for i := range candidates {
+				candidates[i].product = enrichedProducts[i]
+			}
+		}
 	}
 
 	verifyByKey := map[string]V{}

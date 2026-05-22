@@ -3,9 +3,11 @@ package bestbuy
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -17,11 +19,12 @@ func (f bestBuyRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, erro
 }
 
 type bestBuyTestStore struct {
-	sellers   []Seller
-	products  map[string]AnalyzedProduct
-	saved     []AnalyzedProduct
-	refreshed []AnalyzedProduct
-	subs      []models.Subscription
+	sellers       []Seller
+	products      map[string]AnalyzedProduct
+	saved         []AnalyzedProduct
+	refreshed     []AnalyzedProduct
+	subs          []models.Subscription
+	soldCompCache map[string]SoldCompSnapshot
 }
 
 func (s *bestBuyTestStore) GetActiveBestBuySellers(context.Context) ([]Seller, error) {
@@ -63,6 +66,19 @@ func (s *bestBuyTestStore) GetAllSubscriptions(context.Context) ([]models.Subscr
 	return s.subs, nil
 }
 
+func (s *bestBuyTestStore) GetBestBuySoldCompSnapshot(_ context.Context, key string) (SoldCompSnapshot, bool, error) {
+	snapshot, ok := s.soldCompCache[key]
+	return snapshot, ok, nil
+}
+
+func (s *bestBuyTestStore) SaveBestBuySoldCompSnapshot(_ context.Context, key string, snapshot SoldCompSnapshot) error {
+	if s.soldCompCache == nil {
+		s.soldCompCache = make(map[string]SoldCompSnapshot)
+	}
+	s.soldCompCache[key] = snapshot
+	return nil
+}
+
 type bestBuyTestNotifier struct {
 	sent []AnalyzedProduct
 	subs [][]models.Subscription
@@ -75,11 +91,12 @@ func (n *bestBuyTestNotifier) SendBestBuyDeal(_ context.Context, product Analyze
 }
 
 type bestBuyTestAnalyzer struct {
-	screenCalls  int
-	analyzeCalls int
-	topDeals     map[string]bool
-	warm         map[string]bool
-	hot          map[string]bool
+	screenCalls   int
+	analyzeCalls  int
+	analyzeInputs [][]Product
+	topDeals      map[string]bool
+	warm          map[string]bool
+	hot           map[string]bool
 }
 
 func (a *bestBuyTestAnalyzer) ScreenBestBuyBatch(_ context.Context, products []Product) ([]BatchScreenResult, error) {
@@ -97,6 +114,7 @@ func (a *bestBuyTestAnalyzer) ScreenBestBuyBatch(_ context.Context, products []P
 
 func (a *bestBuyTestAnalyzer) AnalyzeBestBuyBatch(_ context.Context, products []Product) ([]BatchAnalyzeResult, error) {
 	a.analyzeCalls++
+	a.analyzeInputs = append(a.analyzeInputs, append([]Product(nil), products...))
 	results := make([]BatchAnalyzeResult, 0, len(products))
 	for _, product := range products {
 		results = append(results, BatchAnalyzeResult{
@@ -112,6 +130,7 @@ func (a *bestBuyTestAnalyzer) AnalyzeBestBuyBatch(_ context.Context, products []
 
 func (a *bestBuyTestAnalyzer) AnalyzeBestBuyProduct(_ context.Context, product Product) (*AnalyzeResult, error) {
 	a.analyzeCalls++
+	a.analyzeInputs = append(a.analyzeInputs, []Product{product})
 	return &AnalyzeResult{
 		CleanTitle: product.Name,
 		IsWarm:     a.warm[product.SKU],
@@ -486,6 +505,100 @@ func TestProcessBestBuyDeals_DuplicatePriceDropAlertSuppressed(t *testing.T) {
 	}
 }
 
+type bestBuyTestSoldCompEnricher struct {
+	beginRuns int
+	calls     int
+	inputs    [][]Product
+	mutate    func([]Product) []Product
+}
+
+func (e *bestBuyTestSoldCompEnricher) BeginRun() {
+	e.beginRuns++
+}
+
+func (e *bestBuyTestSoldCompEnricher) EnrichProducts(_ context.Context, products []Product, _ time.Time, _ *slog.Logger) ([]Product, error) {
+	e.calls++
+	e.inputs = append(e.inputs, append([]Product(nil), products...))
+	if e.mutate != nil {
+		return e.mutate(products), nil
+	}
+	return products, nil
+}
+
+func TestProcessBestBuyDeals_SoldCompEnricherRunsAfterTier1Only(t *testing.T) {
+	store := &bestBuyTestStore{
+		sellers:  []Seller{{ID: "591375", Name: "Tech Outlet Center", SearchPath: "sellerName:Tech Outlet Center", IsActive: true}},
+		products: make(map[string]AnalyzedProduct),
+		subs:     []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_warm_hot", ChannelID: "warm"}},
+	}
+	analyzer := &bestBuyTestAnalyzer{topDeals: map[string]bool{"111": true, "222": false}, warm: map[string]bool{"111": true}}
+	enricher := &bestBuyTestSoldCompEnricher{mutate: func(products []Product) []Product {
+		out := append([]Product(nil), products...)
+		for i := range out {
+			out[i].SoldCompSummary = "eBay sold comps: useful evidence"
+			out[i].SoldCompCount = 2
+			out[i].SoldCompMedianPrice = 500
+		}
+		return out
+	}}
+	client := bestBuyTestClient(`{
+		"currentPage":1,
+		"total":2,
+		"totalPages":1,
+		"pageSize":48,
+		"products":[
+			{"sku":"111","name":"Sony Headphones","productUrl":"/en-ca/product/111","regularPrice":500,"salePrice":300,"seller":"Tech Outlet Center"},
+			{"sku":"222","name":"USB Cable","productUrl":"/en-ca/product/222","regularPrice":200,"salePrice":150,"seller":"Tech Outlet Center"}
+		]
+	}`)
+	processor := NewProcessor(store, client, analyzer, &bestBuyTestNotifier{}, "")
+	processor.SetSoldCompEnricher(enricher)
+
+	if err := processor.ProcessBestBuyDeals(context.Background()); err != nil {
+		t.Fatalf("ProcessBestBuyDeals() error = %v", err)
+	}
+	if enricher.beginRuns != 1 || enricher.calls != 1 {
+		t.Fatalf("enricher begin/calls = %d/%d, want 1/1", enricher.beginRuns, enricher.calls)
+	}
+	if len(enricher.inputs) != 1 || len(enricher.inputs[0]) != 1 || enricher.inputs[0][0].SKU != "111" {
+		t.Fatalf("enricher inputs = %#v, want only tier-1 product 111", enricher.inputs)
+	}
+	if len(analyzer.analyzeInputs) == 0 || analyzer.analyzeInputs[0][0].SoldCompSummary == "" {
+		t.Fatalf("tier-2 analyze inputs missing sold comps: %#v", analyzer.analyzeInputs)
+	}
+	if saved := store.products["111_seller:591375"]; saved.SoldCompSummary == "" || saved.SoldCompMedianPrice != 500 {
+		t.Fatalf("saved product missing sold comps: %#v", saved.Product)
+	}
+}
+
+func TestProcessBestBuyDeals_SoldCompEnricherSkippedWithoutSubscriptions(t *testing.T) {
+	store := &bestBuyTestStore{sellers: []Seller{{ID: "591375", Name: "Tech Outlet Center", SearchPath: "sellerName:Tech Outlet Center", IsActive: true}}, products: make(map[string]AnalyzedProduct)}
+	analyzer := &bestBuyTestAnalyzer{warm: map[string]bool{"111": true}}
+	enricher := &bestBuyTestSoldCompEnricher{}
+	processor := NewProcessor(store, bestBuyTestClient(`{"currentPage":1,"total":1,"totalPages":1,"pageSize":48,"products":[{"sku":"111","name":"Sony Headphones","productUrl":"/en-ca/product/111","regularPrice":500,"salePrice":300,"seller":"Tech Outlet Center"}]}`), analyzer, &bestBuyTestNotifier{}, "")
+	processor.SetSoldCompEnricher(enricher)
+	if err := processor.ProcessBestBuyDeals(context.Background()); err != nil {
+		t.Fatalf("ProcessBestBuyDeals() error = %v", err)
+	}
+	if enricher.calls != 0 {
+		t.Fatalf("enricher calls = %d, want 0 without subscriptions", enricher.calls)
+	}
+}
+
+func TestProcessBestBuyDeals_SoldCompEnricherSkippedForTier1Rejected(t *testing.T) {
+	store := &bestBuyTestStore{sellers: []Seller{{ID: "591375", Name: "Tech Outlet Center", SearchPath: "sellerName:Tech Outlet Center", IsActive: true}}, products: make(map[string]AnalyzedProduct), subs: []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_warm_hot", ChannelID: "warm"}}}
+	analyzer := &bestBuyTestAnalyzer{topDeals: map[string]bool{"111": false}, warm: map[string]bool{"111": true}}
+	enricher := &bestBuyTestSoldCompEnricher{}
+	processor := NewProcessor(store, bestBuyTestClient(`{"currentPage":1,"total":1,"totalPages":1,"pageSize":48,"products":[{"sku":"111","name":"Sony Headphones","productUrl":"/en-ca/product/111","regularPrice":500,"salePrice":300,"seller":"Tech Outlet Center"}]}`), analyzer, &bestBuyTestNotifier{}, "")
+	processor.SetSoldCompEnricher(enricher)
+	if err := processor.ProcessBestBuyDeals(context.Background()); err != nil {
+		t.Fatalf("ProcessBestBuyDeals() error = %v", err)
+	}
+	if enricher.calls != 0 {
+		t.Fatalf("enricher calls = %d, want 0 for tier-1 rejected product", enricher.calls)
+	}
+}
+
 func TestRefreshExistingBestBuyProduct_BaselinesLegacyRecordFromStoredPrice(t *testing.T) {
 	existing := AnalyzedProduct{
 		Product: Product{
@@ -529,6 +642,31 @@ func TestBestBuyComparableGuardDowngradesOptimisticWarm(t *testing.T) {
 
 	if analyzed.IsWarm || analyzed.IsLavaHot {
 		t.Fatalf("optimistic comp-backed label was not downgraded: %#v", analyzed)
+	}
+	if !strings.Contains(analyzed.Summary, "Not enough below comps") {
+		t.Fatalf("Summary = %q, want comp downgrade note", analyzed.Summary)
+	}
+}
+
+func TestBestBuyComparableGuardDowngradesSmallSetWhenNotBelowLowestComp(t *testing.T) {
+	product := Product{
+		SKU:                   "16554105",
+		Name:                  "Refurbished Apple Watch Series 8 GPS 41mm",
+		SalePrice:             229.99,
+		ComparableCount:       2,
+		ComparableMedianPrice: 1111.495,
+		ComparableP25Price:    667.74125,
+		ComparableLowestPrice: 223.99,
+		ComparableDiscountPct: 79.3,
+	}
+
+	analyzed := bestBuyFromAnalysis(product, BatchScreenResult{}, BatchAnalyzeResult{
+		IsLavaHot: true,
+		Summary:   "AI trusted the median comp gap",
+	})
+
+	if analyzed.IsWarm || analyzed.IsLavaHot {
+		t.Fatalf("small-set comp floor did not downgrade label: %#v", analyzed)
 	}
 	if !strings.Contains(analyzed.Summary, "Not enough below comps") {
 		t.Fatalf("Summary = %q, want comp downgrade note", analyzed.Summary)
@@ -597,6 +735,65 @@ func TestBestBuyComparableGuardKeepsLavaHotWhenDeepBelowComps(t *testing.T) {
 
 	if !analyzed.IsWarm || !analyzed.IsLavaHot {
 		t.Fatalf("lava-hot comp-backed label changed unexpectedly: %#v", analyzed)
+	}
+}
+
+func TestSoldCompMarketGuardDowngradesWeakEbayEvidence(t *testing.T) {
+	product := Product{
+		SKU:                 "111",
+		Name:                "Refurbished Laptop",
+		SalePrice:           500,
+		SoldCompCount:       3,
+		SoldCompMedianPrice: 540,
+		SoldCompP25Price:    520,
+	}
+
+	analyzed := bestBuyFromAnalysis(product, BatchScreenResult{}, BatchAnalyzeResult{
+		IsWarm:    true,
+		IsLavaHot: true,
+		Summary:   "AI liked the seller discount",
+	})
+
+	if analyzed.IsWarm || analyzed.IsLavaHot {
+		t.Fatalf("weak eBay evidence did not downgrade: %#v", analyzed)
+	}
+	if !strings.Contains(analyzed.Summary, "Not enough below eBay sold comps") {
+		t.Fatalf("Summary = %q, want eBay downgrade note", analyzed.Summary)
+	}
+}
+
+func TestSoldCompMarketGuardFailsOpenWithoutEbayEvidence(t *testing.T) {
+	product := Product{SKU: "111", Name: "Refurbished Laptop", SalePrice: 500}
+
+	analyzed := bestBuyFromAnalysis(product, BatchScreenResult{}, BatchAnalyzeResult{
+		IsWarm:  true,
+		Summary: "AI liked the seller discount",
+	})
+
+	if !analyzed.IsWarm || analyzed.IsLavaHot {
+		t.Fatalf("missing eBay evidence should fail open to AI label: %#v", analyzed)
+	}
+}
+
+func TestSoldCompMarketGuardCanUpgradeStrongEbayEvidence(t *testing.T) {
+	product := Product{
+		SKU:                 "111",
+		Name:                "Refurbished Laptop",
+		SalePrice:           500,
+		SoldCompCount:       3,
+		SoldCompMedianPrice: 1000,
+		SoldCompP25Price:    900,
+	}
+
+	analyzed := bestBuyFromAnalysis(product, BatchScreenResult{}, BatchAnalyzeResult{
+		Summary: "AI was unsure",
+	})
+
+	if !analyzed.IsWarm || !analyzed.IsLavaHot {
+		t.Fatalf("strong eBay evidence should upgrade to hot: %#v", analyzed)
+	}
+	if !strings.Contains(analyzed.Summary, "Hot verified by eBay sold comps") {
+		t.Fatalf("Summary = %q, want eBay verification note", analyzed.Summary)
 	}
 }
 

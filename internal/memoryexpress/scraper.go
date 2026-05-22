@@ -22,16 +22,20 @@ var priceRe = regexp.MustCompile(`\$([0-9,]+\.\d{2})`)
 
 var fetchBackendHTML = func(ctx context.Context, backend, pageURL, chromeProfile string, paidEnabled bool, paidAttempt func(context.Context) error) scrapebackend.FetchResult {
 	return scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
-		Backend:          backend,
-		URL:              pageURL,
-		Timeout:          60 * time.Second,
-		ChromeProfile:    chromeProfile,
-		ExternalCommand:  firstNonEmptyEnv("MEMEXPRESS_EXTERNAL_STEALTH_COMMAND", "SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
-		CamoufoxCommand:  firstNonEmptyEnv("MEMEXPRESS_CAMOUFOX_COMMAND", "SCRAPELAB_CAMOUFOX_COMMAND"),
-		AICrawlerCommand: firstNonEmptyEnv("MEMEXPRESS_AI_CRAWLER_COMMAND", "SCRAPELAB_AI_CRAWLER_COMMAND"),
-		PaidCommand:      firstNonEmptyEnv("MEMEXPRESS_PAID_TRIAL_COMMAND", "SCRAPELAB_PAID_TRIAL_COMMAND"),
-		PaidEnabled:      paidEnabled,
-		PaidAttempt:      paidAttempt,
+		Backend:             backend,
+		URL:                 pageURL,
+		Timeout:             60 * time.Second,
+		ChromeProfile:       chromeProfile,
+		ExternalCommand:     firstNonEmptyEnv("MEMEXPRESS_EXTERNAL_STEALTH_COMMAND", "SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
+		ExternalCommandArgs: scrapebackend.CommandArgsFromEnv("MEMEXPRESS_EXTERNAL_STEALTH_COMMAND_ARGS", "SCRAPELAB_EXTERNAL_STEALTH_COMMAND_ARGS"),
+		CamoufoxCommand:     firstNonEmptyEnv("MEMEXPRESS_CAMOUFOX_COMMAND", "SCRAPELAB_CAMOUFOX_COMMAND"),
+		CamoufoxCommandArgs: scrapebackend.CommandArgsFromEnv("MEMEXPRESS_CAMOUFOX_COMMAND_ARGS", "SCRAPELAB_CAMOUFOX_COMMAND_ARGS"),
+		AICrawlerCommand:    firstNonEmptyEnv("MEMEXPRESS_AI_CRAWLER_COMMAND", "SCRAPELAB_AI_CRAWLER_COMMAND"),
+		AICrawlerArgs:       scrapebackend.CommandArgsFromEnv("MEMEXPRESS_AI_CRAWLER_COMMAND_ARGS", "SCRAPELAB_AI_CRAWLER_COMMAND_ARGS"),
+		PaidCommand:         firstNonEmptyEnv("MEMEXPRESS_PAID_TRIAL_COMMAND", "SCRAPELAB_PAID_TRIAL_COMMAND"),
+		PaidCommandArgs:     scrapebackend.CommandArgsFromEnv("MEMEXPRESS_PAID_TRIAL_COMMAND_ARGS", "SCRAPELAB_PAID_TRIAL_COMMAND_ARGS"),
+		PaidEnabled:         paidEnabled,
+		PaidAttempt:         paidAttempt,
 	})
 }
 
@@ -82,6 +86,7 @@ func ScrapeWithBackends(ctx context.Context, storeCode string, backends []string
 	if len(backends) == 0 {
 		backends = []string{scrapebackend.BackendHTTP, scrapebackend.BackendExternalStealth, scrapebackend.BackendCamoufox, scrapebackend.BackendAICrawler, scrapebackend.BackendPaidTrial}
 	}
+	backends = scrapebackend.FilterBackendsForPaidEnabled(backends, paidEnabled)
 	var attemptHook func(context.Context) error
 	if len(paidAttempt) > 0 {
 		attemptHook = paidAttempt[0]

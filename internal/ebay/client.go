@@ -580,40 +580,70 @@ func (c *Client) fetchPageCoupon(ctx context.Context, item BrowseAPIItem, basePr
 	if len(backends) == 0 {
 		backends = []string{scrapebackend.BackendHTTP}
 	}
+	backends = scrapebackend.FilterBackendsForPaidEnabled(backends, c.paidBrowserEnabled)
 
 	var errs []error
+	attempts := scrapebackend.NewAttemptCounter()
 	for _, backend := range backends {
+		attempts.RecordAttempt(backend)
 		result := scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
-			Backend:          backend,
-			URL:              pageURL,
-			Timeout:          timeout,
-			ExternalCommand:  ebayCouponExternalCommand(),
-			CamoufoxCommand:  ebayCouponCamoufoxCommand(),
-			AICrawlerCommand: ebayCouponAICrawlerCommand(),
-			PaidCommand:      ebayCouponPaidCommand(),
-			PaidEnabled:      c.paidBrowserEnabled,
-			PaidAttempt:      c.paidAttempt,
+			Backend:             backend,
+			URL:                 pageURL,
+			Timeout:             timeout,
+			ExternalCommand:     ebayCouponExternalCommand(),
+			ExternalCommandArgs: ebayCouponExternalCommandArgs(),
+			CamoufoxCommand:     ebayCouponCamoufoxCommand(),
+			CamoufoxCommandArgs: ebayCouponCamoufoxCommandArgs(),
+			AICrawlerCommand:    ebayCouponAICrawlerCommand(),
+			AICrawlerArgs:       ebayCouponAICrawlerCommandArgs(),
+			PaidCommand:         ebayCouponPaidCommand(),
+			PaidCommandArgs:     ebayCouponPaidCommandArgs(),
+			PaidEnabled:         c.paidBrowserEnabled,
+			PaidAttempt:         c.paidAttempt,
 		})
-		if result.Error != "" {
-			errs = append(errs, fmt.Errorf("%s: %s", backend, result.Error))
-			continue
-		}
-		if result.BlockSignal != "" {
-			errs = append(errs, fmt.Errorf("%s: blocked by %s", backend, result.BlockSignal))
+		if issue := attempts.RecordFetchResult(backend, result); issue != "" {
+			errs = append(errs, fmt.Errorf("%s: %s", backend, issue))
+			slog.Warn("eBay coupon backend failed",
+				"itemID", item.ItemID,
+				"backend", backend,
+				"status", result.StatusCode,
+				"block_signal", result.BlockSignal,
+				"error", result.Error,
+				"duration_ms", result.Duration.Milliseconds(),
+			)
 			continue
 		}
 
 		coupon := ExtractPageCoupon(result.HTML, basePrice)
 		if coupon.DiscountAmount <= 0 {
+			attempts.RecordVerdict(backend, "no_coupon")
 			continue
 		}
+		attempts.RecordVerdict(backend, "coupon")
+		logEbayCouponBackendSummary(item, "coupon", "page:"+backend, attempts)
 		return coupon, "page:" + backend, nil
 	}
 
 	if len(errs) > 0 {
-		return PageCoupon{}, "", errors.Join(errs...)
+		err := errors.Join(errs...)
+		logEbayCouponBackendSummary(item, "fetch_error", "", attempts)
+		return PageCoupon{}, "", err
 	}
+	logEbayCouponBackendSummary(item, "no_coupon", "", attempts)
 	return PageCoupon{}, "", nil
+}
+
+func logEbayCouponBackendSummary(item BrowseAPIItem, verdict, source string, attempts *scrapebackend.AttemptCounter) {
+	if attempts == nil || attempts.TotalAttempts() == 0 {
+		return
+	}
+	attrs := []any{
+		"itemID", item.ItemID,
+		"source", source,
+		"verdict", verdict,
+	}
+	attrs = append(attrs, attempts.Attrs()...)
+	slog.Info("eBay coupon backend summary", attrs...)
 }
 
 func ebayCouponExternalCommand() string {
@@ -630,6 +660,22 @@ func ebayCouponAICrawlerCommand() string {
 
 func ebayCouponPaidCommand() string {
 	return firstNonEmptyEnv("EBAY_COUPON_PAID_TRIAL_COMMAND", "SCRAPELAB_PAID_TRIAL_COMMAND")
+}
+
+func ebayCouponExternalCommandArgs() []string {
+	return scrapebackend.CommandArgsFromEnv("EBAY_COUPON_EXTERNAL_STEALTH_COMMAND_ARGS", "SCRAPELAB_EXTERNAL_STEALTH_COMMAND_ARGS")
+}
+
+func ebayCouponCamoufoxCommandArgs() []string {
+	return scrapebackend.CommandArgsFromEnv("EBAY_COUPON_CAMOUFOX_COMMAND_ARGS", "SCRAPELAB_CAMOUFOX_COMMAND_ARGS")
+}
+
+func ebayCouponAICrawlerCommandArgs() []string {
+	return scrapebackend.CommandArgsFromEnv("EBAY_COUPON_AI_CRAWLER_COMMAND_ARGS", "SCRAPELAB_AI_CRAWLER_COMMAND_ARGS")
+}
+
+func ebayCouponPaidCommandArgs() []string {
+	return scrapebackend.CommandArgsFromEnv("EBAY_COUPON_PAID_TRIAL_COMMAND_ARGS", "SCRAPELAB_PAID_TRIAL_COMMAND_ARGS")
 }
 
 func firstNonEmptyEnv(keys ...string) string {

@@ -153,6 +153,7 @@ type mockScraper struct {
 	deals          []models.DealInfo
 	err            error
 	fetchedDetails []*models.DealInfo
+	mutateDetails  func([]*models.DealInfo)
 }
 
 func (m *mockScraper) ScrapeDealList(_ context.Context) ([]models.DealInfo, error) {
@@ -165,6 +166,9 @@ func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealIn
 	for _, d := range deals {
 		copy := *d
 		m.fetchedDetails = append(m.fetchedDetails, &copy)
+	}
+	if m.mutateDetails != nil {
+		m.mutateDetails(deals)
 	}
 }
 
@@ -233,6 +237,41 @@ func TestProcessDeals_NewDeal(t *testing.T) {
 	}
 	if !store.trimCalled {
 		t.Error("Expected TrimOldDeals to be called after new deals")
+	}
+}
+
+func TestProcessDeals_SkipsNewDealWhenDetail404s(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{
+				Title:              "Dead Deal",
+				PostURL:            "https://forums.redflagdeals.com/dead-deal-111111",
+				PublishedTimestamp: testTime1,
+				Threads: []models.ThreadContext{
+					{PostURL: "https://forums.redflagdeals.com/dead-deal-111111", LikeCount: 25},
+				},
+			},
+		},
+		mutateDetails: func(deals []*models.DealInfo) {
+			deals[0].Threads[0].NotFound = true
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatalf("ProcessDeals() error = %v", err)
+	}
+
+	if len(store.deals) != 0 {
+		t.Fatalf("expected dead new deal to be skipped, got %d stored deals", len(store.deals))
+	}
+	if len(notif.sentDeals) != 0 {
+		t.Fatalf("expected no notification for dead new deal, got %d", len(notif.sentDeals))
+	}
+	if store.trimCalled {
+		t.Fatal("TrimOldDeals should not run when no new deals were saved")
 	}
 }
 
@@ -794,6 +833,69 @@ func TestProcessExistingDeal_CorrectsStoredRetailerMetadata(t *testing.T) {
 	}
 	if len(updates) != 1 {
 		t.Fatalf("expected corrected metadata to be persisted, got %d updates", len(updates))
+	}
+}
+
+func TestProcessDeals_RemovesNotFoundExistingThreadButKeepsDiscordMessage(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	documentID := generateDealID(testTime1)
+	deadURL := "https://forums.redflagdeals.com/dead-slug-111111"
+	liveURL := "https://forums.redflagdeals.com/live-slug-222222"
+
+	store.deals[documentID] = &models.DealInfo{
+		DocumentID:             documentID,
+		Title:                  "Existing Deal",
+		PostURL:                deadURL,
+		ActualDealURL:          "https://example.com/product",
+		PublishedTimestamp:     testTime1,
+		DiscordMessageIDs:      map[string]string{"channel1": "msg-keep"},
+		DiscordLastUpdatedTime: time.Now(),
+		Threads: []models.ThreadContext{
+			{DocumentID: documentID, PostURL: deadURL, LikeCount: 50},
+			{DocumentID: documentID, PostURL: liveURL, LikeCount: 10},
+		},
+	}
+
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{
+				Title:              "Existing Deal",
+				PostURL:            deadURL,
+				PublishedTimestamp: testTime1,
+				Threads: []models.ThreadContext{
+					{DocumentID: documentID, PostURL: deadURL, LikeCount: 50},
+				},
+			},
+		},
+		mutateDetails: func(deals []*models.DealInfo) {
+			deals[0].Threads[0].NotFound = true
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatalf("ProcessDeals() error = %v", err)
+	}
+
+	saved := store.deals[documentID]
+	if saved == nil {
+		t.Fatal("existing deal was not saved")
+	}
+	if len(saved.Threads) != 1 {
+		t.Fatalf("expected one live thread after removing 404 thread, got %d", len(saved.Threads))
+	}
+	if saved.Threads[0].PostURL != liveURL {
+		t.Fatalf("remaining thread = %q, want %q", saved.Threads[0].PostURL, liveURL)
+	}
+	if saved.PostURL != liveURL {
+		t.Fatalf("PostURL = %q, want %q", saved.PostURL, liveURL)
+	}
+	if saved.DiscordMessageIDs["channel1"] != "msg-keep" {
+		t.Fatalf("DiscordMessageIDs were not preserved: %#v", saved.DiscordMessageIDs)
+	}
+	if len(notif.sentDeals) != 0 {
+		t.Fatalf("expected no new Discord message, got %d", len(notif.sentDeals))
 	}
 }
 

@@ -731,3 +731,34 @@ func TestScrapeDealListAndFetchDealDetails_InvalidPrimaryLinkStaysEmpty(t *testi
 		t.Fatalf("Category = %q, want %q", deals[0].Category, "Computers & Electronics")
 	}
 }
+
+func TestFetchDealDetails_MarksPrimaryThreadNotFoundOn404(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	parsedURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to parse server URL: %v", err)
+	}
+
+	cfg := &config.Config{
+		AllowedDomains: []string{parsedURL.Hostname()},
+		RFDBaseURL:     srv.URL,
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+	c.httpClient = srv.Client()
+
+	deal := models.DealInfo{
+		PostURL: srv.URL + "/dead-deal-111111",
+		Threads: []models.ThreadContext{
+			{PostURL: srv.URL + "/dead-deal-111111"},
+		},
+	}
+	c.FetchDealDetails(context.Background(), []*models.DealInfo{&deal})
+
+	if !deal.Threads[0].NotFound {
+		t.Fatal("expected primary thread to be marked NotFound after detail 404")
+	}
+}

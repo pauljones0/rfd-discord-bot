@@ -16,14 +16,23 @@ The current cross-run evidence table lives in `docs/scrape-lab/evidence.md`.
 - `ai-crawler`: command adapter for the Crawl4AI Magic Mode script.
 - `paid-trial`: command adapter for a managed browser/unlocker proof of concept.
 
-The command adapters read the target URL from `SCRAPELAB_TARGET_URL` and should print HTML/JSON to stdout. You can also include `{url}` in the command string.
+The command adapters read the target URL from `SCRAPELAB_TARGET_URL` and should print HTML/JSON to stdout. Prefer the `*_COMMAND_ARGS` JSON argv variables; `{url}` is replaced only when it is a full argv value.
 
 ```powershell
-$env:SCRAPELAB_EXTERNAL_STEALTH_COMMAND = "python .\scripts\camoufox_fetch.py '{url}'"
-$env:SCRAPELAB_CAMOUFOX_COMMAND = "python .\scripts\camoufox_fetch.py '{url}'"
-$env:SCRAPELAB_AI_CRAWLER_COMMAND = "python .\scripts\crawl4ai_fetch.py '{url}'"
-$env:SCRAPELAB_PAID_TRIAL_COMMAND = "python .\scripts\browserless_bql_fetch.py '{url}'"
+$env:SCRAPELAB_EXTERNAL_STEALTH_COMMAND_ARGS = '["python","./scripts/nodriver_fetch.py","{url}","--headless"]'
+$env:SCRAPELAB_CAMOUFOX_COMMAND_ARGS = '["python","./scripts/camoufox_fetch.py","{url}","--headless"]'
+$env:SCRAPELAB_AI_CRAWLER_COMMAND_ARGS = '["python","./scripts/crawl4ai_fetch.py","{url}","--headless"]'
+$env:SCRAPELAB_PAID_TRIAL_COMMAND_ARGS = '["python","./scripts/browserless_bql_fetch.py","{url}"]'
 ```
+
+Legacy `*_COMMAND` shell strings still work for one deploy window with a warning, then should be removed after validation.
+
+In production, browser binaries are not baked on every image build. Set
+`XDG_CACHE_HOME=/data/browser-cache` and
+`PLAYWRIGHT_BROWSERS_PATH=/data/browser-cache/playwright` with a persistent
+`RFD_BOT_BROWSER_CACHE_DIR` volume. Camoufox uses its cache path automatically,
+and the nodriver/Crawl4AI wrappers run `python -m playwright install <browser>`
+only when the matching cached browser is missing or stale.
 
 ## Store Targets
 
@@ -108,10 +117,10 @@ Production processors use ordered backend lists on Stormtrooper:
 
 ```text
 EBAY_COUPON_BACKENDS=http,external-stealth,camoufox,ai-crawler,paid-trial
-EBAY_COUPON_EXTERNAL_STEALTH_COMMAND=xvfb-run -a /opt/scrape-venv/bin/python scripts/camoufox_fetch.py "{url}" --wait-ms 7000
-EBAY_COUPON_CAMOUFOX_COMMAND=xvfb-run -a /opt/scrape-venv/bin/python scripts/camoufox_fetch.py "{url}" --wait-ms 7000
-EBAY_COUPON_AI_CRAWLER_COMMAND=/opt/scrape-venv/bin/python scripts/crawl4ai_fetch.py "{url}" --wait-ms 7000
-EBAY_PAID_BROWSER_ENABLED=true
+EBAY_COUPON_EXTERNAL_STEALTH_COMMAND_ARGS=["xvfb-run","-a","/opt/scrape-venv/bin/python","scripts/camoufox_fetch.py","{url}","--wait-ms","7000"]
+EBAY_COUPON_CAMOUFOX_COMMAND_ARGS=["xvfb-run","-a","/opt/scrape-venv/bin/python","scripts/camoufox_fetch.py","{url}","--wait-ms","7000"]
+EBAY_COUPON_AI_CRAWLER_COMMAND_ARGS=["/opt/scrape-venv/bin/python","scripts/crawl4ai_fetch.py","{url}","--wait-ms","7000"]
+EBAY_PAID_BROWSER_ENABLED=false
 MEMEXPRESS_BACKENDS=http,external-stealth,camoufox,ai-crawler,paid-trial
 BESTBUY_BACKENDS=bestbuy-algolia,http
 ```
@@ -119,19 +128,20 @@ BESTBUY_BACKENDS=bestbuy-algolia,http
 For eBay, the site-specific command envs are used before scrape-lab globals:
 
 ```text
-EBAY_COUPON_EXTERNAL_STEALTH_COMMAND
-EBAY_COUPON_CAMOUFOX_COMMAND
-EBAY_COUPON_AI_CRAWLER_COMMAND
-EBAY_COUPON_PAID_TRIAL_COMMAND
+EBAY_COUPON_EXTERNAL_STEALTH_COMMAND_ARGS
+EBAY_COUPON_CAMOUFOX_COMMAND_ARGS
+EBAY_COUPON_AI_CRAWLER_COMMAND_ARGS
+EBAY_COUPON_PAID_TRIAL_COMMAND_ARGS
 ```
 
-Keep `paid-trial` as the final backend. It is inert unless the site-specific paid
-enable flag is set. The Browserless proof of concept uses the BrowserQL stealth
-route and requires `BROWSERLESS_TOKEN`:
+Keep `paid-trial` as the final backend when testing Browserless, but leave the
+site-specific paid enable flags disabled in normal production runs. The
+Browserless proof of concept uses the BrowserQL stealth route and requires
+`BROWSERLESS_TOKEN`:
 
 ```bash
 export BROWSERLESS_TOKEN=...
-export SCRAPELAB_PAID_TRIAL_COMMAND='/opt/scrape-venv/bin/python scripts/browserless_bql_fetch.py "{url}" --wait-ms 5000'
+export SCRAPELAB_PAID_TRIAL_COMMAND_ARGS='["/opt/scrape-venv/bin/python","scripts/browserless_bql_fetch.py","{url}","--wait-ms","5000"]'
 SCRAPELAB_PAID_BROWSER_ENABLED=true ./scrape-lab -from-store -sites ebay -ebay-limit 3 -backends paid-trial -env stormtrooper -out /data/scrape-lab-browserless-ebay-$(date +%Y%m%d-%H%M%S)
 ```
 

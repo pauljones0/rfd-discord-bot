@@ -26,6 +26,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/paidbrowser"
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
 	"github.com/pauljones0/rfd-discord-bot/internal/reddit"
+	"github.com/pauljones0/rfd-discord-bot/internal/scrapebackend"
 	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
 	"github.com/pauljones0/rfd-discord-bot/internal/storage"
 	"github.com/pauljones0/rfd-discord-bot/internal/validator"
@@ -95,12 +96,13 @@ func main() {
 	ebayClient := ebay.NewClient(cfg.EbayClientID, cfg.EbayClientSecret)
 	var ebayProc *ebay.Processor
 	if ebayClient != nil {
-		ebayClient.SetCouponBackends(cfg.EbayCouponBackends)
+		ebayCouponBackends := scrapebackend.FilterBackendsForPaidEnabled(cfg.EbayCouponBackends, cfg.EbayPaidBrowserEnabled)
+		ebayClient.SetCouponBackends(ebayCouponBackends)
 		ebayClient.SetPaidBrowserEnabled(cfg.EbayPaidBrowserEnabled)
 		ebayProc = ebay.NewProcessor(store, ebayClient, n)
 		ebayProc.SetCouponDiscoveryInterval(cfg.EbayCouponDiscoveryInterval)
 		ebayProc.SetPaidLimiter(paidbrowser.NewLimiter(store, "ebay", cfg.EbayPaidBrowserMaxPerRun, cfg.EbayPaidBrowserMaxPerDay))
-		slog.Info("eBay deal processor initialized", "coupon_backends", cfg.EbayCouponBackends)
+		slog.Info("eBay deal processor initialized", "coupon_backends", ebayCouponBackends, "paid_browser_enabled", cfg.EbayPaidBrowserEnabled)
 	} else {
 		slog.Info("eBay features disabled (EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set)")
 	}
@@ -125,38 +127,56 @@ func main() {
 
 	// Initialize Memory Express processor (always available — no special credentials needed)
 	memexpressPaidLimiter := paidbrowser.NewLimiter(store, "memoryexpress", cfg.MemoryExpressPaidMaxPerRun, cfg.MemoryExpressPaidMaxPerDay)
+	memexpressBackends := scrapebackend.FilterBackendsForPaidEnabled(cfg.MemoryExpressBackends, cfg.MemoryExpressPaidBrowserEnabled)
 	meProc := memoryexpress.NewProcessor(
 		store,
 		aiClient,
 		n,
-		memoryexpress.WithScrapeFunc(memoryexpress.ScrapeWithConfiguredBackends(cfg.MemoryExpressBackends, cfg.MemoryExpressChromeProfile, cfg.MemoryExpressPaidBrowserEnabled, memexpressPaidLimiter.BeforeAttempt)),
+		memoryexpress.WithScrapeFunc(memoryexpress.ScrapeWithConfiguredBackends(memexpressBackends, cfg.MemoryExpressChromeProfile, cfg.MemoryExpressPaidBrowserEnabled, memexpressPaidLimiter.BeforeAttempt)),
 		memoryexpress.WithBeforeRun(memexpressPaidLimiter.BeginRun),
 	)
-	slog.Info("Memory Express clearance processor initialized", "backends", cfg.MemoryExpressBackends)
+	slog.Info("Memory Express clearance processor initialized", "backends", memexpressBackends, "paid_browser_enabled", cfg.MemoryExpressPaidBrowserEnabled)
 
 	// Initialize Best Buy processor (always available — no special credentials needed)
 	bbClient := bestbuy.NewClient()
 	bbClient.SetBackends(cfg.BestBuyBackends)
 	bbProc := bestbuy.NewProcessor(store, bbClient, aiClient, n, cfg.BestBuyAffiliatePrefix)
+	bbSoldCompBackends := scrapebackend.FilterBackendsForPaidEnabled(cfg.BestBuySoldCompBackends, cfg.BestBuySoldCompPaidEnabled)
+	if cfg.BestBuySoldCompsEnabled {
+		bbSoldCompPaidLimiter := paidbrowser.NewLimiter(store, "bestbuy_seller_ebay_sold", cfg.BestBuySoldCompPaidMaxPerRun, cfg.BestBuySoldCompPaidMaxPerDay)
+		bbProc.SetSoldCompEnricher(bestbuy.NewSoldCompEnricher(bestbuy.SoldCompEnricherOptions{
+			Enabled:     true,
+			Store:       store,
+			Backends:    bbSoldCompBackends,
+			CacheTTL:    cfg.BestBuySoldCompCacheTTL,
+			MaxPerRun:   cfg.BestBuySoldCompMaxPerRun,
+			QueryDelay:  cfg.BestBuySoldCompQueryDelay,
+			PaidEnabled: cfg.BestBuySoldCompPaidEnabled,
+			PaidAttempt: bbSoldCompPaidLimiter.BeforeAttempt,
+			BeforeRun:   bbSoldCompPaidLimiter.BeginRun,
+		}))
+	}
 	bbComputeProc := bestbuy.NewComputeProcessor(store, bbClient, n, cfg.BestBuyAffiliatePrefix, cfg.BestBuyComputeAlertFirstSeen, bestbuy.NewComputeEmbedder(cfg.BestBuyComputeEmbedCommand))
+	bbComputeSoldBackends := scrapebackend.FilterBackendsForPaidEnabled(cfg.BestBuyComputeSoldBackends, cfg.BestBuyComputeSoldPaidEnabled)
 	if cfg.BestBuyComputeSoldVerifyEnabled {
 		bbComputeSoldPaidLimiter := paidbrowser.NewLimiter(store, "bestbuy_compute_ebay_sold", cfg.BestBuyComputeSoldPaidMaxPerRun, cfg.BestBuyComputeSoldPaidMaxPerDay)
 		bbComputeProc.SetSoldVerifier(bestbuy.NewEbaySoldVerifier(bestbuy.EbaySoldVerifierOptions{
 			Enabled:     true,
-			Backends:    cfg.BestBuyComputeSoldBackends,
+			Backends:    bbComputeSoldBackends,
 			CacheTTL:    cfg.BestBuyComputeSoldCacheTTL,
+			QueryDelay:  cfg.BestBuyComputeSoldQueryDelay,
 			PaidEnabled: cfg.BestBuyComputeSoldPaidEnabled,
 			PaidAttempt: bbComputeSoldPaidLimiter.BeforeAttempt,
 			BeforeRun:   bbComputeSoldPaidLimiter.BeginRun,
 		}))
 	}
-	slog.Info("Best Buy Marketplace processor initialized", "backends", cfg.BestBuyBackends)
+	slog.Info("Best Buy Marketplace processor initialized", "backends", cfg.BestBuyBackends, "sold_comps_enabled", cfg.BestBuySoldCompsEnabled, "sold_comp_backends", bbSoldCompBackends, "sold_comp_paid_browser_enabled", cfg.BestBuySoldCompPaidEnabled)
 	slog.Info("Best Buy compute outlier processor initialized",
 		"enabled", cfg.BestBuyComputeEnabled,
 		"interval", cfg.BestBuyComputePollInterval.String(),
 		"alert_first_seen", cfg.BestBuyComputeAlertFirstSeen,
 		"ebay_sold_verify_enabled", cfg.BestBuyComputeSoldVerifyEnabled,
-		"ebay_sold_backends", cfg.BestBuyComputeSoldBackends,
+		"ebay_sold_backends", bbComputeSoldBackends,
 		"ebay_sold_paid_enabled", cfg.BestBuyComputeSoldPaidEnabled,
 	)
 
@@ -205,17 +225,20 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", rootHandler)
-	mux.HandleFunc("GET /process-deals", srv.ProcessDealsHandler)
-	mux.HandleFunc("GET /process-ebay", srv.ProcessEbayHandler)
-	if cfg.FacebookEnabled {
-		mux.HandleFunc("GET /process-facebook", srv.ProcessFacebookHandler)
+	adminHandle := func(pattern string, handler http.HandlerFunc) {
+		mux.Handle(pattern, adminOnly(cfg.RFDAdminToken, handler))
 	}
-	mux.HandleFunc("GET /process-memoryexpress", srv.ProcessMemoryExpressHandler)
-	mux.HandleFunc("GET /process-bestbuy", srv.ProcessBestBuyHandler)
-	mux.HandleFunc("GET /process-bestbuy-compute", srv.ProcessBestBuyComputeHandler)
-	mux.HandleFunc("POST /prime-bestbuy-baseline", srv.PrimeBestBuyBaselineHandler)
+	adminHandle("GET /process-deals", srv.ProcessDealsHandler)
+	adminHandle("GET /process-ebay", srv.ProcessEbayHandler)
+	if cfg.FacebookEnabled {
+		adminHandle("GET /process-facebook", srv.ProcessFacebookHandler)
+	}
+	adminHandle("GET /process-memoryexpress", srv.ProcessMemoryExpressHandler)
+	adminHandle("GET /process-bestbuy", srv.ProcessBestBuyHandler)
+	adminHandle("GET /process-bestbuy-compute", srv.ProcessBestBuyComputeHandler)
+	adminHandle("POST /prime-bestbuy-baseline", srv.PrimeBestBuyBaselineHandler)
 	if cfg.HardwareSwapEnabled {
-		mux.HandleFunc("GET /process-hardwareswap", srv.ProcessHardwareSwapHandler)
+		adminHandle("GET /process-hardwareswap", srv.ProcessHardwareSwapHandler)
 	}
 	mux.Handle("/discord/interactions", apiHandler)
 	mux.HandleFunc("POST /register-token-service", func(w http.ResponseWriter, r *http.Request) {
@@ -604,9 +627,46 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		slog.Info("HTTP Request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
-		next.ServeHTTP(w, r)
-		slog.Info("HTTP Request Completed", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start))
+		rec := &statusResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		slog.Info("HTTP Request Completed",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.statusCode(),
+			"bytes", rec.bytes,
+			"duration", time.Since(start),
+		)
 	})
+}
+
+type statusResponseWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (w *statusResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusResponseWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(data)
+	w.bytes += n
+	return n, err
+}
+
+func (w *statusResponseWriter) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
 }
 
 func rootHandler(w http.ResponseWriter, r *http.Request) {

@@ -68,6 +68,7 @@ func (c *Client) ScreenBestBuyBatch(ctx context.Context, products []bestbuy.Prod
 		if p.ComparableSummary != "" {
 			itemList.WriteString(" — " + p.ComparableSummary)
 		}
+		appendBestBuySoldCompEvidence(&itemList, p)
 		itemList.WriteString("\n")
 	}
 
@@ -77,6 +78,7 @@ Review these %d products and select the top %d items that are most likely to be 
 Focus on items where the price appears significantly below typical Canadian retail/market value.
 For marketplace items, same-seller regular/list prices are weak evidence because marketplace sellers can inflate them.
 When Best Buy comparable evidence is present, it already excludes the current seller. Treat that as stronger than the seller's own regular price.
+When eBay sold evidence is present, treat it as historical resale evidence; use it to sanity-check value but do not hard-reject an otherwise compelling item solely because sold comps are thin.
 Do not mark an item as a top deal from discount percentage alone. With comps, prefer items at least 20%% and $50 below the median comparable price. Lava-hot candidates should look 40%%+ and $100+ below comps.
 For open-box items, consider the condition discount vs typical market value, but still prefer external/current-comparable evidence.
 Ignore generic accessories, low-value items, and items where the discount is unremarkable.
@@ -223,6 +225,7 @@ func (c *Client) AnalyzeBestBuyBatch(ctx context.Context, products []bestbuy.Pro
 		if p.ComparableSummary != "" {
 			itemList.WriteString(" — " + p.ComparableSummary)
 		}
+		appendBestBuySoldCompEvidence(&itemList, p)
 		itemList.WriteString("\n")
 	}
 
@@ -232,6 +235,7 @@ For each item, determine whether the price is a genuinely good Canadian tech dea
 Use "warm" only when it is meaningfully below market or unusually attractive.
 Use "lava hot" only for absurdly good prices, likely pricing errors, or 50%%+ off on broadly desirable products.
 Treat same-seller regular/list prices as weak evidence. Best Buy comparable evidence, when present, excludes the current seller and should be weighted heavily.
+When eBay sold evidence is present, treat it as historical resale evidence; it can support value, resale demand, or skepticism when sold medians are weak.
 If comps exist, do not call an item warm unless it is roughly 20%%+ and $50+ below the median comparable. Do not call it lava hot unless it is roughly 40%%+ and $100+ below comps.
 Return all items, including non-deals, with concise product-focused clean titles and one-line summaries.
 
@@ -348,6 +352,7 @@ Discount: %.0f%% off
 Seller: %s
 Source: %s
 Best Buy comparable evidence: %s
+eBay sold evidence: %s
 
 Task:
 1. Clean up the title to be concise (5-15 words, product name and key specs only, no marketing fluff, no "Refurbished (Excellent)" prefix).
@@ -357,13 +362,14 @@ Task:
    - The product has broad appeal or is a desirable tech item.
    - Do not trust the seller's own regular/list price by itself.
    - Best Buy comparable evidence, when present, excludes this seller and is the strongest signal.
+   - eBay sold evidence, when present, is historical resale evidence and should be considered separately from active Best Buy comps.
    - With comps, warm usually requires 20%%+ and $50+ below median comparable pricing.
    - For marketplace/open-box items, compare against new retail pricing and active comparable listings.
 4. Determine if this is "Lava Hot" — be strict. Only if the price is absurdly good (50%%+ off on a popular, in-demand product, or a clear pricing error).
    - With comps, lava hot usually requires 40%%+ and $100+ below comparable pricing.
 
 Return JSON only: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool, "summary": "..."}
-`, product.Name, product.CategoryName, product.RegularPrice, finalPrice, discountPct, product.SellerName, sourceContext, firstNonEmptyString(product.ComparableSummary, "No active comparable summary available."))
+`, product.Name, product.CategoryName, product.RegularPrice, finalPrice, discountPct, product.SellerName, sourceContext, firstNonEmptyString(product.ComparableSummary, "No active comparable summary available."), bestBuySoldCompPrompt(product))
 
 	slog.Debug("Best Buy tier-2 analysis prompt",
 		"processor", "bestbuy",
@@ -530,6 +536,40 @@ func parseBestBuyAnalyzeBatchResponse(resp *genai.GenerateContentResponse) ([]be
 	}
 	return nil, fmt.Errorf("no text response from gemini for Best Buy batch analysis (finish_reason=%s, parts=%d)",
 		resp.Candidates[0].FinishReason, len(resp.Candidates[0].Content.Parts))
+}
+
+func appendBestBuySoldCompEvidence(builder *strings.Builder, product bestbuy.Product) {
+	if product.SoldCompSummary == "" {
+		return
+	}
+	builder.WriteString(" — eBay sold evidence: " + product.SoldCompSummary)
+	if examples := bestBuySoldCompExamples(product); examples != "" {
+		builder.WriteString(" Examples: " + examples)
+	}
+}
+
+func bestBuySoldCompPrompt(product bestbuy.Product) string {
+	if product.SoldCompSummary == "" {
+		return "No eBay sold summary available."
+	}
+	if examples := bestBuySoldCompExamples(product); examples != "" {
+		return product.SoldCompSummary + " Examples: " + examples
+	}
+	return product.SoldCompSummary
+}
+
+func bestBuySoldCompExamples(product bestbuy.Product) string {
+	if len(product.SoldCompExamples) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(product.SoldCompExamples))
+	for i, example := range product.SoldCompExamples {
+		if i >= 3 {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%q $%.2f", example.Title, example.Price))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func firstNonEmptyString(values ...string) string {

@@ -3,6 +3,7 @@ name: rfd-discord-bot
 services:
   postgres:
     image: postgres:17-alpine
+    pull_policy: always
     container_name: rfd-discord-bot-postgres
     restart: unless-stopped
     env_file:
@@ -24,27 +25,35 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
+      pull: true
+      args:
+        PY_BROWSER_PACKAGE_REFRESH: ${PY_BROWSER_PACKAGE_REFRESH:-latest}
+        INSTALL_CAMOUFOX_BROWSER: ${INSTALL_CAMOUFOX_BROWSER:-false}
+        INSTALL_PLAYWRIGHT_BROWSERS: ${INSTALL_PLAYWRIGHT_BROWSERS:-false}
     restart: unless-stopped
     env_file:
       - ${RFD_BOT_ENV_FILE:-/opt/rfd-discord-bot/.env}
     environment:
       PORT: "8080"
+      XDG_CACHE_HOME: /data/browser-cache
+      PLAYWRIGHT_BROWSERS_PATH: /data/browser-cache/playwright
+      SCRAPELAB_AUTO_INSTALL_BROWSERS: ${SCRAPELAB_AUTO_INSTALL_BROWSERS:-true}
       MEMEXPRESS_CHROME_PROFILE_DIR: /data/memoryexpress-chrome
-      SCRAPELAB_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
-      SCRAPELAB_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000
-      SCRAPELAB_AI_CRAWLER_COMMAND: /opt/scrape-venv/bin/python /root/scripts/crawl4ai_fetch.py "{url}" --headless --wait-ms 7000
-      EBAY_COUPON_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7 --ebay-price-details
-      EBAY_COUPON_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000 --ebay-price-details
-      EBAY_COUPON_AI_CRAWLER_COMMAND: /opt/scrape-venv/bin/python /root/scripts/crawl4ai_fetch.py "{url}" --headless --wait-ms 7000
-      EBAY_COUPON_PAID_TRIAL_COMMAND: /opt/scrape-venv/bin/python /root/scripts/browserless_bql_fetch.py "{url}" --wait-ms 5000 --ebay-price-details
-      EBAY_SOLD_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
-      EBAY_SOLD_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000
-      EBAY_SOLD_AI_CRAWLER_COMMAND: /opt/scrape-venv/bin/python /root/scripts/crawl4ai_fetch.py "{url}" --headless --wait-ms 7000
-      EBAY_SOLD_PAID_TRIAL_COMMAND: /opt/scrape-venv/bin/python /root/scripts/browserless_bql_fetch.py "{url}" --endpoint "https://production-sfo.browserless.io/stealth/bql?proxy=residential&proxyCountry=ca" --wait-ms 15000 --solve-captcha
+      SCRAPELAB_EXTERNAL_STEALTH_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/nodriver_fetch.py","{url}","--profile-dir","/data/nodriver-profile","--headless","--wait-seconds","7"]'
+      SCRAPELAB_CAMOUFOX_COMMAND_ARGS: '["xvfb-run","-a","/opt/scrape-venv/bin/python","/root/scripts/camoufox_fetch.py","{url}","--wait-ms","7000"]'
+      SCRAPELAB_AI_CRAWLER_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/crawl4ai_fetch.py","{url}","--headless","--wait-ms","7000"]'
+      EBAY_COUPON_EXTERNAL_STEALTH_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/nodriver_fetch.py","{url}","--profile-dir","/data/nodriver-profile","--headless","--wait-seconds","7","--ebay-price-details"]'
+      EBAY_COUPON_CAMOUFOX_COMMAND_ARGS: '["xvfb-run","-a","/opt/scrape-venv/bin/python","/root/scripts/camoufox_fetch.py","{url}","--wait-ms","7000","--ebay-price-details"]'
+      EBAY_COUPON_AI_CRAWLER_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/crawl4ai_fetch.py","{url}","--headless","--wait-ms","7000"]'
+      EBAY_COUPON_PAID_TRIAL_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/browserless_bql_fetch.py","{url}","--wait-ms","5000","--ebay-price-details"]'
+      EBAY_SOLD_EXTERNAL_STEALTH_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/nodriver_fetch.py","{url}","--profile-dir","/data/nodriver-profile","--headless","--wait-seconds","7"]'
+      EBAY_SOLD_CAMOUFOX_COMMAND_ARGS: '["xvfb-run","-a","/opt/scrape-venv/bin/python","/root/scripts/camoufox_fetch.py","{url}","--wait-ms","7000"]'
+      EBAY_SOLD_AI_CRAWLER_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/crawl4ai_fetch.py","{url}","--headless","--wait-ms","7000"]'
+      EBAY_SOLD_PAID_TRIAL_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/browserless_bql_fetch.py","{url}","--endpoint","https://production-sfo.browserless.io/stealth/bql?proxy=residential&proxyCountry=ca","--wait-ms","15000","--solve-captcha"]'
       BESTBUY_COMPUTE_EMBED_COMMAND: /opt/scrape-venv/bin/python /root/scripts/local_embed.py
-      MEMEXPRESS_EXTERNAL_STEALTH_COMMAND: /opt/scrape-venv/bin/python /root/scripts/nodriver_fetch.py "{url}" --profile-dir /data/nodriver-profile --headless --wait-seconds 7
-      MEMEXPRESS_CAMOUFOX_COMMAND: xvfb-run -a /opt/scrape-venv/bin/python /root/scripts/camoufox_fetch.py "{url}" --wait-ms 7000
-      MEMEXPRESS_AI_CRAWLER_COMMAND: /opt/scrape-venv/bin/python /root/scripts/crawl4ai_fetch.py "{url}" --headless --wait-ms 7000
+      MEMEXPRESS_EXTERNAL_STEALTH_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/nodriver_fetch.py","{url}","--profile-dir","/data/nodriver-profile","--headless","--wait-seconds","7"]'
+      MEMEXPRESS_CAMOUFOX_COMMAND_ARGS: '["xvfb-run","-a","/opt/scrape-venv/bin/python","/root/scripts/camoufox_fetch.py","{url}","--wait-ms","7000"]'
+      MEMEXPRESS_AI_CRAWLER_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/crawl4ai_fetch.py","{url}","--headless","--wait-ms","7000"]'
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,9 +61,11 @@ services:
       - "127.0.0.1:18080:8080"
     volumes:
       - ${RFD_BOT_DATA_DIR:-/srv/appdata/rfd-discord-bot}:/data
+      - ${RFD_BOT_BROWSER_CACHE_DIR:-/srv/appdata/rfd-discord-bot/browser-cache}:/data/browser-cache
 
   cloudflared:
     image: cloudflare/cloudflared:latest
+    pull_policy: always
     restart: unless-stopped
     command: tunnel --no-autoupdate run
     env_file:

@@ -78,15 +78,19 @@ func Run(ctx context.Context, targets []Target, opts Options) ([]Result, error) 
 				fetch = fetchBestBuyAlgolia(ctx, target)
 			} else {
 				fetch = scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
-					Backend:          backend,
-					URL:              target.URL,
-					Timeout:          opts.Timeout,
-					ChromeProfile:    opts.ChromeProfile,
-					ExternalCommand:  os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
-					CamoufoxCommand:  os.Getenv("SCRAPELAB_CAMOUFOX_COMMAND"),
-					AICrawlerCommand: os.Getenv("SCRAPELAB_AI_CRAWLER_COMMAND"),
-					PaidCommand:      os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
-					PaidEnabled:      envBool("SCRAPELAB_PAID_BROWSER_ENABLED"),
+					Backend:             backend,
+					URL:                 target.URL,
+					Timeout:             opts.Timeout,
+					ChromeProfile:       opts.ChromeProfile,
+					ExternalCommand:     os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
+					ExternalCommandArgs: scrapebackend.CommandArgsFromEnv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND_ARGS"),
+					CamoufoxCommand:     os.Getenv("SCRAPELAB_CAMOUFOX_COMMAND"),
+					CamoufoxCommandArgs: scrapebackend.CommandArgsFromEnv("SCRAPELAB_CAMOUFOX_COMMAND_ARGS"),
+					AICrawlerCommand:    os.Getenv("SCRAPELAB_AI_CRAWLER_COMMAND"),
+					AICrawlerArgs:       scrapebackend.CommandArgsFromEnv("SCRAPELAB_AI_CRAWLER_COMMAND_ARGS"),
+					PaidCommand:         os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
+					PaidCommandArgs:     scrapebackend.CommandArgsFromEnv("SCRAPELAB_PAID_TRIAL_COMMAND_ARGS"),
+					PaidEnabled:         envBool("SCRAPELAB_PAID_BROWSER_ENABLED"),
 				})
 			}
 

@@ -12,6 +12,7 @@ $HOME/rfd-discord-bot
 $HOME/.config/rfd-discord-bot/.env
 $HOME/appdata/rfd-discord-bot
 $HOME/appdata/rfd-discord-bot/postgres
+$HOME/appdata/rfd-discord-bot/browser-cache
 ```
 
 The `.env` file is outside git and should include:
@@ -19,6 +20,8 @@ The `.env` file is outside git and should include:
 ```env
 POSTGRES_PASSWORD=...
 DATABASE_URL=postgres://rfd_bot:...@postgres:5432/rfd_discord_bot?sslmode=disable
+RFD_ADMIN_TOKEN=...
+ALLOW_UNSIGNED_DISCORD_INTERACTIONS=false
 
 LOCAL_SCHEDULER_ENABLED=true
 RFD_POLL_INTERVAL=3m
@@ -28,7 +31,7 @@ BESTBUY_POLL_INTERVAL=30m
 
 EBAY_COUPON_BACKENDS=http,external-stealth,camoufox,ai-crawler,paid-trial
 EBAY_COUPON_DISCOVERY_INTERVAL=6h
-EBAY_PAID_BROWSER_ENABLED=true
+EBAY_PAID_BROWSER_ENABLED=false
 EBAY_PAID_BROWSER_MAX_CALLS_PER_RUN=1
 EBAY_PAID_BROWSER_MAX_CALLS_PER_DAY=6
 MEMEXPRESS_BACKENDS=http,external-stealth,camoufox,ai-crawler,paid-trial
@@ -51,11 +54,20 @@ git pull --ff-only origin main
 RFD_BOT_ENV_FILE=$HOME/.config/rfd-discord-bot/.env \
 RFD_BOT_DATA_DIR=$HOME/appdata/rfd-discord-bot \
 RFD_BOT_POSTGRES_DIR=$HOME/appdata/rfd-discord-bot/postgres \
+RFD_BOT_BROWSER_CACHE_DIR=$HOME/appdata/rfd-discord-bot/browser-cache \
+PY_BROWSER_PACKAGE_REFRESH=$(date -u +%Y%m%d) \
 docker compose -f deploy/stormtrooper/docker-compose.yml up -d --build
 ```
 
 For branch verification, check out the branch first and use the same Compose
 command.
+
+The Compose file asks Docker to check for newer images and build bases while
+still reusing cached layers/blobs when they are current. Browser Python
+packages are unpinned and refreshed by changing `PY_BROWSER_PACKAGE_REFRESH`.
+Runtime browser binaries are cached in `RFD_BOT_BROWSER_CACHE_DIR`; Camoufox and
+Playwright-backed adapters fetch into that cache only when the expected browser
+is absent or stale.
 
 ## Health And Logs
 
@@ -74,6 +86,15 @@ Healthy production should report:
 Scheduler logs should mention only these active loops unless a feature is
 explicitly re-enabled:
 
+- RFD
+- eBay
+- Memory Express
+- Best Buy
+
+After each deploy, watch one full scheduler cycle. Keep `docker compose ps`, the
+health response, and `docker compose logs -f --tail=200 bot` open long enough to
+see all four active loops run once.
+
 The Compose project is explicitly named `rfd-discord-bot` to avoid collisions
 with other Stormtrooper stacks. Keep the watchdog timer enabled so Docker
 containers that are stopped or removed by a bad Compose run are brought back:
@@ -87,29 +108,25 @@ systemctl --user enable --now rfd-discord-bot-watchdog.timer
 systemctl --user list-timers rfd-discord-bot-watchdog.timer
 ```
 
-- RFD
-- eBay
-- Memory Express
-- Best Buy
-
 Facebook and HardwareSwap remain disabled unless their feature flags are turned
 on intentionally.
 
 ## Manual Processor Checks
 
-Manual endpoints use the same no-overlap guard as scheduled runs:
+Manual endpoints use the same no-overlap guard as scheduled runs. They are not
+publicly routed and require the admin bearer token even on localhost:
 
 ```bash
-curl -fsS http://127.0.0.1:18080/process-deals
-curl -fsS http://127.0.0.1:18080/process-ebay
-curl -fsS http://127.0.0.1:18080/process-memoryexpress
-curl -fsS http://127.0.0.1:18080/process-bestbuy
+curl -fsS -H "Authorization: Bearer $RFD_ADMIN_TOKEN" http://127.0.0.1:18080/process-deals
+curl -fsS -H "Authorization: Bearer $RFD_ADMIN_TOKEN" http://127.0.0.1:18080/process-ebay
+curl -fsS -H "Authorization: Bearer $RFD_ADMIN_TOKEN" http://127.0.0.1:18080/process-memoryexpress
+curl -fsS -H "Authorization: Bearer $RFD_ADMIN_TOKEN" http://127.0.0.1:18080/process-bestbuy
 ```
 
 Prime Best Buy baseline without Discord notifications:
 
 ```bash
-curl -fsS -X POST http://127.0.0.1:18080/prime-bestbuy-baseline
+curl -fsS -X POST -H "Authorization: Bearer $RFD_ADMIN_TOKEN" http://127.0.0.1:18080/prime-bestbuy-baseline
 ```
 
 ## Scrape Lab
@@ -127,14 +144,15 @@ Camoufox-only eBay sample:
 
 ```bash
 docker compose -f deploy/stormtrooper/docker-compose.yml exec \
-  -e SCRAPELAB_CAMOUFOX_COMMAND='xvfb-run -a /opt/scrape-venv/bin/python scripts/camoufox_fetch.py "{url}" --wait-ms 7000' \
+  -e SCRAPELAB_CAMOUFOX_COMMAND_ARGS='["xvfb-run","-a","/opt/scrape-venv/bin/python","scripts/camoufox_fetch.py","{url}","--wait-ms","7000"]' \
   bot ./scrape-lab -from-store -sites ebay -ebay-limit 3 \
   -backends camoufox -env stormtrooper \
   -out /data/scrape-lab-stormtrooper-ebay-camoufox-$(date +%Y%m%d-%H%M%S)
 ```
 
-Browserless stays the final fallback. `paid-trial` is inert unless the matching
-paid enable flag is true and the Browserless token/command are present.
+Browserless stays the final fallback for lab validation, but production should
+leave the matching paid enable flag false unless a deploy intentionally opts in
+with the Browserless token/argv command present.
 
 ## Discord Commands
 

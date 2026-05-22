@@ -79,6 +79,52 @@ ON CONFLICT DO NOTHING`, collection, docID, payload)
 	return nil
 }
 
+func (c *Client) SetDocuments(ctx context.Context, collection string, values map[string]any) error {
+	raw := make(map[string]map[string]any, len(values))
+	for docID, value := range values {
+		data, err := encodeDocument(value)
+		if err != nil {
+			return fmt.Errorf("encode document %s/%s: %w", collection, docID, err)
+		}
+		raw[docID] = data
+	}
+	return c.SetRawDocuments(ctx, collection, raw)
+}
+
+func (c *Client) SetRawDocuments(ctx context.Context, collection string, docs map[string]map[string]any) error {
+	if len(docs) == 0 {
+		return nil
+	}
+	if collection == "" {
+		return fmt.Errorf("collection is required")
+	}
+	ids := make([]string, 0, len(docs))
+	batch := &pgx.Batch{}
+	for docID, data := range docs {
+		if docID == "" {
+			return fmt.Errorf("docID is required")
+		}
+		payload, err := json.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("marshal document %s/%s: %w", collection, docID, err)
+		}
+		ids = append(ids, docID)
+		batch.Queue(`
+INSERT INTO documents (collection, doc_id, data)
+VALUES ($1, $2, $3::jsonb)
+ON CONFLICT (collection, doc_id)
+DO UPDATE SET data = EXCLUDED.data, updated_at = now()`, collection, docID, payload)
+	}
+	results := c.pg.SendBatch(ctx, batch)
+	defer results.Close()
+	for _, docID := range ids {
+		if _, err := results.Exec(); err != nil {
+			return fmt.Errorf("set document %s/%s: %w", collection, docID, err)
+		}
+	}
+	return nil
+}
+
 // SetRawDocument upserts one already-shaped JSON document map.
 func (c *Client) SetRawDocument(ctx context.Context, collection, docID string, data map[string]any) error {
 	if collection == "" || docID == "" {
@@ -195,6 +241,93 @@ func (c *Client) ListDocumentsWhere(ctx context.Context, collection string, fiel
 		docs = append(docs, doc)
 	}
 	return docs, rows.Err()
+}
+
+func (c *Client) GetRawDocuments(ctx context.Context, collection string, docIDs []string) (map[string]Document, error) {
+	result := make(map[string]Document, len(docIDs))
+	if len(docIDs) == 0 {
+		return result, nil
+	}
+	rows, err := c.pg.Query(ctx, `SELECT doc_id, data FROM documents WHERE collection=$1 AND doc_id = ANY($2::text[])`, collection, docIDs)
+	if err != nil {
+		return nil, fmt.Errorf("batch get documents %s: %w", collection, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var doc Document
+		var payload []byte
+		if err := rows.Scan(&doc.ID, &payload); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(payload, &doc.Data); err != nil {
+			return nil, fmt.Errorf("unmarshal document %s/%s: %w", collection, doc.ID, err)
+		}
+		result[doc.ID] = doc
+	}
+	return result, rows.Err()
+}
+
+func (c *Client) DeleteDocuments(ctx context.Context, collection string, docIDs []string) (int64, error) {
+	if len(docIDs) == 0 {
+		return 0, nil
+	}
+	tag, err := c.pg.Exec(ctx, `DELETE FROM documents WHERE collection=$1 AND doc_id = ANY($2::text[])`, collection, docIDs)
+	if err != nil {
+		return 0, fmt.Errorf("delete documents %s: %w", collection, err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+func (c *Client) DeleteDocumentsWhere(ctx context.Context, collection string, fields map[string]any) (int64, error) {
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("delete documents %s: predicate is required", collection)
+	}
+	payload, err := json.Marshal(fields)
+	if err != nil {
+		return 0, fmt.Errorf("marshal delete predicate %s: %w", collection, err)
+	}
+	tag, err := c.pg.Exec(ctx, `DELETE FROM documents WHERE collection=$1 AND data @> $2::jsonb`, collection, payload)
+	if err != nil {
+		return 0, fmt.Errorf("delete documents %s where %v: %w", collection, fields, err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+func (c *Client) DeleteOldestDocuments(ctx context.Context, collection, timeKey string, keepMax int) (int, error) {
+	rows, err := c.ListDocuments(ctx, collection)
+	if err != nil {
+		return 0, err
+	}
+	if keepMax < 0 || len(rows) <= keepMax {
+		return 0, nil
+	}
+	sortDocumentsByTime(rows, timeKey, true)
+	ids := make([]string, 0, len(rows)-keepMax)
+	for _, row := range rows[:len(rows)-keepMax] {
+		ids = append(ids, row.ID)
+	}
+	deleted, err := c.DeleteDocuments(ctx, collection, ids)
+	return int(deleted), err
+}
+
+func (c *Client) PruneDocumentsByTime(ctx context.Context, collection, timeKey string, cutoff time.Time, maxRecords int) (int, error) {
+	rows, err := c.ListDocuments(ctx, collection)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for _, row := range rows {
+		if ts := documentTime(row.Data, timeKey); !ts.IsZero() && ts.Before(cutoff) {
+			ids = append(ids, row.ID)
+		}
+	}
+	deleted, err := c.DeleteDocuments(ctx, collection, ids)
+	if err != nil {
+		return int(deleted), err
+	}
+	extraDeleted, err := c.DeleteOldestDocuments(ctx, collection, timeKey, maxRecords)
+	return int(deleted) + extraDeleted, err
 }
 
 func encodeDocument(value any) (map[string]any, error) {

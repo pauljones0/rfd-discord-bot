@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -59,31 +58,9 @@ func (c *Client) SaveFacebookAd(ctx context.Context, ad *models.FacebookAdRecord
 
 // PruneFacebookAds deletes Facebook ads older than maxAgeMonths or exceeding maxRecords.
 func (c *Client) PruneFacebookAds(ctx context.Context, maxAgeMonths int, maxRecords int) error {
-	rows, err := c.ListDocuments(ctx, facebookAdsCollection)
-	if err != nil {
-		return err
-	}
 	cutoff := time.Now().AddDate(0, -maxAgeMonths, 0)
-	for _, row := range rows {
-		if !documentTime(row.Data, "last_seen").IsZero() && documentTime(row.Data, "last_seen").Before(cutoff) {
-			if err := c.DeleteDocument(ctx, facebookAdsCollection, row.ID); err != nil {
-				slog.Warn("Failed to delete old facebook ad", "processor", "facebook", "id", row.ID, "error", err)
-			}
-		}
-	}
-	rows, err = c.ListDocuments(ctx, facebookAdsCollection)
-	if err != nil {
-		return err
-	}
-	if len(rows) > maxRecords {
-		sortDocumentsByTime(rows, "last_seen", true)
-		for _, row := range rows[:len(rows)-maxRecords] {
-			if err := c.DeleteDocument(ctx, facebookAdsCollection, row.ID); err != nil {
-				slog.Warn("Failed to delete excess facebook record", "processor", "facebook", "id", row.ID, "error", err)
-			}
-		}
-	}
-	return nil
+	_, err := c.PruneDocumentsByTime(ctx, facebookAdsCollection, "last_seen", cutoff, maxRecords)
+	return err
 }
 
 // SavePriceHistory stores a daily price snapshot for a vehicle model.

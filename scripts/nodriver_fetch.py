@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import glob
+import importlib.metadata
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,7 +27,11 @@ def default_browser_path(configured: str) -> str:
     if configured:
         return configured
 
+    playwright_root = os.getenv("PLAYWRIGHT_BROWSERS_PATH", "/ms-playwright")
     candidates = [
+        f"{playwright_root}/chromium-*/chrome-linux64/chrome",
+        f"{playwright_root}/chromium-*/chrome-linux/chrome",
+        f"{playwright_root}/chromium-*/chrome-linux/chrome-wrapper",
         "/ms-playwright/chromium-*/chrome-linux64/chrome",
         "/ms-playwright/chromium-*/chrome-linux/chrome",
         "/ms-playwright/chromium-*/chrome-linux/chrome-wrapper",
@@ -41,6 +47,31 @@ def default_browser_path(configured: str) -> str:
         if "*" not in pattern and os.path.exists(pattern):
             return pattern
     return ""
+
+
+def playwright_package_version() -> str:
+    try:
+        return importlib.metadata.version("playwright")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def ensure_playwright_chromium(configured_browser_path: str) -> None:
+    if configured_browser_path or not truthy(os.getenv("SCRAPELAB_AUTO_INSTALL_BROWSERS", "true")):
+        return
+    root = Path(os.getenv("PLAYWRIGHT_BROWSERS_PATH", "/ms-playwright"))
+    version = playwright_package_version()
+    marker = root / ".rfd-playwright-chromium.version"
+    if default_browser_path("") and marker.exists() and marker.read_text().strip() == version:
+        return
+
+    root.mkdir(parents=True, exist_ok=True)
+    print(f"ensuring playwright chromium browser cache at {root} for package {version}", file=sys.stderr)
+    try:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        marker.write_text(version, encoding="utf-8")
+    except Exception as exc:
+        print(f"playwright chromium cache install failed: {exc}", file=sys.stderr)
 
 
 def remove_stale_profile_locks(profile_dir: Path) -> None:
@@ -133,6 +164,7 @@ def main() -> int:
         print("target URL is required", file=sys.stderr)
         return 2
 
+    ensure_playwright_chromium(args.browser_path)
     html = asyncio.run(fetch(args))
     sys.stdout.buffer.write(html.encode("utf-8", errors="replace"))
     return 0

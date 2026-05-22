@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -140,5 +143,90 @@ func TestRootHandler_ReturnsNotFoundForUnknownPath(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestAdminOnlyRejectsMissingConfiguredToken(t *testing.T) {
+	called := false
+	handler := adminOnly("", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/process-deals", nil)
+	req.Header.Set("Authorization", "Bearer supplied")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if called {
+		t.Fatal("handler should not be called when admin token is not configured")
+	}
+}
+
+func TestAdminOnlyRejectsInvalidBearer(t *testing.T) {
+	called := false
+	handler := adminOnly("secret-token", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/process-deals", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if called {
+		t.Fatal("handler should not be called with invalid bearer token")
+	}
+}
+
+func TestAdminOnlyAllowsValidBearer(t *testing.T) {
+	called := false
+	handler := adminOnly("secret-token", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/process-deals", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if !called {
+		t.Fatal("handler was not called with valid bearer token")
+	}
+}
+
+func TestLoggingMiddlewareRecordsResponseStatusAndBytes(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	handler := loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		if _, err := w.Write([]byte("short")); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/teapot", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	got := logs.String()
+	for _, want := range []string{"HTTP Request Completed", "status=418", "bytes=5"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("logs missing %q: %s", want, got)
+		}
 	}
 }

@@ -1,6 +1,6 @@
 # Scrape Lab Evidence
 
-Last updated: 2026-05-02 local / 2026-05-03 UTC.
+Last updated: 2026-05-22 config update, latest scrape evidence remains 2026-05-03 UTC.
 
 This is the living ROI table for the low-rate scraper experiments. A backend is not considered production-proven until it gets three consecutive low-rate successful runs for the same target class, but these runs are enough to pick the next cheapest candidate for each site.
 
@@ -39,3 +39,6 @@ Current candidates:
 - eBay coupon pages: keep Browse API as source of truth. Page coupon discovery remains post-drop-only. Stormtrooper failed HTTP, chromedp, nodriver, and Camoufox against sampled item pages; Browserless passed a capped three-listing paid sample and is the final eBay-only fallback when enabled.
 - Memory Express clearance: prefer `chromedp-persistent` on Stormtrooper for SKST, keep `external-stealth` as a fallback/prototype, and evaluate paid services only if persistent Chrome starts seeing repeated Cloudflare challenges.
 - Best Buy seller listings: use `bestbuy-algolia` first. It is free, avoids the Akamai-denied public page/API paths, and already maps into the existing new-listing notification processor.
+
+
+2026-05-22 command config note: scraper command adapters now prefer JSON argv `*_COMMAND_ARGS` env vars and keep Browserless documented as the final paid fallback only. No new scrape result was added by this config-only update.

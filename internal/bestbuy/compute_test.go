@@ -139,6 +139,38 @@ func TestParseComputeSpecRejectsSub64GBLaptops(t *testing.T) {
 	}
 }
 
+func TestParseComputeSpecDoesNotTreatStorageAfterRAMAsRAM(t *testing.T) {
+	products := []struct {
+		name    string
+		wantRAM float64
+	}{
+		{
+			name:    `Dell Latitude 3000 3190 11.6" Netbook - HD - Intel Celeron N4120 Quad-core - 4 GB RAM - 64 GB Flash Memory`,
+			wantRAM: 4,
+		},
+		{
+			name:    `Refurbished Good - Apple MacBook Air 13.3" 2020 - M1 - 8GB RAM / 256GB SSD`,
+			wantRAM: 8,
+		},
+		{
+			name:    `Lenovo ThinkPad T490 Laptop - Core i5 -16GB RAM - 256 GB SSD`,
+			wantRAM: 16,
+		},
+	}
+	for _, product := range products {
+		spec := ParseComputeSpec(Product{Name: product.name})
+		if spec.RAMGB != product.wantRAM {
+			t.Fatalf("%q RAMGB = %.0f, want %.0f; spec=%#v", product.name, spec.RAMGB, product.wantRAM, spec)
+		}
+		if spec.IsCompute {
+			t.Fatalf("%q parsed as compute after RAM/storage split: %#v", product.name, spec)
+		}
+	}
+	if got := ramGBFromText("Rack server RAM: 64GB ECC RDIMM 2TB SSD"); got != 64 {
+		t.Fatalf("RAM: prefix parsed %.0f, want 64", got)
+	}
+}
+
 func TestParseComputeSpecTitleWinsOverDetails(t *testing.T) {
 	product := Product{
 		Name: "Refurbished (Good) - HP Z640 Workstation | E5-2680 V3 12 Core | 32GB|256GB SSD+500GB HDD | K2000 | WIN 10P",
@@ -225,6 +257,33 @@ func TestScoreComputeOutlierRequiresHugeGap(t *testing.T) {
 	score := ScoreComputeOutlier(candidate, spec, comps)
 	if score.IsWarm {
 		t.Fatalf("IsWarm = true for merely-good comp gap: %#v", score)
+	}
+}
+
+func TestScoreComputeOutlierRequiresP25FloorForHot(t *testing.T) {
+	candidate := Product{
+		SKU:        "candidate",
+		Name:       "Dell Precision 5820 Xeon W-2133 32GB RAM 512GB NVMe Quadro P4000",
+		SalePrice:  650,
+		SellerID:   "seller-a",
+		SellerName: "Seller A",
+		Source:     "seller:seller-a",
+	}
+	spec := ParseComputeSpec(candidate)
+	comps := []ComputeObservation{
+		computeComp("c1", "seller-b", 500),
+		computeComp("c2", "seller-c", 600),
+		computeComp("c3", "seller-d", 4000),
+		computeComp("c4", "seller-e", 5000),
+		computeComp("c5", "seller-f", 6000),
+	}
+
+	score := ScoreComputeOutlier(candidate, spec, comps)
+	if score.IsWarm || score.IsLavaHot {
+		t.Fatalf("candidate above p25 should not be warm/hot despite inflated median: %#v", score)
+	}
+	if score.MedianPrice != 4000 || score.P25Price != 600 {
+		t.Fatalf("median/p25 = %.2f/%.2f, want 4000/600", score.MedianPrice, score.P25Price)
 	}
 }
 

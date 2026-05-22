@@ -14,7 +14,7 @@ import (
 
 const (
 	bestBuyComputeMaxRecords                    = 20000
-	bestBuyComputeMaxExtremeSoldFallbacksPerRun = 1
+	bestBuyComputeMaxExtremeSoldFallbacksPerRun = 5
 )
 
 type ComputeStore interface {
@@ -203,7 +203,8 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 				applyEbaySoldVerification(&observation, verification)
 				extremeSoldFallbacks++
 				stats.SoldFallbacks++
-				if verification.Pass {
+
+				if ebaySoldVerificationConfirmsMarket(verification) {
 					applyEbaySoldFallbackScore(&observation, verification)
 					observation.EbaySoldAlertKey = computeAlertKey(observation)
 					stats.WarmHot++
@@ -217,7 +218,7 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 						"sold_median", verification.MedianPrice,
 						"sold_gap_pct", verification.GapPct,
 					)
-				} else {
+				} else if verification.Verdict == ebaySoldVerdictFail {
 					stats.SoldRejected++
 					logger.Info("Best Buy compute extreme item skipped after eBay sold fallback",
 						"sku", observation.SKU,
@@ -227,6 +228,15 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 						"verdict", verification.Verdict,
 						"error", verification.Error,
 						"sold_comps", verification.ComparableCount,
+					)
+				} else {
+					logger.Info("Best Buy compute extreme item not promoted because eBay sold evidence was unavailable",
+						"sku", observation.SKU,
+						"sellerID", observation.SellerID,
+						"query", verification.Query,
+						"backend", verification.Backend,
+						"verdict", verification.Verdict,
+						"error", verification.Error,
 					)
 				}
 			} else {
@@ -263,7 +273,7 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 						applyEbaySoldVerification(&observation, verification)
 						verified = verification.Pass
 					}
-					if verified && !alreadyVerified {
+					if ebaySoldVerificationConfirmsMarket(verification) && !alreadyVerified {
 						stats.SoldVerified++
 					} else if !verified {
 						stats.SoldRejected++
@@ -278,9 +288,20 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 							"sold_median", verification.MedianPrice,
 							"sold_gap_pct", verification.GapPct,
 						)
+					} else if p.soldVerifier != nil && !alreadyVerified {
+						logger.Info("Best Buy compute outlier proceeding without decisive eBay sold verification",
+							"sku", observation.SKU,
+							"sellerID", observation.SellerID,
+							"query", verification.Query,
+							"backend", verification.Backend,
+							"verdict", verification.Verdict,
+							"error", verification.Error,
+							"sold_comps", verification.ComparableCount,
+						)
 					}
 				}
 				if verified {
+					applyEbaySoldMarketGuardToObservation(&observation, verification)
 					if err := p.notifier.SendBestBuyDeal(ctx, computeAnalyzedProduct(observation), computeSubs); err != nil {
 						stats.NotifyErrors++
 						logger.Warn("Failed to send Best Buy compute outlier", "sku", observation.SKU, "error", err)
@@ -381,8 +402,39 @@ func applyEbaySoldFallbackScore(observation *ComputeObservation, verification Eb
 	observation.OutlierGapPct = verification.GapPct
 	observation.OutlierGapAmount = verification.GapAmount
 	observation.IsWarm = true
-	observation.IsLavaHot = verification.GapPct >= defaultComputeHotMinGapPct && verification.GapAmount >= defaultComputeHotMinGapAmount
+	observation.IsLavaHot = ebaySoldMarketLabel(observation, verification) == soldCompMarketHot
 	observation.Summary = computeEbaySoldFallbackSummary(observation.Spec, verification)
+}
+
+func applyEbaySoldMarketGuardToObservation(observation *ComputeObservation, verification EbaySoldVerification) {
+	if observation == nil || !verification.Pass {
+		return
+	}
+	switch ebaySoldMarketLabel(observation, verification) {
+	case soldCompMarketHot:
+		observation.IsWarm = true
+		observation.IsLavaHot = true
+	case soldCompMarketWarm:
+		observation.IsWarm = true
+		observation.IsLavaHot = false
+	}
+}
+
+func ebaySoldMarketLabel(observation *ComputeObservation, verification EbaySoldVerification) string {
+	if verification.MarketLabel != "" {
+		return verification.MarketLabel
+	}
+	if observation == nil || verification.ComparableCount <= 0 || verification.MedianPrice <= 0 {
+		return ""
+	}
+	verdict := soldCompMarketVerdictFromSummary(
+		effectiveProductPrice(observation.Product),
+		verification.ComparableCount,
+		verification.MedianPrice,
+		verification.P25Price,
+		defaultEbaySoldMinComps,
+	)
+	return verdict.Label
 }
 
 func computeEbaySoldFallbackSummary(spec ComputeSpec, verification EbaySoldVerification) string {
@@ -439,7 +491,9 @@ func computeAlertKey(observation ComputeObservation) string {
 	if observation.SKU == "" || observation.Source == "" || price <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s|%s|%.2f|%.0f|%d", observation.SKU, observation.Source, price, observation.OutlierGapPct, observation.ComparableCount)
+	// We stabilize the key to avoid re-alerting on the same item at the same price
+	// even if the outlier gap or comparable count changes slightly.
+	return fmt.Sprintf("%s|%s|%.2f", observation.SKU, observation.Source, price)
 }
 
 func computeObservationKey(product Product) string {

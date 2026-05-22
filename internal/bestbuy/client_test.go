@@ -401,16 +401,14 @@ func TestAlgoliaSearchPreservesTargetAndRecentFilters(t *testing.T) {
 	}
 }
 
-func TestDefaultComputeSearchTargetsCoverAppleAndHighRAMLaptops(t *testing.T) {
+func TestDefaultComputeSearchTargetsAvoidBroadNoisyCategories(t *testing.T) {
 	targets := map[string]ComputeSearchTarget{}
 	for _, target := range DefaultComputeSearchTargets() {
 		targets[target.Name] = target
 	}
 
 	required := map[string]string{
-		"apple-macbook-air-category": `["categoryIds:12746017"]`,
 		"apple-macbook-pro-category": `["categoryIds:12746019"]`,
-		"apple-macbook-category":     `["categoryIds:22156"]`,
 		"apple-mac-studio-category":  `["categoryIds:19862843"]`,
 	}
 	for name, facet := range required {
@@ -436,19 +434,26 @@ func TestDefaultComputeSearchTargetsCoverAppleAndHighRAMLaptops(t *testing.T) {
 	if !strings.Contains(laptopTarget.FacetFilters, "specs.custom0ramsize:2048") {
 		t.Fatalf("windows laptop target facet = %q, want 2TB RAM facet", laptopTarget.FacetFilters)
 	}
-	categoryTarget, ok := targets["windows-laptops-category"]
-	if !ok {
-		t.Fatal("missing windows-laptops-category compute target")
-	}
-	if categoryTarget.FacetFilters != `["categoryIds:36711"]` {
-		t.Fatalf("windows-laptops-category facet = %q, want broad Windows Laptops category", categoryTarget.FacetFilters)
+	if target, ok := targets["rtx-workstation"]; !ok || target.Query != "RTX workstation -graphics" {
+		t.Fatalf("rtx-workstation target = %#v, want broad RTX workstation query with graphics exclusion", target)
 	}
 	if target, ok := targets["macbook-pro"]; !ok || target.Query != "MacBook Pro" {
-		t.Fatalf("macbook-pro target = %#v, want broad query fallback", target)
+		t.Fatalf("macbook-pro target = %#v, want query fallback", target)
+	}
+
+	removedBroadTargets := []string{
+		"windows-laptops-category",
+		"apple-macbook-air-category",
+		"apple-macbook-category",
+	}
+	for _, name := range removedBroadTargets {
+		if _, ok := targets[name]; ok {
+			t.Fatalf("broad noisy compute target %q should stay removed", name)
+		}
 	}
 	for _, name := range []string{"core-ultra-9-laptop", "intel-i9-laptop", "ryzen-9-laptop", "ryzen-ai-max-laptop"} {
 		if _, ok := targets[name]; ok {
-			t.Fatalf("legacy narrow laptop target %q should be removed in favor of category parsing", name)
+			t.Fatalf("legacy narrow laptop target %q should stay removed", name)
 		}
 	}
 }

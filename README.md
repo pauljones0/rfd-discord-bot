@@ -34,6 +34,8 @@ Health check:
 curl.exe http://stormtrooper:18080/health
 ```
 
+Public routing should expose only `/discord/interactions` and `/health`. Manual
+processor endpoints stay on localhost/SSH and also require `RFD_ADMIN_TOKEN`.
 Expected production health reports `storage=postgres`.
 
 ## Active Scheduler
@@ -49,15 +51,20 @@ BESTBUY_POLL_INTERVAL=30m
 ```
 
 Manual HTTP triggers still exist and use the same concurrency guards as the
-scheduler:
+scheduler, but they require `Authorization: Bearer $RFD_ADMIN_TOKEN` and should
+only be reached over localhost/SSH:
 
 ```text
 GET /process-deals
 GET /process-ebay
 GET /process-memoryexpress
 GET /process-bestbuy
+GET /process-bestbuy-compute
 POST /prime-bestbuy-baseline
 ```
+
+Production should keep `ALLOW_UNSIGNED_DISCORD_INTERACTIONS=false`; unsigned
+Discord interactions are only for explicit local development or tests.
 
 ## Current Flows
 
@@ -84,14 +91,16 @@ Typical Stormtrooper backend order:
 ```env
 EBAY_COUPON_BACKENDS=http,external-stealth,camoufox,ai-crawler,paid-trial
 EBAY_COUPON_DISCOVERY_INTERVAL=6h
-EBAY_PAID_BROWSER_ENABLED=true
+EBAY_PAID_BROWSER_ENABLED=false
 EBAY_PAID_BROWSER_MAX_CALLS_PER_RUN=1
 EBAY_PAID_BROWSER_MAX_CALLS_PER_DAY=6
 ```
 
 `paid-trial` is the Browserless adapter and only runs when explicitly enabled.
-It stays last in the ladder behind HTTP, nodriver/external stealth, Camoufox,
-and the local AI crawler adapter.
+It is disabled in normal production runs for now; set the site-specific boolean
+back to `true` only after validating Browserless in scrape-lab. It stays last in
+the ladder behind HTTP, nodriver/external stealth, Camoufox, and the local AI
+crawler adapter.
 
 ### Memory Express
 
@@ -117,6 +126,16 @@ AI-labeled:
 
 With no Best Buy subscription, the processor still refreshes baseline inventory
 quietly.
+
+Optional eBay sold-comps enrichment for Best Buy seller alerts is enabled by
+default with `BESTBUY_SOLD_COMPS_ENABLED=true`. It only runs for AI tier-1
+candidates before tier-2 analysis, caches sold-search snapshots for
+`BESTBUY_SOLD_COMP_CACHE_TTL`, waits `BESTBUY_SOLD_COMP_QUERY_DELAY` between
+eBay fetch attempts, and caps uncached lookups with `BESTBUY_SOLD_COMP_MAX_PER_RUN`
+(default `10`). Uncached candidates are ranked by Best Buy comp gap, dollar
+margin, comp count, high-value compute signal, and model/brand confidence. eBay
+sold comps verify warm/hot labels when enough matches exist; blocked, errored,
+or thin eBay evidence fails open to the existing AI/Best Buy behavior.
 
 ## Discord Commands
 
@@ -188,11 +207,20 @@ git pull --ff-only origin main
 RFD_BOT_ENV_FILE=$HOME/.config/rfd-discord-bot/.env \
 RFD_BOT_DATA_DIR=$HOME/appdata/rfd-discord-bot \
 RFD_BOT_POSTGRES_DIR=$HOME/appdata/rfd-discord-bot/postgres \
+RFD_BOT_BROWSER_CACHE_DIR=$HOME/appdata/rfd-discord-bot/browser-cache \
+PY_BROWSER_PACKAGE_REFRESH=$(date -u +%Y%m%d) \
 docker compose -f deploy/stormtrooper/docker-compose.yml up -d --build
 ```
 
 For branch testing, pull the branch instead of `main` and use the same Compose
 command.
+
+Compose checks for newer base/runtime images on deploy while reusing local
+layers when the digest is unchanged. Browser packages are intentionally
+unpinned; bump `PY_BROWSER_PACKAGE_REFRESH` when you want Docker to refresh the
+pip install layer. Camoufox, Playwright/Crawl4AI, and nodriver browser binaries
+live under `RFD_BOT_BROWSER_CACHE_DIR` and are downloaded only when the matching
+cache entry is missing or stale.
 
 Useful checks:
 
@@ -200,7 +228,12 @@ Useful checks:
 docker compose -f deploy/stormtrooper/docker-compose.yml ps
 docker compose -f deploy/stormtrooper/docker-compose.yml logs --tail=200 bot
 curl -s http://127.0.0.1:18080/health
+curl -fsS -H "Authorization: Bearer $RFD_ADMIN_TOKEN" http://127.0.0.1:18080/process-deals
 ```
+
+After deploy, watch at least one full scheduler cycle. Confirm health stays OK,
+Compose shows the bot and Postgres healthy, and bot logs show RFD, eBay, Memory
+Express, and Best Buy polling without repeated block or auth errors.
 
 The Compose file pins the project name to `rfd-discord-bot` so other stacks in
 directories named `stormtrooper` cannot replace its `postgres` service. Install

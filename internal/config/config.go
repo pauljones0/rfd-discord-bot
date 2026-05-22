@@ -27,11 +27,13 @@ type Config struct {
 	GeminiLocations        []string
 	GeminiFallbackModels   []string
 	LocalSchedulerEnabled  bool
+	RFDAdminToken          string
 
 	// Discord App Auth
-	DiscordAppID     string
-	DiscordPublicKey string
-	DiscordBotToken  string
+	DiscordAppID                     string
+	DiscordPublicKey                 string
+	DiscordBotToken                  string
+	AllowUnsignedDiscordInteractions bool
 
 	// eBay API (optional — eBay features disabled if not set)
 	EbayClientID                string
@@ -65,9 +67,18 @@ type Config struct {
 	BestBuyComputeSoldVerifyEnabled bool
 	BestBuyComputeSoldBackends      []string
 	BestBuyComputeSoldCacheTTL      time.Duration
+	BestBuyComputeSoldQueryDelay    time.Duration
 	BestBuyComputeSoldPaidEnabled   bool
 	BestBuyComputeSoldPaidMaxPerRun int
 	BestBuyComputeSoldPaidMaxPerDay int
+	BestBuySoldCompsEnabled         bool
+	BestBuySoldCompBackends         []string
+	BestBuySoldCompCacheTTL         time.Duration
+	BestBuySoldCompQueryDelay       time.Duration
+	BestBuySoldCompMaxPerRun        int
+	BestBuySoldCompPaidEnabled      bool
+	BestBuySoldCompPaidMaxPerRun    int
+	BestBuySoldCompPaidMaxPerDay    int
 
 	// Carfax Token Service (optional — if not set, Carfax falls back to Playwright UI automation)
 	// The token service runs a real headed Chrome that generates high-scoring reCAPTCHA v3 tokens.
@@ -162,6 +173,21 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	bestBuyComputeSoldQueryDelay, err := durationEnv("BESTBUY_COMPUTE_SOLD_QUERY_DELAY", 3*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	bestBuySoldCompCacheTTL, err := durationEnv("BESTBUY_SOLD_COMP_CACHE_TTL", 24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+
+	bestBuySoldCompQueryDelay, err := durationEnv("BESTBUY_SOLD_COMP_QUERY_DELAY", 3*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
 	ebayCouponDiscoveryInterval, err := durationEnv("EBAY_COUPON_DISCOVERY_INTERVAL", 6*time.Hour)
 	if err != nil {
 		return nil, err
@@ -224,44 +250,55 @@ func Load() (*Config, error) {
 			"gemini-2.5-flash",
 			"gemini-2.5-pro",
 		},
-		DiscordAppID:                    os.Getenv("DISCORD_APP_ID"),
-		DiscordPublicKey:                discordPublicKey,
-		DiscordBotToken:                 discordBotToken,
-		EbayClientID:                    os.Getenv("EBAY_CLIENT_ID"),
-		EbayClientSecret:                os.Getenv("EBAY_CLIENT_SECRET"),
-		EbayCouponBackends:              csvEnv("EBAY_COUPON_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
-		EbayPollInterval:                ebayPollInterval,
-		EbayCouponDiscoveryInterval:     ebayCouponDiscoveryInterval,
-		EbayPaidBrowserEnabled:          boolEnv("EBAY_PAID_BROWSER_ENABLED", false),
-		EbayPaidBrowserMaxPerRun:        intEnv("EBAY_PAID_BROWSER_MAX_CALLS_PER_RUN", 1),
-		EbayPaidBrowserMaxPerDay:        intEnv("EBAY_PAID_BROWSER_MAX_CALLS_PER_DAY", 6),
-		ProxyURL:                        os.Getenv("PROXY_URL"),
-		MemoryExpressPollInterval:       memexpressPollInterval,
-		MemoryExpressChromePath:         firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
-		MemoryExpressChromeProfile:      os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
-		MemoryExpressBackends:           csvEnv("MEMEXPRESS_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
-		MemoryExpressPaidBrowserEnabled: boolEnv("MEMEXPRESS_PAID_BROWSER_ENABLED", false),
-		MemoryExpressPaidMaxPerRun:      intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
-		MemoryExpressPaidMaxPerDay:      intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
-		BestBuyBackends:                 csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
-		BestBuyPollInterval:             bestBuyPollInterval,
-		BestBuyComputeEnabled:           boolEnv("BESTBUY_COMPUTE_ENABLED", false),
-		BestBuyComputePollInterval:      bestBuyComputePollInterval,
-		BestBuyComputeAlertFirstSeen:    boolEnv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", false),
-		BestBuyComputeEmbedCommand:      os.Getenv("BESTBUY_COMPUTE_EMBED_COMMAND"),
-		BestBuyComputeSoldVerifyEnabled: boolEnv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", true),
-		BestBuyComputeSoldBackends:      csvEnv("BESTBUY_COMPUTE_SOLD_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler"}),
-		BestBuyComputeSoldCacheTTL:      bestBuyComputeSoldCacheTTL,
-		BestBuyComputeSoldPaidEnabled:   boolEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_ENABLED", false),
-		BestBuyComputeSoldPaidMaxPerRun: intEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
-		BestBuyComputeSoldPaidMaxPerDay: intEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
-		LocalSchedulerEnabled:           boolEnv("LOCAL_SCHEDULER_ENABLED", false),
-		CarfaxTokenServiceURL:           os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
-		CarfaxTokenServiceSecret:        os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
-		RedditServiceURL:                os.Getenv("REDDIT_SERVICE_URL"),
-		RedditServiceSecret:             os.Getenv("REDDIT_SERVICE_SECRET"),
-		FacebookEnabled:                 boolEnv("FACEBOOK_ENABLED", false),
-		HardwareSwapEnabled:             boolEnv("HARDWARESWAP_ENABLED", false),
+		RFDAdminToken:                    os.Getenv("RFD_ADMIN_TOKEN"),
+		DiscordAppID:                     os.Getenv("DISCORD_APP_ID"),
+		DiscordPublicKey:                 discordPublicKey,
+		DiscordBotToken:                  discordBotToken,
+		AllowUnsignedDiscordInteractions: boolEnv("ALLOW_UNSIGNED_DISCORD_INTERACTIONS", false),
+		EbayClientID:                     os.Getenv("EBAY_CLIENT_ID"),
+		EbayClientSecret:                 os.Getenv("EBAY_CLIENT_SECRET"),
+		EbayCouponBackends:               csvEnv("EBAY_COUPON_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
+		EbayPollInterval:                 ebayPollInterval,
+		EbayCouponDiscoveryInterval:      ebayCouponDiscoveryInterval,
+		EbayPaidBrowserEnabled:           boolEnv("EBAY_PAID_BROWSER_ENABLED", false),
+		EbayPaidBrowserMaxPerRun:         intEnv("EBAY_PAID_BROWSER_MAX_CALLS_PER_RUN", 1),
+		EbayPaidBrowserMaxPerDay:         intEnv("EBAY_PAID_BROWSER_MAX_CALLS_PER_DAY", 6),
+		ProxyURL:                         os.Getenv("PROXY_URL"),
+		MemoryExpressPollInterval:        memexpressPollInterval,
+		MemoryExpressChromePath:          firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
+		MemoryExpressChromeProfile:       os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
+		MemoryExpressBackends:            csvEnv("MEMEXPRESS_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
+		MemoryExpressPaidBrowserEnabled:  boolEnv("MEMEXPRESS_PAID_BROWSER_ENABLED", false),
+		MemoryExpressPaidMaxPerRun:       intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
+		MemoryExpressPaidMaxPerDay:       intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
+		BestBuyBackends:                  csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
+		BestBuyPollInterval:              bestBuyPollInterval,
+		BestBuyComputeEnabled:            boolEnv("BESTBUY_COMPUTE_ENABLED", false),
+		BestBuyComputePollInterval:       bestBuyComputePollInterval,
+		BestBuyComputeAlertFirstSeen:     boolEnv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", false),
+		BestBuyComputeEmbedCommand:       os.Getenv("BESTBUY_COMPUTE_EMBED_COMMAND"),
+		BestBuyComputeSoldVerifyEnabled:  boolEnv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", true),
+		BestBuyComputeSoldBackends:       csvEnv("BESTBUY_COMPUTE_SOLD_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler"}),
+		BestBuyComputeSoldCacheTTL:       bestBuyComputeSoldCacheTTL,
+		BestBuyComputeSoldQueryDelay:     bestBuyComputeSoldQueryDelay,
+		BestBuyComputeSoldPaidEnabled:    boolEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_ENABLED", false),
+		BestBuyComputeSoldPaidMaxPerRun:  intEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
+		BestBuyComputeSoldPaidMaxPerDay:  intEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
+		BestBuySoldCompsEnabled:          boolEnv("BESTBUY_SOLD_COMPS_ENABLED", true),
+		BestBuySoldCompBackends:          csvEnv("BESTBUY_SOLD_COMP_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler"}),
+		BestBuySoldCompCacheTTL:          bestBuySoldCompCacheTTL,
+		BestBuySoldCompQueryDelay:        bestBuySoldCompQueryDelay,
+		BestBuySoldCompMaxPerRun:         intEnv("BESTBUY_SOLD_COMP_MAX_PER_RUN", 10),
+		BestBuySoldCompPaidEnabled:       boolEnv("BESTBUY_SOLD_COMP_PAID_BROWSER_ENABLED", false),
+		BestBuySoldCompPaidMaxPerRun:     intEnv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
+		BestBuySoldCompPaidMaxPerDay:     intEnv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
+		LocalSchedulerEnabled:            boolEnv("LOCAL_SCHEDULER_ENABLED", false),
+		CarfaxTokenServiceURL:            os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
+		CarfaxTokenServiceSecret:         os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
+		RedditServiceURL:                 os.Getenv("REDDIT_SERVICE_URL"),
+		RedditServiceSecret:              os.Getenv("REDDIT_SERVICE_SECRET"),
+		FacebookEnabled:                  boolEnv("FACEBOOK_ENABLED", false),
+		HardwareSwapEnabled:              boolEnv("HARDWARESWAP_ENABLED", false),
 	}, nil
 }
 

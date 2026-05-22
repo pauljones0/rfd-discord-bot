@@ -26,8 +26,8 @@ const (
 
 	defaultEbaySoldCacheTTL       = 24 * time.Hour
 	defaultEbaySoldMinComps       = 3
-	defaultEbaySoldWarmMinGapPct  = 25.0
-	defaultEbaySoldWarmMinGapDols = 100.0
+	defaultEbaySoldWarmMinGapPct  = ebaySoldWarmMinGapPct
+	defaultEbaySoldWarmMinGapDols = 0.0
 )
 
 type ComputeSoldVerifier interface {
@@ -42,6 +42,8 @@ type EbaySoldVerifierOptions struct {
 	PaidEnabled   bool
 	PaidAttempt   func(context.Context) error
 	BeforeRun     func()
+	QueryDelay    time.Duration
+	Sleep         contextSleeper
 	MinComps      int
 	MinGapPct     float64
 	MinGapDollars float64
@@ -59,22 +61,27 @@ type EbaySoldVerifier struct {
 	minGapPct     float64
 	minGapDollars float64
 	timeout       time.Duration
+	limiter       *soldFetchLimiter
 }
 
 type EbaySoldVerification struct {
-	Pass            bool
-	Verdict         string
-	Query           string
-	Backend         string
-	ComparableCount int
-	MedianPrice     float64
-	P25Price        float64
-	GapPct          float64
-	GapAmount       float64
-	CheckedAt       time.Time
-	AlertKey        string
-	Error           string
-	Comparables     []ComputeExternalComparable
+	Pass              bool
+	Verdict           string
+	Query             string
+	Backend           string
+	ComparableCount   int
+	MedianPrice       float64
+	P25Price          float64
+	GapPct            float64
+	GapAmount         float64
+	MarketLabel       string
+	LocalResalePrice  float64
+	LocalMarginPct    float64
+	LocalMarginAmount float64
+	CheckedAt         time.Time
+	AlertKey          string
+	Error             string
+	Comparables       []ComputeExternalComparable
 }
 
 type ebaySoldListing struct {
@@ -83,15 +90,7 @@ type ebaySoldListing struct {
 }
 
 func NewEbaySoldVerifier(opts EbaySoldVerifierOptions) *EbaySoldVerifier {
-	backends := compactStrings(opts.Backends)
-	if len(backends) == 0 {
-		backends = []string{
-			scrapebackend.BackendHTTP,
-			scrapebackend.BackendExternalStealth,
-			scrapebackend.BackendCamoufox,
-			scrapebackend.BackendAICrawler,
-		}
-	}
+	backends := ebaySoldBackends(opts.Backends, opts.PaidEnabled)
 	cacheTTL := opts.CacheTTL
 	if cacheTTL <= 0 {
 		cacheTTL = defaultEbaySoldCacheTTL
@@ -112,6 +111,10 @@ func NewEbaySoldVerifier(opts EbaySoldVerifierOptions) *EbaySoldVerifier {
 	if timeout <= 0 {
 		timeout = 45 * time.Second
 	}
+	queryDelay := opts.QueryDelay
+	if queryDelay <= 0 {
+		queryDelay = defaultBestBuySoldCompQueryDelay
+	}
 	return &EbaySoldVerifier{
 		enabled:       opts.Enabled,
 		backends:      backends,
@@ -123,12 +126,19 @@ func NewEbaySoldVerifier(opts EbaySoldVerifierOptions) *EbaySoldVerifier {
 		minGapPct:     minGapPct,
 		minGapDollars: minGapDollars,
 		timeout:       timeout,
+		limiter:       newSoldFetchLimiter(queryDelay, opts.Sleep),
 	}
 }
 
 func (v *EbaySoldVerifier) BeginRun() {
-	if v != nil && v.beforeRun != nil {
+	if v == nil {
+		return
+	}
+	if v.beforeRun != nil {
 		v.beforeRun()
+	}
+	if v.limiter != nil {
+		v.limiter.BeginRun()
 	}
 }
 
@@ -149,34 +159,68 @@ func (v *EbaySoldVerifier) Verify(ctx context.Context, observation ComputeObserv
 	if len(queries) == 0 {
 		verification.Verdict = ebaySoldVerdictNoComps
 		verification.Error = "empty sold-search query"
-		return verification
+		return ebaySoldVerificationWithFailOpenPass(verification)
 	}
 
 	var failures []string
 	var bestVerification EbaySoldVerification
+	attempts := scrapebackend.NewAttemptCounter()
 	exactQuery := buildEbaySoldQueryWithRAM(observation, true)
 	for _, query := range queries {
 		searchURL := ebaySoldSearchURL(query)
 		for _, backend := range v.backends {
+			attempts.RecordAttempt(backend)
+			if err := v.limiter.BeforeFetch(ctx); err != nil {
+				attempts.RecordError(backend)
+				verification.Verdict = ebaySoldVerdictFetchError
+				verification.Error = err.Error()
+				verification = ebaySoldVerificationWithFailOpenPass(verification)
+				logEbaySoldVerificationBackendSummary(logger, observation, verification, attempts)
+				return verification
+			}
 			result := scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
-				Backend:          backend,
-				URL:              searchURL,
-				Timeout:          v.timeout,
-				ExternalCommand:  ebaySoldExternalCommand(),
-				CamoufoxCommand:  ebaySoldCamoufoxCommand(),
-				AICrawlerCommand: ebaySoldAICrawlerCommand(),
-				PaidCommand:      ebaySoldPaidCommand(),
-				PaidEnabled:      v.paidEnabled,
-				PaidAttempt:      v.paidAttempt,
+				Backend:             backend,
+				URL:                 searchURL,
+				Timeout:             v.timeout,
+				ExternalCommand:     ebaySoldExternalCommand(),
+				ExternalCommandArgs: ebaySoldExternalCommandArgs(),
+				CamoufoxCommand:     ebaySoldCamoufoxCommand(),
+				CamoufoxCommandArgs: ebaySoldCamoufoxCommandArgs(),
+				AICrawlerCommand:    ebaySoldAICrawlerCommand(),
+				AICrawlerArgs:       ebaySoldAICrawlerCommandArgs(),
+				PaidCommand:         ebaySoldPaidCommand(),
+				PaidCommandArgs:     ebaySoldPaidCommandArgs(),
+				PaidEnabled:         v.paidEnabled,
+				PaidAttempt:         v.paidAttempt,
 			})
-			if result.Error != "" || result.BlockSignal != "" {
-				failures = append(failures, fmt.Sprintf("%s/%s: %s %s", backend, query, result.Error, result.BlockSignal))
+			if issue := attempts.RecordFetchResult(backend, result); issue != "" {
+				failures = append(failures, fmt.Sprintf("%s/%s: %s", backend, query, issue))
+				if logger != nil {
+					logger.Warn("Best Buy compute eBay sold backend failed",
+						"sku", observation.SKU,
+						"query", query,
+						"backend", backend,
+						"status", result.StatusCode,
+						"block_signal", result.BlockSignal,
+						"error", result.Error,
+						"duration_ms", result.Duration.Milliseconds(),
+					)
+				}
 				continue
 			}
 
 			listings, err := ParseEbaySoldListings(result.HTML)
 			if err != nil {
+				attempts.RecordParseError(backend)
 				failures = append(failures, fmt.Sprintf("%s/%s: parse: %s", backend, query, err))
+				if logger != nil {
+					logger.Warn("Best Buy compute eBay sold parse failed",
+						"sku", observation.SKU,
+						"query", query,
+						"backend", backend,
+						"error", err,
+					)
+				}
 				continue
 			}
 			verification = scoreEbaySoldVerification(observation, listings, v.minComps, v.minGapPct, v.minGapDollars)
@@ -184,6 +228,7 @@ func (v *EbaySoldVerifier) Verify(ctx context.Context, observation ComputeObserv
 			verification.Backend = backend
 			verification.CheckedAt = now
 			verification.AlertKey = alertKey
+			attempts.RecordVerdict(backend, verification.Verdict)
 			for i := range verification.Comparables {
 				verification.Comparables[i].Query = query
 				verification.Comparables[i].Backend = backend
@@ -201,6 +246,7 @@ func (v *EbaySoldVerifier) Verify(ctx context.Context, observation ComputeObserv
 				)
 			}
 			if verification.Pass || (verification.Verdict != ebaySoldVerdictNoComps && strings.EqualFold(query, exactQuery)) {
+				logEbaySoldVerificationBackendSummary(logger, observation, verification, attempts)
 				return verification
 			}
 			if verification.ComparableCount > bestVerification.ComparableCount || bestVerification.Query == "" {
@@ -210,11 +256,31 @@ func (v *EbaySoldVerifier) Verify(ctx context.Context, observation ComputeObserv
 	}
 
 	if bestVerification.Query != "" {
+		bestVerification = ebaySoldVerificationWithFailOpenPass(bestVerification)
+		logEbaySoldVerificationBackendSummary(logger, observation, bestVerification, attempts)
 		return bestVerification
 	}
 	verification.Verdict = ebaySoldVerdictFetchError
-	verification.Error = strings.Join(failures, "; ")
+	verification.Error = soldFetchFailureSummary(failures)
+	verification = ebaySoldVerificationWithFailOpenPass(verification)
+	logEbaySoldVerificationBackendSummary(logger, observation, verification, attempts)
 	return verification
+}
+
+func logEbaySoldVerificationBackendSummary(logger *slog.Logger, observation ComputeObservation, verification EbaySoldVerification, attempts *scrapebackend.AttemptCounter) {
+	if logger == nil || attempts == nil || attempts.TotalAttempts() == 0 {
+		return
+	}
+	attrs := []any{
+		"sku", observation.SKU,
+		"query", verification.Query,
+		"backend", verification.Backend,
+		"verdict", verification.Verdict,
+		"sold_comps", verification.ComparableCount,
+		"error", verification.Error,
+	}
+	attrs = append(attrs, attempts.Attrs()...)
+	logger.Info("Best Buy compute eBay sold backend summary", attrs...)
 }
 
 func (v *EbaySoldVerifier) cached(prior ComputeObservation, alertKey string, now time.Time) (EbaySoldVerification, bool) {
@@ -224,22 +290,48 @@ func (v *EbaySoldVerifier) cached(prior ComputeObservation, alertKey string, now
 	if v.cacheTTL <= 0 || now.Sub(prior.EbaySoldCheckedAt) > v.cacheTTL {
 		return EbaySoldVerification{}, false
 	}
+	market := soldCompMarketVerdictFromSummary(effectiveProductPrice(prior.Product), prior.EbaySoldComparableCount, prior.EbaySoldMedianPrice, prior.EbaySoldP25Price, v.minComps)
 	verification := EbaySoldVerification{
-		Pass:            prior.EbaySoldVerdict == ebaySoldVerdictPass,
-		Verdict:         prior.EbaySoldVerdict,
-		Query:           prior.EbaySoldQuery,
-		Backend:         prior.EbaySoldBackend,
-		ComparableCount: prior.EbaySoldComparableCount,
-		MedianPrice:     prior.EbaySoldMedianPrice,
-		P25Price:        prior.EbaySoldP25Price,
-		GapPct:          prior.EbaySoldGapPct,
-		GapAmount:       prior.EbaySoldGapAmount,
-		CheckedAt:       prior.EbaySoldCheckedAt,
-		AlertKey:        prior.EbaySoldAlertKey,
-		Error:           prior.EbaySoldError,
-		Comparables:     prior.EbaySoldComparables,
+		Pass:              ebaySoldVerificationPassForVerdict(prior.EbaySoldVerdict),
+		Verdict:           prior.EbaySoldVerdict,
+		Query:             prior.EbaySoldQuery,
+		Backend:           prior.EbaySoldBackend,
+		ComparableCount:   prior.EbaySoldComparableCount,
+		MedianPrice:       prior.EbaySoldMedianPrice,
+		P25Price:          prior.EbaySoldP25Price,
+		GapPct:            prior.EbaySoldGapPct,
+		GapAmount:         prior.EbaySoldGapAmount,
+		MarketLabel:       market.Label,
+		LocalResalePrice:  market.LocalResalePrice,
+		LocalMarginPct:    market.LocalMarginPct,
+		LocalMarginAmount: market.LocalMarginAmount,
+		CheckedAt:         prior.EbaySoldCheckedAt,
+		AlertKey:          prior.EbaySoldAlertKey,
+		Error:             prior.EbaySoldError,
+		Comparables:       prior.EbaySoldComparables,
 	}
 	return verification, true
+}
+
+func ebaySoldVerificationWithFailOpenPass(verification EbaySoldVerification) EbaySoldVerification {
+	verification.Pass = ebaySoldVerificationPassForVerdict(verification.Verdict)
+	return verification
+}
+
+func ebaySoldVerificationPassForVerdict(verdict string) bool {
+	switch verdict {
+	case ebaySoldVerdictFail:
+		return false
+	default:
+		return true
+	}
+}
+
+func ebaySoldVerificationConfirmsMarket(verification EbaySoldVerification) bool {
+	return verification.Pass &&
+		verification.Verdict == ebaySoldVerdictPass &&
+		verification.ComparableCount > 0 &&
+		verification.MedianPrice > 0
 }
 
 func applyEbaySoldVerification(observation *ComputeObservation, verification EbaySoldVerification) {
@@ -451,18 +543,26 @@ func scoreEbaySoldVerification(observation ComputeObservation, listings []ebaySo
 	if median > 0 {
 		gapPct = gap / median * 100
 	}
+	market := soldCompMarketVerdictFromSummary(currentPrice, len(prices), median, p25, minComps)
 	verification.ComparableCount = len(prices)
 	verification.MedianPrice = median
 	verification.P25Price = p25
 	verification.GapAmount = gap
 	verification.GapPct = gapPct
+	verification.MarketLabel = market.Label
+	verification.LocalResalePrice = market.LocalResalePrice
+	verification.LocalMarginPct = market.LocalMarginPct
+	verification.LocalMarginAmount = market.LocalMarginAmount
 	verification.Comparables = comparableLimitExternal(comparables, 20)
-	if gap >= minGapDollars && gapPct >= minGapPct {
+	if market.Label != "" {
 		verification.Pass = true
 		verification.Verdict = ebaySoldVerdictPass
 	} else {
 		verification.Verdict = ebaySoldVerdictFail
-		verification.Error = fmt.Sprintf("sold comps gap %.1f%%/$%.0f below threshold %.1f%%/$%.0f", gapPct, gap, minGapPct, minGapDollars)
+		verification.Error = market.Reason
+		if verification.Error == "" {
+			verification.Error = fmt.Sprintf("sold comps gap %.1f%%/$%.0f below threshold %.1f%%/$%.0f", gapPct, gap, minGapPct, minGapDollars)
+		}
 	}
 	return verification
 }
@@ -590,6 +690,22 @@ func ebaySoldAICrawlerCommand() string {
 
 func ebaySoldPaidCommand() string {
 	return firstNonEmptyEnv("EBAY_SOLD_PAID_TRIAL_COMMAND", "EBAY_COUPON_PAID_TRIAL_COMMAND", "SCRAPELAB_PAID_TRIAL_COMMAND")
+}
+
+func ebaySoldExternalCommandArgs() []string {
+	return scrapebackend.CommandArgsFromEnv("EBAY_SOLD_EXTERNAL_STEALTH_COMMAND_ARGS", "EBAY_COUPON_EXTERNAL_STEALTH_COMMAND_ARGS", "SCRAPELAB_EXTERNAL_STEALTH_COMMAND_ARGS")
+}
+
+func ebaySoldCamoufoxCommandArgs() []string {
+	return scrapebackend.CommandArgsFromEnv("EBAY_SOLD_CAMOUFOX_COMMAND_ARGS", "EBAY_COUPON_CAMOUFOX_COMMAND_ARGS", "SCRAPELAB_CAMOUFOX_COMMAND_ARGS")
+}
+
+func ebaySoldAICrawlerCommandArgs() []string {
+	return scrapebackend.CommandArgsFromEnv("EBAY_SOLD_AI_CRAWLER_COMMAND_ARGS", "EBAY_COUPON_AI_CRAWLER_COMMAND_ARGS", "SCRAPELAB_AI_CRAWLER_COMMAND_ARGS")
+}
+
+func ebaySoldPaidCommandArgs() []string {
+	return scrapebackend.CommandArgsFromEnv("EBAY_SOLD_PAID_TRIAL_COMMAND_ARGS", "EBAY_COUPON_PAID_TRIAL_COMMAND_ARGS", "SCRAPELAB_PAID_TRIAL_COMMAND_ARGS")
 }
 
 func firstNonEmptyEnv(keys ...string) string {

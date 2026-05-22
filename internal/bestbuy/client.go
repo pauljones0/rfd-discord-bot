@@ -299,15 +299,12 @@ func DefaultComputeSearchTargets() []ComputeSearchTarget {
 	core12 := `["specs.custom0processorcores:12","specs.custom0processorcores:14","specs.custom0processorcores:16","specs.custom0processorcores:20","specs.custom0processorcores:24","specs.custom0processorcores:28","specs.custom0processorcores:32","specs.custom0processorcores:36","specs.custom0processorcores:48","specs.custom0processorcores:64"]`
 	return []ComputeSearchTarget{
 		{Name: "ram64-all", FacetFilters: "[" + ram64 + "]"},
-		{Name: "windows-laptops-category", FacetFilters: `["categoryIds:36711"]`},
 		{Name: "windows-laptops-ram64", FacetFilters: "[" + ram64 + `,"categoryIds:36711"]`},
 		{Name: "core12-under-1500", FacetFilters: "[" + core12 + "]", Filters: "price.currentPrice <= 1500"},
 		{Name: "core12-1500-2500", FacetFilters: "[" + core12 + "]", Filters: "price.currentPrice > 1500 AND price.currentPrice <= 2500"},
 		{Name: "servers-category", FacetFilters: `["categoryIds:26200"]`},
 		{Name: "commercial-servers-category", FacetFilters: `["categoryIds:32381"]`},
-		{Name: "apple-macbook-air-category", FacetFilters: `["categoryIds:12746017"]`},
 		{Name: "apple-macbook-pro-category", FacetFilters: `["categoryIds:12746019"]`},
-		{Name: "apple-macbook-category", FacetFilters: `["categoryIds:22156"]`},
 		{Name: "apple-mac-studio-category", FacetFilters: `["categoryIds:19862843"]`},
 		{Name: "poweredge-server", Query: "PowerEdge server"},
 		{Name: "proliant-server", Query: "ProLiant server"},
@@ -319,7 +316,7 @@ func DefaultComputeSearchTargets() []ComputeSearchTarget {
 		{Name: "xeon-desktop", Query: "Xeon desktop"},
 		{Name: "threadripper-workstation", Query: "Threadripper workstation"},
 		{Name: "quadro-workstation", Query: "Quadro workstation"},
-		{Name: "rtx-a-workstation", Query: "RTX A4000 workstation"},
+		{Name: "rtx-workstation", Query: "RTX workstation -graphics"},
 		{Name: "mac-studio", Query: "Mac Studio"},
 		{Name: "macbook-pro", Query: "MacBook Pro"},
 	}
@@ -789,11 +786,13 @@ func firstNonEmpty(values ...string) string {
 
 func (c *Client) doBackendSearch(ctx context.Context, backend, reqURL string) (*searchResponse, error) {
 	result := scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
-		Backend:         backend,
-		URL:             reqURL,
-		Timeout:         45 * time.Second,
-		ExternalCommand: os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
-		PaidCommand:     os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
+		Backend:             backend,
+		URL:                 reqURL,
+		Timeout:             45 * time.Second,
+		ExternalCommand:     os.Getenv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND"),
+		ExternalCommandArgs: scrapebackend.CommandArgsFromEnv("SCRAPELAB_EXTERNAL_STEALTH_COMMAND_ARGS"),
+		PaidCommand:         os.Getenv("SCRAPELAB_PAID_TRIAL_COMMAND"),
+		PaidCommandArgs:     scrapebackend.CommandArgsFromEnv("SCRAPELAB_PAID_TRIAL_COMMAND_ARGS"),
 	})
 	if result.Error != "" {
 		return nil, fmt.Errorf("%s", result.Error)
@@ -1369,6 +1368,7 @@ func applyComparableSummary(product *Product, comps []ComparableListing) {
 	}
 	sort.Float64s(prices)
 	lowest := prices[0]
+	p25 := percentileSorted(prices, 0.25)
 	median := prices[len(prices)/2]
 	if len(prices)%2 == 0 {
 		median = (prices[len(prices)/2-1] + prices[len(prices)/2]) / 2
@@ -1381,10 +1381,11 @@ func applyComparableSummary(product *Product, comps []ComparableListing) {
 
 	product.ComparableCount = len(prices)
 	product.ComparableLowestPrice = lowest
+	product.ComparableP25Price = p25
 	product.ComparableMedianPrice = median
 	product.ComparableDiscountPct = discountPct
-	product.ComparableSummary = fmt.Sprintf("Best Buy comps: $%.2f median / $%.2f low across %d active comparable%s excluding this seller; candidate is %.0f%% below median.",
-		median, lowest, len(prices), pluralSuffix(len(prices)), discountPct)
+	product.ComparableSummary = fmt.Sprintf("Best Buy comps: $%.2f median / $%.2f p25 / $%.2f low across %d active comparable%s excluding this seller; candidate is %.0f%% below median.",
+		median, p25, lowest, len(prices), pluralSuffix(len(prices)), discountPct)
 }
 
 func pluralSuffix(n int) string {

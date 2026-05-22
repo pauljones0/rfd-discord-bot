@@ -25,26 +25,15 @@ func (c *Client) SaveSubscription(ctx context.Context, sub models.Subscription) 
 
 // RemoveSubscription removes a specific channel's subscription.
 func (c *Client) RemoveSubscription(ctx context.Context, guildID, channelID, dealType string) error {
-	rows, err := c.ListDocuments(ctx, subscriptionsCollection)
+	fields := map[string]any{"guildID": guildID, "channelID": channelID}
+	if dealType != "" {
+		fields["dealType"] = dealType
+	}
+	deleted, err := c.DeleteDocumentsWhere(ctx, subscriptionsCollection, fields)
 	if err != nil {
 		return err
 	}
-	sawChannelDoc := false
-	deleted := 0
-	for _, row := range rows {
-		if documentString(row.Data, "guildID") != guildID || documentString(row.Data, "channelID") != channelID {
-			continue
-		}
-		sawChannelDoc = true
-		if dealType != "" && documentString(row.Data, "dealType") != dealType {
-			continue
-		}
-		if err := c.DeleteDocument(ctx, subscriptionsCollection, row.ID); err != nil {
-			return err
-		}
-		deleted++
-	}
-	if deleted == 0 && !sawChannelDoc && dealType == "" {
+	if deleted == 0 && dealType == "" {
 		return c.DeleteDocument(ctx, subscriptionsCollection, fmt.Sprintf("%s_%s", guildID, channelID))
 	}
 	return nil

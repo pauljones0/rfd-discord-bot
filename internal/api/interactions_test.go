@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
@@ -359,5 +360,143 @@ func TestHandleCommand_RejectsLegacyRfdBotSetup(t *testing.T) {
 	}
 	if !strings.Contains(res.Data.Content, "Unknown command") {
 		t.Fatalf("expected unknown command response, got %q", res.Data.Content)
+	}
+}
+
+func TestHandleDealsCommandRejectsDisabledFacebookSetup(t *testing.T) {
+	handler := &Handler{store: &mockStore{}}
+	reqPayload := interactionRequest{
+		GuildID: "guild1",
+		Data: &interactionData{Options: []interactionOption{{
+			Name: "setup-facebook",
+		}}},
+	}
+
+	w := httptest.NewRecorder()
+	handler.handleDealsCommand(w, reqPayload)
+
+	var res interactionResponse
+	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
+		t.Fatalf("failed decoding response: %v", err)
+	}
+	if !strings.Contains(res.Data.Content, "Facebook Marketplace features are currently disabled") {
+		t.Fatalf("expected disabled Facebook response, got %q", res.Data.Content)
+	}
+}
+
+func TestHandleCommandRejectsDisabledHardwareSwap(t *testing.T) {
+	handler := &Handler{store: &mockStore{}}
+	reqPayload := interactionRequest{Data: &interactionData{Name: "hw-help"}}
+
+	w := httptest.NewRecorder()
+	handler.handleCommand(w, reqPayload)
+
+	var res interactionResponse
+	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
+		t.Fatalf("failed decoding response: %v", err)
+	}
+	if !strings.Contains(res.Data.Content, "HardwareSwap features are disabled") {
+		t.Fatalf("expected disabled HardwareSwap response, got %q", res.Data.Content)
+	}
+}
+
+func TestNewHandlerRequiresDiscordPublicKeyByDefault(t *testing.T) {
+	_, err := NewHandler(&config.Config{}, &mockStore{}, nil, nil)
+	if err == nil {
+		t.Fatal("NewHandler() error = nil, want missing public key error")
+	}
+	if !strings.Contains(err.Error(), "DISCORD_PUBLIC_KEY") {
+		t.Fatalf("NewHandler() error = %q, want DISCORD_PUBLIC_KEY context", err)
+	}
+}
+
+func TestNewHandlerAllowsUnsignedWhenExplicitlyEnabled(t *testing.T) {
+	handler, err := NewHandler(&config.Config{AllowUnsignedDiscordInteractions: true}, &mockStore{}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewHandler() returned unexpected error: %v", err)
+	}
+	if handler == nil {
+		t.Fatal("NewHandler() returned nil handler")
+	}
+}
+
+func TestNewHandlerRejectsInvalidPublicKey(t *testing.T) {
+	_, err := NewHandler(&config.Config{DiscordPublicKey: "not-hex"}, &mockStore{}, nil, nil)
+	if err == nil {
+		t.Fatal("NewHandler() error = nil, want invalid public key error")
+	}
+}
+
+func TestNewHandlerAcceptsValidPublicKey(t *testing.T) {
+	key := strings.Repeat("00", 32)
+	handler, err := NewHandler(&config.Config{DiscordPublicKey: key}, &mockStore{}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewHandler() returned unexpected error: %v", err)
+	}
+	if handler == nil || len(handler.pubKey) != 32 {
+		t.Fatalf("NewHandler() pubKey length = %d, want 32", len(handler.pubKey))
+	}
+}
+
+func TestHandleChannelFilterSetup_SavesRFDSubscription(t *testing.T) {
+	store := &mockStore{}
+	handler := &Handler{store: store}
+	reqPayload := interactionRequest{
+		GuildID: "guild1",
+		Data: &interactionData{Resolved: &interactionResolved{Channels: map[string]struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			Type int    `json:"type"`
+		}{"chan1": {ID: "chan1", Name: "deals"}}}},
+	}
+
+	w := httptest.NewRecorder()
+	handler.handleSetupRFD(w, reqPayload, []interactionOption{{Name: "channel", Value: "chan1"}, {Name: "filter", Value: "rfd_warm_hot"}})
+
+	if len(store.subscriptions) != 1 {
+		t.Fatalf("subscriptions = %d, want 1", len(store.subscriptions))
+	}
+	sub := store.subscriptions[0]
+	if sub.SubscriptionType != "rfd" || sub.ChannelName != "deals" || sub.DealType != "rfd_warm_hot" {
+		t.Fatalf("unexpected subscription: %#v", sub)
+	}
+}
+
+func TestHandleChannelFilterSetup_SavesBestBuySubscription(t *testing.T) {
+	store := &mockStore{}
+	handler := &Handler{store: store}
+	reqPayload := interactionRequest{GuildID: "guild1", Data: &interactionData{}}
+
+	w := httptest.NewRecorder()
+	handler.handleSetupBestBuy(w, reqPayload, []interactionOption{{Name: "channel", Value: "chan1"}, {Name: "filter", Value: "bb_compute"}})
+
+	if len(store.subscriptions) != 1 {
+		t.Fatalf("subscriptions = %d, want 1", len(store.subscriptions))
+	}
+	sub := store.subscriptions[0]
+	if sub.SubscriptionType != "bestbuy" || sub.ChannelID != "chan1" || sub.DealType != "bb_compute" {
+		t.Fatalf("unexpected subscription: %#v", sub)
+	}
+}
+
+func TestParseRemoveAction(t *testing.T) {
+	tests := []struct {
+		customID string
+		want     removeAction
+		ok       bool
+	}{
+		{"remove_sub::chan1::rfd_hot", removeAction{Kind: "sub", ChannelID: "chan1", Value: "rfd_hot"}, true},
+		{"remove_fb::chan2::Saskatoon", removeAction{Kind: "facebook", ChannelID: "chan2", Value: "Saskatoon"}, true},
+		{"remove_bb::chan3", removeAction{Kind: "bestbuy", ChannelID: "chan3"}, true},
+		{"remove_me::chan4::SKST", removeAction{Kind: "memoryexpress", ChannelID: "chan4", Value: "SKST"}, true},
+		{"unknown::chan", removeAction{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.customID, func(t *testing.T) {
+			got, ok := parseRemoveAction(tt.customID)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("parseRemoveAction() = %#v, %v; want %#v, %v", got, ok, tt.want, tt.ok)
+			}
+		})
 	}
 }

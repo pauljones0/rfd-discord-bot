@@ -54,6 +54,7 @@ type ThreadContext struct {
 	CommentCount       int    `docstore:"commentCount" validate:"gte=0"`
 	ViewCount          int    `docstore:"viewCount" validate:"gte=0"`
 	ViewCountAvailable bool   `docstore:"viewCountAvailable,omitempty"`
+	NotFound           bool   `docstore:"notFound,omitempty"`
 }
 
 // Stats returns the engagement metrics from the primary (most popular) thread.

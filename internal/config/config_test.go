@@ -58,6 +58,21 @@ func TestLoad(t *testing.T) {
 	if cfg.BestBuyComputeSoldCacheTTL != 24*time.Hour {
 		t.Errorf("Expected default Best Buy compute sold cache TTL 24h, got %s", cfg.BestBuyComputeSoldCacheTTL)
 	}
+	if cfg.BestBuyComputeSoldQueryDelay != 3*time.Second {
+		t.Errorf("Expected default Best Buy compute sold query delay 3s, got %s", cfg.BestBuyComputeSoldQueryDelay)
+	}
+	if !cfg.BestBuySoldCompsEnabled {
+		t.Errorf("Expected Best Buy seller sold comps to be enabled by default")
+	}
+	if !reflect.DeepEqual(cfg.BestBuySoldCompBackends, []string{"http", "external-stealth", "camoufox", "ai-crawler"}) {
+		t.Errorf("Expected default Best Buy sold comp backends, got %v", cfg.BestBuySoldCompBackends)
+	}
+	if cfg.BestBuySoldCompCacheTTL != 24*time.Hour || cfg.BestBuySoldCompQueryDelay != 3*time.Second || cfg.BestBuySoldCompMaxPerRun != 10 {
+		t.Errorf("Expected default Best Buy sold comp TTL/delay/cap 24h/3s/10, got %s/%s/%d", cfg.BestBuySoldCompCacheTTL, cfg.BestBuySoldCompQueryDelay, cfg.BestBuySoldCompMaxPerRun)
+	}
+	if cfg.BestBuySoldCompPaidEnabled || cfg.BestBuySoldCompPaidMaxPerRun != 0 || cfg.BestBuySoldCompPaidMaxPerDay != 0 {
+		t.Errorf("Expected Best Buy sold comp paid browser disabled, got enabled=%v caps=%d/%d", cfg.BestBuySoldCompPaidEnabled, cfg.BestBuySoldCompPaidMaxPerRun, cfg.BestBuySoldCompPaidMaxPerDay)
+	}
 	if cfg.BestBuyComputeSoldPaidEnabled {
 		t.Errorf("Expected Best Buy compute sold paid browser to be disabled by default")
 	}
@@ -169,6 +184,7 @@ func TestLoad_BackendFallbackConfig(t *testing.T) {
 	t.Setenv("MEMEXPRESS_BACKENDS", "http,chromedp-persistent, paid-trial")
 	t.Setenv("BESTBUY_BACKENDS", "http,playwright")
 	t.Setenv("BESTBUY_COMPUTE_SOLD_BACKENDS", "http, camoufox, paid-trial")
+	t.Setenv("BESTBUY_SOLD_COMP_BACKENDS", "http, external-stealth")
 
 	cfg, err := Load()
 	if err != nil {
@@ -187,6 +203,9 @@ func TestLoad_BackendFallbackConfig(t *testing.T) {
 	if !reflect.DeepEqual(cfg.BestBuyComputeSoldBackends, []string{"http", "camoufox", "paid-trial"}) {
 		t.Fatalf("BestBuyComputeSoldBackends = %v", cfg.BestBuyComputeSoldBackends)
 	}
+	if !reflect.DeepEqual(cfg.BestBuySoldCompBackends, []string{"http", "external-stealth"}) {
+		t.Fatalf("BestBuySoldCompBackends = %v", cfg.BestBuySoldCompBackends)
+	}
 }
 
 func TestLoad_CustomSchedulerConfig(t *testing.T) {
@@ -201,9 +220,17 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	t.Setenv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", "true")
 	t.Setenv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", "false")
 	t.Setenv("BESTBUY_COMPUTE_SOLD_CACHE_TTL", "12h")
+	t.Setenv("BESTBUY_COMPUTE_SOLD_QUERY_DELAY", "4s")
 	t.Setenv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_ENABLED", "true")
 	t.Setenv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_RUN", "1")
 	t.Setenv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_DAY", "2")
+	t.Setenv("BESTBUY_SOLD_COMPS_ENABLED", "true")
+	t.Setenv("BESTBUY_SOLD_COMP_CACHE_TTL", "6h")
+	t.Setenv("BESTBUY_SOLD_COMP_QUERY_DELAY", "5s")
+	t.Setenv("BESTBUY_SOLD_COMP_MAX_PER_RUN", "3")
+	t.Setenv("BESTBUY_SOLD_COMP_PAID_BROWSER_ENABLED", "true")
+	t.Setenv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_RUN", "1")
+	t.Setenv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_DAY", "2")
 
 	cfg, err := Load()
 	if err != nil {
@@ -239,6 +266,18 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	}
 	if cfg.BestBuyComputeSoldCacheTTL != 12*time.Hour {
 		t.Fatalf("BestBuyComputeSoldCacheTTL = %s, want 12h", cfg.BestBuyComputeSoldCacheTTL)
+	}
+	if cfg.BestBuyComputeSoldQueryDelay != 4*time.Second {
+		t.Fatalf("BestBuyComputeSoldQueryDelay = %s, want 4s", cfg.BestBuyComputeSoldQueryDelay)
+	}
+	if !cfg.BestBuySoldCompsEnabled {
+		t.Fatal("BestBuySoldCompsEnabled = false, want true")
+	}
+	if cfg.BestBuySoldCompCacheTTL != 6*time.Hour || cfg.BestBuySoldCompQueryDelay != 5*time.Second || cfg.BestBuySoldCompMaxPerRun != 3 {
+		t.Fatalf("BestBuySoldComp TTL/delay/cap = %s/%s/%d, want 6h/5s/3", cfg.BestBuySoldCompCacheTTL, cfg.BestBuySoldCompQueryDelay, cfg.BestBuySoldCompMaxPerRun)
+	}
+	if !cfg.BestBuySoldCompPaidEnabled || cfg.BestBuySoldCompPaidMaxPerRun != 1 || cfg.BestBuySoldCompPaidMaxPerDay != 2 {
+		t.Fatalf("BestBuySoldCompPaid = %v caps=%d/%d, want true 1/2", cfg.BestBuySoldCompPaidEnabled, cfg.BestBuySoldCompPaidMaxPerRun, cfg.BestBuySoldCompPaidMaxPerDay)
 	}
 	if !cfg.BestBuyComputeSoldPaidEnabled {
 		t.Fatal("BestBuyComputeSoldPaidEnabled = false, want true")
@@ -288,5 +327,21 @@ func TestLoadLooseDotEnv_IgnoresMultilineJSONBlock(t *testing.T) {
 	}
 	if got := os.Getenv("MULTILINE_SECRET"); got != "" {
 		t.Fatalf("Expected multiline secret block to be skipped, got %q", got)
+	}
+}
+
+func TestLoad_AdminAndUnsignedInteractionConfig(t *testing.T) {
+	t.Setenv("RFD_ADMIN_TOKEN", "test-admin-token")
+	t.Setenv("ALLOW_UNSIGNED_DISCORD_INTERACTIONS", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.RFDAdminToken != "test-admin-token" {
+		t.Fatalf("RFDAdminToken = %q, want test-admin-token", cfg.RFDAdminToken)
+	}
+	if !cfg.AllowUnsignedDiscordInteractions {
+		t.Fatal("AllowUnsignedDiscordInteractions = false, want true")
 	}
 }

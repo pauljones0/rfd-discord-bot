@@ -885,10 +885,23 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 	}
 	if product.ComparableCount > 0 && product.ComparableMedianPrice > 0 {
 		compValue := fmt.Sprintf("$%.2f median", product.ComparableMedianPrice)
+		if product.ComparableP25Price > 0 && product.ComparableP25Price < product.ComparableMedianPrice {
+			compValue += fmt.Sprintf(" • $%.2f p25", product.ComparableP25Price)
+		}
+		if product.ComparableLowestPrice > 0 && product.ComparableLowestPrice < product.ComparableMedianPrice {
+			compValue += fmt.Sprintf(" • $%.2f low", product.ComparableLowestPrice)
+		}
 		if product.ComparableDiscountPct > 0 {
 			compValue += fmt.Sprintf(" • %.0f%% below comps", product.ComparableDiscountPct)
 		}
 		fields = append(fields, discordEmbedField{Name: "Best Buy Comps", Value: compValue, Inline: true})
+	}
+	if product.SoldCompCount > 0 && product.SoldCompMedianPrice > 0 {
+		soldValue := fmt.Sprintf("$%.2f sold median", product.SoldCompMedianPrice)
+		if product.SoldCompGapPct > 0 {
+			soldValue += fmt.Sprintf(" • %.0f%% below sold", product.SoldCompGapPct)
+		}
+		fields = append(fields, discordEmbedField{Name: "eBay Sold Comps", Value: soldValue, Inline: true})
 	}
 
 	var description string

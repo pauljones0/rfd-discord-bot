@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
@@ -66,31 +65,9 @@ func (c *Client) RefreshMemExpressProductLastSeen(ctx context.Context, product m
 
 // PruneMemExpressProducts deletes clearance products older than maxAgeDays or exceeding maxRecords.
 func (c *Client) PruneMemExpressProducts(ctx context.Context, maxAgeDays, maxRecords int) error {
-	rows, err := c.ListDocuments(ctx, memexpressCollection)
-	if err != nil {
-		return err
-	}
 	cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
-	for _, row := range rows {
-		if !documentTime(row.Data, "lastSeen").IsZero() && documentTime(row.Data, "lastSeen").Before(cutoff) {
-			if err := c.DeleteDocument(ctx, memexpressCollection, row.ID); err != nil {
-				slog.Warn("Failed to delete old memexpress product", "processor", "memoryexpress", "id", row.ID, "error", err)
-			}
-		}
-	}
-	rows, err = c.ListDocuments(ctx, memexpressCollection)
-	if err != nil {
-		return err
-	}
-	if len(rows) > maxRecords {
-		sortDocumentsByTime(rows, "lastSeen", true)
-		for _, row := range rows[:len(rows)-maxRecords] {
-			if err := c.DeleteDocument(ctx, memexpressCollection, row.ID); err != nil {
-				slog.Warn("Failed to delete excess memexpress record", "processor", "memoryexpress", "id", row.ID, "error", err)
-			}
-		}
-	}
-	return nil
+	_, err := c.PruneDocumentsByTime(ctx, memexpressCollection, "lastSeen", cutoff, maxRecords)
+	return err
 }
 
 // memExpressSubscriptionDocID generates a unique document ID for a Memory Express subscription.

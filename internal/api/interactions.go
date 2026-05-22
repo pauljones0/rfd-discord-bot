@@ -28,6 +28,175 @@ func writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
+func optionString(options []interactionOption, name string) (string, bool) {
+	for _, opt := range options {
+		if opt.Name != name {
+			continue
+		}
+		value, ok := opt.Value.(string)
+		return value, ok
+	}
+	return "", false
+}
+
+func optionFloat(options []interactionOption, name string) (float64, bool) {
+	for _, opt := range options {
+		if opt.Name != name {
+			continue
+		}
+		value, ok := opt.Value.(float64)
+		return value, ok
+	}
+	return 0, false
+}
+
+func selectedChannel(req interactionRequest, options []interactionOption) (string, string) {
+	channelID, _ := optionString(options, "channel")
+	if channelID == "" || req.Data == nil || req.Data.Resolved == nil || req.Data.Resolved.Channels == nil {
+		return channelID, ""
+	}
+	if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
+		return channelID, ch.Name
+	}
+	return channelID, ""
+}
+
+func requestUsername(req interactionRequest) string {
+	if req.Member == nil || req.Member.User.Username == "" {
+		return "Unknown"
+	}
+	return req.Member.User.Username
+}
+
+func storeContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 15*time.Second)
+}
+
+type channelFilterSetupSpec struct {
+	SubscriptionType string
+	Validate         func(string) bool
+	InvalidMessage   string
+	Save             func(Store, context.Context, models.Subscription) error
+	SuccessMessage   func(channelID, filter string) string
+}
+
+var channelFilterSetupSpecs = map[string]channelFilterSetupSpec{
+	"rfd": {
+		SubscriptionType: "rfd",
+		Validate:         dealtypes.IsRFD,
+		InvalidMessage:   "Invalid RFD filter type.",
+		Save: func(store Store, ctx context.Context, sub models.Subscription) error {
+			return store.SaveSubscription(ctx, sub)
+		},
+		SuccessMessage: func(channelID, filter string) string {
+			return fmt.Sprintf("✅ RFD deal notifications have been set up in <#%s> with filter **%s**!", channelID, dealTypeLabel(filter))
+		},
+	},
+	"ebay": {
+		SubscriptionType: "ebay",
+		Validate:         dealtypes.IsEbay,
+		InvalidMessage:   "Invalid eBay filter type.",
+		Save: func(store Store, ctx context.Context, sub models.Subscription) error {
+			return store.SaveSubscription(ctx, sub)
+		},
+		SuccessMessage: func(channelID, filter string) string {
+			return fmt.Sprintf("✅ EBAY deal notifications have been set up in <#%s> with filter **%s**!", channelID, dealTypeLabel(filter))
+		},
+	},
+	"bestbuy": {
+		SubscriptionType: "bestbuy",
+		Validate:         dealtypes.IsBestBuy,
+		InvalidMessage:   "Invalid Best Buy filter type.",
+		Save: func(store Store, ctx context.Context, sub models.Subscription) error {
+			return store.SaveBestBuySubscription(ctx, sub)
+		},
+		SuccessMessage: func(channelID, filter string) string {
+			return fmt.Sprintf("Best Buy alerts will be posted in <#%s> with filter **%s**.", channelID, dealTypeLabel(filter))
+		},
+	},
+}
+
+func (h *Handler) handleChannelFilterSetup(w http.ResponseWriter, req interactionRequest, options []interactionOption, kind string) {
+	spec, ok := channelFilterSetupSpecs[kind]
+	if !ok {
+		h.respondPrivateMessage(w, "Unknown subscription type.")
+		return
+	}
+	channelID, channelName := selectedChannel(req, options)
+	filter, _ := optionString(options, "filter")
+	if channelID == "" || filter == "" {
+		h.respondPrivateMessage(w, "Please select a channel and filter type.")
+		return
+	}
+	if !spec.Validate(filter) {
+		h.respondPrivateMessage(w, spec.InvalidMessage)
+		return
+	}
+
+	sub := models.Subscription{
+		GuildID:          req.GuildID,
+		ChannelID:        channelID,
+		ChannelName:      channelName,
+		DealType:         filter,
+		AddedBy:          requestUsername(req),
+		AddedAt:          time.Now(),
+		SubscriptionType: spec.SubscriptionType,
+	}
+
+	ctx, cancel := storeContext()
+	defer cancel()
+	if err := spec.Save(h.store, ctx, sub); err != nil {
+		slog.Error("Failed to save subscription", "guild", req.GuildID, "type", spec.SubscriptionType, "error", err)
+		h.respondPrivateMessage(w, "Failed to save subscription due to an internal error.")
+		return
+	}
+	h.respondPrivateMessage(w, spec.SuccessMessage(channelID, filter))
+}
+
+type removeAction struct {
+	Kind      string
+	ChannelID string
+	Value     string
+}
+
+func parseRemoveAction(customID string) (removeAction, bool) {
+	for _, candidate := range []struct {
+		prefix string
+		kind   string
+	}{
+		{prefix: "remove_sub::", kind: "sub"},
+		{prefix: "remove_fb::", kind: "facebook"},
+		{prefix: "remove_bb::", kind: "bestbuy"},
+		{prefix: "remove_me::", kind: "memoryexpress"},
+	} {
+		if !strings.HasPrefix(customID, candidate.prefix) {
+			continue
+		}
+		trimmed := strings.TrimPrefix(customID, candidate.prefix)
+		parts := strings.SplitN(trimmed, "::", 2)
+		if parts[0] == "" {
+			return removeAction{}, false
+		}
+		value := ""
+		if len(parts) > 1 {
+			value = parts[1]
+		}
+		return removeAction{Kind: candidate.kind, ChannelID: parts[0], Value: value}, true
+	}
+	return removeAction{}, false
+}
+
+func writeUpdateMessage(w http.ResponseWriter, content string, components []discordComponent) {
+	res := interactionResponse{
+		Type: InteractionResponseTypeUpdateMessage,
+		Data: &interactionResponseData{
+			Content:    content,
+			Components: &components,
+		},
+	}
+	writeJSON(w, res)
+}
+
 // Interaction constants
 const (
 	InteractionResponseTypePong                     = 1
@@ -171,6 +340,9 @@ type Handler struct {
 // NewHandler creates a new API interactions handler.
 func NewHandler(cfg *config.Config, store Store, hwStore *hardwareswap.Store, aiClient *ai.Client) (*Handler, error) {
 	if cfg.DiscordPublicKey == "" {
+		if !cfg.AllowUnsignedDiscordInteractions {
+			return nil, fmt.Errorf("DISCORD_PUBLIC_KEY is required unless ALLOW_UNSIGNED_DISCORD_INTERACTIONS=true")
+		}
 		return &Handler{
 			store:               store,
 			hwStore:             hwStore,
@@ -179,7 +351,7 @@ func NewHandler(cfg *config.Config, store Store, hwStore *hardwareswap.Store, ai
 			discordAppID:        cfg.DiscordAppID,
 			facebookEnabled:     cfg.FacebookEnabled,
 			hardwareSwapEnabled: cfg.HardwareSwapEnabled,
-		}, nil // Run without verifier if missing key, useful for testing or disabled state
+		}, nil
 	}
 
 	keyBytes, err := hex.DecodeString(cfg.DiscordPublicKey)
@@ -357,132 +529,22 @@ func (h *Handler) handleDealsCommand(w http.ResponseWriter, req interactionReque
 
 // handleSetupRFD handles /deals setup-rfd channel:<#channel> filter:<type>
 func (h *Handler) handleSetupRFD(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
-	var channelID, channelName, filter string
-	for _, opt := range options {
-		switch opt.Name {
-		case "channel":
-			if val, ok := opt.Value.(string); ok {
-				channelID = val
-				if req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
-					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
-						channelName = ch.Name
-					}
-				}
-			}
-		case "filter":
-			if val, ok := opt.Value.(string); ok {
-				filter = val
-			}
-		}
-	}
-
-	if channelID == "" || filter == "" {
-		h.respondPrivateMessage(w, "Please select a channel and filter type.")
-		return
-	}
-
-	if !dealtypes.IsRFD(filter) {
-		h.respondPrivateMessage(w, "Invalid RFD filter type.")
-		return
-	}
-
-	h.saveRFDEbaySubscription(w, req, channelID, channelName, filter, "rfd")
+	h.handleChannelFilterSetup(w, req, options, "rfd")
 }
 
 // handleSetupEbay handles /deals setup-ebay channel:<#channel> filter:<type>
 func (h *Handler) handleSetupEbay(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
-	var channelID, channelName, filter string
-	for _, opt := range options {
-		switch opt.Name {
-		case "channel":
-			if val, ok := opt.Value.(string); ok {
-				channelID = val
-				if req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
-					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
-						channelName = ch.Name
-					}
-				}
-			}
-		case "filter":
-			if val, ok := opt.Value.(string); ok {
-				filter = val
-			}
-		}
-	}
-
-	if channelID == "" || filter == "" {
-		h.respondPrivateMessage(w, "Please select a channel and filter type.")
-		return
-	}
-
-	if !dealtypes.IsEbay(filter) {
-		h.respondPrivateMessage(w, "Invalid eBay filter type.")
-		return
-	}
-
-	h.saveRFDEbaySubscription(w, req, channelID, channelName, filter, "ebay")
-}
-
-// saveRFDEbaySubscription saves an RFD or eBay subscription (shared logic).
-func (h *Handler) saveRFDEbaySubscription(w http.ResponseWriter, req interactionRequest, channelID, channelName, dealType, subscriptionType string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	username := "Unknown"
-	if req.Member != nil {
-		username = req.Member.User.Username
-	}
-
-	sub := models.Subscription{
-		GuildID:          req.GuildID,
-		ChannelID:        channelID,
-		ChannelName:      channelName,
-		DealType:         dealType,
-		AddedBy:          username,
-		AddedAt:          time.Now(),
-		SubscriptionType: subscriptionType,
-	}
-
-	if err := h.store.SaveSubscription(ctx, sub); err != nil {
-		slog.Error("Failed to save subscription", "guild", req.GuildID, "error", err)
-		h.respondPrivateMessage(w, "Failed to save subscription due to an internal error.")
-		return
-	}
-
-	label := strings.ToUpper(subscriptionType)
-	h.respondPrivateMessage(w, fmt.Sprintf("✅ %s deal notifications have been set up in <#%s> with filter **%s**!", label, channelID, dealTypeLabel(dealType)))
+	h.handleChannelFilterSetup(w, req, options, "ebay")
 }
 
 // handleSetupFacebook handles /deals setup-facebook channel:<#channel> city:<city> [radius:<km>] [brands:<brands>]
 func (h *Handler) handleSetupFacebook(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
-	var channelID, channelName, city, brands string
+	channelID, channelName := selectedChannel(req, options)
+	city, _ := optionString(options, "city")
+	brands, _ := optionString(options, "brands")
 	radiusKm := 500
-
-	for _, opt := range options {
-		switch opt.Name {
-		case "channel":
-			if val, ok := opt.Value.(string); ok {
-				channelID = val
-				if req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
-					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
-						channelName = ch.Name
-					}
-				}
-			}
-		case "city":
-			if val, ok := opt.Value.(string); ok {
-				city = val
-			}
-		case "radius":
-			// JSON numbers come as float64
-			if val, ok := opt.Value.(float64); ok {
-				radiusKm = int(val)
-			}
-		case "brands":
-			if val, ok := opt.Value.(string); ok {
-				brands = val
-			}
-		}
+	if radius, ok := optionFloat(options, "radius"); ok {
+		radiusKm = int(radius)
 	}
 
 	if channelID == "" || city == "" {
@@ -510,17 +572,12 @@ func (h *Handler) handleSetupFacebook(w http.ResponseWriter, req interactionRequ
 		}
 	}
 
-	username := "Unknown"
-	if req.Member != nil {
-		username = req.Member.User.Username
-	}
-
 	sub := models.Subscription{
 		GuildID:          req.GuildID,
 		ChannelID:        channelID,
 		ChannelName:      channelName,
 		DealType:         "facebook_vehicles",
-		AddedBy:          username,
+		AddedBy:          requestUsername(req),
 		AddedAt:          time.Now(),
 		SubscriptionType: "facebook",
 		City:             city,
@@ -528,7 +585,7 @@ func (h *Handler) handleSetupFacebook(w http.ResponseWriter, req interactionRequ
 		FilterBrands:     filterBrands,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := storeContext()
 	defer cancel()
 
 	if err := h.store.SaveFacebookSubscription(ctx, sub); err != nil {
@@ -546,28 +603,9 @@ func (h *Handler) handleSetupFacebook(w http.ResponseWriter, req interactionRequ
 
 // handleSetupMemoryExpress handles /deals setup-memoryexpress channel:<#channel> store:<store> filter:<type>
 func (h *Handler) handleSetupMemoryExpress(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
-	var channelID, channelName, storeCode, filter string
-	for _, opt := range options {
-		switch opt.Name {
-		case "channel":
-			if val, ok := opt.Value.(string); ok {
-				channelID = val
-				if req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
-					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
-						channelName = ch.Name
-					}
-				}
-			}
-		case "store":
-			if val, ok := opt.Value.(string); ok {
-				storeCode = val
-			}
-		case "filter":
-			if val, ok := opt.Value.(string); ok {
-				filter = val
-			}
-		}
-	}
+	channelID, channelName := selectedChannel(req, options)
+	storeCode, _ := optionString(options, "store")
+	filter, _ := optionString(options, "filter")
 
 	if channelID == "" || storeCode == "" || filter == "" {
 		h.respondPrivateMessage(w, "Please select a channel, store, and filter type.")
@@ -584,23 +622,18 @@ func (h *Handler) handleSetupMemoryExpress(w http.ResponseWriter, req interactio
 		return
 	}
 
-	username := "Unknown"
-	if req.Member != nil {
-		username = req.Member.User.Username
-	}
-
 	sub := models.Subscription{
 		GuildID:          req.GuildID,
 		ChannelID:        channelID,
 		ChannelName:      channelName,
 		DealType:         filter,
-		AddedBy:          username,
+		AddedBy:          requestUsername(req),
 		AddedAt:          time.Now(),
 		SubscriptionType: "memoryexpress",
 		StoreCode:        storeCode,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := storeContext()
 	defer cancel()
 
 	if err := h.store.SaveMemExpressSubscription(ctx, sub); err != nil {
@@ -615,73 +648,162 @@ func (h *Handler) handleSetupMemoryExpress(w http.ResponseWriter, req interactio
 
 // handleSetupBestBuy handles /deals setup-bestbuy channel:<#channel> filter:<type>
 func (h *Handler) handleSetupBestBuy(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
-	var channelID, channelName, filter string
-	for _, opt := range options {
-		switch opt.Name {
-		case "channel":
-			if val, ok := opt.Value.(string); ok {
-				channelID = val
-				if req.Data.Resolved != nil && req.Data.Resolved.Channels != nil {
-					if ch, exists := req.Data.Resolved.Channels[channelID]; exists {
-						channelName = ch.Name
-					}
-				}
-			}
-		case "filter":
-			if val, ok := opt.Value.(string); ok {
-				filter = val
-			}
+	h.handleChannelFilterSetup(w, req, options, "bestbuy")
+}
+
+type subscriptionRemoveSpec struct {
+	NoActiveMessage string
+	Prompt          string
+	List            func(*Handler, context.Context, string) ([]models.Subscription, error)
+	BuildButtons    func([]models.Subscription) []discordComponent
+}
+
+func (h *Handler) subscriptionRemoveSpec(removeType string) (subscriptionRemoveSpec, bool) {
+	specs := map[string]subscriptionRemoveSpec{
+		"rfd": {
+			NoActiveMessage: "No active **RFD** subscriptions found for this server.",
+			Prompt:          "Here are the active **RFD** subscriptions. Click to remove:",
+			List: func(h *Handler, ctx context.Context, guildID string) ([]models.Subscription, error) {
+				return h.listDealSubscriptions(ctx, guildID, func(sub models.Subscription) bool { return sub.IsRFD() })
+			},
+			BuildButtons: buildRemoveButtons,
+		},
+		"ebay": {
+			NoActiveMessage: "No active **EBAY** subscriptions found for this server.",
+			Prompt:          "Here are the active **EBAY** subscriptions. Click to remove:",
+			List: func(h *Handler, ctx context.Context, guildID string) ([]models.Subscription, error) {
+				return h.listDealSubscriptions(ctx, guildID, func(sub models.Subscription) bool { return sub.IsEbay() })
+			},
+			BuildButtons: buildRemoveButtons,
+		},
+		"facebook": {
+			NoActiveMessage: "No active **Facebook** subscriptions found for this server.",
+			Prompt:          "Here are the active **Facebook** subscriptions. Click to remove:",
+			List: func(h *Handler, ctx context.Context, guildID string) ([]models.Subscription, error) {
+				return h.store.GetFacebookSubscriptionsByGuild(ctx, guildID)
+			},
+			BuildButtons: buildFacebookRemoveButtons,
+		},
+		"memoryexpress": {
+			NoActiveMessage: "No active **Memory Express** subscriptions found for this server.",
+			Prompt:          "Here are the active **Memory Express** subscriptions. Click to remove:",
+			List: func(h *Handler, ctx context.Context, guildID string) ([]models.Subscription, error) {
+				return h.store.GetMemExpressSubscriptionsByGuild(ctx, guildID)
+			},
+			BuildButtons: buildMemExpressRemoveButtons,
+		},
+		"bestbuy": {
+			NoActiveMessage: "No active **Best Buy** subscriptions found for this server.",
+			Prompt:          "Here are the active **Best Buy** subscriptions. Click to remove:",
+			List: func(h *Handler, ctx context.Context, guildID string) ([]models.Subscription, error) {
+				return h.store.GetBestBuySubscriptionsByGuild(ctx, guildID)
+			},
+			BuildButtons: buildBestBuyRemoveButtons,
+		},
+	}
+	spec, ok := specs[removeType]
+	return spec, ok
+}
+
+func (h *Handler) listDealSubscriptions(ctx context.Context, guildID string, keep func(models.Subscription) bool) ([]models.Subscription, error) {
+	subs, err := h.store.GetSubscriptionsByGuild(ctx, guildID)
+	if err != nil {
+		return nil, err
+	}
+	matching := make([]models.Subscription, 0, len(subs))
+	for _, sub := range subs {
+		if keep(sub) {
+			matching = append(matching, sub)
 		}
 	}
+	return matching, nil
+}
 
-	if channelID == "" || filter == "" {
-		h.respondPrivateMessage(w, "Please select a channel and filter type.")
+func respondRemoveChoices(w http.ResponseWriter, prompt string, components []discordComponent) {
+	res := interactionResponse{
+		Type: InteractionResponseTypeChannelMessageWithSource,
+		Data: &interactionResponseData{
+			Content:    prompt,
+			Flags:      MessageFlagEphemeral,
+			Components: &components,
+		},
+	}
+	writeJSON(w, res)
+}
+
+func splitDealSubscriptions(subs []models.Subscription) ([]models.Subscription, []models.Subscription) {
+	var rfdSubs, ebaySubs []models.Subscription
+	for _, sub := range subs {
+		switch {
+		case sub.IsEbay():
+			ebaySubs = append(ebaySubs, sub)
+		case sub.IsRFD():
+			rfdSubs = append(rfdSubs, sub)
+		}
+	}
+	return rfdSubs, ebaySubs
+}
+
+func appendDealListSection(msg *strings.Builder, title string, subs []models.Subscription) {
+	if len(subs) == 0 {
 		return
 	}
+	msg.WriteString("**" + title + ":**\n")
+	for _, sub := range subs {
+		msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
+	}
+	msg.WriteString("\n")
+}
 
-	if !dealtypes.IsBestBuy(filter) {
-		h.respondPrivateMessage(w, "Invalid Best Buy filter type.")
+func appendFacebookListSection(msg *strings.Builder, subs []models.Subscription) {
+	if len(subs) == 0 {
 		return
 	}
-
-	username := "Unknown"
-	if req.Member != nil {
-		username = req.Member.User.Username
+	msg.WriteString("**Facebook Marketplace:**\n")
+	for _, sub := range subs {
+		brandInfo := ""
+		if len(sub.FilterBrands) > 0 {
+			brandInfo = fmt.Sprintf(" | brands: %s", strings.Join(sub.FilterBrands, ", "))
+		}
+		msg.WriteString(fmt.Sprintf("  • <#%s> — %s (radius: %d km%s)\n", sub.ChannelID, sub.City, sub.RadiusKm, brandInfo))
 	}
+	msg.WriteString("\n")
+}
 
-	sub := models.Subscription{
-		GuildID:          req.GuildID,
-		ChannelID:        channelID,
-		ChannelName:      channelName,
-		DealType:         filter,
-		AddedBy:          username,
-		AddedAt:          time.Now(),
-		SubscriptionType: "bestbuy",
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	if err := h.store.SaveBestBuySubscription(ctx, sub); err != nil {
-		slog.Error("Failed to save Best Buy subscription", "guild", req.GuildID, "channel", channelID, "error", err)
-		h.respondPrivateMessage(w, "Failed to save subscription due to an internal error.")
+func appendMemExpressListSection(msg *strings.Builder, subs []models.Subscription) {
+	if len(subs) == 0 {
 		return
 	}
+	msg.WriteString("**Memory Express:**\n")
+	for _, sub := range subs {
+		storeName := memoryexpress.StoreName(sub.StoreCode)
+		msg.WriteString(fmt.Sprintf("  • <#%s> — %s (%s)\n", sub.ChannelID, storeName, dealTypeLabel(sub.DealType)))
+	}
+	msg.WriteString("\n")
+}
 
-	h.respondPrivateMessage(w, fmt.Sprintf("Best Buy alerts will be posted in <#%s> with filter **%s**.", channelID, dealTypeLabel(filter)))
+func appendBestBuyListSection(msg *strings.Builder, subs []models.Subscription) {
+	if len(subs) == 0 {
+		return
+	}
+	msg.WriteString("**Best Buy:**\n")
+	for _, sub := range subs {
+		msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
+	}
+}
+
+func hasAnySubscription(groups ...[]models.Subscription) bool {
+	for _, group := range groups {
+		if len(group) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // handleDealsRemove handles /deals remove type:<rfd|ebay|facebook>
 func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
-	var removeType string
-	for _, opt := range options {
-		if opt.Name == "type" {
-			if val, ok := opt.Value.(string); ok {
-				removeType = val
-			}
-		}
-	}
-
+	removeType, _ := optionString(options, "type")
 	if removeType == "" {
 		h.respondPrivateMessage(w, "Please specify the subscription type to remove.")
 		return
@@ -691,128 +813,32 @@ func (h *Handler) handleDealsRemove(w http.ResponseWriter, req interactionReques
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	spec, ok := h.subscriptionRemoveSpec(removeType)
+	if !ok {
+		h.respondPrivateMessage(w, "Invalid subscription type.")
+		return
+	}
+
+	ctx, cancel := storeContext()
 	defer cancel()
 
-	switch removeType {
-	case "rfd", "ebay":
-		// Get all subscriptions and filter by type
-		subs, err := h.store.GetSubscriptionsByGuild(ctx, req.GuildID)
-		if err != nil {
-			slog.Error("Failed to get subscriptions", "guild", req.GuildID, "error", err)
-			h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
-			return
-		}
-
-		var matching []models.Subscription
-		for _, sub := range subs {
-			if removeType == "rfd" && sub.IsRFD() {
-				matching = append(matching, sub)
-			} else if removeType == "ebay" && sub.IsEbay() {
-				matching = append(matching, sub)
-			}
-		}
-
-		if len(matching) == 0 {
-			h.respondPrivateMessage(w, fmt.Sprintf("No active **%s** subscriptions found for this server.", strings.ToUpper(removeType)))
-			return
-		}
-
-		components := buildRemoveButtons(matching)
-		res := interactionResponse{
-			Type: InteractionResponseTypeChannelMessageWithSource,
-			Data: &interactionResponseData{
-				Content:    fmt.Sprintf("Here are the active **%s** subscriptions. Click to remove:", strings.ToUpper(removeType)),
-				Flags:      MessageFlagEphemeral,
-				Components: &components,
-			},
-		}
-		writeJSON(w, res)
-
-	case "facebook":
-		if !h.facebookEnabled {
-			h.respondPrivateMessage(w, "Facebook Marketplace features are currently disabled.")
-			return
-		}
-		fbSubs, err := h.store.GetFacebookSubscriptionsByGuild(ctx, req.GuildID)
-		if err != nil {
-			slog.Error("Failed to get Facebook subscriptions", "guild", req.GuildID, "error", err)
-			h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
-			return
-		}
-
-		if len(fbSubs) == 0 {
-			h.respondPrivateMessage(w, "No active **Facebook** subscriptions found for this server.")
-			return
-		}
-
-		components := buildFacebookRemoveButtons(fbSubs)
-		res := interactionResponse{
-			Type: InteractionResponseTypeChannelMessageWithSource,
-			Data: &interactionResponseData{
-				Content:    "Here are the active **Facebook** subscriptions. Click to remove:",
-				Flags:      MessageFlagEphemeral,
-				Components: &components,
-			},
-		}
-		writeJSON(w, res)
-
-	case "memoryexpress":
-		meSubs, err := h.store.GetMemExpressSubscriptionsByGuild(ctx, req.GuildID)
-		if err != nil {
-			slog.Error("Failed to get Memory Express subscriptions", "guild", req.GuildID, "error", err)
-			h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
-			return
-		}
-
-		if len(meSubs) == 0 {
-			h.respondPrivateMessage(w, "No active **Memory Express** subscriptions found for this server.")
-			return
-		}
-
-		components := buildMemExpressRemoveButtons(meSubs)
-		res := interactionResponse{
-			Type: InteractionResponseTypeChannelMessageWithSource,
-			Data: &interactionResponseData{
-				Content:    "Here are the active **Memory Express** subscriptions. Click to remove:",
-				Flags:      MessageFlagEphemeral,
-				Components: &components,
-			},
-		}
-		writeJSON(w, res)
-
-	case "bestbuy":
-		bbSubs, err := h.store.GetBestBuySubscriptionsByGuild(ctx, req.GuildID)
-		if err != nil {
-			slog.Error("Failed to get Best Buy subscriptions", "guild", req.GuildID, "error", err)
-			h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
-			return
-		}
-
-		if len(bbSubs) == 0 {
-			h.respondPrivateMessage(w, "No active **Best Buy** subscriptions found for this server.")
-			return
-		}
-
-		components := buildBestBuyRemoveButtons(bbSubs)
-		res := interactionResponse{
-			Type: InteractionResponseTypeChannelMessageWithSource,
-			Data: &interactionResponseData{
-				Content:    "Here are the active **Best Buy** subscriptions. Click to remove:",
-				Flags:      MessageFlagEphemeral,
-				Components: &components,
-			},
-		}
-		writeJSON(w, res)
-
-	default:
-		h.respondPrivateMessage(w, "Invalid subscription type.")
+	subs, err := spec.List(h, ctx, req.GuildID)
+	if err != nil {
+		slog.Error("Failed to get subscriptions", "guild", req.GuildID, "type", removeType, "error", err)
+		h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
+		return
 	}
+	if len(subs) == 0 {
+		h.respondPrivateMessage(w, spec.NoActiveMessage)
+		return
+	}
+
+	respondRemoveChoices(w, spec.Prompt, spec.BuildButtons(subs))
 }
 
 // handleDealsList handles /deals list
 func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := storeContext()
 	defer cancel()
 
 	subs, err := h.store.GetSubscriptionsByGuild(ctx, req.GuildID)
@@ -821,164 +847,124 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 		h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
 		return
 	}
+	rfdSubs, ebaySubs := splitDealSubscriptions(subs)
 
-	var fbSubs []models.Subscription
-	if h.facebookEnabled {
-		var err error
-		fbSubs, err = h.store.GetFacebookSubscriptionsByGuild(ctx, req.GuildID)
-		if err != nil {
-			slog.Error("Failed to get Facebook subscriptions", "guild", req.GuildID, "error", err)
-		}
-	}
+	fbSubs := h.facebookSubscriptionsForList(ctx, req.GuildID)
+	meSubs := h.memExpressSubscriptionsForList(ctx, req.GuildID)
+	bbSubs := h.bestBuySubscriptionsForList(ctx, req.GuildID)
 
-	meSubs, err := h.store.GetMemExpressSubscriptionsByGuild(ctx, req.GuildID)
-	if err != nil {
-		slog.Error("Failed to get Memory Express subscriptions", "guild", req.GuildID, "error", err)
-	}
-
-	bbSubs, err := h.store.GetBestBuySubscriptionsByGuild(ctx, req.GuildID)
-	if err != nil {
-		slog.Error("Failed to get Best Buy subscriptions", "guild", req.GuildID, "error", err)
-	}
-
-	if len(subs) == 0 && len(fbSubs) == 0 && len(meSubs) == 0 && len(bbSubs) == 0 {
+	if !hasAnySubscription(rfdSubs, ebaySubs, fbSubs, meSubs, bbSubs) {
 		h.respondPrivateMessage(w, "No active deal subscriptions for this server.")
 		return
 	}
 
 	var msg strings.Builder
 	msg.WriteString("📋 **Active Deal Subscriptions**\n\n")
-
-	// Group RFD/eBay subs
-	var rfdSubs, ebaySubs []models.Subscription
-	for _, sub := range subs {
-		if sub.IsEbay() {
-			ebaySubs = append(ebaySubs, sub)
-		} else if sub.IsRFD() {
-			rfdSubs = append(rfdSubs, sub)
-		}
-	}
-
-	if len(rfdSubs) > 0 {
-		msg.WriteString("**RFD:**\n")
-		for _, sub := range rfdSubs {
-			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
-		}
-		msg.WriteString("\n")
-	}
-
-	if len(ebaySubs) > 0 {
-		msg.WriteString("**eBay:**\n")
-		for _, sub := range ebaySubs {
-			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
-		}
-		msg.WriteString("\n")
-	}
-
-	if len(fbSubs) > 0 {
-		msg.WriteString("**Facebook Marketplace:**\n")
-		for _, sub := range fbSubs {
-			brandInfo := ""
-			if len(sub.FilterBrands) > 0 {
-				brandInfo = fmt.Sprintf(" | brands: %s", strings.Join(sub.FilterBrands, ", "))
-			}
-			msg.WriteString(fmt.Sprintf("  • <#%s> — %s (radius: %d km%s)\n", sub.ChannelID, sub.City, sub.RadiusKm, brandInfo))
-		}
-		msg.WriteString("\n")
-	}
-
-	if len(meSubs) > 0 {
-		msg.WriteString("**Memory Express:**\n")
-		for _, sub := range meSubs {
-			storeName := memoryexpress.StoreName(sub.StoreCode)
-			msg.WriteString(fmt.Sprintf("  • <#%s> — %s (%s)\n", sub.ChannelID, storeName, dealTypeLabel(sub.DealType)))
-		}
-		msg.WriteString("\n")
-	}
-
-	if len(bbSubs) > 0 {
-		msg.WriteString("**Best Buy:**\n")
-		for _, sub := range bbSubs {
-			msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
-		}
-	}
+	appendDealListSection(&msg, "RFD", rfdSubs)
+	appendDealListSection(&msg, "eBay", ebaySubs)
+	appendFacebookListSection(&msg, fbSubs)
+	appendMemExpressListSection(&msg, meSubs)
+	appendBestBuyListSection(&msg, bbSubs)
 
 	h.respondPrivateMessage(w, msg.String())
+}
+
+func (h *Handler) facebookSubscriptionsForList(ctx context.Context, guildID string) []models.Subscription {
+	if !h.facebookEnabled {
+		return nil
+	}
+	subs, err := h.store.GetFacebookSubscriptionsByGuild(ctx, guildID)
+	if err != nil {
+		slog.Error("Failed to get Facebook subscriptions", "guild", guildID, "error", err)
+		return nil
+	}
+	return subs
+}
+
+func (h *Handler) memExpressSubscriptionsForList(ctx context.Context, guildID string) []models.Subscription {
+	subs, err := h.store.GetMemExpressSubscriptionsByGuild(ctx, guildID)
+	if err != nil {
+		slog.Error("Failed to get Memory Express subscriptions", "guild", guildID, "error", err)
+		return nil
+	}
+	return subs
+}
+
+func (h *Handler) bestBuySubscriptionsForList(ctx context.Context, guildID string) []models.Subscription {
+	subs, err := h.store.GetBestBuySubscriptionsByGuild(ctx, guildID)
+	if err != nil {
+		slog.Error("Failed to get Best Buy subscriptions", "guild", guildID, "error", err)
+		return nil
+	}
+	return subs
 }
 
 // handleAutocomplete handles Discord autocomplete interactions (type 4).
 func (h *Handler) handleAutocomplete(w http.ResponseWriter, req interactionRequest) {
 	if req.Data == nil || len(req.Data.Options) == 0 {
-		writeJSON(w, autocompleteResponse{
-			Type: InteractionResponseTypeAutocompleteResult,
-			Data: autocompleteResponseData{Choices: []autocompleteChoice{}},
-		})
+		writeAutocompleteChoices(w, nil)
 		return
 	}
 
-	// Find the focused option within the subcommand
 	subCommand := req.Data.Options[0]
-	if subCommand.Name == "setup-facebook" && h.facebookEnabled {
-		var query string
-		for _, opt := range subCommand.Options {
-			if opt.Name == "city" && opt.Focused {
-				if val, ok := opt.Value.(string); ok {
-					query = val
-				}
-			}
-		}
-
-		cities := facebook.FilterCities(query)
-		var choices []autocompleteChoice
-		for _, city := range cities {
-			choices = append(choices, autocompleteChoice{Name: city, Value: city})
-			if len(choices) >= 25 { // Discord max autocomplete choices
-				break
-			}
-		}
-
-		writeJSON(w, autocompleteResponse{
-			Type: InteractionResponseTypeAutocompleteResult,
-			Data: autocompleteResponseData{Choices: choices},
-		})
-		return
+	switch {
+	case subCommand.Name == "setup-facebook" && h.facebookEnabled:
+		writeAutocompleteChoices(w, facebookCityChoices(focusedOptionString(subCommand.Options, "city")))
+	case subCommand.Name == "setup-memoryexpress":
+		writeAutocompleteChoices(w, memExpressStoreChoices(focusedOptionString(subCommand.Options, "store")))
+	default:
+		writeAutocompleteChoices(w, nil)
 	}
+}
 
-	if subCommand.Name == "setup-memoryexpress" {
-		var query string
-		for _, opt := range subCommand.Options {
-			if opt.Name == "store" && opt.Focused {
-				if val, ok := opt.Value.(string); ok {
-					query = val
-				}
-			}
+func focusedOptionString(options []interactionOption, name string) string {
+	for _, opt := range options {
+		if opt.Name != name || !opt.Focused {
+			continue
 		}
-
-		stores := memoryexpress.MatchingStores(query)
-		var choices []autocompleteChoice
-		for _, store := range stores {
-			choices = append(choices, autocompleteChoice{Name: store.Name, Value: store.Code})
-			if len(choices) >= 25 {
-				break
-			}
+		if value, ok := opt.Value.(string); ok {
+			return value
 		}
-
-		writeJSON(w, autocompleteResponse{
-			Type: InteractionResponseTypeAutocompleteResult,
-			Data: autocompleteResponseData{Choices: choices},
-		})
-		return
 	}
+	return ""
+}
 
-	// Fallback: empty choices
+func facebookCityChoices(query string) []autocompleteChoice {
+	cities := facebook.FilterCities(query)
+	choices := make([]autocompleteChoice, 0, min(len(cities), 25))
+	for _, city := range cities {
+		choices = append(choices, autocompleteChoice{Name: city, Value: city})
+		if len(choices) >= 25 {
+			break
+		}
+	}
+	return choices
+}
+
+func memExpressStoreChoices(query string) []autocompleteChoice {
+	stores := memoryexpress.MatchingStores(query)
+	choices := make([]autocompleteChoice, 0, min(len(stores), 25))
+	for _, store := range stores {
+		choices = append(choices, autocompleteChoice{Name: store.Name, Value: store.Code})
+		if len(choices) >= 25 {
+			break
+		}
+	}
+	return choices
+}
+
+func writeAutocompleteChoices(w http.ResponseWriter, choices []autocompleteChoice) {
+	if choices == nil {
+		choices = []autocompleteChoice{}
+	}
 	writeJSON(w, autocompleteResponse{
 		Type: InteractionResponseTypeAutocompleteResult,
-		Data: autocompleteResponseData{Choices: []autocompleteChoice{}},
+		Data: autocompleteResponseData{Choices: choices},
 	})
 }
 
 func (h *Handler) handleRemoveCommand(w http.ResponseWriter, req interactionRequest) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := storeContext()
 	defer cancel()
 
 	if req.GuildID == "" {
@@ -1016,16 +1002,13 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		h.respondError(w, "Missing component data.")
 		return
 	}
-
 	if req.GuildID == "" {
 		h.respondError(w, "This action can only be used in a server.")
 		return
 	}
 
-	var channelID string
-	dealType := "all"
-
-	if strings.HasPrefix(req.Data.CustomID, "hw_") {
+	customID := req.Data.CustomID
+	if strings.HasPrefix(customID, "hw_") {
 		if !h.hardwareSwapEnabled {
 			h.respondError(w, "HardwareSwap features are disabled.")
 			return
@@ -1034,150 +1017,94 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 		return
 	}
 
-	if strings.HasPrefix(req.Data.CustomID, "remove_sub::") {
-		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_sub::")
-		parts := strings.SplitN(trimmed, "::", 2)
-		channelID = parts[0]
-		if len(parts) > 1 {
-			dealType = parts[1]
-		}
-	} else if strings.HasPrefix(req.Data.CustomID, "remove_fb::") {
-		if !h.facebookEnabled {
-			h.respondError(w, "Facebook Marketplace features are disabled.")
-			return
-		}
-		// Facebook subscription removal: remove_fb::{channelID}::{city}
-		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_fb::")
-		parts := strings.SplitN(trimmed, "::", 2)
-		if len(parts) < 2 {
-			h.respondError(w, "Invalid Facebook removal data.")
-			return
-		}
-		fbChannelID := parts[0]
-		fbCity := parts[1]
-
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		if err := h.store.RemoveFacebookSubscription(ctx, req.GuildID, fbChannelID, fbCity); err != nil {
-			slog.Error("Failed to remove Facebook subscription", "guild", req.GuildID, "channel", fbChannelID, "city", fbCity, "error", err)
-			h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
-			return
-		}
-
-		res := interactionResponse{
-			Type: InteractionResponseTypeUpdateMessage,
-			Data: &interactionResponseData{
-				Content:    fmt.Sprintf("🗑️ Facebook Marketplace subscription for **%s** has been removed from <#%s>.", fbCity, fbChannelID),
-				Components: &[]discordComponent{},
-			},
-		}
-		writeJSON(w, res)
-		return
-	} else if strings.HasPrefix(req.Data.CustomID, "remove_bb::") {
-		// Best Buy subscription removal: remove_bb::{channelID}
-		bbChannelID := strings.TrimPrefix(req.Data.CustomID, "remove_bb::")
-
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		if err := h.store.RemoveBestBuySubscription(ctx, req.GuildID, bbChannelID); err != nil {
-			slog.Error("Failed to remove Best Buy subscription", "guild", req.GuildID, "channel", bbChannelID, "error", err)
-			h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
-			return
-		}
-
-		res := interactionResponse{
-			Type: InteractionResponseTypeUpdateMessage,
-			Data: &interactionResponseData{
-				Content:    fmt.Sprintf("🗑️ Best Buy subscription has been removed from <#%s>.", bbChannelID),
-				Components: &[]discordComponent{},
-			},
-		}
-		writeJSON(w, res)
-		return
-	} else if strings.HasPrefix(req.Data.CustomID, "remove_me::") {
-		// Memory Express subscription removal: remove_me::{channelID}::{storeCode}
-		trimmed := strings.TrimPrefix(req.Data.CustomID, "remove_me::")
-		parts := strings.SplitN(trimmed, "::", 2)
-		if len(parts) < 2 {
-			h.respondError(w, "Invalid Memory Express removal data.")
-			return
-		}
-		meChannelID := parts[0]
-		meStoreCode := parts[1]
-
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		if err := h.store.RemoveMemExpressSubscription(ctx, req.GuildID, meChannelID, meStoreCode); err != nil {
-			slog.Error("Failed to remove Memory Express subscription", "guild", req.GuildID, "channel", meChannelID, "store", meStoreCode, "error", err)
-			h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
-			return
-		}
-
-		storeName := memoryexpress.StoreName(meStoreCode)
-		res := interactionResponse{
-			Type: InteractionResponseTypeUpdateMessage,
-			Data: &interactionResponseData{
-				Content:    fmt.Sprintf("🗑️ Memory Express subscription for **%s** has been removed from <#%s>.", storeName, meChannelID),
-				Components: &[]discordComponent{},
-			},
-		}
-		writeJSON(w, res)
-		return
-	} else {
+	action, ok := parseRemoveAction(customID)
+	if !ok {
 		h.respondError(w, "Unknown button clicked.")
 		return
 	}
+	h.handleRemoveComponent(w, req, action)
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+func (h *Handler) handleRemoveComponent(w http.ResponseWriter, req interactionRequest, action removeAction) {
+	ctx, cancel := storeContext()
 	defer cancel()
 
-	if err := h.store.RemoveSubscription(ctx, req.GuildID, channelID, dealType); err != nil {
-		slog.Error("Failed to remove subscription", "guild", req.GuildID, "channel", channelID, "error", err)
+	switch action.Kind {
+	case "facebook":
+		h.handleFacebookRemoveComponent(w, ctx, req, action)
+	case "bestbuy":
+		h.handleBestBuyRemoveComponent(w, ctx, req, action)
+	case "memoryexpress":
+		h.handleMemExpressRemoveComponent(w, ctx, req, action)
+	default:
+		h.handleDealRemoveComponent(w, ctx, req, action)
+	}
+}
+
+func (h *Handler) handleFacebookRemoveComponent(w http.ResponseWriter, ctx context.Context, req interactionRequest, action removeAction) {
+	if !h.facebookEnabled {
+		h.respondError(w, "Facebook Marketplace features are disabled.")
+		return
+	}
+	if action.Value == "" {
+		h.respondError(w, "Invalid Facebook removal data.")
+		return
+	}
+	if err := h.store.RemoveFacebookSubscription(ctx, req.GuildID, action.ChannelID, action.Value); err != nil {
+		slog.Error("Failed to remove Facebook subscription", "guild", req.GuildID, "channel", action.ChannelID, "city", action.Value, "error", err)
+		h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
+		return
+	}
+	writeUpdateMessage(w, fmt.Sprintf("🗑️ Facebook Marketplace subscription for **%s** has been removed from <#%s>.", action.Value, action.ChannelID), []discordComponent{})
+}
+
+func (h *Handler) handleBestBuyRemoveComponent(w http.ResponseWriter, ctx context.Context, req interactionRequest, action removeAction) {
+	if err := h.store.RemoveBestBuySubscription(ctx, req.GuildID, action.ChannelID); err != nil {
+		slog.Error("Failed to remove Best Buy subscription", "guild", req.GuildID, "channel", action.ChannelID, "error", err)
+		h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
+		return
+	}
+	writeUpdateMessage(w, fmt.Sprintf("🗑️ Best Buy subscription has been removed from <#%s>.", action.ChannelID), []discordComponent{})
+}
+
+func (h *Handler) handleMemExpressRemoveComponent(w http.ResponseWriter, ctx context.Context, req interactionRequest, action removeAction) {
+	if action.Value == "" {
+		h.respondError(w, "Invalid Memory Express removal data.")
+		return
+	}
+	if err := h.store.RemoveMemExpressSubscription(ctx, req.GuildID, action.ChannelID, action.Value); err != nil {
+		slog.Error("Failed to remove Memory Express subscription", "guild", req.GuildID, "channel", action.ChannelID, "store", action.Value, "error", err)
+		h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
+		return
+	}
+	storeName := memoryexpress.StoreName(action.Value)
+	writeUpdateMessage(w, fmt.Sprintf("🗑️ Memory Express subscription for **%s** has been removed from <#%s>.", storeName, action.ChannelID), []discordComponent{})
+}
+
+func (h *Handler) handleDealRemoveComponent(w http.ResponseWriter, ctx context.Context, req interactionRequest, action removeAction) {
+	dealType := action.Value
+	if dealType == "" {
+		dealType = "all"
+	}
+	if err := h.store.RemoveSubscription(ctx, req.GuildID, action.ChannelID, dealType); err != nil {
+		slog.Error("Failed to remove subscription", "guild", req.GuildID, "channel", action.ChannelID, "error", err)
 		h.respondPrivateMessage(w, "Failed to remove subscription due to an internal error.")
 		return
 	}
 
-	// Fetch remaining subscriptions to update the message
 	subs, err := h.store.GetSubscriptionsByGuild(ctx, req.GuildID)
 	if err != nil {
 		slog.Error("Failed to get remaining subscriptions for guild", "guild", req.GuildID, "error", err)
-		// Fallback to old behavior if we can't fetch remaining
-		res := interactionResponse{
-			Type: InteractionResponseTypeUpdateMessage,
-			Data: &interactionResponseData{
-				Content:    fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>.", dealTypeLabel(dealType), channelID),
-				Components: &[]discordComponent{}, // Clear the buttons
-			},
-		}
-		writeJSON(w, res)
+		writeUpdateMessage(w, fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>.", dealTypeLabel(dealType), action.ChannelID), []discordComponent{})
 		return
 	}
-
 	if len(subs) == 0 {
-		res := interactionResponse{
-			Type: InteractionResponseTypeUpdateMessage,
-			Data: &interactionResponseData{
-				Content:    "🗑️ All channels removed, there are no active subscriptions for this server.",
-				Components: &[]discordComponent{}, // Clear the buttons
-			},
-		}
-		writeJSON(w, res)
+		writeUpdateMessage(w, "🗑️ All channels removed, there are no active subscriptions for this server.", []discordComponent{})
 		return
 	}
 
 	components := buildRemoveButtons(subs)
-
-	res := interactionResponse{
-		Type: InteractionResponseTypeUpdateMessage,
-		Data: &interactionResponseData{
-			Content:    fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>. Here are the remaining active deal channels:", dealTypeLabel(dealType), channelID),
-			Components: &components,
-		},
-	}
-	writeJSON(w, res)
+	writeUpdateMessage(w, fmt.Sprintf("🗑️ RFD Bot %s has been removed from <#%s>. Here are the remaining active deal channels:", dealTypeLabel(dealType), action.ChannelID), components)
 }
 
 func (h *Handler) respondPrivateMessage(w http.ResponseWriter, msg string) {
@@ -1318,7 +1245,7 @@ func (h *Handler) handleHWCommand(w http.ResponseWriter, req interactionRequest)
 	// Convert typed options to []interface{} for the hardwareswap package
 	options := convertOptionsToGeneric(req.Data.Options)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := storeContext()
 	defer cancel()
 
 	result := hardwareswap.HandleCommand(ctx, w, h.hwStore, req.Data.Name, options, req.GuildID, userID)
@@ -1345,7 +1272,7 @@ func (h *Handler) handleHWComponent(w http.ResponseWriter, req interactionReques
 	// Collect message embeds as []interface{} from the raw message
 	var messageEmbeds []interface{}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := storeContext()
 	defer cancel()
 
 	result := hardwareswap.HandleComponent(ctx, h.hwStore, h.aiClient, h.discordToken, req.Data.CustomID, req.GuildID, userID, messageEmbeds)
