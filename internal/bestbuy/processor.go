@@ -848,6 +848,18 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, enrichSol
 	result, err := productmonitor.ProcessBatch(ctx, batch, cfg, logger)
 	for _, item := range result.Items {
 		if item.IsWarm || item.IsLavaHot {
+			examplesStr := ""
+			if len(item.SoldCompExamples) > 0 {
+				var parts []string
+				for i, ex := range item.SoldCompExamples {
+					if i >= 3 {
+						break
+					}
+					parts = append(parts, fmt.Sprintf("%q: $%.2f", ex.Title, ex.Price))
+				}
+				examplesStr = strings.Join(parts, ", ")
+			}
+
 			logger.Info("Best Buy deal labeled warm/hot",
 				"sku", item.SKU,
 				"clean_title", item.CleanTitle,
@@ -856,6 +868,8 @@ func (p *Processor) processBatch(ctx context.Context, batch []Product, enrichSol
 				"discount_pct", item.DiscountPct,
 				"seller", item.SellerName,
 				"source", item.Source,
+				"sold_comp_summary", item.SoldCompSummary,
+				"sold_comp_examples", examplesStr,
 			)
 		}
 	}
@@ -917,6 +931,18 @@ func (p *Processor) processPriceDropBatch(ctx context.Context, batch []priceDrop
 	result, err := productmonitor.ProcessBatch(ctx, batch, cfg, logger)
 	for _, item := range result.Items {
 		if item.IsWarm || item.IsLavaHot {
+			examplesStr := ""
+			if len(item.SoldCompExamples) > 0 {
+				var parts []string
+				for i, ex := range item.SoldCompExamples {
+					if i >= 3 {
+						break
+					}
+					parts = append(parts, fmt.Sprintf("%q: $%.2f", ex.Title, ex.Price))
+				}
+				examplesStr = strings.Join(parts, ", ")
+			}
+
 			logger.Info("Best Buy price drop labeled warm/hot",
 				"sku", item.SKU,
 				"clean_title", item.CleanTitle,
@@ -926,6 +952,8 @@ func (p *Processor) processPriceDropBatch(ctx context.Context, batch []priceDrop
 				"price_drop_pct", item.PriceDropPct,
 				"seller", item.SellerName,
 				"source", item.Source,
+				"sold_comp_summary", item.SoldCompSummary,
+				"sold_comp_examples", examplesStr,
 			)
 		}
 	}
