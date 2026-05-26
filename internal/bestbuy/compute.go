@@ -674,12 +674,12 @@ func isHighComputeSpec(spec ComputeSpec) bool {
 		return true
 	}
 	if spec.Class == ComputeClassWorkstationDesktop {
-		return spec.RAMGB >= 64 || spec.CoreCount >= 16 || highValueCPU(spec.CPUModel) || spec.GPU != ""
+		return spec.RAMGB >= 32 || spec.CoreCount >= 12 || highValueCPU(spec.CPUModel) || spec.GPU != ""
 	}
 	if spec.Class == ComputeClassWorkstationLaptop || spec.Class == ComputeClassLaptop {
-		return spec.RAMGB >= 128
+		return spec.RAMGB >= 64
 	}
-	return spec.RAMGB >= 128 || spec.CoreCount >= 24 || highValueCPU(spec.CPUModel) || spec.GPU != ""
+	return spec.RAMGB >= 64 || spec.CoreCount >= 16 || highValueCPU(spec.CPUModel) || spec.GPU != ""
 }
 
 func computeFamilyModel(text string) (string, string, string) {
