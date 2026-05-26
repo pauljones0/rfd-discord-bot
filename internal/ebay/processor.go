@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -344,7 +345,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	}
 
 	if len(activatedCoupons) > 0 {
-		retroItems, retroWrites := p.retroactiveCouponAlerts(apiItems, tracked, activatedCoupons, notifiedIDs, now, logger)
+		retroItems, retroWrites := p.retroactiveCouponAlerts(ctx, apiItems, tracked, activatedCoupons, notifiedIDs, now, logger)
 		if len(retroItems) > 0 {
 			stats.priceDrops += len(retroItems)
 			stats.updated += len(retroWrites)
@@ -918,7 +919,7 @@ func storeCouponReadyForStoreWideUse(coupon StoreCoupon, now time.Time) bool {
 	return true
 }
 
-func (p *Processor) retroactiveCouponAlerts(apiItems []BrowseAPIItem, tracked map[string]TrackedItem, activated map[string]StoreCoupon, notifiedIDs map[string]bool, now time.Time, logger *slog.Logger) ([]EbayItem, []TrackedItem) {
+func (p *Processor) retroactiveCouponAlerts(ctx context.Context, apiItems []BrowseAPIItem, tracked map[string]TrackedItem, activated map[string]StoreCoupon, notifiedIDs map[string]bool, now time.Time, logger *slog.Logger) ([]EbayItem, []TrackedItem) {
 	var alerts []EbayItem
 	var writes []TrackedItem
 	for _, apiItem := range apiItems {
@@ -949,7 +950,6 @@ func (p *Processor) retroactiveCouponAlerts(apiItems []BrowseAPIItem, tracked ma
 		}
 		discountCoupon := couponSnapshot{
 			DiscountAmount: discount,
-			OriginalPrice:  coupon.OriginalPrice,
 			Code:           coupon.Code,
 			Message:        coupon.RawText,
 			Source:         "seller-coupon-cache",
@@ -1109,7 +1109,6 @@ func couponCacheFresh(coupons []StoreCoupon, now time.Time, interval time.Durati
 
 func totalCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot {
 	var total float64
-	var maxOriginal float64
 	var codes []string
 	var messages []string
 	var signatures []string
@@ -1127,9 +1126,6 @@ func totalCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot 
 		}
 		if !storeCouponReadyForStoreWideUse(coupon, now) {
 			continue
-		}
-		if coupon.OriginalPrice > maxOriginal {
-			maxOriginal = coupon.OriginalPrice
 		}
 		discount := storeCouponDiscount(coupon, basePrice)
 		if discount <= 0 {
@@ -1171,7 +1167,6 @@ func totalCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot 
 
 	return couponSnapshot{
 		DiscountAmount: total,
-		OriginalPrice:  maxOriginal,
 		Code:           strings.Join(codes, "+"),
 		Message:        strings.Join(uniqueStrings(messages), "; "),
 		Source:         "seller-coupon-cache",

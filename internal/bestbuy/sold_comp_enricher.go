@@ -440,7 +440,7 @@ func (e *EbaySoldCompsEnricher) saveSnapshot(ctx context.Context, key string, sn
 }
 
 func (e *EbaySoldCompsEnricher) fetchSnapshot(ctx context.Context, product Product, query, key string, now time.Time, logger *slog.Logger) SoldCompSnapshot {
-	searchURL := ebaySoldSearchURL(query)
+	searchURL := ebay.SoldSearchURL(query)
 	var failures []string
 	best := SoldCompSnapshot{Key: key, Query: query, Verdict: ebaySoldVerdictNoComps, CheckedAt: now}
 	attempts := scrapebackend.NewAttemptCounter()

@@ -3,7 +3,11 @@ package bestbuy
 import (
 	"context"
 	"fmt"
+	"html"
 	"log/slog"
+	"math"
+	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -436,7 +440,7 @@ func scoreEbaySoldVerification(observation ComputeObservation, listings []ebay.S
 	var prices []float64
 	var comparables []ComputeExternalComparable
 	for _, listing := range listings {
-		if ebay.SoldListingMatches(observation, listing) {
+		if ebaySoldListingMatches(observation, listing) {
 			prices = append(prices, listing.Price)
 			comparables = append(comparables, ebaySoldExternalComparable(observation, listing))
 		}
@@ -498,7 +502,7 @@ func comparableLimitExternal(comparables []ComputeExternalComparable, limit int)
 	return append([]ComputeExternalComparable(nil), comparables[:limit]...)
 }
 
-func ebay.SoldListingMatches(observation ComputeObservation, listing ebay.SoldListing) bool {
+func ebaySoldListingMatches(observation ComputeObservation, listing ebay.SoldListing) bool {
 	title := strings.ToLower(listing.Title)
 	if rejectComputeReason(title) != "" {
 		return false

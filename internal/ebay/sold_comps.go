@@ -36,11 +36,11 @@ func ParseSoldListings(pageHTML string) ([]SoldListing, error) {
 	var listings []SoldListing
 	seen := make(map[string]bool)
 	addListing := func(title, priceText string) {
-		title = cleanSoldTitle(title)
+		title = CleanSoldTitle(title)
 		if title == "" || strings.Contains(strings.ToLower(title), "shop on ebay") {
 			return
 		}
-		price, ok := parseSoldPrice(priceText)
+		price, ok := ParseSoldPrice(priceText)
 		if !ok || price <= 0 {
 			return
 		}
