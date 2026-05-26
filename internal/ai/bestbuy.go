@@ -76,10 +76,10 @@ func (c *Client) ScreenBestBuyBatch(ctx context.Context, products []bestbuy.Prod
 
 Review these %d products and select the top %d items that are most likely to be genuinely good deals.
 Focus on items where the price appears significantly below typical Canadian retail/market value.
-For marketplace items, same-seller regular/list prices are weak evidence because marketplace sellers can inflate them.
+For marketplace items, same-seller regular/list prices are highly unreliable. Sellers routinely fake massive discounts.
 When Best Buy comparable evidence is present, it already excludes the current seller. Treat that as stronger than the seller's own regular price.
-When eBay sold evidence is present, treat it as historical resale evidence; use it to sanity-check value but do not hard-reject an otherwise compelling item solely because sold comps are thin.
-Do not mark an item as a top deal from discount percentage alone. With comps, prefer items at least 20%% and $50 below the median comparable price. Lava-hot candidates should look 40%%+ and $100+ below comps.
+When eBay sold evidence is present, it represents the TRUE market resale value. If an item's price is near or above the eBay sold median, it is NOT a good deal, regardless of the claimed discount percentage.
+Do not mark an item as a top deal from discount percentage alone. With comps, prefer items at least 20%% and $50 below the median comparable price (Best Buy active or eBay sold). Lava-hot candidates should look 40%%+ and $100+ below comps.
 For open-box items, consider the condition discount vs typical market value, but still prefer external/current-comparable evidence.
 Ignore generic accessories, low-value items, and items where the discount is unremarkable.
 
@@ -360,13 +360,14 @@ Task:
 3. Determine if this is a "warm" deal:
    - The price is significantly below typical Canadian retail for this product.
    - The product has broad appeal or is a desirable tech item.
-   - Do not trust the seller's own regular/list price by itself.
-   - Best Buy comparable evidence, when present, excludes this seller and is the strongest signal.
-   - eBay sold evidence, when present, is historical resale evidence and should be considered separately from active Best Buy comps.
-   - With comps, warm usually requires 20%%+ and $50+ below median comparable pricing.
-   - For marketplace/open-box items, compare against new retail pricing and active comparable listings.
+   - Do not trust the seller's own regular/list price by itself. Sellers routinely fake massive discounts.
+   - Best Buy comparable evidence, when present, excludes this seller and is the strongest active retail signal.
+   - eBay sold evidence, when present, is the STRONGEST signal of true market resale value. If an item's Sale Price is equal to or higher than the eBay sold median, it is NEVER a warm or hot deal, no matter how big the "discount" from regular price seems.
+   - With comps, warm usually requires 20%%+ and $50+ below median comparable pricing (Best Buy active or eBay sold).
+   - For marketplace/open-box items, compare against new retail pricing and active/sold comparable listings.
 4. Determine if this is "Lava Hot" — be strict. Only if the price is absurdly good (50%%+ off on a popular, in-demand product, or a clear pricing error).
    - With comps, lava hot usually requires 40%%+ and $100+ below comparable pricing.
+   - NEVER label an item "Lava Hot" if it merely matches the eBay sold median.
 
 Return JSON only: {"clean_title": "...", "is_warm": bool, "is_lava_hot": bool, "summary": "..."}
 `, product.Name, product.CategoryName, product.RegularPrice, finalPrice, discountPct, product.SellerName, sourceContext, firstNonEmptyString(product.ComparableSummary, "No active comparable summary available."), bestBuySoldCompPrompt(product))
