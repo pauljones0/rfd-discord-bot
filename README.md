@@ -202,7 +202,7 @@ available for narrow repros and paid-browser trials.
 From Stormtrooper:
 
 ```bash
-cd ~/rfd-discord-bot
+cd ~/agent-work/repos/rfd-discord-bot
 git pull --ff-only origin main
 RFD_BOT_ENV_FILE=$HOME/.config/rfd-discord-bot/.env \
 RFD_BOT_DATA_DIR=$HOME/appdata/rfd-discord-bot \
