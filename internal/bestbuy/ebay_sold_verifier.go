@@ -3,18 +3,12 @@ package bestbuy
 import (
 	"context"
 	"fmt"
-	"html"
 	"log/slog"
-	"math"
-	"net/url"
-	"os"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
+	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/scrapebackend"
 )
 
@@ -82,11 +76,6 @@ type EbaySoldVerification struct {
 	AlertKey          string
 	Error             string
 	Comparables       []ComputeExternalComparable
-}
-
-type ebaySoldListing struct {
-	Title string
-	Price float64
 }
 
 func NewEbaySoldVerifier(opts EbaySoldVerifierOptions) *EbaySoldVerifier {
@@ -167,7 +156,7 @@ func (v *EbaySoldVerifier) Verify(ctx context.Context, observation ComputeObserv
 	attempts := scrapebackend.NewAttemptCounter()
 	exactQuery := buildEbaySoldQueryWithRAM(observation, true)
 	for _, query := range queries {
-		searchURL := ebaySoldSearchURL(query)
+		searchURL := ebay.SoldSearchURL(query)
 		for _, backend := range v.backends {
 			attempts.RecordAttempt(backend)
 			if err := v.limiter.BeforeFetch(ctx); err != nil {
@@ -209,7 +198,7 @@ func (v *EbaySoldVerifier) Verify(ctx context.Context, observation ComputeObserv
 				continue
 			}
 
-			listings, err := ParseEbaySoldListings(result.HTML)
+			listings, err := ebay.ParseSoldListings(result.HTML)
 			if err != nil {
 				attempts.RecordParseError(backend)
 				failures = append(failures, fmt.Sprintf("%s/%s: parse: %s", backend, query, err))
@@ -437,85 +426,7 @@ func cleanSoldQueryTitle(title string) string {
 	return strings.Join(words, " ")
 }
 
-func ebaySoldSearchURL(query string) string {
-	values := url.Values{}
-	values.Set("_nkw", query)
-	values.Set("LH_Sold", "1")
-	values.Set("LH_Complete", "1")
-	values.Set("LH_BIN", "1")
-	values.Set("_sop", "13")
-	values.Set("rt", "nc")
-	return "https://www.ebay.ca/sch/i.html?" + values.Encode()
-}
-
-func ParseEbaySoldListings(pageHTML string) ([]ebaySoldListing, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(pageHTML))
-	if err != nil {
-		return nil, err
-	}
-	var listings []ebaySoldListing
-	seen := make(map[string]bool)
-	addListing := func(title, priceText string) {
-		title = cleanEbaySoldTitle(title)
-		if title == "" || strings.Contains(strings.ToLower(title), "shop on ebay") {
-			return
-		}
-		price, ok := parseEbaySoldPrice(priceText)
-		if !ok || price <= 0 {
-			return
-		}
-		key := fmt.Sprintf("%s|%.2f", strings.ToLower(title), price)
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		listings = append(listings, ebaySoldListing{Title: title, Price: price})
-	}
-
-	doc.Find("li.s-item").Each(func(_ int, sel *goquery.Selection) {
-		priceText := strings.TrimSpace(sel.Find(".s-item__price").First().Text())
-		addListing(sel.Find(".s-item__title").First().Text(), priceText)
-	})
-	doc.Find(".s-card__title").Each(func(_ int, sel *goquery.Selection) {
-		title := sel.Find(".su-styled-text.primary").First().Text()
-		if strings.TrimSpace(title) == "" {
-			title = sel.Text()
-		}
-		card := sel.Closest("li")
-		if card.Length() == 0 {
-			card = sel.Closest(".su-card-container")
-		}
-		priceText := strings.TrimSpace(card.Find(".s-card__price").First().Text())
-		addListing(title, priceText)
-	})
-	return listings, nil
-}
-
-func cleanEbaySoldTitle(title string) string {
-	title = html.UnescapeString(strings.TrimSpace(title))
-	title = strings.TrimSpace(strings.TrimPrefix(title, "New Listing"))
-	title = regexp.MustCompile(`(?i)\s+opens in a new window or tab\b.*$`).ReplaceAllString(title, "")
-	return strings.TrimSpace(title)
-}
-
-func parseEbaySoldPrice(text string) (float64, bool) {
-	text = html.UnescapeString(strings.TrimSpace(text))
-	lower := strings.ToLower(text)
-	if strings.Contains(lower, " to ") || strings.Contains(lower, "shipping") {
-		return 0, false
-	}
-	if strings.Contains(lower, "us $") || strings.Contains(lower, "eur") || strings.Contains(lower, "gbp") {
-		return 0, false
-	}
-	match := regexp.MustCompile(`(?i)(?:c\s*)?\$\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`).FindStringSubmatch(text)
-	if len(match) < 2 {
-		return 0, false
-	}
-	value, err := strconv.ParseFloat(strings.ReplaceAll(match[1], ",", ""), 64)
-	return value, err == nil
-}
-
-func scoreEbaySoldVerification(observation ComputeObservation, listings []ebaySoldListing, minComps int, minGapPct, minGapDollars float64) EbaySoldVerification {
+func scoreEbaySoldVerification(observation ComputeObservation, listings []ebay.SoldListing, minComps int, minGapPct, minGapDollars float64) EbaySoldVerification {
 	currentPrice := effectiveProductPrice(observation.Product)
 	verification := EbaySoldVerification{Verdict: ebaySoldVerdictNoComps}
 	if currentPrice <= 0 {
@@ -525,7 +436,7 @@ func scoreEbaySoldVerification(observation ComputeObservation, listings []ebaySo
 	var prices []float64
 	var comparables []ComputeExternalComparable
 	for _, listing := range listings {
-		if ebaySoldListingMatches(observation, listing) {
+		if ebay.SoldListingMatches(observation, listing) {
 			prices = append(prices, listing.Price)
 			comparables = append(comparables, ebaySoldExternalComparable(observation, listing))
 		}
@@ -567,7 +478,7 @@ func scoreEbaySoldVerification(observation ComputeObservation, listings []ebaySo
 	return verification
 }
 
-func ebaySoldExternalComparable(observation ComputeObservation, listing ebaySoldListing) ComputeExternalComparable {
+func ebaySoldExternalComparable(observation ComputeObservation, listing ebay.SoldListing) ComputeExternalComparable {
 	cleanTitle := cleanSoldQueryTitle(listing.Title)
 	spec := ParseComputeSpec(Product{Name: listing.Title, SalePrice: listing.Price, Source: "ebay-sold"})
 	return ComputeExternalComparable{
@@ -587,7 +498,7 @@ func comparableLimitExternal(comparables []ComputeExternalComparable, limit int)
 	return append([]ComputeExternalComparable(nil), comparables[:limit]...)
 }
 
-func ebaySoldListingMatches(observation ComputeObservation, listing ebaySoldListing) bool {
+func ebay.SoldListingMatches(observation ComputeObservation, listing ebay.SoldListing) bool {
 	title := strings.ToLower(listing.Title)
 	if rejectComputeReason(title) != "" {
 		return false

@@ -1,12 +1,13 @@
 package bestbuy
 
 import (
+	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestParseEbaySoldListings(t *testing.T) {
+func Testebay.ParseSoldListings(t *testing.T) {
 	html := `
 <ul>
   <li class="s-item">
@@ -23,9 +24,9 @@ func TestParseEbaySoldListings(t *testing.T) {
   </li>
 </ul>`
 
-	listings, err := ParseEbaySoldListings(html)
+	listings, err := ebay.ParseSoldListings(html)
 	if err != nil {
-		t.Fatalf("ParseEbaySoldListings() error = %v", err)
+		t.Fatalf("ebay.ParseSoldListings() error = %v", err)
 	}
 	if len(listings) != 1 {
 		t.Fatalf("listings = %d, want 1: %#v", len(listings), listings)
@@ -38,7 +39,7 @@ func TestParseEbaySoldListings(t *testing.T) {
 	}
 }
 
-func TestParseEbaySoldListingsNewCardLayout(t *testing.T) {
+func Testebay.ParseSoldListingsNewCardLayout(t *testing.T) {
 	html := `
 <ul>
   <li>
@@ -59,9 +60,9 @@ func TestParseEbaySoldListingsNewCardLayout(t *testing.T) {
   </li>
 </ul>`
 
-	listings, err := ParseEbaySoldListings(html)
+	listings, err := ebay.ParseSoldListings(html)
 	if err != nil {
-		t.Fatalf("ParseEbaySoldListings() error = %v", err)
+		t.Fatalf("ebay.ParseSoldListings() error = %v", err)
 	}
 	if len(listings) != 1 {
 		t.Fatalf("listings = %d, want 1: %#v", len(listings), listings)
@@ -76,7 +77,7 @@ func TestParseEbaySoldListingsNewCardLayout(t *testing.T) {
 
 func TestEbaySoldVerificationPassesBelowSoldMedian(t *testing.T) {
 	observation := soldVerifierObservation(650)
-	listings := []ebaySoldListing{
+	listings := []ebay.SoldListing{
 		{Title: "Dell Precision 5820 Xeon W-2133 32GB RAM 512GB NVMe Quadro P4000", Price: 2400},
 		{Title: "Dell Precision 5820 Workstation Xeon W-2133 32GB RAM Quadro P4000", Price: 2500},
 		{Title: "Dell Precision 5820 Xeon W-2133 32GB RAM Quadro P4000", Price: 2600},
@@ -96,7 +97,7 @@ func TestEbaySoldVerificationPassesBelowSoldMedian(t *testing.T) {
 
 func TestEbaySoldVerificationFailsWeakGap(t *testing.T) {
 	observation := soldVerifierObservation(2300)
-	listings := []ebaySoldListing{
+	listings := []ebay.SoldListing{
 		{Title: "Dell Precision 5820 Xeon W-2133 32GB RAM 512GB NVMe Quadro P4000", Price: 2400},
 		{Title: "Dell Precision 5820 Workstation Xeon W-2133 32GB RAM Quadro P4000", Price: 2500},
 		{Title: "Dell Precision 5820 Xeon W-2133 32GB RAM Quadro P4000", Price: 2600},
@@ -113,7 +114,7 @@ func TestEbaySoldVerificationFailsWeakGap(t *testing.T) {
 
 func TestEbaySoldListingRequiresGPUMatch(t *testing.T) {
 	observation := soldVerifierObservation(650)
-	listings := []ebaySoldListing{
+	listings := []ebay.SoldListing{
 		{Title: "Dell Precision 5820 Xeon W-2133 32GB RAM 512GB NVMe Quadro K2000", Price: 2500},
 		{Title: "Dell Precision 5820 Workstation Xeon W-2133 32GB RAM no graphics card", Price: 2600},
 		{Title: "Dell Precision 5820 Xeon W-2133 32GB RAM", Price: 2700},
@@ -136,7 +137,7 @@ func TestEbaySoldVerificationAllowsLowerRAMForExtremeServers(t *testing.T) {
 		Source:    "seller:test",
 	}
 	observation := ComputeObservation{Product: product, Spec: ParseComputeSpec(product)}
-	listings := []ebaySoldListing{
+	listings := []ebay.SoldListing{
 		{Title: "Dell PowerEdge R740 128GB RAM 24 Core Xeon Server", Price: 1500},
 		{Title: "Dell PowerEdge R740 256GB RAM 24 Core Xeon Server", Price: 2000},
 		{Title: "Dell PowerEdge R740 384GB RAM 24 Core Xeon Server", Price: 2500},

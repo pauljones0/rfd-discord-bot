@@ -95,6 +95,8 @@ type EbayItem struct {
 	Condition                string
 	Marketplace              string
 	ListedAt                 time.Time
+	SoldMedian               float64
+	IsGoodDeal               bool
 }
 
 // EbayPollState tracks the state of the last eBay polling run (singleton in bot_config).

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/scrapebackend"
 )
 
@@ -481,7 +482,7 @@ func (e *EbaySoldCompsEnricher) fetchSnapshot(ctx context.Context, product Produ
 			}
 			continue
 		}
-		listings, err := ParseEbaySoldListings(result.HTML)
+		listings, err := ebay.ParseSoldListings(result.HTML)
 		if err != nil {
 			attempts.RecordParseError(backend)
 			failures = append(failures, fmt.Sprintf("%s: parse: %s", backend, err))
@@ -659,7 +660,7 @@ func normalizeSoldCompQuery(query string) string {
 	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(query))), " ")
 }
 
-func scoreBestBuySoldComps(product Product, listings []ebaySoldListing, query, backend, key string, now time.Time) SoldCompSnapshot {
+func scoreBestBuySoldComps(product Product, listings []ebay.SoldListing, query, backend, key string, now time.Time) SoldCompSnapshot {
 	snapshot := SoldCompSnapshot{Key: key, Query: query, Backend: backend, Verdict: ebaySoldVerdictNoComps, CheckedAt: now}
 	current := effectiveProductPrice(product)
 	if current <= 0 {
@@ -699,7 +700,7 @@ func scoreBestBuySoldComps(product Product, listings []ebaySoldListing, query, b
 	return snapshot
 }
 
-func bestBuySoldListingMatches(product Product, listing ebaySoldListing) bool {
+func bestBuySoldListingMatches(product Product, listing ebay.SoldListing) bool {
 	title := strings.ToLower(listing.Title)
 	if containsPoorResaleKeyword(title) {
 		return false

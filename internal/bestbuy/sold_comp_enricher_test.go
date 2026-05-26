@@ -1,6 +1,7 @@
 package bestbuy
 
 import (
+	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"context"
 	"fmt"
 	"net/url"
@@ -73,7 +74,7 @@ func TestBuildBestBuySoldCompQueryUsesAppleWatchFamily(t *testing.T) {
 func TestScoreBestBuySoldCompsSummarizesMedianAndExamples(t *testing.T) {
 	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
 	product := Product{Name: "Sony WH-1000XM5 Noise Cancelling Headphones", BrandName: "Sony", ModelNumber: "WH-1000XM5", SalePrice: 300}
-	listings := []ebaySoldListing{
+	listings := []ebay.SoldListing{
 		{Title: "Sony WH-1000XM5 Wireless Noise Cancelling Headphones", Price: 420},
 		{Title: "Sony WH1000XM5 Headphones Black", Price: 460},
 		{Title: "Sony WH-1000XM4 Headphones", Price: 250},

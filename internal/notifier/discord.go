@@ -612,7 +612,13 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 	if item.OriginalPrice > 0 && item.OriginalPrice > item.CurrentPrice && item.OriginalPrice != item.PreviousPrice {
 		totalDrop := item.OriginalPrice - item.CurrentPrice
 		totalPct := (totalDrop / item.OriginalPrice) * 100
-		descBuilder.WriteString(fmt.Sprintf("\n*(total savings: -%s, -%.0f%%)*", formatEbayMoney(totalDrop, item.Currency), totalPct))
+		descBuilder.WriteString(fmt.Sprintf("\n*(total savings: -%s, -%.0f%%)*", formatEbayMoney(item.OriginalPrice-item.CurrentPrice, item.Currency), totalPct))
+	}
+
+	if item.IsGoodDeal && item.SoldMedian > 0 {
+		descBuilder.WriteString(fmt.Sprintf("\n✅ **Good Deal!** (Median sold: %s)", formatEbayMoney(item.SoldMedian, item.Currency)))
+	} else if item.SoldMedian > 0 {
+		descBuilder.WriteString(fmt.Sprintf("\n*(Market median: %s)*", formatEbayMoney(item.SoldMedian, item.Currency)))
 	}
 
 	if item.CouponDiscount > 0 {

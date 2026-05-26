@@ -266,7 +266,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				"drop_dollars", fmt.Sprintf("$%.2f", dollarDrop),
 				"drop_count", existing.DropCount,
 			)
-			priceDropItems = append(priceDropItems, EbayItem{
+			item := EbayItem{
 				ItemID:                   itemID,
 				Title:                    apiItem.Title,
 				CurrentPrice:             newPrice,
@@ -289,7 +289,19 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				Condition:                apiItem.Condition,
 				Marketplace:              apiItem.Marketplace,
 				ListedAt:                 parseItemCreationDate(apiItem.ItemCreationDate),
-			})
+			}
+
+			// Market Verification: Check sold listings to see if it's a good deal
+			if p.client != nil {
+				verification := p.verifyMarketDeal(ctx, item.Title, item.CurrentPrice)
+				item.SoldMedian = verification.MedianPrice
+				item.IsGoodDeal = verification.IsGoodDeal
+				if item.IsGoodDeal {
+					logger.Info("Market verification: Good deal detected", "title", item.Title, "median", item.SoldMedian, "current", item.CurrentPrice)
+				}
+			}
+
+			priceDropItems = append(priceDropItems, item)
 			existing.LastNotifiedPrice = newPrice
 		}
 
@@ -441,6 +453,23 @@ func ebayItemMarketplace(item EbayItem) string {
 }
 
 // parsePrice extracts a float64 price from a Browse API Price object.
+func (p *Processor) verifyMarketDeal(ctx context.Context, title string, currentPrice float64) DealVerification {
+	// Simple query: first 5 words of title
+	words := strings.Fields(title)
+	if len(words) > 5 {
+		words = words[:5]
+	}
+	query := strings.Join(words, " ")
+
+	listings, err := p.client.FetchSoldListings(ctx, query)
+	if err != nil {
+		slog.Warn("Failed to fetch eBay sold listings for market verification", "query", query, "error", err)
+		return DealVerification{}
+	}
+
+	return VerifyDeal(title, currentPrice, listings)
+}
+
 func parsePrice(p *Price) float64 {
 	if p == nil || p.Value == "" {
 		return 0
@@ -962,7 +991,7 @@ func (p *Processor) retroactiveCouponAlerts(apiItems []BrowseAPIItem, tracked ma
 			"drop_dollars", fmt.Sprintf("$%.2f", dollarDrop),
 		)
 
-		alerts = append(alerts, EbayItem{
+		item := EbayItem{
 			ItemID:                   itemID,
 			Title:                    apiItem.Title,
 			CurrentPrice:             effectivePrice,
@@ -985,7 +1014,16 @@ func (p *Processor) retroactiveCouponAlerts(apiItems []BrowseAPIItem, tracked ma
 			Condition:                apiItem.Condition,
 			Marketplace:              marketplace,
 			ListedAt:                 parseItemCreationDate(apiItem.ItemCreationDate),
-		})
+		}
+
+		// Market Verification
+		if p.client != nil {
+			verification := p.verifyMarketDeal(ctx, item.Title, item.CurrentPrice)
+			item.SoldMedian = verification.MedianPrice
+			item.IsGoodDeal = verification.IsGoodDeal
+		}
+
+		alerts = append(alerts, item)
 	}
 	return alerts, writes
 }

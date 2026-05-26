@@ -604,6 +604,18 @@ func (c *Client) FetchPageCouponSnapshot(ctx context.Context, item BrowseAPIItem
 	return coupon.snapshot(source), nil
 }
 
+func (c *Client) FetchSoldListings(ctx context.Context, query string) ([]SoldListing, error) {
+	searchURL := SoldSearchURL(query)
+
+	// Reuse fetchBrowseItemBody which handles tokens and retry logic
+	body, err := c.fetchBrowseItemBody(ctx, searchURL, "EBAY_CA")
+	if err != nil {
+		return nil, err
+	}
+
+	return ParseSoldListings(string(body))
+}
+
 // FetchPageCoupon attempts buyer-visible eBay listing-page coupon discovery and
 // returns the parsed coupon metadata plus the backend source that found it.
 func (c *Client) FetchPageCoupon(ctx context.Context, item BrowseAPIItem, basePrice float64) (PageCoupon, string, error) {
