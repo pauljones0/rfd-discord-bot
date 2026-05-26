@@ -78,6 +78,7 @@ type EbayItem struct {
 	CurrentPrice             float64
 	PreviousPrice            float64
 	BasePrice                float64
+	OriginalPrice            float64
 	CouponDiscount           float64
 	CouponCode               string
 	CouponMessage            string

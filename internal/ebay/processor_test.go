@@ -285,7 +285,7 @@ func TestStoreCouponDiscountUsesInferredThreshold(t *testing.T) {
 	}
 }
 
-func TestBestCachedCouponSkipsLowConfidenceInferredCoupons(t *testing.T) {
+func TestTotalCachedCouponSkipsLowConfidenceInferredCoupons(t *testing.T) {
 	coupon := StoreCoupon{
 		Active:        true,
 		Scope:         "store",
@@ -294,12 +294,12 @@ func TestBestCachedCouponSkipsLowConfidenceInferredCoupons(t *testing.T) {
 		DiscountType:  "fixed",
 		DiscountValue: 50,
 	}
-	if got := bestCachedCoupon([]StoreCoupon{coupon}, 500); got.DiscountAmount != 0 {
+	if got := totalCachedCoupon([]StoreCoupon{coupon}, 500); got.DiscountAmount != 0 {
 		t.Fatalf("discount = %v, want 0 for low confidence coupon", got.DiscountAmount)
 	}
 }
 
-func TestBestCachedCouponAppliesInferredPercentCap(t *testing.T) {
+func TestTotalCachedCouponAppliesInferredPercentCap(t *testing.T) {
 	coupon := StoreCoupon{
 		Active:        true,
 		Scope:         "store",
@@ -309,7 +309,7 @@ func TestBestCachedCouponAppliesInferredPercentCap(t *testing.T) {
 		DiscountValue: 20,
 		MaxDiscount:   100,
 	}
-	if got := bestCachedCoupon([]StoreCoupon{coupon}, 800); got.DiscountAmount != 100 {
+	if got := totalCachedCoupon([]StoreCoupon{coupon}, 800); got.DiscountAmount != 100 {
 		t.Fatalf("discount = %v, want 100", got.DiscountAmount)
 	}
 }
@@ -576,7 +576,46 @@ func TestRetroactiveCouponAlertsSendOncePerCouponSignature(t *testing.T) {
 	}
 }
 
-func TestBestCachedCouponUsesLatestCouponCheckOnly(t *testing.T) {
+func TestTotalCachedCoupon_SumsUniqueCoupons(t *testing.T) {
+	now := time.Now()
+	coupons := []StoreCoupon{
+		{
+			Code:          "SAVE10",
+			RawText:       "Save $10",
+			Active:        true,
+			Scope:         "store",
+			Confidence:    0.95,
+			FormulaType:   "flat",
+			DiscountValue: 10,
+			LastChecked:   now,
+			Signature:     "sig1",
+		},
+		{
+			Code:          "SAVE5",
+			RawText:       "Save $5",
+			Active:        true,
+			Scope:         "store",
+			Confidence:    0.95,
+			FormulaType:   "flat",
+			DiscountValue: 5,
+			LastChecked:   now,
+			Signature:     "sig2",
+		},
+	}
+
+	got := totalCachedCoupon(coupons, 500)
+	if got.DiscountAmount != 15 {
+		t.Fatalf("discount = %v, want 15", got.DiscountAmount)
+	}
+	if got.Code != "SAVE10+SAVE5" {
+		t.Fatalf("code = %q, want SAVE10+SAVE5", got.Code)
+	}
+	if got.Message != "Save $10; Save $5" {
+		t.Fatalf("message = %q, want 'Save $10; Save $5'", got.Message)
+	}
+}
+
+func TestTotalCachedCouponUsesLatestCouponCheckOnly(t *testing.T) {
 	oldCheck := time.Now().Add(-2 * time.Hour)
 	newCheck := time.Now()
 	oldActive := StoreCoupon{
@@ -595,7 +634,7 @@ func TestBestCachedCouponUsesLatestCouponCheckOnly(t *testing.T) {
 		FormulaType: "ambiguous",
 		LastChecked: newCheck,
 	}
-	if got := bestCachedCoupon([]StoreCoupon{oldActive, freshAmbiguous}, 500); got.DiscountAmount != 0 {
+	if got := totalCachedCoupon([]StoreCoupon{oldActive, freshAmbiguous}, 500); got.DiscountAmount != 0 {
 		t.Fatalf("discount = %v, want 0 after fresher ambiguous check", got.DiscountAmount)
 	}
 }

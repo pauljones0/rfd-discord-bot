@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-APP_DIR="${RFD_BOT_APP_DIR:-/home/paul/rfd-discord-bot/deploy/stormtrooper}"
+APP_DIR="${RFD_BOT_APP_DIR:-/home/paul/agent-work/repos/rfd-discord-bot/deploy/stormtrooper}"
 HEALTH_URL="${RFD_BOT_HEALTH_URL:-http://127.0.0.1:18080/health}"
 
 cd "$APP_DIR"

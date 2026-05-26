@@ -83,8 +83,8 @@ func TestBrowseSearchResponse_UnmarshalsCouponFlag(t *testing.T) {
 	}
 }
 
-func TestBestCouponSnapshot_UsesLargestCoupon(t *testing.T) {
-	coupon := bestCouponSnapshot([]AvailableCoupon{
+func TestTotalCouponSnapshot_SumsUniqueCodes(t *testing.T) {
+	coupon := totalCouponSnapshot([]AvailableCoupon{
 		{
 			DiscountAmount: &Price{Value: "15.00", Currency: "CAD"},
 			RedemptionCode: "SAVE15",
@@ -95,16 +95,26 @@ func TestBestCouponSnapshot_UsesLargestCoupon(t *testing.T) {
 			RedemptionCode: "SAVE40",
 			Message:        "Save $40",
 		},
+		{
+			DiscountAmount: &Price{Value: "10.00", Currency: "CAD"},
+			RedemptionCode: "SAVE15", // Duplicate code with smaller amount
+			Message:        "Smaller Save $15",
+		},
+		{
+			DiscountAmount: &Price{Value: "5.00", Currency: "CAD"},
+			RedemptionCode: "", // Automatic discount
+			Message:        "Auto $5",
+		},
 	})
 
-	if coupon.DiscountAmount != 40 {
-		t.Fatalf("discount = %v, want 40", coupon.DiscountAmount)
+	if coupon.DiscountAmount != 60 { // 40 + 15 + 5
+		t.Fatalf("discount = %v, want 60", coupon.DiscountAmount)
 	}
-	if coupon.Code != "SAVE40" {
-		t.Fatalf("code = %q, want SAVE40", coupon.Code)
+	if coupon.Code != "SAVE15+SAVE40" {
+		t.Fatalf("code = %q, want SAVE15+SAVE40", coupon.Code)
 	}
-	if coupon.Message != "Save $40" {
-		t.Fatalf("message = %q, want Save $40", coupon.Message)
+	if coupon.Message != "Auto $5; Save $15; Save $40" {
+		t.Fatalf("message = %q, want 'Auto $5; Save $15; Save $40'", coupon.Message)
 	}
 }
 

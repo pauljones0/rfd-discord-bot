@@ -393,6 +393,7 @@ func appendUniqueBrowseItems(dst, items []BrowseAPIItem, seen map[string]struct{
 
 type couponSnapshot struct {
 	DiscountAmount float64
+	OriginalPrice  float64
 	Code           string
 	Message        string
 	Source         string
@@ -452,7 +453,7 @@ func (c *Client) fetchItemCouponSnapshot(ctx context.Context, item BrowseAPIItem
 	if err := json.Unmarshal(body, &detail); err != nil {
 		return couponSnapshot{}, fmt.Errorf("failed to parse item detail response: %w", err)
 	}
-	return bestCouponSnapshot(detail.AvailableCoupons), nil
+	return totalCouponSnapshot(detail.AvailableCoupons), nil
 }
 
 func browseItemDetailURL(item BrowseAPIItem) string {
@@ -516,22 +517,78 @@ func (c *Client) doBrowseItemRequest(ctx context.Context, reqURL, token, marketp
 	return body, resp.StatusCode, nil
 }
 
-func bestCouponSnapshot(coupons []AvailableCoupon) couponSnapshot {
-	var best couponSnapshot
-	for _, coupon := range coupons {
-		discount := parsePrice(coupon.DiscountAmount)
-		if discount <= best.DiscountAmount {
-			continue
-		}
-		best = couponSnapshot{
+func totalCouponSnapshot(coupons []AvailableCoupon) couponSnapshot {
+	if len(coupons) == 0 {
+		return couponSnapshot{}
+	}
+	if len(coupons) == 1 {
+		discount := parsePrice(coupons[0].DiscountAmount)
+		return couponSnapshot{
 			DiscountAmount: discount,
-			Code:           coupon.RedemptionCode,
-			Message:        coupon.Message,
+			Code:           coupons[0].RedemptionCode,
+			Message:        coupons[0].Message,
 			Source:         "api",
-			Signature:      strings.ToLower(strings.TrimSpace(fmt.Sprintf("api|%s|%.2f", coupon.RedemptionCode, discount))),
+			Signature:      strings.ToLower(strings.TrimSpace(fmt.Sprintf("api|%s|%.2f", coupons[0].RedemptionCode, discount))),
 		}
 	}
-	return best
+
+	uniqueCodes := make(map[string]float64)
+	codeToMessage := make(map[string]string)
+	var noCodeTotal float64
+	var noCodeMessages []string
+
+	for _, c := range coupons {
+		code := strings.ToUpper(strings.TrimSpace(c.RedemptionCode))
+		discount := parsePrice(c.DiscountAmount)
+		if discount <= 0 {
+			continue
+		}
+		if code == "" {
+			noCodeTotal += discount
+			if c.Message != "" {
+				noCodeMessages = append(noCodeMessages, c.Message)
+			}
+			continue
+		}
+		if discount > uniqueCodes[code] {
+			uniqueCodes[code] = discount
+			codeToMessage[code] = c.Message
+		}
+	}
+
+	var total float64 = noCodeTotal
+	var codes []string
+	var messages []string
+	messages = append(messages, noCodeMessages...)
+
+	// Sort codes for deterministic signature and message order
+	sortedCodes := make([]string, 0, len(uniqueCodes))
+	for code := range uniqueCodes {
+		sortedCodes = append(sortedCodes, code)
+	}
+	sort.Strings(sortedCodes)
+
+	for _, code := range sortedCodes {
+		total += uniqueCodes[code]
+		codes = append(codes, code)
+		if msg := codeToMessage[code]; msg != "" {
+			messages = append(messages, msg)
+		}
+	}
+
+	if total <= 0 {
+		return couponSnapshot{}
+	}
+
+	combinedCode := strings.Join(codes, "+")
+	combinedMessage := strings.Join(uniqueStrings(messages), "; ")
+	return couponSnapshot{
+		DiscountAmount: total,
+		Code:           combinedCode,
+		Message:        combinedMessage,
+		Source:         "api",
+		Signature:      strings.ToLower(strings.TrimSpace(fmt.Sprintf("api|%s|%.2f", combinedCode, total))),
+	}
 }
 
 // FetchPageCouponSnapshot attempts buyer-visible eBay listing-page coupon

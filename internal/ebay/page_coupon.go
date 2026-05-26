@@ -26,6 +26,7 @@ var (
 	priceDetailsFormulaHintRe       = regexp.MustCompile(`(?i)(\d{1,2}(?:\.\d{1,2})?)\s*%\s*off|(?:us\s*\$|c\s*\$|ca\s*\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*off`)
 	priceDetailsSignatureCleanupRe  = regexp.MustCompile(`(?i)(?:[-−]?\s*)?(?:us\s*\$|c\s*\$|ca\s*\$|\$)\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?`)
 	priceDetailsSignatureNonWordRe  = regexp.MustCompile(`[^a-z0-9%$]+`)
+	pageOriginalPriceRe             = regexp.MustCompile(`(?i)(?:list\s+price|was|original\s+price)[:\s]+(?:us\s*\$|c\s*\$|ca\s*\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
 )
 
 // PageCoupon is a buyer-visible coupon discovered from an eBay listing page.
@@ -41,11 +42,13 @@ type PageCoupon struct {
 	Scope          string
 	Signature      string
 	Confidence     float64
+	OriginalPrice  float64
 }
 
 func (c PageCoupon) snapshot(source string) couponSnapshot {
 	return couponSnapshot{
 		DiscountAmount: c.DiscountAmount,
+		OriginalPrice:  c.OriginalPrice,
 		Code:           c.Code,
 		Message:        c.Message,
 		Source:         source,
@@ -63,57 +66,70 @@ func ExtractPageCoupon(html string, basePrice float64) PageCoupon {
 		return PageCoupon{}
 	}
 
-	if coupon := extractPriceDetailsCoupon(normalized, basePrice); coupon.DiscountAmount > 0 {
-		return coupon
+	var originalPrice float64
+	if match := pageOriginalPriceRe.FindStringSubmatch(normalized); len(match) >= 2 {
+		originalPrice = parseCouponAmount(match[1])
 	}
 
-	best := PageCoupon{}
-	if match := pageCouponPercentRe.FindStringSubmatch(normalized); len(match) >= 2 && basePrice > 0 {
-		if percent, err := strconv.ParseFloat(match[1], 64); err == nil && percent > 0 {
-			discount := basePrice * percent / 100
-			maxDiscount := 0.0
-			if capMatch := pageCouponCapRe.FindStringSubmatch(normalized); len(capMatch) >= 2 {
-				if capAmount := parseCouponAmount(capMatch[1]); capAmount > 0 && capAmount < discount {
-					discount = capAmount
-					maxDiscount = capAmount
+	coupon := PageCoupon{}
+	if priceDetailsCoupon := extractPriceDetailsCoupon(normalized, basePrice); priceDetailsCoupon.DiscountAmount > 0 {
+		coupon = priceDetailsCoupon
+	} else {
+		best := PageCoupon{}
+		if match := pageCouponPercentRe.FindStringSubmatch(normalized); len(match) >= 2 && basePrice > 0 {
+			if percent, err := strconv.ParseFloat(match[1], 64); err == nil && percent > 0 {
+				discount := basePrice * percent / 100
+				maxDiscount := 0.0
+				if capMatch := pageCouponCapRe.FindStringSubmatch(normalized); len(capMatch) >= 2 {
+					if capAmount := parseCouponAmount(capMatch[1]); capAmount > 0 && capAmount < discount {
+						discount = capAmount
+						maxDiscount = capAmount
+					}
 				}
+				best.DiscountAmount = roundCents(discount)
+				best.DiscountType = "percent"
+				best.DiscountValue = percent
+				best.MaxDiscount = maxDiscount
+				best.Message = strings.TrimSpace(match[0])
 			}
-			best.DiscountAmount = roundCents(discount)
-			best.DiscountType = "percent"
-			best.DiscountValue = percent
-			best.MaxDiscount = maxDiscount
+		}
+
+		for _, match := range pageCouponFixedRe.FindAllStringSubmatch(normalized, -1) {
+			discount := parseCouponAmount(firstNonEmpty(match[1:]...))
+			if basePrice > 0 && discount >= basePrice {
+				continue
+			}
+			if discount <= best.DiscountAmount {
+				continue
+			}
+			best.DiscountAmount = discount
+			best.DiscountType = "fixed"
+			best.DiscountValue = discount
+			best.MaxDiscount = 0
 			best.Message = strings.TrimSpace(match[0])
 		}
+		coupon = best
 	}
 
-	for _, match := range pageCouponFixedRe.FindAllStringSubmatch(normalized, -1) {
-		discount := parseCouponAmount(firstNonEmpty(match[1:]...))
-		if basePrice > 0 && discount >= basePrice {
-			continue
+	if coupon.DiscountAmount <= 0 {
+		if originalPrice > 0 {
+			return PageCoupon{OriginalPrice: originalPrice}
 		}
-		if discount <= best.DiscountAmount {
-			continue
-		}
-		best.DiscountAmount = discount
-		best.DiscountType = "fixed"
-		best.DiscountValue = discount
-		best.MaxDiscount = 0
-		best.Message = strings.TrimSpace(match[0])
-	}
-
-	if best.DiscountAmount <= 0 {
 		return PageCoupon{}
 	}
 
-	if codeMatch := pageCouponCodeRe.FindStringSubmatch(normalized); len(codeMatch) >= 2 {
-		best.Code = normalizeCouponCode(codeMatch[1])
+	if coupon.Code == "" {
+		if codeMatch := pageCouponCodeRe.FindStringSubmatch(normalized); len(codeMatch) >= 2 {
+			coupon.Code = normalizeCouponCode(codeMatch[1])
+		}
 	}
-	best.ExpiresAt = parseCouponExpiry(normalized)
-	best.Scope = inferCouponScope(normalized)
-	best.EvidenceText = couponEvidenceWindow(normalized, best.Message)
-	best.Confidence = couponConfidence(best, normalized)
-	best.Signature = NormalizeCouponSignature(best)
-	return best
+	coupon.OriginalPrice = originalPrice
+	coupon.ExpiresAt = parseCouponExpiry(normalized)
+	coupon.Scope = inferCouponScope(normalized)
+	coupon.EvidenceText = couponEvidenceWindow(normalized, coupon.Message)
+	coupon.Confidence = couponConfidence(coupon, normalized)
+	coupon.Signature = NormalizeCouponSignature(coupon)
+	return coupon
 }
 
 type priceDetailsDiscount struct {

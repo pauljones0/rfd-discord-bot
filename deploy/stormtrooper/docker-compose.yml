@@ -18,6 +18,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   bot:
     container_name: rfd-discord-bot
@@ -62,6 +67,11 @@ services:
     volumes:
       - ${RFD_BOT_DATA_DIR:-/srv/appdata/rfd-discord-bot}:/data
       - ${RFD_BOT_BROWSER_CACHE_DIR:-/srv/appdata/rfd-discord-bot/browser-cache}:/data/browser-cache
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
 
   cloudflared:
     image: cloudflare/cloudflared:latest

@@ -4,5 +4,5 @@ After=default.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/paul/rfd-discord-bot/deploy/stormtrooper
-ExecStart=/home/paul/rfd-discord-bot/deploy/stormtrooper/rfd-bot-watchdog.sh
+WorkingDirectory=/home/paul/agent-work/repos/rfd-discord-bot/deploy/stormtrooper
+ExecStart=/home/paul/agent-work/repos/rfd-discord-bot/deploy/stormtrooper/rfd-bot-watchdog.sh

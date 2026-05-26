@@ -587,6 +587,10 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		}
 	}
 
+	if item.OriginalPrice > 0 && item.OriginalPrice != item.PreviousPrice {
+		descBuilder.WriteString(fmt.Sprintf("~~%s~~ (orig)  •  ", formatEbayMoney(item.OriginalPrice, item.Currency)))
+	}
+
 	if item.PreviousPrice > 0 && item.CurrentPrice > 0 && item.PriceDrop > 0 {
 		descBuilder.WriteString(fmt.Sprintf(
 			"~~%s~~ -> **%s**  (-%s, -%.0f%%)",
@@ -604,11 +608,22 @@ func formatEbayEmbed(item ebay.EbayItem) discordEmbed {
 		}
 		descBuilder.WriteString(fmt.Sprintf("%s drop", ordinal(item.DropCount)))
 	}
+
+	if item.OriginalPrice > 0 && item.OriginalPrice > item.CurrentPrice && item.OriginalPrice != item.PreviousPrice {
+		totalDrop := item.OriginalPrice - item.CurrentPrice
+		totalPct := (totalDrop / item.OriginalPrice) * 100
+		descBuilder.WriteString(fmt.Sprintf("\n*(total savings: -%s, -%.0f%%)*", formatEbayMoney(totalDrop, item.Currency), totalPct))
+	}
+
 	if item.CouponDiscount > 0 {
+		couponLabel := "coupon included"
+		if strings.Contains(item.CouponCode, "+") {
+			couponLabel = "multiple coupons included"
+		}
 		if descBuilder.Len() > 0 {
 			descBuilder.WriteString("  •  ")
 		}
-		descBuilder.WriteString("coupon included")
+		descBuilder.WriteString(couponLabel)
 	}
 
 	var meta []string

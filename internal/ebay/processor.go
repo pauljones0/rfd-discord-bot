@@ -209,7 +209,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				CouponMessage:   apiItem.CouponMessage,
 				CouponSource:    apiItem.CouponSource,
 				CouponSignature: apiItem.CouponSignature,
-				OriginalPrice:   newPrice,
+				OriginalPrice:   basePrice, // Default to basePrice if no page original found yet
 				Currency:        currencyOrDefault(apiItem.Price),
 				Seller:          sellerUsername(apiItem.Seller),
 				Condition:       apiItem.Condition,
@@ -272,6 +272,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				CurrentPrice:             newPrice,
 				PreviousPrice:            baselinePrice,
 				BasePrice:                basePrice,
+				OriginalPrice:            existing.OriginalPrice,
 				CouponDiscount:           apiItem.CouponDiscount,
 				CouponCode:               apiItem.CouponCode,
 				CouponMessage:            apiItem.CouponMessage,
@@ -552,7 +553,10 @@ func (p *Processor) applyCouponForPriceDrop(ctx context.Context, apiItem BrowseA
 		couponCache[key] = coupons
 	}
 
-	if cachedCoupon := bestCachedCoupon(coupons, basePrice); cachedCoupon.DiscountAmount > apiItem.CouponDiscount {
+	if cachedCoupon := totalCachedCoupon(coupons, basePrice); cachedCoupon.DiscountAmount > apiItem.CouponDiscount {
+		if existing.OriginalPrice < cachedCoupon.OriginalPrice {
+			existing.OriginalPrice = cachedCoupon.OriginalPrice
+		}
 		applyCouponSnapshotToItem(&apiItem, cachedCoupon)
 		currentPrice = effectiveItemPrice(basePrice, apiItem.CouponDiscount)
 		logger.Info("Applied cached eBay seller coupon to effective price",
@@ -649,6 +653,9 @@ func (p *Processor) applyCouponForPriceDrop(ctx context.Context, apiItem BrowseA
 	}
 
 	if pageSnapshot := pageCoupon.snapshot(source); pageSnapshot.DiscountAmount > apiItem.CouponDiscount {
+		if existing.OriginalPrice < pageSnapshot.OriginalPrice {
+			existing.OriginalPrice = pageSnapshot.OriginalPrice
+		}
 		applyCouponSnapshotToItem(&apiItem, pageSnapshot)
 		currentPrice = effectiveItemPrice(basePrice, apiItem.CouponDiscount)
 		logger.Info("Applied page eBay coupon to current item effective price",
@@ -663,7 +670,10 @@ func (p *Processor) applyCouponForPriceDrop(ctx context.Context, apiItem BrowseA
 	}
 
 	if refreshed.Active {
-		if cachedCoupon := bestCachedCoupon([]StoreCoupon{refreshed}, basePrice); cachedCoupon.DiscountAmount > apiItem.CouponDiscount {
+		if cachedCoupon := totalCachedCoupon([]StoreCoupon{refreshed}, basePrice); cachedCoupon.DiscountAmount > apiItem.CouponDiscount {
+			if existing.OriginalPrice < cachedCoupon.OriginalPrice {
+				existing.OriginalPrice = cachedCoupon.OriginalPrice
+			}
 			applyCouponSnapshotToItem(&apiItem, cachedCoupon)
 			currentPrice = effectiveItemPrice(basePrice, apiItem.CouponDiscount)
 		}
@@ -908,6 +918,14 @@ func (p *Processor) retroactiveCouponAlerts(apiItems []BrowseAPIItem, tracked ma
 		if discount <= apiItem.CouponDiscount {
 			continue
 		}
+		discountCoupon := couponSnapshot{
+			DiscountAmount: discount,
+			OriginalPrice:  coupon.OriginalPrice,
+			Code:           coupon.Code,
+			Message:        coupon.RawText,
+			Source:         "seller-coupon-cache",
+			Signature:      coupon.Signature,
+		}
 		effectivePrice := effectiveItemPrice(basePrice, discount)
 		baselinePrice, dollarDrop, percentDrop, shouldNotify := shouldNotifyPriceDrop(existing, effectivePrice)
 		if !shouldNotify {
@@ -915,6 +933,9 @@ func (p *Processor) retroactiveCouponAlerts(apiItems []BrowseAPIItem, tracked ma
 		}
 
 		existing.DropCount = priorDropCount(existing) + 1
+		if existing.OriginalPrice < discountCoupon.OriginalPrice {
+			existing.OriginalPrice = discountCoupon.OriginalPrice
+		}
 		existing.Price = effectivePrice
 		existing.BasePrice = basePrice
 		existing.CouponDiscount = discount
@@ -947,6 +968,7 @@ func (p *Processor) retroactiveCouponAlerts(apiItems []BrowseAPIItem, tracked ma
 			CurrentPrice:             effectivePrice,
 			PreviousPrice:            baselinePrice,
 			BasePrice:                basePrice,
+			OriginalPrice:            existing.OriginalPrice,
 			CouponDiscount:           discount,
 			CouponCode:               coupon.Code,
 			CouponMessage:            coupon.RawText,
@@ -1047,10 +1069,20 @@ func couponCacheFresh(coupons []StoreCoupon, now time.Time, interval time.Durati
 	return false, StoreCoupon{}
 }
 
-func bestCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot {
-	var best couponSnapshot
+func totalCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot {
+	var total float64
+	var maxOriginal float64
+	var codes []string
+	var messages []string
+	var signatures []string
+
 	now := time.Now()
 	latestChecked := latestCouponCheck(coupons)
+
+	uniqueCodes := make(map[string]float64)
+	codeToMessage := make(map[string]string)
+	codeToSignature := make(map[string]string)
+
 	for _, coupon := range coupons {
 		if !latestChecked.IsZero() && !coupon.LastChecked.Equal(latestChecked) {
 			continue
@@ -1058,19 +1090,55 @@ func bestCachedCoupon(coupons []StoreCoupon, basePrice float64) couponSnapshot {
 		if !storeCouponReadyForStoreWideUse(coupon, now) {
 			continue
 		}
+		if coupon.OriginalPrice > maxOriginal {
+			maxOriginal = coupon.OriginalPrice
+		}
 		discount := storeCouponDiscount(coupon, basePrice)
-		if discount <= best.DiscountAmount {
+		if discount <= 0 {
 			continue
 		}
-		best = couponSnapshot{
-			DiscountAmount: discount,
-			Code:           coupon.Code,
-			Message:        coupon.RawText,
-			Source:         "seller-coupon-cache",
-			Signature:      coupon.Signature,
+
+		code := strings.ToUpper(strings.TrimSpace(coupon.Code))
+		if code == "" {
+			code = "AUTO-" + coupon.Signature
+		}
+
+		if discount > uniqueCodes[code] {
+			uniqueCodes[code] = discount
+			codeToMessage[code] = coupon.RawText
+			codeToSignature[code] = coupon.Signature
 		}
 	}
-	return best
+
+	sortedCodes := make([]string, 0, len(uniqueCodes))
+	for code := range uniqueCodes {
+		sortedCodes = append(sortedCodes, code)
+	}
+	sort.Strings(sortedCodes)
+
+	for _, code := range sortedCodes {
+		total += uniqueCodes[code]
+		if !strings.HasPrefix(code, "AUTO-") {
+			codes = append(codes, code)
+		}
+		if msg := codeToMessage[code]; msg != "" {
+			messages = append(messages, msg)
+		}
+		signatures = append(signatures, codeToSignature[code])
+	}
+
+	if total <= 0 {
+		return couponSnapshot{}
+	}
+
+	return couponSnapshot{
+		DiscountAmount: total,
+		OriginalPrice:  maxOriginal,
+		Code:           strings.Join(codes, "+"),
+		Message:        strings.Join(uniqueStrings(messages), "; "),
+		Source:         "seller-coupon-cache",
+		Signature:      strings.Join(signatures, "+"),
+	}
 }
 
 func latestCouponCheck(coupons []StoreCoupon) time.Time {
