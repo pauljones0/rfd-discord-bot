@@ -11,7 +11,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server \
     && CGO_ENABLED=0 GOOS=linux go build -o /out/scrape-lab ./cmd/scrape-lab \
     && CGO_ENABLED=0 GOOS=linux go build -o /out/register-commands ./cmd/register-commands \
     && CGO_ENABLED=0 GOOS=linux go build -o /out/cleanup-legacy-subscriptions ./cmd/cleanup-legacy-subscriptions

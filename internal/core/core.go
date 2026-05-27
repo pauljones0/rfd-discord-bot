@@ -291,6 +291,10 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 
 	priceCAD := p.rates.ConvertToCAD(parsed.Price, parsed.Currency)
 
+	if isTCGCategory(category) {
+		normName += " " + getTCGTier(priceCAD)
+	}
+
 	lock := p.productLock(normName)
 	lock.Lock()
 	defer lock.Unlock()
@@ -670,6 +674,22 @@ func isAmbiguous(normName string, truncated bool) bool {
 	}
 
 	return false
+}
+
+func getTCGTier(priceCAD float64) string {
+	if priceCAD < 15 {
+		return "pack"
+	}
+	if priceCAD < 75 {
+		return "bundle"
+	}
+	if priceCAD < 250 {
+		return "booster_box"
+	}
+	if priceCAD < 400 {
+		return "collector_box"
+	}
+	return "case"
 }
 
 func minOf(slice []float64) float64 {
