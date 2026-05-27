@@ -1568,9 +1568,9 @@ func (h *Handler) handleCoreSuggestRules(w http.ResponseWriter, req interactionR
 			}
 
 			// Apply old active rules
-			oldNorm := core.NormalizeProductName(productName, existingRules)
+			oldNorm := core.NormalizeProductName(productName, existingRules, "")
 			// Apply new suggested rules
-			newNorm := core.NormalizeProductName(productName, suggestedRules)
+			newNorm := core.NormalizeProductName(productName, suggestedRules, "")
 
 			if oldNorm != newNorm && changedCount < 5 {
 				diffText.WriteString(fmt.Sprintf("• Original: `%s`\n  Before: `%s`\n  After:  `%s`\n\n", productName, oldNorm, newNorm))

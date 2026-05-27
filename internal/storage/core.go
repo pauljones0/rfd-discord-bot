@@ -10,6 +10,7 @@ import (
 
 const (
 	corePriceHistoryCollection     = "core_price_history"
+	coreCategoryStatsCollection    = "core_category_stats"
 	coreRawNotificationsCollection = "core_raw_notifications"
 )
 
@@ -26,6 +27,21 @@ func (c *Client) GetCorePriceHistory(ctx context.Context, productName string) (*
 // SaveCorePriceHistory saves or updates the price history for a product.
 func (c *Client) SaveCorePriceHistory(ctx context.Context, history models.CorePriceHistory) error {
 	return c.SetDocument(ctx, corePriceHistoryCollection, history.ProductName, history)
+}
+
+// GetCoreCategoryStats retrieves the observation stats for a category.
+func (c *Client) GetCoreCategoryStats(ctx context.Context, category string) (*models.CoreCategoryStats, bool, error) {
+	var stats models.CoreCategoryStats
+	ok, err := c.GetDocument(ctx, coreCategoryStatsCollection, category, &stats)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return &stats, true, nil
+}
+
+// SaveCoreCategoryStats saves or updates the observation stats for a category.
+func (c *Client) SaveCoreCategoryStats(ctx context.Context, stats models.CoreCategoryStats) error {
+	return c.SetDocument(ctx, coreCategoryStatsCollection, stats.Category, stats)
 }
 
 // GetCoreSubscriptionsByGuild retrieves all core subscriptions for a specific guild.

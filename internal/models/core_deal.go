@@ -30,6 +30,13 @@ type CorePriceHistory struct {
 	LastUpdated time.Time `docstore:"lastUpdated"`
 }
 
+// CoreCategoryStats tracks how many observations have been seen in a category.
+type CoreCategoryStats struct {
+	Category    string    `docstore:"category"`
+	TotalCount  int       `docstore:"totalCount"`
+	LastUpdated time.Time `docstore:"lastUpdated"`
+}
+
 // CoreRule represents a single regex search and replace rule.
 type CoreRule struct {
 	Pattern string `docstore:"pattern"`

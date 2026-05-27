@@ -19,6 +19,7 @@ import (
 
 const (
 	minPriceObservationsForAlert = 10
+	minCategoryObservations      = 10
 	maxPriceHistoryEntries       = 100
 )
 
@@ -26,6 +27,8 @@ const (
 type Store interface {
 	GetCorePriceHistory(ctx context.Context, productName string) (*models.CorePriceHistory, bool, error)
 	SaveCorePriceHistory(ctx context.Context, history models.CorePriceHistory) error
+	GetCoreCategoryStats(ctx context.Context, category string) (*models.CoreCategoryStats, bool, error)
+	SaveCoreCategoryStats(ctx context.Context, stats models.CoreCategoryStats) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
 	GetCoreRules(ctx context.Context) ([]models.CoreRule, error)
 }
@@ -99,6 +102,7 @@ var (
 		":", "",
 		",", "",
 		"-", " ",
+		"|", " ",
 		"(", "",
 		")", "",
 		"[", "",
@@ -267,16 +271,24 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 	if err != nil {
 		slog.Error("Core bot: Failed to fetch core rules, proceeding without rules", "error", err)
 	}
-	compiledRules, ruleErr := compileRules(rules)
+	_, ruleErr := compileRules(rules)
 	if ruleErr != nil {
 		slog.Warn("Core bot: Ignoring invalid normalization rules", "error", ruleErr)
 	}
 
-	normName := normalizeProductNameWithRules(parsed.ProductName, compiledRules)
-	if normName == "" {
-		normName = NormalizeProductName(parsed.ProductName, nil)
-	}
 	category := ParseCategoryFromTitle(title)
+	normName := NormalizeProductName(parsed.ProductName, rules, category)
+	if normName == "" {
+		normName = NormalizeProductName(parsed.ProductName, nil, category)
+	}
+
+	// Check for ambiguity especially with truncated names
+	truncated := strings.HasSuffix(strings.TrimSpace(message), "...") || strings.HasSuffix(strings.TrimSpace(title), "...")
+	if isAmbiguous(normName, truncated) {
+		slog.Info("Core bot: Normalized product name is too ambiguous, skipping", "name", normName, "truncated", truncated)
+		return nil
+	}
+
 	priceCAD := p.rates.ConvertToCAD(parsed.Price, parsed.Currency)
 
 	lock := p.productLock(normName)
@@ -286,6 +298,15 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 	history, historyLoaded, err := p.loadPriceHistory(ctx, normName, category)
 	if err != nil {
 		slog.Error("Core bot: Failed to fetch price history, proceeding with empty history", "product", parsed.ProductName, "normalized", normName, "error", err)
+	}
+
+	// Load and update category stats
+	catStats, _, err := p.store.GetCoreCategoryStats(ctx, category)
+	if err != nil {
+		slog.Warn("Core bot: Failed to fetch category stats", "category", category, "error", err)
+	}
+	if catStats == nil {
+		catStats = &models.CoreCategoryStats{Category: category}
 	}
 
 	if eventAlreadyRecorded(history, eventID) {
@@ -300,11 +321,27 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 		slog.Debug("Core bot: Price observation did not qualify for alert", "product", parsed.ProductName, "normalized", normName, "price_cad", priceCAD, "reason", evaluation.Reason, "prior_count", evaluation.PriorCount)
 	}
 
+	// Threshold enforcement: Category-wide count check
+	if catStats.TotalCount < minCategoryObservations {
+		if evaluation.ShouldSignal {
+			slog.Info("Core bot: Alert suppressed due to insufficient category history", "category", category, "count", catStats.TotalCount)
+			evaluation.ShouldSignal = false
+			evaluation.Reason = "insufficient_category_history"
+		}
+	}
+
 	appendPriceObservation(history, priceCAD, eventID)
 	history.Category = category
 	history.LastUpdated = time.Now()
 	if err := p.store.SaveCorePriceHistory(ctx, *history); err != nil {
 		return fmt.Errorf("failed to save core price history for %q: %w", normName, err)
+	}
+
+	// Update category count
+	catStats.TotalCount++
+	catStats.LastUpdated = time.Now()
+	if err := p.store.SaveCoreCategoryStats(ctx, *catStats); err != nil {
+		slog.Warn("Core bot: Failed to save category stats", "category", category, "error", err)
 	}
 
 	if !evaluation.ShouldSignal {
@@ -511,9 +548,23 @@ func ValidateRules(rules []models.CoreRule) error {
 }
 
 // NormalizeProductName normalizes characters and symbols to group similar product names reliably.
-func NormalizeProductName(name string, rules []models.CoreRule) string {
+func NormalizeProductName(name string, rules []models.CoreRule, category string) string {
 	compiled, _ := compileRules(rules)
-	return normalizeProductNameWithRules(name, compiled)
+	norm := normalizeProductNameWithRules(name, compiled)
+
+	// Special handling for RAM
+	if isRAMCategory(category) {
+		if ramSpec := extractRAMSpecs(norm); ramSpec != "" {
+			return ramSpec
+		}
+	}
+
+	// Special handling for TCG (Pokemon/Magic)
+	if isTCGCategory(category) {
+		return normalizeTCG(norm)
+	}
+
+	return norm
 }
 
 func normalizeProductNameWithRules(name string, rules []compiledRule) string {
@@ -526,6 +577,99 @@ func normalizeProductNameWithRules(name string, rules []compiledRule) string {
 
 	words := strings.Fields(name)
 	return strings.Join(words, " ")
+}
+
+func isRAMCategory(category string) bool {
+	cat := strings.ToLower(category)
+	return strings.Contains(cat, "gb") && (strings.HasPrefix(cat, "#") || strings.Contains(cat, "ram"))
+}
+
+var (
+	ramCapacityRegex = regexp.MustCompile(`\b(\d+)\s*(?:gb|g|go)\b`)
+	ramConfigRegex   = regexp.MustCompile(`\b(\d+)\s*[x*]\s*(\d+)\s*(?:gb|g|go)?\b`)
+)
+
+func extractRAMSpecs(name string) string {
+	// Try to find config first (e.g. 2x16)
+	configMatch := ramConfigRegex.FindStringSubmatch(name)
+	capacityMatch := ramCapacityRegex.FindStringSubmatch(name)
+
+	if len(configMatch) > 0 {
+		count := configMatch[1]
+		size := configMatch[2]
+		// If we also found a total capacity, use it to verify
+		total := ""
+		if len(capacityMatch) > 0 {
+			total = capacityMatch[1] + "gb"
+		}
+		return fmt.Sprintf("ram %s %sx%sgb", total, count, size)
+	}
+
+	if len(capacityMatch) > 0 {
+		return fmt.Sprintf("ram %sgb", capacityMatch[1])
+	}
+
+	return ""
+}
+
+func isTCGCategory(category string) bool {
+	cat := strings.ToLower(category)
+	return strings.Contains(cat, "pokemon") || strings.Contains(cat, "magic") || strings.Contains(cat, "tcg") || strings.Contains(cat, "mtg")
+}
+
+var tcgTypes = []string{
+	"booster box", "booster pack", "elite trainer box", "etb",
+	"blister", "case", "triple pack", "premium collection",
+	"starter deck", "commander deck", "bundle", "tin",
+	"small pack", "big pack", "booster", "mega premium",
+}
+
+func normalizeTCG(name string) string {
+	// Preserve specific TCG keywords that differentiate products
+	var foundType string
+	for _, t := range tcgTypes {
+		if strings.Contains(name, t) {
+			foundType = t
+			break
+		}
+	}
+
+	// Remove common prefixes/suffixes to find the "Set Name"
+	set := name
+	set = strings.ReplaceAll(set, "pokemon tcg", "")
+	set = strings.ReplaceAll(set, "pokemon", "")
+	set = strings.ReplaceAll(set, "magic the gathering", "")
+	set = strings.ReplaceAll(set, "magic", "")
+	set = strings.ReplaceAll(set, "card game", "")
+	set = strings.TrimSpace(set)
+
+	if foundType != "" {
+		set = strings.ReplaceAll(set, foundType, "")
+		set = strings.TrimSpace(set)
+		// If set name is truncated, it's still better than just the set name
+		return fmt.Sprintf("tcg %s %s", set, foundType)
+	}
+
+	return "tcg " + set
+}
+
+func isAmbiguous(normName string, truncated bool) bool {
+	// If it's already specialized (starts with ram or tcg), it's not ambiguous enough to skip
+	if strings.HasPrefix(normName, "ram ") || strings.HasPrefix(normName, "tcg ") {
+		return false
+	}
+
+	words := strings.Fields(normName)
+	if len(words) == 0 {
+		return true
+	}
+
+	// 1-word names are almost always ambiguous (e.g. "Monitor")
+	if len(words) == 1 {
+		return true
+	}
+
+	return false
 }
 
 func minOf(slice []float64) float64 {
