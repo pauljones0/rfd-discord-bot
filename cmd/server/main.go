@@ -237,6 +237,7 @@ func main() {
 	adminHandle("GET /process-bestbuy", srv.ProcessBestBuyHandler)
 	adminHandle("GET /process-bestbuy-compute", srv.ProcessBestBuyComputeHandler)
 	adminHandle("POST /prime-bestbuy-baseline", srv.PrimeBestBuyBaselineHandler)
+	adminHandle("POST /ingest/discord-notification", srv.DiscordNotificationIngestHandler)
 	if cfg.HardwareSwapEnabled {
 		adminHandle("GET /process-hardwareswap", srv.ProcessHardwareSwapHandler)
 	}
