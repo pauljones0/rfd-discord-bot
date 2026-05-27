@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func Testebay.ParseSoldListings(t *testing.T) {
+func TestEbayParseSoldListings(t *testing.T) {
 	html := `
 <ul>
   <li class="s-item">
@@ -39,7 +39,7 @@ func Testebay.ParseSoldListings(t *testing.T) {
 	}
 }
 
-func Testebay.ParseSoldListingsNewCardLayout(t *testing.T) {
+func TestEbayParseSoldListingsNewCardLayout(t *testing.T) {
 	html := `
 <ul>
   <li>

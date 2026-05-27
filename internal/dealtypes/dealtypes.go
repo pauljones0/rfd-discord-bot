@@ -12,6 +12,7 @@ const (
 	SubscriptionMemoryExpress = "memoryexpress"
 	SubscriptionBestBuy       = "bestbuy"
 	SubscriptionHardwareSwap  = "hardwareswap"
+	SubscriptionCore          = "core"
 
 	RFDAll         = "rfd_all"
 	RFDTech        = "rfd_tech"
@@ -30,6 +31,8 @@ const (
 	BestBuyWarmHot = "bb_warm_hot"
 	BestBuyHot     = "bb_hot"
 	BestBuyCompute = "bb_compute"
+
+	CoreAlerts = "core_alerts"
 )
 
 var RFDChoices = []Choice{
@@ -58,12 +61,17 @@ var BestBuyChoices = []Choice{
 	{Name: "High-compute outliers", Value: BestBuyCompute},
 }
 
+var CoreChoices = []Choice{
+	{Name: "Lowest or p25 deals", Value: CoreAlerts},
+}
+
 var RemoveChoices = []Choice{
 	{Name: "RFD", Value: SubscriptionRFD},
 	{Name: "eBay", Value: SubscriptionEbay},
 	{Name: "Facebook", Value: SubscriptionFacebook},
 	{Name: "Memory Express", Value: SubscriptionMemoryExpress},
 	{Name: "Best Buy", Value: SubscriptionBestBuy},
+	{Name: "Core", Value: SubscriptionCore},
 }
 
 func ActiveRemoveChoices(facebookEnabled, hardwareSwapEnabled bool) []Choice {
@@ -79,7 +87,7 @@ func ActiveRemoveChoices(facebookEnabled, hardwareSwapEnabled bool) []Choice {
 
 func ValidSubscriptionType(value string, facebookEnabled, hardwareSwapEnabled bool) bool {
 	switch value {
-	case SubscriptionRFD, SubscriptionEbay, SubscriptionMemoryExpress, SubscriptionBestBuy:
+	case SubscriptionRFD, SubscriptionEbay, SubscriptionMemoryExpress, SubscriptionBestBuy, SubscriptionCore:
 		return true
 	case SubscriptionFacebook:
 		return facebookEnabled
@@ -104,6 +112,10 @@ func IsMemoryExpress(value string) bool {
 
 func IsBestBuy(value string) bool {
 	return containsValue(BestBuyChoices, value)
+}
+
+func IsCore(value string) bool {
+	return containsValue(CoreChoices, value)
 }
 
 func Label(value string) string {
@@ -138,6 +150,8 @@ func Label(value string) string {
 		return "Best Buy AI hot new listings and price drops only"
 	case BestBuyCompute:
 		return "Best Buy high-compute workstation/server outliers"
+	case CoreAlerts:
+		return "Core lowest or p25 deals"
 	default:
 		return value
 	}

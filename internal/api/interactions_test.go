@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -145,6 +146,44 @@ func (m *mockStore) GetBestBuySubscriptionsByGuild(ctx context.Context, guildID 
 		return nil, m.err
 	}
 	return nil, nil
+}
+
+func (m *mockStore) GetCoreSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	// Return subscriptions of type core
+	var out []models.Subscription
+	for _, sub := range m.subscriptions {
+		if sub.IsCore() && sub.GuildID == guildID {
+			out = append(out, sub)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockStore) GetRecentCoreRawNotifications(ctx context.Context, duration time.Duration) ([]models.CoreRawNotification, error) {
+	return nil, nil
+}
+
+func (m *mockStore) GetCoreRules(ctx context.Context) ([]models.CoreRule, error) {
+	return nil, nil
+}
+
+func (m *mockStore) SaveCoreRules(ctx context.Context, rules []models.CoreRule) error {
+	return nil
+}
+
+func (m *mockStore) GetPendingCoreRules(ctx context.Context) ([]models.CoreRule, error) {
+	return nil, nil
+}
+
+func (m *mockStore) SavePendingCoreRules(ctx context.Context, rules []models.CoreRule) error {
+	return nil
+}
+
+func (m *mockStore) DeletePendingCoreRules(ctx context.Context) error {
+	return nil
 }
 
 func TestHandleRemoveCommand(t *testing.T) {

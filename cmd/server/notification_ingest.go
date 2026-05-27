@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
 const discordNotificationIngestMaxBytes = 128 * 1024
@@ -96,6 +99,36 @@ func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http
 		"mark_read_sent", normalized.MarkReadSent,
 		"mark_read_reason", normalized.MarkReadReason,
 	)
+
+	// Save the raw notification to storage
+	rawNotif := models.CoreRawNotification{
+		EventID:       normalized.EventID,
+		SourcePackage: normalized.SourcePackage,
+		Title:         normalized.Title,
+		Message:       normalized.Message,
+		Lines:         normalized.Lines,
+		ReceivedAt:    time.Now(),
+	}
+	if normalized.ReceivedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, normalized.ReceivedAt); err == nil {
+			rawNotif.ReceivedAt = t
+		}
+	}
+	if s.db != nil {
+		if err := s.db.SaveCoreRawNotification(r.Context(), rawNotif); err != nil {
+			slog.Error("Failed to save raw notification", "event_id", normalized.EventID, "error", err)
+		}
+	}
+
+	if s.coreProcessor != nil && strings.Contains(strings.ToLower(normalized.SourcePackage), "discord") {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := s.coreProcessor.ProcessNotification(ctx, normalized.Title, normalized.Message, normalized.Lines, normalized.EventID, normalized.SourcePackage); err != nil {
+				slog.Error("Failed to process ingested Discord notification in Core bot", "event_id", normalized.EventID, "error", err)
+			}
+		}()
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)

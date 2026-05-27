@@ -178,6 +178,34 @@ func main() {
 						},
 					},
 				},
+				// setup-core subcommand
+				{
+					"name":        "setup-core",
+					"description": "Subscribe this channel to Core lowest or p25 price deal alerts.",
+					"type":        1, // SUB_COMMAND
+					"options": []map[string]interface{}{
+						{
+							"name":          "channel",
+							"description":   "The channel to publish deals to.",
+							"type":          7,           // CHANNEL
+							"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
+							"required":      true,
+						},
+						{
+							"name":        "filter",
+							"description": "Which Core alerts to publish.",
+							"type":        3, // STRING
+							"required":    true,
+							"choices":     stringChoices(dealtypes.CoreChoices),
+						},
+					},
+				},
+				// suggest-rules subcommand
+				{
+					"name":        "suggest-rules",
+					"description": "Have Gemini analyze recent notifications and suggest product segmentation regexes.",
+					"type":        1, // SUB_COMMAND
+				},
 				// remove subcommand
 				{
 					"name":        "remove",

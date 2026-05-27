@@ -29,3 +29,6 @@ func (s *Subscription) IsMemoryExpress() bool { return s.SubscriptionType == "me
 
 // IsBestBuy returns true if this is a Best Buy subscription.
 func (s *Subscription) IsBestBuy() bool { return s.SubscriptionType == "bestbuy" }
+
+// IsCore returns true if this is a Core subscription.
+func (s *Subscription) IsCore() bool { return s.SubscriptionType == "core" }

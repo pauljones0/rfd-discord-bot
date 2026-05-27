@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -14,11 +15,13 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/ai"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/core"
 	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
 	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
 	"github.com/pauljones0/rfd-discord-bot/internal/hardwareswap"
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"google.golang.org/genai"
 )
 
 // writeJSON encodes v as JSON to w and logs any encoding error.
@@ -112,6 +115,17 @@ var channelFilterSetupSpecs = map[string]channelFilterSetupSpec{
 		},
 		SuccessMessage: func(channelID, filter string) string {
 			return fmt.Sprintf("Best Buy alerts will be posted in <#%s> with filter **%s**.", channelID, dealTypeLabel(filter))
+		},
+	},
+	"core": {
+		SubscriptionType: "core",
+		Validate:         dealtypes.IsCore,
+		InvalidMessage:   "Invalid Core filter type.",
+		Save: func(store Store, ctx context.Context, sub models.Subscription) error {
+			return store.SaveSubscription(ctx, sub)
+		},
+		SuccessMessage: func(channelID, filter string) string {
+			return fmt.Sprintf("✅ Core deal alerts will be posted in <#%s> with filter **%s**.", channelID, dealTypeLabel(filter))
 		},
 	},
 }
@@ -323,6 +337,13 @@ type Store interface {
 	SaveBestBuySubscription(ctx context.Context, sub models.Subscription) error
 	RemoveBestBuySubscription(ctx context.Context, guildID, channelID string) error
 	GetBestBuySubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
+	GetCoreSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error)
+	GetRecentCoreRawNotifications(ctx context.Context, duration time.Duration) ([]models.CoreRawNotification, error)
+	GetCoreRules(ctx context.Context) ([]models.CoreRule, error)
+	SaveCoreRules(ctx context.Context, rules []models.CoreRule) error
+	GetPendingCoreRules(ctx context.Context) ([]models.CoreRule, error)
+	SavePendingCoreRules(ctx context.Context, rules []models.CoreRule) error
+	DeletePendingCoreRules(ctx context.Context) error
 }
 
 // Handler holds the dependencies for the interaction endpoint.
@@ -335,6 +356,7 @@ type Handler struct {
 	discordAppID        string
 	facebookEnabled     bool
 	hardwareSwapEnabled bool
+	fallbackModels      []string
 }
 
 // NewHandler creates a new API interactions handler.
@@ -351,6 +373,7 @@ func NewHandler(cfg *config.Config, store Store, hwStore *hardwareswap.Store, ai
 			discordAppID:        cfg.DiscordAppID,
 			facebookEnabled:     cfg.FacebookEnabled,
 			hardwareSwapEnabled: cfg.HardwareSwapEnabled,
+			fallbackModels:      cfg.GeminiFallbackModels,
 		}, nil
 	}
 
@@ -371,6 +394,7 @@ func NewHandler(cfg *config.Config, store Store, hwStore *hardwareswap.Store, ai
 		discordAppID:        cfg.DiscordAppID,
 		facebookEnabled:     cfg.FacebookEnabled,
 		hardwareSwapEnabled: cfg.HardwareSwapEnabled,
+		fallbackModels:      cfg.GeminiFallbackModels,
 	}, nil
 }
 
@@ -518,6 +542,10 @@ func (h *Handler) handleDealsCommand(w http.ResponseWriter, req interactionReque
 		h.handleSetupMemoryExpress(w, req, subCommand.Options)
 	case "setup-bestbuy":
 		h.handleSetupBestBuy(w, req, subCommand.Options)
+	case "setup-core":
+		h.handleSetupCore(w, req, subCommand.Options)
+	case "suggest-rules":
+		h.handleCoreSuggestRules(w, req)
 	case "remove":
 		h.handleDealsRemove(w, req, subCommand.Options)
 	case "list":
@@ -651,6 +679,11 @@ func (h *Handler) handleSetupBestBuy(w http.ResponseWriter, req interactionReque
 	h.handleChannelFilterSetup(w, req, options, "bestbuy")
 }
 
+// handleSetupCore handles /deals setup-core channel:<#channel> filter:<type>
+func (h *Handler) handleSetupCore(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
+	h.handleChannelFilterSetup(w, req, options, "core")
+}
+
 type subscriptionRemoveSpec struct {
 	NoActiveMessage string
 	Prompt          string
@@ -700,6 +733,14 @@ func (h *Handler) subscriptionRemoveSpec(removeType string) (subscriptionRemoveS
 			},
 			BuildButtons: buildBestBuyRemoveButtons,
 		},
+		"core": {
+			NoActiveMessage: "No active **Core** subscriptions found for this server.",
+			Prompt:          "Here are the active **Core** subscriptions. Click to remove:",
+			List: func(h *Handler, ctx context.Context, guildID string) ([]models.Subscription, error) {
+				return h.listDealSubscriptions(ctx, guildID, func(sub models.Subscription) bool { return sub.IsCore() })
+			},
+			BuildButtons: buildRemoveButtons,
+		},
 	}
 	spec, ok := specs[removeType]
 	return spec, ok
@@ -731,17 +772,19 @@ func respondRemoveChoices(w http.ResponseWriter, prompt string, components []dis
 	writeJSON(w, res)
 }
 
-func splitDealSubscriptions(subs []models.Subscription) ([]models.Subscription, []models.Subscription) {
-	var rfdSubs, ebaySubs []models.Subscription
+func splitDealSubscriptions(subs []models.Subscription) ([]models.Subscription, []models.Subscription, []models.Subscription) {
+	var rfdSubs, ebaySubs, coreSubs []models.Subscription
 	for _, sub := range subs {
 		switch {
 		case sub.IsEbay():
 			ebaySubs = append(ebaySubs, sub)
+		case sub.IsCore():
+			coreSubs = append(coreSubs, sub)
 		case sub.IsRFD():
 			rfdSubs = append(rfdSubs, sub)
 		}
 	}
-	return rfdSubs, ebaySubs
+	return rfdSubs, ebaySubs, coreSubs
 }
 
 func appendDealListSection(msg *strings.Builder, title string, subs []models.Subscription) {
@@ -787,6 +830,17 @@ func appendBestBuyListSection(msg *strings.Builder, subs []models.Subscription) 
 		return
 	}
 	msg.WriteString("**Best Buy:**\n")
+	for _, sub := range subs {
+		msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
+	}
+	msg.WriteString("\n")
+}
+
+func appendCoreListSection(msg *strings.Builder, subs []models.Subscription) {
+	if len(subs) == 0 {
+		return
+	}
+	msg.WriteString("**Core:**\n")
 	for _, sub := range subs {
 		msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
 	}
@@ -847,13 +901,13 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 		h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
 		return
 	}
-	rfdSubs, ebaySubs := splitDealSubscriptions(subs)
+	rfdSubs, ebaySubs, coreSubs := splitDealSubscriptions(subs)
 
 	fbSubs := h.facebookSubscriptionsForList(ctx, req.GuildID)
 	meSubs := h.memExpressSubscriptionsForList(ctx, req.GuildID)
 	bbSubs := h.bestBuySubscriptionsForList(ctx, req.GuildID)
 
-	if !hasAnySubscription(rfdSubs, ebaySubs, fbSubs, meSubs, bbSubs) {
+	if !hasAnySubscription(rfdSubs, ebaySubs, fbSubs, meSubs, bbSubs, coreSubs) {
 		h.respondPrivateMessage(w, "No active deal subscriptions for this server.")
 		return
 	}
@@ -865,8 +919,18 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 	appendFacebookListSection(&msg, fbSubs)
 	appendMemExpressListSection(&msg, meSubs)
 	appendBestBuyListSection(&msg, bbSubs)
+	appendCoreListSection(&msg, coreSubs)
 
 	h.respondPrivateMessage(w, msg.String())
+}
+
+func (h *Handler) coreSubscriptionsForList(ctx context.Context, guildID string) []models.Subscription {
+	subs, err := h.store.GetCoreSubscriptionsByGuild(ctx, guildID)
+	if err != nil {
+		slog.Error("Failed to get Core subscriptions", "guild", guildID, "error", err)
+		return nil
+	}
+	return subs
 }
 
 func (h *Handler) facebookSubscriptionsForList(ctx context.Context, guildID string) []models.Subscription {
@@ -1014,6 +1078,15 @@ func (h *Handler) handleComponent(w http.ResponseWriter, req interactionRequest)
 			return
 		}
 		h.handleHWComponent(w, req)
+		return
+	}
+
+	if customID == "approve_core_rules" {
+		h.handleApproveCoreRules(w, req)
+		return
+	}
+	if customID == "reject_core_rules" {
+		h.handleRejectCoreRules(w, req)
 		return
 	}
 
@@ -1355,4 +1428,292 @@ func convertOptionsToGeneric(options []interactionOption) []interface{} {
 		result[i] = m
 	}
 	return result
+}
+
+// handleCoreSuggestRules handles /deals suggest-rules channel command.
+func (h *Handler) handleCoreSuggestRules(w http.ResponseWriter, req interactionRequest) {
+	if h.aiClient == nil {
+		h.respondPrivateMessage(w, "AI client is not configured on this bot.")
+		return
+	}
+
+	// 1. Write deferred response immediately (type 5)
+	writeJSON(w, map[string]interface{}{
+		"type": InteractionResponseTypeDeferredChannelMessage,
+		"data": map[string]interface{}{
+			"flags": MessageFlagEphemeral,
+		},
+	})
+
+	// 2. Process asynchronously
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		// Get recent raw notifications
+		notifs, err := h.store.GetRecentCoreRawNotifications(ctx, 7*24*time.Hour)
+		if err != nil {
+			slog.Error("Failed to fetch raw notifications for rule suggestion", "error", err)
+			_ = h.sendDiscordFollowup(req.Token, map[string]any{
+				"content": "❌ Failed to fetch raw notifications from the database.",
+			})
+			return
+		}
+
+		if len(notifs) == 0 {
+			_ = h.sendDiscordFollowup(req.Token, map[string]any{
+				"content": "ℹ️ No raw notifications have been recorded in the last 7 days. Please ingest some deals first.",
+			})
+			return
+		}
+
+		// Get existing rules
+		existingRules, err := h.store.GetCoreRules(ctx)
+		if err != nil {
+			slog.Error("Failed to fetch existing core rules", "error", err)
+		}
+
+		// Format notifications for Gemini
+		var sampleText strings.Builder
+		for i, n := range notifs {
+			if i >= 100 { // Limit to 100 recent notifications to keep prompt compact and precise
+				break
+			}
+			sampleText.WriteString(fmt.Sprintf("- Title: %q | Message: %q\n", n.Title, n.Message))
+		}
+
+		// Format existing rules for Gemini
+		var rulesJson []byte
+		if len(existingRules) > 0 {
+			rulesJson, _ = json.Marshal(existingRules)
+		} else {
+			rulesJson = []byte("[]")
+		}
+
+		// Prepare prompt
+		var prompt strings.Builder
+		prompt.WriteString("You are an expert regex rules architect for a deal alert bot.\n")
+		prompt.WriteString("Your task is to analyze raw Discord notifications and suggest search-and-replace regular expressions to clean up product names for better grouping (segmentation).\n\n")
+		prompt.WriteString("Goals:\n")
+		prompt.WriteString("1. Group identical products together by stripping redundant retailer names, fluff words (e.g. 'sale', 'limited stock', 'deal of the day', 'lava hot', 'ymmv'), emojis, leading/trailing dashes, or extra spaces.\n")
+		prompt.WriteString("2. CRITICAL: Keep distinct sub-products SEPARATE. Do NOT strip memory configurations (e.g., '16g', '8g', '16gb', '8gb', '12gb', '24gb', '32gb', '1tb') or specific edition names. For example, '5060ti 8g' and '5060ti 16g' are different products; do not strip their memory sizes. However, you should normalize '8g' or '8g ' to '8gb' and '16g' to '16gb' consistently using regex patterns.\n\n")
+		prompt.WriteString("Here are the existing active rules we are already applying:\n")
+		prompt.WriteString(string(rulesJson) + "\n\n")
+		prompt.WriteString("Here are recent raw notifications (newest first):\n")
+		prompt.WriteString(sampleText.String() + "\n\n")
+		prompt.WriteString("Respond with a JSON array containing proposed rules. Each rule should be an object with \"pattern\" (regexp compilation pattern, case-insensitive) and \"replace\" (replacement string). Output ONLY the JSON array inside a standard JSON block (no markdown blocks or extra explanation). Example response format:\n")
+		prompt.WriteString("[{\"pattern\": \"(?i)\\\\s*-\\\\s*deal of the day\", \"replace\": \"\"}, {\"pattern\": \"(?i)\\\\b(\\\\d+)g\\\\b\", \"replace\": \"$1gb\"}]\n")
+
+		// Call Gemini with Pro model
+		model := "gemini-2.5-pro"
+		for _, m := range h.fallbackModels {
+			if strings.Contains(m, "pro") {
+				model = m
+				break
+			}
+		}
+
+		config := &genai.GenerateContentConfig{
+			Temperature: genai.Ptr[float32](0.1),
+		}
+		respText, _, _, err := h.aiClient.GenerateContentWithModel(ctx, model, prompt.String(), config)
+		if err != nil {
+			slog.Error("Gemini call for rule suggestion failed", "error", err)
+			_ = h.sendDiscordFollowup(req.Token, map[string]any{
+				"content": "❌ AI text generation failed. Please try again later.",
+			})
+			return
+		}
+
+		// Parse rules
+		cleanedJson := stripMarkdownCodeFences(respText)
+		var suggestedRules []models.CoreRule
+		if err := json.Unmarshal([]byte(cleanedJson), &suggestedRules); err != nil {
+			slog.Error("Failed to parse suggested rules JSON", "raw", respText, "error", err)
+			_ = h.sendDiscordFollowup(req.Token, map[string]any{
+				"content": "❌ Failed to parse suggested rules returned by the AI. Raw response:\n```\n" + respText + "\n```",
+			})
+			return
+		}
+		if err := core.ValidateRules(suggestedRules); err != nil {
+			slog.Error("Suggested core rules contain invalid regex patterns", "error", err)
+			_ = h.sendDiscordFollowup(req.Token, map[string]any{
+				"content": "❌ Suggested rules included invalid regex patterns:\n```\n" + err.Error() + "\n```",
+			})
+			return
+		}
+
+		// Store pending rules
+		if err := h.store.SavePendingCoreRules(ctx, suggestedRules); err != nil {
+			slog.Error("Failed to save pending core rules", "error", err)
+			_ = h.sendDiscordFollowup(req.Token, map[string]any{
+				"content": "❌ Failed to save pending rules in the database.",
+			})
+			return
+		}
+
+		// Dry run comparison (sample a few changes)
+		var diffText strings.Builder
+		diffText.WriteString("**Proposed Regex Rules:**\n")
+		for _, r := range suggestedRules {
+			diffText.WriteString(fmt.Sprintf("- Pattern: `%s` ➡️ Replace: `%q`\n", r.Pattern, r.Replace))
+		}
+		diffText.WriteString("\n**Sample Dry-Run Normalization Changes:**\n")
+
+		changedCount := 0
+		for _, n := range notifs {
+			productName, _, _, _, isDeal := core.ParseNotificationText(nil, n.Message)
+			if !isDeal {
+				continue
+			}
+
+			// Apply old active rules
+			oldNorm := core.NormalizeProductName(productName, existingRules)
+			// Apply new suggested rules
+			newNorm := core.NormalizeProductName(productName, suggestedRules)
+
+			if oldNorm != newNorm && changedCount < 5 {
+				diffText.WriteString(fmt.Sprintf("• Original: `%s`\n  Before: `%s`\n  After:  `%s`\n\n", productName, oldNorm, newNorm))
+				changedCount++
+			}
+		}
+
+		if changedCount == 0 {
+			diffText.WriteString("*(No changes detected on the sampled notifications. Rules might be cleanups that didn't match the recent sample, or redundant.)*\n")
+		}
+
+		// Format embed & buttons
+		embed := map[string]any{
+			"title":       "🤖 Proposed Core Product Segmentation Rules",
+			"description": diffText.String(),
+			"color":       0x5865F2, // Discord Blurple
+			"timestamp":   time.Now().Format(time.RFC3339),
+		}
+
+		components := []map[string]any{
+			{
+				"type": ComponentTypeActionRow,
+				"components": []map[string]any{
+					{
+						"type":      ComponentTypeButton,
+						"style":     ButtonStylePrimary,
+						"label":     "Approve & Apply",
+						"custom_id": "approve_core_rules",
+					},
+					{
+						"type":      ComponentTypeButton,
+						"style":     ButtonStyleDanger,
+						"label":     "Reject & Discard",
+						"custom_id": "reject_core_rules",
+					},
+				},
+			},
+		}
+
+		err = h.sendDiscordFollowup(req.Token, map[string]any{
+			"embeds":     []any{embed},
+			"components": components,
+		})
+		if err != nil {
+			slog.Error("Failed to send rule proposal embed to Discord", "error", err)
+		}
+	}()
+}
+
+// handleApproveCoreRules applies pending rules to active configuration.
+func (h *Handler) handleApproveCoreRules(w http.ResponseWriter, req interactionRequest) {
+	ctx, cancel := storeContext()
+	defer cancel()
+
+	// 1. Retrieve pending rules
+	pending, err := h.store.GetPendingCoreRules(ctx)
+	if err != nil {
+		slog.Error("Failed to fetch pending core rules", "error", err)
+		h.respondPrivateMessage(w, "❌ Failed to retrieve pending rules from the database.")
+		return
+	}
+
+	if len(pending) == 0 {
+		h.respondPrivateMessage(w, "ℹ️ No pending rules found to approve.")
+		return
+	}
+	if err := core.ValidateRules(pending); err != nil {
+		slog.Error("Pending core rules contain invalid regex patterns", "error", err)
+		h.respondPrivateMessage(w, "❌ Pending rules include invalid regex patterns and were not applied.")
+		return
+	}
+
+	// 2. Save to active rules
+	if err := h.store.SaveCoreRules(ctx, pending); err != nil {
+		slog.Error("Failed to save approved core rules", "error", err)
+		h.respondPrivateMessage(w, "❌ Failed to save approved rules.")
+		return
+	}
+
+	// 3. Delete pending rules
+	if err := h.store.DeletePendingCoreRules(ctx); err != nil {
+		slog.Error("Failed to delete pending core rules after approval", "error", err)
+	}
+
+	// 4. Update the interaction response message to show success
+	writeUpdateMessage(w, "✅ **Product segmentation rules approved and applied successfully!**", []discordComponent{})
+}
+
+// handleRejectCoreRules discards proposed rules.
+func (h *Handler) handleRejectCoreRules(w http.ResponseWriter, req interactionRequest) {
+	ctx, cancel := storeContext()
+	defer cancel()
+
+	// Delete pending rules
+	if err := h.store.DeletePendingCoreRules(ctx); err != nil {
+		slog.Error("Failed to delete pending core rules on rejection", "error", err)
+	}
+
+	// Update the interaction response message to show rejection
+	writeUpdateMessage(w, "❌ **Proposed rules discarded.**", []discordComponent{})
+}
+
+// sendDiscordFollowup patches the deferred response in Discord.
+func (h *Handler) sendDiscordFollowup(token string, body any) error {
+	url := fmt.Sprintf("https://discord.com/api/v10/webhooks/%s/%s/messages/@original", h.discordAppID, token)
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bot "+h.discordToken)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("discord API error %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+func stripMarkdownCodeFences(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "```") {
+		s = strings.TrimPrefix(s, "```json")
+		s = strings.TrimPrefix(s, "```")
+		s = strings.TrimSuffix(s, "```")
+		s = strings.TrimSpace(s)
+	}
+	start := strings.Index(s, "[")
+	end := strings.LastIndex(s, "]")
+	if start != -1 && end != -1 && end > start {
+		return s[start : end+1]
+	}
+	return s
 }

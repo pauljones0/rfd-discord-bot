@@ -530,6 +530,93 @@ func formatPriceShort(v float64) string {
 	return fmt.Sprintf("%.1fk", k)
 }
 
+// --- Core Deal Notifications ---
+
+// SendCoreDeal sends a new Core deal notification to all subscribed channels.
+// Returns a map of ChannelID -> MessageID.
+func (c *Client) SendCoreDeal(ctx context.Context, deal models.CoreDeal, subs []models.Subscription) (map[string]string, error) {
+	if c.botToken == "" {
+		return nil, nil
+	}
+
+	payload := createCorePayload(deal)
+	results := make(map[string]string)
+	sentChannels := make(map[string]bool)
+
+	for _, sub := range subs {
+		if sentChannels[sub.ChannelID] {
+			continue
+		}
+		sentChannels[sub.ChannelID] = true
+
+		urlStr := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, sub.ChannelID)
+		body, err := c.doRequest(ctx, "POST", urlStr, payload)
+		if err != nil {
+			slog.Error("Failed to send Core deal to channel", "processor", "core", "channel", sub.ChannelID, "product", deal.ProductName, "error", err)
+			continue
+		}
+
+		var msgResponse discordMessageResponse
+		if err := json.Unmarshal(body, &msgResponse); err != nil {
+			slog.Error("Failed to parse discord message response for Core deal", "processor", "core", "channel", sub.ChannelID, "error", err)
+			continue
+		}
+		results[sub.ChannelID] = msgResponse.ID
+	}
+
+	return results, nil
+}
+
+func createCorePayload(deal models.CoreDeal) discordWebhookPayload {
+	embed := formatCoreEmbed(deal)
+	return discordWebhookPayload{
+		Content: "",
+		Embeds:  []discordEmbed{embed},
+	}
+}
+
+func formatCoreEmbed(deal models.CoreDeal) discordEmbed {
+	title := deal.ProductName
+
+	var descBuilder strings.Builder
+
+	// Price display
+	descBuilder.WriteString(fmt.Sprintf("Price: **C$%.2f**", deal.PriceCAD))
+	if deal.OriginalCurr != "CAD" && deal.OriginalPrice > 0 {
+		descBuilder.WriteString(fmt.Sprintf("  •  Original: **%s %.2f**", strings.ToUpper(deal.OriginalCurr), deal.OriginalPrice))
+	}
+	descBuilder.WriteString("\n\n")
+	if deal.StoreName != "" {
+		descBuilder.WriteString(fmt.Sprintf("Store: **%s**\n", deal.StoreName))
+	}
+
+	// Historical comparison details
+	descBuilder.WriteString("📊 **Historical Stats:**\n")
+	if deal.PriceCAD <= deal.MinPriceSeen {
+		descBuilder.WriteString("⭐ **New lowest price seen!**\n")
+	} else {
+		descBuilder.WriteString(fmt.Sprintf("• Min price seen: **C$%.2f**\n", deal.MinPriceSeen))
+	}
+	descBuilder.WriteString(fmt.Sprintf("• 25th percentile (p25): **C$%.2f**\n", deal.P25PriceSeen))
+	descBuilder.WriteString(fmt.Sprintf("• Total price observations: **%d**\n", deal.HistoryCount))
+
+	if deal.Category != "" {
+		descBuilder.WriteString(fmt.Sprintf("\nCategory: %s", deal.Category))
+	}
+
+	embedColor := 7098599 // #6C5CE7 (premium dark violet)
+
+	return discordEmbed{
+		Title:       title,
+		URL:         deal.Link,
+		Description: descBuilder.String(),
+		Color:       embedColor,
+		Footer: discordEmbedFooter{
+			Text: "Core Deal Alert • Local Price Analysis",
+		},
+	}
+}
+
 // --- eBay Deal Notifications ---
 
 // SendEbayDeal sends a new eBay deal notification to all subscribed channels.

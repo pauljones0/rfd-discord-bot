@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/api"
 	"github.com/pauljones0/rfd-discord-bot/internal/bestbuy"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/core"
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
 	"github.com/pauljones0/rfd-discord-bot/internal/hardwareswap"
@@ -40,8 +42,10 @@ type Server struct {
 	bestbuyProcessor    *bestbuy.Processor
 	bestbuyCompute      *bestbuy.ComputeProcessor
 	hwProcessor         *hardwareswap.Processor
+	coreProcessor       *core.Processor
 	aiClient            *ai.Client
 	store               processor.DealStore
+	db                  *storage.Client
 	wg                  sync.WaitGroup
 	sem                 chan struct{} // Semaphore to limit concurrent RFD processing requests
 	ebaySem             chan struct{} // Semaphore to limit concurrent eBay processing requests
@@ -63,6 +67,7 @@ func main() {
 	}
 
 	ctx := context.Background()
+	schedulerCtx, schedulerCancel := context.WithCancel(ctx)
 	store, err := storage.New(ctx)
 	if err != nil {
 		slog.Error("Critical error initializing storage client", "error", err)
@@ -193,6 +198,15 @@ func main() {
 		slog.Info("HardwareSwap features disabled (AI client unavailable)")
 	}
 
+	// Initialize Core processor with RateManager
+	rates := core.NewRateManager()
+	if err := rates.FetchRates(ctx); err != nil {
+		slog.Error("Failed to fetch initial exchange rates, using defaults", "error", err)
+	}
+	rates.StartAutoRefresh(schedulerCtx, 24*time.Hour)
+
+	coreProc := core.NewProcessor(store, n, rates)
+
 	srv := &Server{
 		processor:           p,
 		ebayProcessor:       ebayProc,
@@ -201,8 +215,10 @@ func main() {
 		bestbuyProcessor:    bbProc,
 		bestbuyCompute:      bbComputeProc,
 		hwProcessor:         hwProc,
+		coreProcessor:       coreProc,
 		aiClient:            aiClient,
 		store:               store,
+		db:                  store,
 		sem:                 make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
 		ebaySem:             make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
 		facebookSem:         make(chan struct{}, 1), // Allow 1 concurrent Facebook processing attempt
@@ -238,6 +254,7 @@ func main() {
 	adminHandle("GET /process-bestbuy-compute", srv.ProcessBestBuyComputeHandler)
 	adminHandle("POST /prime-bestbuy-baseline", srv.PrimeBestBuyBaselineHandler)
 	adminHandle("POST /ingest/discord-notification", srv.DiscordNotificationIngestHandler)
+	adminHandle("GET /core/raw-notifications", srv.CoreRawNotificationsHandler)
 	if cfg.HardwareSwapEnabled {
 		adminHandle("GET /process-hardwareswap", srv.ProcessHardwareSwapHandler)
 	}
@@ -328,7 +345,6 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	schedulerCtx, schedulerCancel := context.WithCancel(context.Background())
 	srv.StartLocalScheduler(schedulerCtx, cfg)
 
 	// Graceful shutdown on SIGTERM/SIGINT
@@ -679,5 +695,38 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
 		slog.Error("Failed to encode root response", "error", err)
+	}
+}
+
+// CoreRawNotificationsHandler returns recent raw notifications for rule-building and audit purposes.
+func (s *Server) CoreRawNotificationsHandler(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		http.Error(w, "storage client not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	daysStr := r.URL.Query().Get("days")
+	days := 7
+	if daysStr != "" {
+		if val, err := strconv.Atoi(daysStr); err == nil && val > 0 {
+			days = val
+		}
+	}
+	if days > 30 {
+		days = 30
+	}
+
+	duration := time.Duration(days) * 24 * time.Hour
+	list, err := s.db.GetRecentCoreRawNotifications(r.Context(), duration)
+	if err != nil {
+		slog.Error("Failed to retrieve core raw notifications", "error", err)
+		http.Error(w, "internal server error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(list); err != nil {
+		slog.Error("Failed to encode core raw notifications response", "error", err)
 	}
 }

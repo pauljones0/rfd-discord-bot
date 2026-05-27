@@ -31,6 +31,38 @@ func (s *Server) StartLocalScheduler(ctx context.Context, cfg *config.Config) {
 	if cfg.BestBuyComputeEnabled && s.bestbuyCompute != nil {
 		s.startScheduledLoop(ctx, "bestbuy_compute", cfg.BestBuyComputePollInterval, 20*time.Minute, s.bestbuyComputeSem, s.bestbuyCompute.ProcessComputeOutliers)
 	}
+
+	// Prune core raw notifications daily
+	if s.db != nil {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			slog.Info("Running startup pruning of core raw notifications...")
+			if count, err := s.db.PruneCoreRawNotifications(ctx, 30*24*time.Hour); err != nil {
+				slog.Error("Failed to prune core raw notifications at startup", "error", err)
+			} else {
+				slog.Info("Pruned old core raw notifications at startup", "deleted_rows", count)
+			}
+
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					slog.Info("Pruner loop stopped")
+					return
+				case <-ticker.C:
+					slog.Info("Running scheduled pruning of core raw notifications...")
+					if count, err := s.db.PruneCoreRawNotifications(ctx, 30*24*time.Hour); err != nil {
+						slog.Error("Failed to prune core raw notifications in scheduled loop", "error", err)
+					} else {
+						slog.Info("Pruned old core raw notifications in scheduled loop", "deleted_rows", count)
+					}
+				}
+			}
+		}()
+	}
 }
 
 func (s *Server) startScheduledLoop(ctx context.Context, processorName string, interval, timeout time.Duration, sem chan struct{}, fn func(context.Context) error) {

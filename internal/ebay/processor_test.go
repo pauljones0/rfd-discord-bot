@@ -558,7 +558,7 @@ func TestRetroactiveCouponAlertsSendOncePerCouponSignature(t *testing.T) {
 		RawText:                "Save C$120.00 with coupon",
 		InferenceMaxErrorCents: 0,
 	}
-	alerts, writes := p.retroactiveCouponAlerts(apiItems, tracked, map[string]StoreCoupon{
+	alerts, writes := p.retroactiveCouponAlerts(context.Background(), apiItems, tracked, map[string]StoreCoupon{
 		sellerCouponKey("EBAY_CA", "seller"): coupon,
 	}, map[string]bool{}, now, logger)
 	if len(alerts) != 1 || len(writes) != 1 {
@@ -568,7 +568,7 @@ func TestRetroactiveCouponAlertsSendOncePerCouponSignature(t *testing.T) {
 		t.Fatalf("LastCouponAlertSignature = %q, want %q", writes[0].LastCouponAlertSignature, coupon.Signature)
 	}
 
-	alerts, writes = p.retroactiveCouponAlerts(apiItems, tracked, map[string]StoreCoupon{
+	alerts, writes = p.retroactiveCouponAlerts(context.Background(), apiItems, tracked, map[string]StoreCoupon{
 		sellerCouponKey("EBAY_CA", "seller"): coupon,
 	}, map[string]bool{}, now, logger)
 	if len(alerts) != 0 || len(writes) != 0 {

@@ -881,3 +881,68 @@ func checkResponseBlocked(resp *genai.GenerateContentResponse) string {
 	}
 	return ""
 }
+
+// GenerateContentWithModel runs a Gemini API text generation using a specific model override.
+func (c *Client) GenerateContentWithModel(ctx context.Context, modelOverride, prompt string, config *genai.GenerateContentConfig) (string, int, int, error) {
+	if c == nil || len(c.clients) == 0 {
+		return "", 0, 0, fmt.Errorf("AI client not initialized")
+	}
+
+	start := time.Now()
+	var result string
+	var inTokens, outTokens int
+
+	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+		c.mu.Lock()
+		client := c.activeClient()
+		c.mu.Unlock()
+
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		resp, genErr := client.Models.GenerateContent(callCtx, modelOverride, genai.Text(prompt), config)
+		if genErr != nil {
+			slog.Warn("AI call with model override failed, retrying", "model", modelOverride, "error", genErr)
+			return genErr
+		}
+
+		c.mu.Lock()
+		c.resetConsecutiveErrors()
+		loc := c.currentLocation
+		c.mu.Unlock()
+
+		c.logTokenUsage(resp, "generate_content_override", modelOverride, loc)
+
+		if resp != nil && resp.UsageMetadata != nil {
+			inTokens = int(resp.UsageMetadata.PromptTokenCount)
+			outTokens = int(resp.UsageMetadata.CandidatesTokenCount)
+		}
+
+		if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
+			return fmt.Errorf("no response content from gemini")
+		}
+
+		var textParts strings.Builder
+		for _, part := range resp.Candidates[0].Content.Parts {
+			if part.Text != "" {
+				textParts.WriteString(part.Text)
+			}
+		}
+
+		result = textParts.String()
+		if result == "" {
+			return fmt.Errorf("gemini returned empty text response")
+		}
+
+		return nil
+	})
+
+	if err == nil {
+		c.mu.Lock()
+		loc := c.currentLocation
+		c.mu.Unlock()
+		slog.Info("GenerateContentWithModel completed", "model", modelOverride, "location", loc, "duration_ms", time.Since(start).Milliseconds())
+	}
+
+	return result, inTokens, outTokens, err
+}

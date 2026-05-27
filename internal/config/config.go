@@ -248,6 +248,7 @@ func Load() (*Config, error) {
 		GeminiFallbackModels: []string{
 			"gemini-2.5-flash-lite",
 			"gemini-2.5-flash",
+			"gemini-3.5-flash",
 			"gemini-2.5-pro",
 		},
 		RFDAdminToken:                    os.Getenv("RFD_ADMIN_TOKEN"),
