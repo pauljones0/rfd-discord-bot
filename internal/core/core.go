@@ -648,6 +648,9 @@ func NormalizeProductName(name string, rules []models.CoreRule, category string)
 		if ramSpec := extractRAMSpecs(norm); ramSpec != "" {
 			return ramSpec
 		}
+		// If it's a RAM category but we extracted absolutely nothing, mark it as ram unknown
+		// so it at least groups with itself instead of forming a highly brittle unique key
+		return "ram unknown " + norm
 	}
 
 	// Special handling for TCG (Pokemon/Magic)
@@ -680,12 +683,45 @@ var (
 	ramConfigRegex    = regexp.MustCompile(`\b(\d+)\s*[x*]\s*(\d+)\s*(?:gb|g|go)?\b`)
 	ramConfigRevRegex = regexp.MustCompile(`\b(\d+)\s*(?:gb|g|go)\s*[x*]\s*(\d+)\b`)
 	ramTruncatedRegex = regexp.MustCompile(`\b(8|16|24|32|48|64|96|128|192)(?:\.{3,}|…)$`)
+
+	// Manufacturer Part Numbers
+	// G.Skill: F5-6000J3038F16GX2-TZ5N (16GB x 2 = 32GB)
+	ramGSkillPNRegex = regexp.MustCompile(`(?i)\bf[45]-\w+?(\d+)gx(\d+)\b`)
+	// Kingston: KF560C36BBEAK2-32 (Kit of 2, 32GB total) or KF560C36BBE-8 (8GB total)
+	ramKingstonPNRegex = regexp.MustCompile(`(?i)\bkf[45]\w+?(?:k(\d+))?-(\d{1,3})\b`)
+	// TeamGroup: TED532G4800C40DC01 (32GB total, DC = Dual Channel = 2 sticks)
+	ramTeamPNRegex = regexp.MustCompile(`(?i)\b(?:ted|ff|ctced)[45](\d{1,3})g\w+?(dc|hc)?01\b`)
 )
 
 func extractRAMSpecs(name string) string {
 	var countStr, sizeStr string
+	var totalCapacity int
 
-	// Try to find standard config first (e.g. 2x16)
+	// 1. Try Part Numbers First (most precise)
+	if match := ramGSkillPNRegex.FindStringSubmatch(name); len(match) > 0 {
+		size, _ := strconv.Atoi(match[1])
+		count, _ := strconv.Atoi(match[2])
+		return fmt.Sprintf("ram %dgb %dx%dgb", size*count, count, size)
+	}
+	if match := ramKingstonPNRegex.FindStringSubmatch(name); len(match) > 0 {
+		total, _ := strconv.Atoi(match[2])
+		if match[1] != "" {
+			count, _ := strconv.Atoi(match[1])
+			if count > 0 && total%count == 0 {
+				return fmt.Sprintf("ram %dgb %dx%dgb", total, count, total/count)
+			}
+		}
+		return fmt.Sprintf("ram %dgb", total)
+	}
+	if match := ramTeamPNRegex.FindStringSubmatch(name); len(match) > 0 {
+		total, _ := strconv.Atoi(match[1])
+		if strings.ToLower(match[2]) == "dc" {
+			return fmt.Sprintf("ram %dgb 2x%dgb", total, total/2)
+		}
+		return fmt.Sprintf("ram %dgb", total)
+	}
+
+	// 2. Try standard config (e.g. 2x16)
 	if match := ramConfigRegex.FindStringSubmatch(name); len(match) > 0 {
 		countStr = match[1]
 		sizeStr = match[2]
@@ -698,14 +734,16 @@ func extractRAMSpecs(name string) string {
 	if countStr != "" && sizeStr != "" {
 		count, _ := strconv.Atoi(countStr)
 		size, _ := strconv.Atoi(sizeStr)
-		total := count * size
-		return fmt.Sprintf("ram %dgb %dx%dgb", total, count, size)
+		totalCapacity = count * size
+		return fmt.Sprintf("ram %dgb %dx%dgb", totalCapacity, count, size)
 	}
 
+	// 3. Try plain capacity (e.g. 16gb)
 	if match := ramCapacityRegex.FindStringSubmatch(name); len(match) > 0 {
 		return fmt.Sprintf("ram %sgb", match[1])
 	}
 
+	// 4. Try truncated capacity (e.g. DDR5 16...)
 	if match := ramTruncatedRegex.FindStringSubmatch(name); len(match) > 0 {
 		return fmt.Sprintf("ram %sgb", match[1])
 	}

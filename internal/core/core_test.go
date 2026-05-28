@@ -196,7 +196,11 @@ func TestNormalizeProductName(t *testing.T) {
 		{"Patriot Memory Viper Venom Kit DDR5 RAM 16Go (2", "#16gb", "ram 16gb"},
 		{"Crucial Pro Overclocking Edition Module DDR5 16...", "#16gb", "ram 16gb"},
 		{"Crucial Pro Overclocking Edition Module DDR5 32 ...", "#32gb", "ram 32gb"},
-		{"Kingston FURY Beast Nero RGB 16GB 5600MT/s DDR5", "#16gb", "ram 16gb"},
+		{"TEAMGROUP Elite TED532G4800C40DC01 Lot de 2", "#unknown-ddr5", "ram 32gb 2x16gb"},
+		{"Kingston FURY Beast KF560C36BBE-8 Module", "#unknown-ddr5", "ram 8gb"},
+		{"Kingston FURY Beast KF560C36BBEAK2-32", "#unknown-ddr5", "ram 32gb 2x16gb"},
+		{"G Skill F5-5200J3636D32GX2-FX5 Memor", "#unknown-ddr5", "ram 64gb 2x32gb"},
+		{"G.skill Trident Z5 Royal Neo - Ddr5 - Kit", "#unknown-ddr5", "ram unknown ddr5 kit"}, // Fallback for zero info
 		{"Magic: The Gathering | Avatar: The Last Airbender Booster Box", "#magic-the-gathering", "tcg avatar the last airbender booster box"},
 	}
 
