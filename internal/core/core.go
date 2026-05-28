@@ -232,6 +232,8 @@ func parseCurrencyFromPricePart(pricePart string) string {
 		return "AUD"
 	case strings.Contains(pricePart, "¥"), strings.Contains(upper, "JPY"):
 		return "JPY"
+	case strings.Contains(pricePart, "zł"), strings.Contains(upper, "PLN"):
+		return "PLN"
 	default:
 		return ""
 	}
@@ -246,6 +248,9 @@ func inferCurrencyFromSymbolAndStore(pricePart, storeName string) string {
 	}
 	if strings.Contains(pricePart, "¥") {
 		return "JPY"
+	}
+	if strings.Contains(pricePart, "zł") {
+		return "PLN"
 	}
 	if strings.Contains(pricePart, "$") {
 		storeUpper := strings.ToUpper(storeName)

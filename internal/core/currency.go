@@ -30,6 +30,7 @@ var defaultRates = map[string]float64{
 	"CHF": 0.66,
 	"AUD": 1.10,
 	"JPY": 115.0,
+	"PLN": 2.9,
 }
 
 // CountryTagToCurrency maps country/region tags in alerts to their standard currency codes.
@@ -98,6 +99,10 @@ var CountryTagToCurrency = map[string]string{
 	"JAPAN": "JPY",
 	"JP":    "JPY",
 	"JPN":   "JPY",
+
+	// Poland
+	"POLAND": "PLN",
+	"PL":     "PLN",
 }
 
 // NewRateManager creates a RateManager initialized with default rates.
