@@ -675,7 +675,10 @@ func normalizeProductNameWithRules(name string, rules []compiledRule) string {
 
 func isRAMCategory(category string) bool {
 	cat := strings.ToLower(category)
-	return strings.Contains(cat, "gb") && (strings.HasPrefix(cat, "#") || strings.Contains(cat, "ram"))
+	if strings.Contains(cat, "ddr5") || strings.Contains(cat, "ddr4") || strings.Contains(cat, "ram") {
+		return true
+	}
+	return strings.Contains(cat, "gb") && strings.HasPrefix(cat, "#")
 }
 
 var (
