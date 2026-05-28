@@ -676,28 +676,38 @@ func isRAMCategory(category string) bool {
 }
 
 var (
-	ramCapacityRegex = regexp.MustCompile(`\b(\d+)\s*(?:gb|g|go)\b`)
-	ramConfigRegex   = regexp.MustCompile(`\b(\d+)\s*[x*]\s*(\d+)\s*(?:gb|g|go)?\b`)
+	ramCapacityRegex  = regexp.MustCompile(`\b(\d+)\s*(?:gb|g|go)\b`)
+	ramConfigRegex    = regexp.MustCompile(`\b(\d+)\s*[x*]\s*(\d+)\s*(?:gb|g|go)?\b`)
+	ramConfigRevRegex = regexp.MustCompile(`\b(\d+)\s*(?:gb|g|go)\s*[x*]\s*(\d+)\b`)
+	ramTruncatedRegex = regexp.MustCompile(`\b(8|16|24|32|48|64|96|128|192)(?:\.{3,}|…)$`)
 )
 
 func extractRAMSpecs(name string) string {
-	// Try to find config first (e.g. 2x16)
-	configMatch := ramConfigRegex.FindStringSubmatch(name)
-	capacityMatch := ramCapacityRegex.FindStringSubmatch(name)
+	var countStr, sizeStr string
 
-	if len(configMatch) > 0 {
-		count := configMatch[1]
-		size := configMatch[2]
-		// If we also found a total capacity, use it to verify
-		total := ""
-		if len(capacityMatch) > 0 {
-			total = capacityMatch[1] + "gb"
-		}
-		return fmt.Sprintf("ram %s %sx%sgb", total, count, size)
+	// Try to find standard config first (e.g. 2x16)
+	if match := ramConfigRegex.FindStringSubmatch(name); len(match) > 0 {
+		countStr = match[1]
+		sizeStr = match[2]
+	} else if match := ramConfigRevRegex.FindStringSubmatch(name); len(match) > 0 {
+		// Try reversed config (e.g. 16gb x 2)
+		sizeStr = match[1]
+		countStr = match[2]
 	}
 
-	if len(capacityMatch) > 0 {
-		return fmt.Sprintf("ram %sgb", capacityMatch[1])
+	if countStr != "" && sizeStr != "" {
+		count, _ := strconv.Atoi(countStr)
+		size, _ := strconv.Atoi(sizeStr)
+		total := count * size
+		return fmt.Sprintf("ram %dgb %dx%dgb", total, count, size)
+	}
+
+	if match := ramCapacityRegex.FindStringSubmatch(name); len(match) > 0 {
+		return fmt.Sprintf("ram %sgb", match[1])
+	}
+
+	if match := ramTruncatedRegex.FindStringSubmatch(name); len(match) > 0 {
+		return fmt.Sprintf("ram %sgb", match[1])
 	}
 
 	return ""
@@ -709,9 +719,9 @@ func isTCGCategory(category string) bool {
 }
 
 var tcgTypes = []string{
-	"booster box", "booster pack", "elite trainer box", "etb",
+	"collector booster", "booster box", "booster pack", "elite trainer box", "elite trainer", "etb",
 	"blister", "case", "triple pack", "premium collection",
-	"starter deck", "commander deck", "bundle", "tin",
+	"starter deck", "commander deck", "deck", "bundle", "tin",
 	"small pack", "big pack", "booster", "mega premium",
 }
 

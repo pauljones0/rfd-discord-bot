@@ -192,6 +192,11 @@ func TestNormalizeProductName(t *testing.T) {
 		{"Amazon Pokemon TCG Scarlet & Violet 16g", "#pokemon", "tcg scarlet & violet 16gb"},
 		{"Crucial Pro RAM DDR5 64Go Kit (2x32Go) 6000MHz", "#64gb", "ram 64gb 2x32gb"},
 		{"CORSAIR VENGEANCE DDR5 RAM 64GB (2x32GB) Bis zu", "#64gb", "ram 64gb 2x32gb"},
+		{"CORSAIR Vengeance 16 GB RGB DDR5 6000 MHz PC RAM - 8 GB x 2", "#16gb", "ram 16gb 2x8gb"},
+		{"Patriot Memory Viper Venom Kit DDR5 RAM 16Go (2", "#16gb", "ram 16gb"},
+		{"Crucial Pro Overclocking Edition Module DDR5 16...", "#16gb", "ram 16gb"},
+		{"Crucial Pro Overclocking Edition Module DDR5 32 ...", "#32gb", "ram 32gb"},
+		{"Kingston FURY Beast Nero RGB 16GB 5600MT/s DDR5", "#16gb", "ram 16gb"},
 		{"Magic: The Gathering | Avatar: The Last Airbender Booster Box", "#magic-the-gathering", "tcg avatar the last airbender booster box"},
 	}
 
