@@ -33,13 +33,28 @@ type discordNotificationIngestEvent struct {
 }
 
 type discordNotificationExtras struct {
-	Title       string   `json:"title"`
-	Text        string   `json:"text"`
-	BigText     string   `json:"bigText"`
-	SubText     string   `json:"subText"`
-	SummaryText string   `json:"summaryText"`
-	InfoText    string   `json:"infoText"`
-	TextLines   []string `json:"textLines"`
+	Title             string                   `json:"title"`
+	Text              string                   `json:"text"`
+	BigText           string                   `json:"bigText"`
+	TitleBig          string                   `json:"titleBig"`
+	SubText           string                   `json:"subText"`
+	SummaryText       string                   `json:"summaryText"`
+	InfoText          string                   `json:"infoText"`
+	TextLines         []string                 `json:"textLines"`
+	ConversationTitle string                   `json:"conversationTitle"`
+	IsGroup           bool                     `json:"isGroupConversation"`
+	ContentIntent     string                   `json:"contentIntent"`
+	Link              string                   `json:"link"`
+	Uri               string                   `json:"uri"`
+	DataLink          string                   `json:"dataLink"`
+	Messages          []discordNotificationMsg `json:"messages"`
+}
+
+type discordNotificationMsg struct {
+	Text   string `json:"text"`
+	Sender string `json:"sender"`
+	Time   int64  `json:"time"`
+	Uri    string `json:"uri"`
 }
 
 type discordNotificationAction struct {
@@ -66,6 +81,7 @@ type normalizedDiscordNotification struct {
 	MarkReadSent    bool     `json:"markReadSent"`
 	MarkReadReason  string   `json:"markReadReason,omitempty"`
 	NotificationKey string   `json:"notificationKey,omitempty"`
+	Link            string   `json:"link,omitempty"`
 }
 
 func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +140,7 @@ func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			if err := s.coreProcessor.ProcessNotification(ctx, normalized.Title, normalized.Message, normalized.Lines, normalized.EventID, normalized.SourcePackage); err != nil {
+			if err := s.coreProcessor.ProcessNotification(ctx, normalized.Title, normalized.Message, normalized.Lines, normalized.EventID, normalized.SourcePackage, normalized.Link); err != nil {
 				slog.Error("Failed to process ingested Discord notification in Core bot", "event_id", normalized.EventID, "error", err)
 			}
 		}()
@@ -142,10 +158,20 @@ func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http
 
 func normalizeDiscordNotification(event discordNotificationIngestEvent) normalizedDiscordNotification {
 	lines := notificationTextLines(event.Extras)
-	title := firstNotificationText(event.Extras.Title, event.Extras.SubText)
+	title := firstNotificationText(event.Extras.TitleBig, event.Extras.ConversationTitle, event.Extras.Title, event.Extras.SubText)
 	message := firstNotificationText(event.Extras.BigText, event.Extras.Text)
+	
+	if message == "" && len(event.Extras.Messages) > 0 {
+		message = event.Extras.Messages[len(event.Extras.Messages)-1].Text
+	}
+	
 	if message == "" && len(lines) > 0 {
 		message = lines[0]
+	}
+
+	link := firstNotificationText(event.Extras.Link, event.Extras.Uri, event.Extras.DataLink)
+	if link == "" && len(event.Extras.Messages) > 0 {
+		link = event.Extras.Messages[len(event.Extras.Messages)-1].Uri
 	}
 
 	normalized := normalizedDiscordNotification{
@@ -157,6 +183,7 @@ func normalizeDiscordNotification(event discordNotificationIngestEvent) normaliz
 		MarkReadSent:    event.MarkRead.Sent,
 		MarkReadReason:  event.MarkRead.Reason,
 		NotificationKey: event.NotificationKey,
+		Link:            link,
 	}
 	if event.ReceivedAt > 0 {
 		normalized.ReceivedAt = time.UnixMilli(event.ReceivedAt).UTC().Format(time.RFC3339Nano)

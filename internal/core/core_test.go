@@ -241,13 +241,13 @@ func TestProcessNotification(t *testing.T) {
 	// Need to warm up category first
 	for i := 0; i < 10; i++ {
 		msg := fmt.Sprintf("$100 | Store | Cat Warmup %d @USA", i)
-		p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, fmt.Sprintf("warm%d", i), "com.discord")
+		p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, fmt.Sprintf("warm%d", i), "com.discord", "")
 	}
 
 	prices := []float64{100, 150, 140, 130, 120, 110, 160, 170, 180, 190}
 	for i, price := range prices {
 		msg := fmt.Sprintf("$%.2f | Amazon US | Test Product @USA", price)
-		err := p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, fmt.Sprintf("ev%d", i+1), "com.discord")
+		err := p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, fmt.Sprintf("ev%d", i+1), "com.discord", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -262,8 +262,8 @@ func TestProcessNotification(t *testing.T) {
 		t.Errorf("expected price history to be saved with 10 observations, got: %+v", h)
 	}
 
-	msg := "$80.00 | Amazon US | Test Product @USA"
-	err := p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, "ev-low", "com.discord")
+	msg := "$20.00 | Amazon US | Test Product @USA"
+	err := p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, "ev-low", "com.discord", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestCategoryThreshold(t *testing.T) {
 
 	// This should be a drop, but suppressed by category threshold
 	msg := "$50.00 | Store | Test Product @USA"
-	err := p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, "ev1", "com.discord")
+	err := p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, "ev1", "com.discord", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -310,11 +310,12 @@ func TestCategoryThreshold(t *testing.T) {
 	// Warm up category
 	for i := 0; i < 9; i++ { // we already have 1 from the suppressed call
 		msg := fmt.Sprintf("$100 | Store | Cat Warmup %d @USA", i)
-		p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, fmt.Sprintf("warm%d", i), "com.discord")
+		p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, fmt.Sprintf("warm%d", i), "com.discord", "")
 	}
 
-	// Now it should fire
-	err = p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, "ev2", "com.discord")
+	// Now it should fire with a slightly different price to avoid duplicate detection
+	msg = "$40.00 | Store | Test Product @USA"
+	err = p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, "ev2", "com.discord", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

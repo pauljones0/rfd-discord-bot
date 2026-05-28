@@ -18,7 +18,10 @@ type CoreDeal struct {
 	// Price history stats at trigger time
 	MinPriceSeen float64 `docstore:"minPriceSeen"`
 	P25PriceSeen float64 `docstore:"p25PriceSeen"`
+	P50PriceSeen float64 `docstore:"p50PriceSeen"`
+	P75PriceSeen float64 `docstore:"p75PriceSeen"`
 	HistoryCount int     `docstore:"historyCount"`
+	BoxPlot      string  `docstore:"boxPlot,omitempty"`
 }
 
 // CorePriceHistory stores the historical price points for a specific product.

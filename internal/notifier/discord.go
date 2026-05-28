@@ -597,8 +597,15 @@ func formatCoreEmbed(deal models.CoreDeal) discordEmbed {
 	} else {
 		descBuilder.WriteString(fmt.Sprintf("• Min price seen: **C$%.2f**\n", deal.MinPriceSeen))
 	}
+	descBuilder.WriteString(fmt.Sprintf("• Median (p50): **C$%.2f**\n", deal.P50PriceSeen))
 	descBuilder.WriteString(fmt.Sprintf("• 25th percentile (p25): **C$%.2f**\n", deal.P25PriceSeen))
 	descBuilder.WriteString(fmt.Sprintf("• Total price observations: **%d**\n", deal.HistoryCount))
+
+	if deal.BoxPlot != "" {
+		descBuilder.WriteString("\n**Price Distribution:**\n")
+		descBuilder.WriteString(fmt.Sprintf("```\n%s\n```\n", deal.BoxPlot))
+		descBuilder.WriteString("*( `[`/`]` = Min/Max, `█` = IQR(p25-p75), `|` = Median, `▼` = Current Price )*\n")
+	}
 
 	if deal.Category != "" {
 		descBuilder.WriteString(fmt.Sprintf("\nCategory: %s", deal.Category))

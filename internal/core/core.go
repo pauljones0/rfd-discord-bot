@@ -80,6 +80,10 @@ type priceEvaluation struct {
 	PriorMin     float64
 	PriorMax     float64
 	PriorP25     float64
+	PriorP50     float64
+	PriorP75     float64
+	LowerBound   float64
+	IsAnomaly    bool
 	ShouldSignal bool
 	Reason       string
 }
@@ -258,13 +262,17 @@ func inferCurrencyFromSymbolAndStore(pricePart, storeName string) string {
 }
 
 // ProcessNotification ingests, parses, checks price percentiles, and alerts if eligible.
-func (p *Processor) ProcessNotification(ctx context.Context, title, message string, lines []string, eventID, sourcePackage string) error {
+func (p *Processor) ProcessNotification(ctx context.Context, title, message string, lines []string, eventID, sourcePackage string, rawLink string) error {
 	slog.Info("Core bot: Processing notification", "event_id", eventID, "source_package", sourcePackage)
 
 	parsed, ok := p.parseNotificationCandidates(message, lines, title)
 	if !ok {
 		slog.Info("Core bot: Notification is not a valid deal format, skipping", "event_id", eventID, "message", message)
 		return nil
+	}
+
+	if parsed.Link == "" && rawLink != "" {
+		parsed.Link = rawLink
 	}
 
 	rules, err := p.store.GetCoreRules(ctx)
@@ -461,18 +469,97 @@ func evaluatePrice(priceCAD float64, priorPrices []float64) priceEvaluation {
 	ev.PriorMin = minOf(priorPrices)
 	ev.PriorMax = maxOf(priorPrices)
 	ev.PriorP25 = percentile(priorPrices, 25)
+	ev.PriorP50 = percentile(priorPrices, 50)
+	ev.PriorP75 = percentile(priorPrices, 75)
+
+	iqr := ev.PriorP75 - ev.PriorP25
+	// Using standard 1.5 * IQR for mild outliers, 3.0 * IQR for extreme outliers
+	ev.LowerBound = math.Max(0, ev.PriorP25-(1.5*iqr))
+	ev.IsAnomaly = priceCAD < ev.LowerBound && priceCAD > 0
 
 	if len(priorPrices) < minPriceObservationsForAlert {
 		ev.Reason = "insufficient_history"
 		return ev
 	}
-	if priceCAD <= ev.PriorP25 && priceCAD < ev.PriorMax {
-		ev.ShouldSignal = true
-		ev.Reason = "at_or_below_p25"
+
+	if ev.IsAnomaly {
+		// Prevent duplicates: Check if we already have a very similar price in history
+		// (e.g., within 2% of an existing price). This avoids duplicate alerts for currency swings.
+		isDupe := false
+		for _, prev := range priorPrices {
+			diff := math.Abs(prev - priceCAD)
+			if diff/priceCAD < 0.02 {
+				isDupe = true
+				break
+			}
+		}
+
+		if isDupe {
+			ev.Reason = "anomaly_duplicate"
+		} else {
+			ev.ShouldSignal = true
+			ev.Reason = "downside_anomaly"
+		}
 		return ev
 	}
-	ev.Reason = "above_threshold"
+
+	ev.Reason = "within_normal_range"
 	return ev
+}
+
+// GenerateBoxPlot creates an ASCII representation of the price distribution and the new outlier.
+func GenerateBoxPlot(ev priceEvaluation, currentPrice float64) string {
+	const width = 40
+	minP := math.Min(ev.PriorMin, currentPrice)
+	maxP := math.Max(ev.PriorMax, currentPrice)
+	
+	if maxP == minP {
+		return "[ Price Distribution Not Available ]"
+	}
+
+	scale := func(val float64) int {
+		pos := int(math.Round((val - minP) / (maxP - minP) * float64(width-1)))
+		if pos < 0 { return 0 }
+		if pos >= width { return width - 1 }
+		return pos
+	}
+
+	p25Pos := scale(ev.PriorP25)
+	p50Pos := scale(ev.PriorP50)
+	p75Pos := scale(ev.PriorP75)
+	currPos := scale(currentPrice)
+
+	line := make([]rune, width)
+	for i := range line {
+		line[i] = '-'
+	}
+
+	// Draw the box (IQR)
+	for i := p25Pos; i <= p75Pos; i++ {
+		line[i] = '█'
+	}
+
+	// Draw median
+	if p50Pos >= 0 && p50Pos < width {
+		line[p50Pos] = '|'
+	}
+
+	// Draw whiskers
+	minPos := scale(ev.PriorMin)
+	maxPos := scale(ev.PriorMax)
+	if minPos >= 0 && minPos < width { line[minPos] = '[' }
+	if maxPos >= 0 && maxPos < width { line[maxPos] = ']' }
+
+	// Draw current price
+	if currPos >= 0 && currPos < width {
+		if line[currPos] == '█' || line[currPos] == '|' {
+			line[currPos] = 'X' // Overlap
+		} else {
+			line[currPos] = '▼' // Current price mark
+		}
+	}
+
+	return string(line)
 }
 
 func appendPriceObservation(history *models.CorePriceHistory, priceCAD float64, eventID string) {
