@@ -1295,26 +1295,21 @@ func millisToTime(ms int64) time.Time {
 var nonAlphaNumeric = regexp.MustCompile(`[^a-z0-9]+`)
 
 func comparableQuery(product Product) string {
-	if product.PrimaryUPC != "" {
+	switch {
+	case product.PrimaryUPC != "":
 		return product.PrimaryUPC
-	}
-
-	normalized := strings.TrimSpace(nonAlphaNumeric.ReplaceAllString(strings.ToLower(product.Name), " "))
-	// Clean out common fluff
-	normalized = regexp.MustCompile(`(?i)\b(refurbished|excellent|good|fair|open box|brand new|renewed|windows|win\s*1[01]\s*pro|warranty|unlocked|wifi|bluetooth|generation|gen)\b`).ReplaceAllString(normalized, " ")
-	parts := strings.Fields(normalized)
-	if len(parts) > 8 {
-		parts = parts[:8]
-	}
-	query := strings.Join(parts, " ")
-	if len(parts) >= 2 {
-		return query
-	}
-
-	if product.BrandName != "" && product.ModelNumber != "" {
+	case product.BrandName != "" && product.ModelNumber != "":
 		return strings.TrimSpace(product.BrandName + " " + product.ModelNumber)
+	case product.ModelNumber != "":
+		return product.ModelNumber
+	default:
+		normalized := strings.TrimSpace(nonAlphaNumeric.ReplaceAllString(strings.ToLower(product.Name), " "))
+		parts := strings.Fields(normalized)
+		if len(parts) > 8 {
+			parts = parts[:8]
+		}
+		return strings.Join(parts, " ")
 	}
-	return product.ModelNumber
 }
 
 func productCondition(title string) string {
