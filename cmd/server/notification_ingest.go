@@ -7,86 +7,50 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/core"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
 const discordNotificationIngestMaxBytes = 128 * 1024
 
 type discordNotificationIngestEvent struct {
-	Type            string                      `json:"type"`
-	ReceivedAt      int64                       `json:"receivedAt"`
-	PackageName     string                      `json:"packageName"`
-	NotificationKey string                      `json:"notificationKey"`
-	NotificationID  int                         `json:"notificationId"`
-	Tag             string                      `json:"tag"`
-	PostTime        int64                       `json:"postTime"`
-	IsClearable     bool                        `json:"isClearable"`
-	IsOngoing       bool                        `json:"isOngoing"`
-	Category        string                      `json:"category"`
-	Group           string                      `json:"group"`
-	Extras          discordNotificationExtras   `json:"extras"`
-	Actions         []discordNotificationAction `json:"actions"`
-	MarkRead        discordNotificationMarkRead `json:"markRead"`
+	Type        string                    `json:"type"`
+	ReceivedAt  int64                     `json:"receivedAt"`
+	PackageName string                    `json:"packageName"`
+	Tag         string                    `json:"tag"`
+	PostTime    int64                     `json:"postTime"`
+	TickerText  string                    `json:"tickerText"`
+	Extras      discordNotificationExtras `json:"extras"`
 }
 
 type discordNotificationExtras struct {
-	Title             string                   `json:"title"`
-	Text              string                   `json:"text"`
-	BigText           string                   `json:"bigText"`
-	TitleBig          string                   `json:"titleBig"`
-	SubText           string                   `json:"subText"`
-	SummaryText       string                   `json:"summaryText"`
-	InfoText          string                   `json:"infoText"`
-	TextLines         []string                 `json:"textLines"`
 	ConversationTitle string                   `json:"conversationTitle"`
-	IsGroup           bool                     `json:"isGroupConversation"`
-	ContentIntent     string                   `json:"contentIntent"`
-	Link              string                   `json:"link"`
-	Uri               string                   `json:"uri"`
-	DataLink          string                   `json:"dataLink"`
 	Messages          []discordNotificationMsg `json:"messages"`
+	PictureBase64     string                   `json:"pictureBase64"`
 }
 
 type discordNotificationMsg struct {
-	Text   string `json:"text"`
 	Sender string `json:"sender"`
+	Text   string `json:"text"`
 	Time   int64  `json:"time"`
-	Uri    string `json:"uri"`
-}
-
-type discordNotificationAction struct {
-	Title     string `json:"title"`
-	HasIntent bool   `json:"hasIntent"`
-}
-
-type discordNotificationMarkRead struct {
-	Sent               bool   `json:"sent"`
-	CancelFallbackUsed bool   `json:"cancelFallbackUsed"`
-	MatchedTitle       string `json:"matchedTitle"`
-	Reason             string `json:"reason"`
-	Error              string `json:"error"`
 }
 
 type normalizedDiscordNotification struct {
-	EventID         string   `json:"eventId"`
-	SourcePackage   string   `json:"sourcePackage"`
-	Title           string   `json:"title,omitempty"`
-	Message         string   `json:"message,omitempty"`
-	Lines           []string `json:"lines,omitempty"`
-	ReceivedAt      string   `json:"receivedAt,omitempty"`
-	PostTime        string   `json:"postTime,omitempty"`
-	MarkReadSent    bool     `json:"markReadSent"`
-	MarkReadReason  string   `json:"markReadReason,omitempty"`
-	NotificationKey string   `json:"notificationKey,omitempty"`
-	Link            string   `json:"link,omitempty"`
+	SourcePackage     string
+	Tag               string
+	TickerText        string
+	ConversationTitle string
+	Messages          []core.DiscordNotificationMsg
+	PictureBase64     string
+	ReceivedAt        int64
+	EventID           string
 }
 
 func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -96,54 +60,51 @@ func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http
 	var event discordNotificationIngestEvent
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(&event); err != nil {
-		http.Error(w, "invalid notification event: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	if strings.TrimSpace(event.PackageName) == "" {
-		http.Error(w, "invalid notification event: packageName is required", http.StatusBadRequest)
+	if event.PackageName == "" {
+		http.Error(w, "Missing packageName", http.StatusBadRequest)
 		return
 	}
 
 	normalized := normalizeDiscordNotification(event)
+
+	// Pass the batched messages to the core processor
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if s.coreProcessor != nil {
+			s.coreProcessor.ProcessNotificationBatch(ctx, normalized.ConversationTitle, normalized.Tag, normalized.TickerText, normalized.Messages, normalized.PictureBase64, normalized.EventID, normalized.SourcePackage)
+		}
+	}()
+
 	slog.Info("Discord notification ingested",
 		"event_id", normalized.EventID,
 		"source_package", normalized.SourcePackage,
-		"title", normalized.Title,
-		"message", normalized.Message,
-		"line_count", len(normalized.Lines),
-		"mark_read_sent", normalized.MarkReadSent,
-		"mark_read_reason", normalized.MarkReadReason,
 	)
 
 	// Save the raw notification to storage
+	var lines []string
+	for _, msg := range normalized.Messages {
+		lines = append(lines, msg.Text)
+	}
 	rawNotif := models.CoreRawNotification{
 		EventID:       normalized.EventID,
 		SourcePackage: normalized.SourcePackage,
-		Title:         normalized.Title,
-		Message:       normalized.Message,
-		Lines:         normalized.Lines,
+		Title:         normalized.ConversationTitle,
+		Message:       normalized.TickerText,
+		Lines:         lines,
 		ReceivedAt:    time.Now(),
 	}
-	if normalized.ReceivedAt != "" {
-		if t, err := time.Parse(time.RFC3339Nano, normalized.ReceivedAt); err == nil {
-			rawNotif.ReceivedAt = t
-		}
+	if normalized.ReceivedAt > 0 {
+		rawNotif.ReceivedAt = time.UnixMilli(normalized.ReceivedAt).UTC()
 	}
 	if s.db != nil {
 		if err := s.db.SaveCoreRawNotification(r.Context(), rawNotif); err != nil {
 			slog.Error("Failed to save raw notification", "event_id", normalized.EventID, "error", err)
 		}
-	}
-
-	if s.coreProcessor != nil && strings.Contains(strings.ToLower(normalized.SourcePackage), "discord") {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			if err := s.coreProcessor.ProcessNotification(ctx, normalized.Title, normalized.Message, normalized.Lines, normalized.EventID, normalized.SourcePackage, normalized.Link); err != nil {
-				slog.Error("Failed to process ingested Discord notification in Core bot", "event_id", normalized.EventID, "error", err)
-			}
-		}()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -157,91 +118,54 @@ func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http
 }
 
 func normalizeDiscordNotification(event discordNotificationIngestEvent) normalizedDiscordNotification {
-	lines := notificationTextLines(event.Extras)
-	title := firstNotificationText(event.Extras.TitleBig, event.Extras.ConversationTitle, event.Extras.Title, event.Extras.SubText)
-	message := firstNotificationText(event.Extras.BigText, event.Extras.Text)
-	
-	if message == "" && len(event.Extras.Messages) > 0 {
-		message = event.Extras.Messages[len(event.Extras.Messages)-1].Text
-	}
-	
-	if message == "" && len(lines) > 0 {
-		message = lines[0]
-	}
-
-	link := firstNotificationText(event.Extras.Link, event.Extras.Uri, event.Extras.DataLink)
-	if link == "" && len(event.Extras.Messages) > 0 {
-		link = event.Extras.Messages[len(event.Extras.Messages)-1].Uri
+	var coreMsgs []core.DiscordNotificationMsg
+	for _, m := range event.Extras.Messages {
+		coreMsgs = append(coreMsgs, core.DiscordNotificationMsg{
+			Sender: m.Sender,
+			Text:   m.Text,
+			Time:   m.Time,
+		})
 	}
 
 	normalized := normalizedDiscordNotification{
-		EventID:         notificationEventID(event, title, message),
-		SourcePackage:   event.PackageName,
-		Title:           title,
-		Message:         message,
-		Lines:           lines,
-		MarkReadSent:    event.MarkRead.Sent,
-		MarkReadReason:  event.MarkRead.Reason,
-		NotificationKey: event.NotificationKey,
-		Link:            link,
-	}
-	if event.ReceivedAt > 0 {
-		normalized.ReceivedAt = time.UnixMilli(event.ReceivedAt).UTC().Format(time.RFC3339Nano)
-	}
-	if event.PostTime > 0 {
-		normalized.PostTime = time.UnixMilli(event.PostTime).UTC().Format(time.RFC3339Nano)
+		EventID:           notificationEventID(event),
+		SourcePackage:     event.PackageName,
+		Tag:               event.Tag,
+		TickerText:        event.TickerText,
+		ConversationTitle: event.Extras.ConversationTitle,
+		Messages:          coreMsgs,
+		PictureBase64:     event.Extras.PictureBase64,
+		ReceivedAt:        event.ReceivedAt,
 	}
 	return normalized
 }
 
-func notificationTextLines(extras discordNotificationExtras) []string {
-	candidates := []string{
-		extras.Title,
-		extras.SubText,
-		extras.Text,
-		extras.BigText,
-		extras.SummaryText,
-		extras.InfoText,
-	}
-	candidates = append(candidates, extras.TextLines...)
 
-	seen := make(map[string]struct{}, len(candidates))
-	lines := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		line := strings.TrimSpace(candidate)
-		if line == "" {
-			continue
-		}
-		if _, ok := seen[line]; ok {
-			continue
-		}
-		seen[line] = struct{}{}
-		lines = append(lines, line)
-	}
-	return lines
-}
 
-func firstNotificationText(values ...string) string {
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func notificationEventID(event discordNotificationIngestEvent, title, message string) string {
+func notificationEventID(event discordNotificationIngestEvent) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(event.PackageName))
 	_, _ = h.Write([]byte{0})
-	_, _ = h.Write([]byte(event.NotificationKey))
-	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(event.Tag))
 	_, _ = h.Write([]byte{0})
-	_, _ = h.Write([]byte(title))
-	_, _ = h.Write([]byte{0})
-	_, _ = h.Write([]byte(message))
+	_, _ = h.Write([]byte(event.TickerText))
 	sum := h.Sum(nil)
 	return hex.EncodeToString(sum[:12])
+}
+
+func (s *Server) CoreRebinHandler(w http.ResponseWriter, r *http.Request) {
+	if s.coreProcessor == nil {
+		http.Error(w, "core processor not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	slog.Info("Core bot: Manual re-binning triggered")
+	if err := s.coreProcessor.Rebin(r.Context()); err != nil {
+		slog.Error("Core bot: Manual re-binning failed", "error", err)
+		http.Error(w, "re-binning failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "details": "Re-binning complete"})
 }

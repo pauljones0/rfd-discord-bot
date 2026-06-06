@@ -3,11 +3,13 @@ package notifier
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -105,8 +107,17 @@ func (c *Client) Update(ctx context.Context, deal models.DealInfo) error {
 
 // Internal structures
 type discordWebhookPayload struct {
-	Content string         `json:"content"`
-	Embeds  []discordEmbed `json:"embeds"`
+	Content     string              `json:"content"`
+	Embeds      []discordEmbed      `json:"embeds"`
+	Attachments []discordAttachment `json:"attachments,omitempty"`
+
+	// Internal field for multipart payload
+	ImageBase64 string `json:"-"`
+}
+
+type discordAttachment struct {
+	ID       int    `json:"id"`
+	Filename string `json:"filename"`
 }
 
 type discordEmbedThumbnail struct {
@@ -262,9 +273,35 @@ func discordEmbedURL(raw string) (string, bool) {
 // It returns the response body on success.
 func (c *Client) doRequest(ctx context.Context, method, targetURL string, payload discordWebhookPayload) ([]byte, error) {
 	start := time.Now()
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
+
+	var payloadBodyBytes []byte
+	var contentType = "application/json"
+
+	if payload.ImageBase64 != "" {
+		imageBytes, err := base64.StdEncoding.DecodeString(payload.ImageBase64)
+		if err == nil {
+			var b bytes.Buffer
+			w := multipart.NewWriter(&b)
+
+			jsonPart, _ := w.CreateFormField("payload_json")
+			jsonBytes, _ := json.Marshal(payload)
+			jsonPart.Write(jsonBytes)
+
+			filePart, _ := w.CreateFormFile("files[0]", "image.jpg")
+			filePart.Write(imageBytes)
+
+			w.Close()
+			payloadBodyBytes = b.Bytes()
+			contentType = w.FormDataContentType()
+		}
+	}
+
+	if payloadBodyBytes == nil {
+		jsonBytes, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		payloadBodyBytes = jsonBytes
 	}
 
 	var lastErr error
@@ -278,11 +315,11 @@ func (c *Client) doRequest(ctx context.Context, method, targetURL string, payloa
 			return nil, fmt.Errorf("rate limiter wait: %w", err)
 		}
 
-		req, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewBuffer(payloadBytes))
+		req, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewReader(payloadBodyBytes))
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 		req.Header.Set("Authorization", "Bot "+c.botToken)
 
 		resp, err := c.client.Do(req)
@@ -530,16 +567,13 @@ func formatPriceShort(v float64) string {
 	return fmt.Sprintf("%.1fk", k)
 }
 
-// --- Core Deal Notifications ---
-
-// SendCoreDeal sends a new Core deal notification to all subscribed channels.
-// Returns a map of ChannelID -> MessageID.
-func (c *Client) SendCoreDeal(ctx context.Context, deal models.CoreDeal, subs []models.Subscription) (map[string]string, error) {
+// SendCoreAlert sends a new Core deal notification to all subscribed channels.
+func (c *Client) SendCoreAlert(ctx context.Context, alert models.CoreAlert, subs []models.Subscription) (map[string]string, error) {
 	if c.botToken == "" {
 		return nil, nil
 	}
 
-	payload := createCorePayload(deal)
+	payload := createCoreAlertPayload(alert)
 	results := make(map[string]string)
 	sentChannels := make(map[string]bool)
 
@@ -552,7 +586,7 @@ func (c *Client) SendCoreDeal(ctx context.Context, deal models.CoreDeal, subs []
 		urlStr := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, sub.ChannelID)
 		body, err := c.doRequest(ctx, "POST", urlStr, payload)
 		if err != nil {
-			slog.Error("Failed to send Core deal to channel", "processor", "core", "channel", sub.ChannelID, "product", deal.ProductName, "error", err)
+			slog.Error("Failed to send Core deal to channel", "processor", "core", "channel", sub.ChannelID, "product", alert.Deal.ProductName, "error", err)
 			continue
 		}
 
@@ -567,16 +601,51 @@ func (c *Client) SendCoreDeal(ctx context.Context, deal models.CoreDeal, subs []
 	return results, nil
 }
 
-func createCorePayload(deal models.CoreDeal) discordWebhookPayload {
-	embed := formatCoreEmbed(deal)
-	return discordWebhookPayload{
+// UpdateCoreAlert updates an existing Core deal notification.
+func (c *Client) UpdateCoreAlert(ctx context.Context, alert models.CoreAlert) error {
+	if c.botToken == "" || len(alert.MessageIDs) == 0 {
+		return nil
+	}
+
+	payload := createCoreAlertPayload(alert)
+	var errs []error
+
+	for channelID, messageID := range alert.MessageIDs {
+		patchURL := fmt.Sprintf("%s/channels/%s/messages/%s", discordAPIBase, channelID, messageID)
+		_, err := c.doRequest(ctx, "PATCH", patchURL, payload)
+		if err != nil {
+			slog.Error("Failed to update Core deal", "processor", "core", "channel", channelID, "message", messageID, "error", err)
+			errs = append(errs, fmt.Errorf("channel %s: %w", channelID, err))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+func createCoreAlertPayload(alert models.CoreAlert) discordWebhookPayload {
+	embed := formatCoreAlertEmbed(alert)
+	payload := discordWebhookPayload{
 		Content: "",
 		Embeds:  []discordEmbed{embed},
 	}
+	if alert.Deal.ImageBase64 != "" {
+		payload.ImageBase64 = alert.Deal.ImageBase64
+		payload.Attachments = []discordAttachment{
+			{ID: 0, Filename: "image.jpg"},
+		}
+		payload.Embeds[0].Thumbnail = discordEmbedThumbnail{
+			URL: "attachment://image.jpg",
+		}
+	}
+	return payload
 }
 
-func formatCoreEmbed(deal models.CoreDeal) discordEmbed {
+func formatCoreAlertEmbed(alert models.CoreAlert) discordEmbed {
+	deal := alert.Deal
 	title := deal.ProductName
+	if deal.AnomalyType != "" && deal.AnomalyType != "Normal" && deal.AnomalyType != "Deal" {
+		title = fmt.Sprintf("🚨 [%s] %s", strings.ToUpper(deal.AnomalyType), deal.ProductName)
+	}
 
 	var descBuilder strings.Builder
 
@@ -586,17 +655,27 @@ func formatCoreEmbed(deal models.CoreDeal) discordEmbed {
 		descBuilder.WriteString(fmt.Sprintf("  •  Original: **%s %.2f**", strings.ToUpper(deal.OriginalCurr), deal.OriginalPrice))
 	}
 	descBuilder.WriteString("\n\n")
-	if deal.StoreName != "" {
-		descBuilder.WriteString(fmt.Sprintf("Store: **%s**\n", deal.StoreName))
+
+	// Store and Links Amalagamation
+	if len(alert.StoreNames) > 0 {
+		descBuilder.WriteString("**Available At:**\n")
+		for i, store := range alert.StoreNames {
+			link := ""
+			if i < len(alert.Links) && alert.Links[i] != "" {
+				link = alert.Links[i]
+			}
+			if link != "" {
+				descBuilder.WriteString(fmt.Sprintf("• [%s](%s)\n", store, link))
+			} else {
+				descBuilder.WriteString(fmt.Sprintf("• **%s**\n", store))
+			}
+		}
+		descBuilder.WriteString("\n")
 	}
 
 	// Historical comparison details
 	descBuilder.WriteString("📊 **Historical Stats:**\n")
-	if deal.PriceCAD <= deal.MinPriceSeen {
-		descBuilder.WriteString("⭐ **New lowest price seen!**\n")
-	} else {
-		descBuilder.WriteString(fmt.Sprintf("• Min price seen: **C$%.2f**\n", deal.MinPriceSeen))
-	}
+	descBuilder.WriteString(fmt.Sprintf("• Min price seen: **C$%.2f**\n", deal.MinPriceSeen))
 	descBuilder.WriteString(fmt.Sprintf("• Median (p50): **C$%.2f**\n", deal.P50PriceSeen))
 	descBuilder.WriteString(fmt.Sprintf("• 25th percentile (p25): **C$%.2f**\n", deal.P25PriceSeen))
 	descBuilder.WriteString(fmt.Sprintf("• Total price observations: **%d**\n", deal.HistoryCount))
@@ -604,14 +683,25 @@ func formatCoreEmbed(deal models.CoreDeal) discordEmbed {
 	if deal.BoxPlot != "" {
 		descBuilder.WriteString("\n**Price Distribution:**\n")
 		descBuilder.WriteString(fmt.Sprintf("```\n%s\n```\n", deal.BoxPlot))
-		descBuilder.WriteString("*( `[`/`]` = Min/Max, `█` = IQR(p25-p75), `|` = Median, `▼` = Current Price )*\n")
+		descBuilder.WriteString("*( `[`/`]` = Min/Max, `█` = IQR, `|` = Median, `▼` = Current Price )*\n")
 	}
 
 	if deal.Category != "" {
 		descBuilder.WriteString(fmt.Sprintf("\nCategory: %s", deal.Category))
 	}
 
-	embedColor := 7098599 // #6C5CE7 (premium dark violet)
+	embedColor := 7098599 // #6C5CE7 (premium dark violet - default)
+
+	// Color Hierarchy: Price Error > Steal > Normal
+	// Since CoreDeal doesn't have engagement/heat yet, we focus on deal "amount"
+	switch deal.AnomalyType {
+	case "Price Error / Used":
+		embedColor = 15158332 // #E74C3C (vibrant red) - critical
+	case "Steal":
+		embedColor = 15844367 // #F1C40F (vibrant gold) - high value
+	case "Deal":
+		embedColor = 3447003  // #3498DB (blue) - solid deal
+	}
 
 	return discordEmbed{
 		Title:       title,

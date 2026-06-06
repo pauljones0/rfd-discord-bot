@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -27,6 +28,7 @@ const (
 type Store interface {
 	GetCorePriceHistory(ctx context.Context, productName string) (*models.CorePriceHistory, bool, error)
 	SaveCorePriceHistory(ctx context.Context, history models.CorePriceHistory) error
+	WipeCorePriceHistory(ctx context.Context) error
 	GetCoreCategoryStats(ctx context.Context, category string) (*models.CoreCategoryStats, bool, error)
 	SaveCoreCategoryStats(ctx context.Context, stats models.CoreCategoryStats) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
@@ -35,7 +37,8 @@ type Store interface {
 
 // Notifier abstracts Discord notifications.
 type Notifier interface {
-	SendCoreDeal(ctx context.Context, deal models.CoreDeal, subs []models.Subscription) (map[string]string, error)
+	SendCoreAlert(ctx context.Context, alert models.CoreAlert, subs []models.Subscription) (map[string]string, error)
+	UpdateCoreAlert(ctx context.Context, alert models.CoreAlert) error
 }
 
 // Processor handles parsing and tracking Core deal alerts without AI.
@@ -46,6 +49,58 @@ type Processor struct {
 
 	locksMu      sync.Mutex
 	productLocks map[string]*sync.Mutex
+
+	Rebinning bool // If true, alerts are suppressed
+}
+
+// Rebin re-processes raw notifications from the last 30 days to reconstruct price history.
+func (p *Processor) Rebin(ctx context.Context) error {
+	p.Rebinning = true
+	defer func() { p.Rebinning = false }()
+
+	// 1. Wipe old history
+	if err := p.store.WipeCorePriceHistory(ctx); err != nil {
+		return fmt.Errorf("failed to wipe old history: %w", err)
+	}
+
+	// 2. Fetch raw notifications from the last 30 days
+	// We use the storage.Client directly if possible, or assume the store satisfies an interface.
+	// Since Store is an interface, let's see if we need to add a method to it.
+	
+	// Actually, for simplicity in this YOLO fix, I'll just look at what's available.
+	// storage.Client has GetRecentCoreRawNotifications.
+	
+	// Let's assume we can fetch them. I'll need to cast or update the interface.
+	type fullStore interface {
+		Store
+		GetRecentCoreRawNotifications(ctx context.Context, duration time.Duration) ([]models.CoreRawNotification, error)
+	}
+
+	fs, ok := p.store.(fullStore)
+	if !ok {
+		return fmt.Errorf("store does not support fetching raw notifications")
+	}
+
+	notifs, err := fs.GetRecentCoreRawNotifications(ctx, 30*24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("failed to fetch raw notifications: %w", err)
+	}
+
+	slog.Info("Core bot: Starting re-binning process", "notification_count", len(notifs))
+
+	// Sort by date ascending to reconstruct history correctly
+	sort.Slice(notifs, func(i, j int) bool {
+		return notifs[i].ReceivedAt.Before(notifs[j].ReceivedAt)
+	})
+
+	for _, notif := range notifs {
+		if err := p.ProcessNotification(ctx, notif.Title, notif.Message, notif.Lines, notif.EventID, notif.SourcePackage, "", "", ""); err != nil {
+			slog.Error("Core bot: Re-binning failed for notification", "event_id", notif.EventID, "error", err)
+		}
+	}
+
+	slog.Info("Core bot: Re-binning process complete")
+	return nil
 }
 
 // NewProcessor creates a new Core processor.
@@ -86,6 +141,55 @@ type priceEvaluation struct {
 	IsAnomaly    bool
 	ShouldSignal bool
 	Reason       string
+	AnomalyScore float64 // % drop from reference median
+	AnomalyType  string  // "Steal", "Price Error / Used", "Normal"
+}
+
+type priceCluster struct {
+	Median float64
+	Count  int
+	Prices []float64
+}
+
+func clusterPrices(prices []float64) []priceCluster {
+	if len(prices) == 0 {
+		return nil
+	}
+	// prices is already sorted
+	var clusters []priceCluster
+	if len(prices) == 0 {
+		return clusters
+	}
+
+	current := priceCluster{Prices: []float64{prices[0]}}
+	for i := 1; i < len(prices); i++ {
+		// If gap is more than 5%, start new cluster
+		if (prices[i]-prices[i-1])/prices[i-1] > 0.05 {
+			current.Median = percentile(current.Prices, 50)
+			current.Count = len(current.Prices)
+			clusters = append(clusters, current)
+			current = priceCluster{Prices: []float64{prices[i]}}
+		} else {
+			current.Prices = append(current.Prices, prices[i])
+		}
+	}
+	current.Median = percentile(current.Prices, 50)
+	current.Count = len(current.Prices)
+	clusters = append(clusters, current)
+	return clusters
+}
+
+func findMainCluster(clusters []priceCluster) priceCluster {
+	if len(clusters) == 0 {
+		return priceCluster{}
+	}
+	main := clusters[0]
+	for _, c := range clusters[1:] {
+		if c.Count > main.Count {
+			main = c
+		}
+	}
+	return main
 }
 
 var (
@@ -266,11 +370,48 @@ func inferCurrencyFromSymbolAndStore(pricePart, storeName string) string {
 	return "CAD"
 }
 
+type DiscordNotificationMsg struct {
+	Sender string `json:"sender"`
+	Text   string `json:"text"`
+	Time   int64  `json:"time"`
+}
+
+func (p *Processor) ProcessNotificationBatch(ctx context.Context, conversationTitle, tag, tickerText string, messages []DiscordNotificationMsg, pictureBase64, eventID, sourcePackage string) {
+	// Construct fallback link from Discord Snowflake tag
+	var fallbackLink string
+	if strings.HasPrefix(tag, "MESSAGE_CREATE") {
+		channelID := strings.TrimPrefix(tag, "MESSAGE_CREATE")
+		if channelID != "" {
+			fallbackLink = "https://discord.com/channels/@me/" + channelID
+		}
+	}
+
+	category := ParseCategoryFromTitle(conversationTitle)
+
+	// Process tickerText as a primary candidate if present
+	if tickerText != "" {
+		if err := p.ProcessNotification(ctx, conversationTitle, tickerText, nil, eventID+"-ticker", sourcePackage, fallbackLink, category, pictureBase64); err != nil {
+			slog.Error("Failed to process tickerText", "error", err)
+		}
+	}
+
+	// Process each message in the batch
+	for i, msg := range messages {
+		if msg.Text == "" {
+			continue
+		}
+		subEventID := fmt.Sprintf("%s-%d", eventID, i)
+		if err := p.ProcessNotification(ctx, conversationTitle, msg.Text, nil, subEventID, sourcePackage, fallbackLink, category, pictureBase64); err != nil {
+			slog.Error("Failed to process grouped message", "subEventID", subEventID, "error", err)
+		}
+	}
+}
+
 // ProcessNotification ingests, parses, checks price percentiles, and alerts if eligible.
-func (p *Processor) ProcessNotification(ctx context.Context, title, message string, lines []string, eventID, sourcePackage string, rawLink string) error {
+func (p *Processor) ProcessNotification(ctx context.Context, title, message string, lines []string, eventID, sourcePackage string, rawLink string, explicitCategory string, pictureBase64 string) error {
 	slog.Info("Core bot: Processing notification", "event_id", eventID, "source_package", sourcePackage)
 
-	parsed, ok := p.parseNotificationCandidates(message, lines, title)
+	parsed, ok := p.parseNotificationCandidates(message, lines, title, rawLink)
 	if !ok {
 		slog.Info("Core bot: Notification is not a valid deal format, skipping", "event_id", eventID, "message", message)
 		return nil
@@ -303,10 +444,6 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 	}
 
 	priceCAD := p.rates.ConvertToCAD(parsed.Price, parsed.Currency)
-
-	if isTCGCategory(category) {
-		normName += " " + getTCGTier(priceCAD)
-	}
 
 	lock := p.productLock(normName)
 	lock.Lock()
@@ -361,7 +498,37 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 		slog.Warn("Core bot: Failed to save category stats", "category", category, "error", err)
 	}
 
-	if !evaluation.ShouldSignal {
+	if !evaluation.ShouldSignal || p.Rebinning {
+		if evaluation.Reason == "anomaly_duplicate" && !p.Rebinning {
+			updated := false
+			for i := range history.RecentAlerts {
+				recent := &history.RecentAlerts[i]
+				if time.Since(recent.FiredAt) < 12*time.Hour && math.Abs(recent.PriceCAD-priceCAD)/recent.PriceCAD < 0.03 {
+					hasStore := false
+					for _, s := range recent.StoreNames {
+						if s == parsed.StoreName {
+							hasStore = true
+							break
+						}
+					}
+					if !hasStore {
+						recent.StoreNames = append(recent.StoreNames, parsed.StoreName)
+						recent.Links = append(recent.Links, parsed.Link)
+						
+						if err := p.notifier.UpdateCoreAlert(ctx, *recent); err != nil {
+							slog.Error("Core bot: Failed to update core deal alert", "error", err)
+						} else {
+							slog.Info("Core bot: Appended new store to existing alert", "store", parsed.StoreName)
+							updated = true
+						}
+					}
+					break
+				}
+			}
+			if updated {
+				_ = p.store.SaveCorePriceHistory(ctx, *history)
+			}
+		}
 		return nil
 	}
 
@@ -384,26 +551,55 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 		OriginalPrice: parsed.Price,
 		OriginalCurr:  parsed.Currency,
 		Link:          parsed.Link,
+		ImageBase64:   pictureBase64,
 		ReceivedAt:    time.Now(),
 		MinPriceSeen:  minFloat(priceCAD, evaluation.PriorMin),
 		P25PriceSeen:  evaluation.PriorP25,
+		P50PriceSeen:  evaluation.PriorP50,
+		P75PriceSeen:  evaluation.PriorP75,
 		HistoryCount:  len(history.Prices),
+		AnomalyType:   evaluation.AnomalyType,
+		BoxPlot:       GenerateBoxPlot(evaluation, priceCAD),
+	}
+
+	alert := models.CoreAlert{
+		PriceCAD:   priceCAD,
+		StoreNames: []string{parsed.StoreName},
+		Links:      []string{parsed.Link},
+		FiredAt:    time.Now(),
+		Deal:       deal,
 	}
 
 	slog.Info("Core bot: Price drop/low price detected; sending alert", "product", parsed.ProductName, "store", parsed.StoreName, "price_cad", priceCAD, "min_cad", deal.MinPriceSeen, "p25_cad", deal.P25PriceSeen, "history_count", deal.HistoryCount)
-	if _, err := p.notifier.SendCoreDeal(ctx, deal, coreSubs); err != nil {
+	msgIDs, err := p.notifier.SendCoreAlert(ctx, alert, coreSubs)
+	if err != nil {
 		return fmt.Errorf("failed to send core deal alerts: %w", err)
 	}
+	
+	alert.MessageIDs = msgIDs
+	
+	var recentAlerts []models.CoreAlert
+	for _, a := range history.RecentAlerts {
+		if time.Since(a.FiredAt) < 24*time.Hour {
+			recentAlerts = append(recentAlerts, a)
+		}
+	}
+	history.RecentAlerts = append(recentAlerts, alert)
+	_ = p.store.SaveCorePriceHistory(ctx, *history)
+
 	return nil
 }
 
-func (p *Processor) parseNotificationCandidates(message string, lines []string, title string) (ParsedNotification, bool) {
-	candidates := make([]string, 0, len(lines)+2)
+func (p *Processor) parseNotificationCandidates(message string, lines []string, title string, rawLink string) (ParsedNotification, bool) {
+	candidates := make([]string, 0, len(lines)+3)
 	candidates = append(candidates, message)
 	candidates = append(candidates, lines...)
 	candidates = append(candidates, title)
 
 	seen := make(map[string]struct{}, len(candidates))
+	var best ParsedNotification
+	var found bool
+
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
@@ -415,10 +611,21 @@ func (p *Processor) parseNotificationCandidates(message string, lines []string, 
 		seen[candidate] = struct{}{}
 
 		if parsed, ok := ParseNotification(p.rates, candidate); ok {
-			return parsed, true
+			if !found {
+				best = parsed
+				found = true
+				continue
+			}
+
+			// Compare prices in CAD to pick the best deal
+			currentBestCAD := p.rates.ConvertToCAD(best.Price, best.Currency)
+			newCAD := p.rates.ConvertToCAD(parsed.Price, parsed.Currency)
+			if newCAD < currentBestCAD {
+				best = parsed
+			}
 		}
 	}
-	return ParsedNotification{}, false
+	return best, found
 }
 
 func (p *Processor) loadPriceHistory(ctx context.Context, normName, category string) (*models.CorePriceHistory, bool, error) {
@@ -465,20 +672,21 @@ func (p *Processor) productLock(normName string) *sync.Mutex {
 }
 
 func evaluatePrice(priceCAD float64, priorPrices []float64) priceEvaluation {
-	ev := priceEvaluation{PriorCount: len(priorPrices)}
+	ev := priceEvaluation{PriorCount: len(priorPrices), AnomalyType: "Normal"}
 	if len(priorPrices) == 0 {
 		ev.Reason = "first_observation"
 		return ev
 	}
 
-	ev.PriorMin = minOf(priorPrices)
-	ev.PriorMax = maxOf(priorPrices)
+	sort.Float64s(priorPrices)
+	ev.PriorMin = priorPrices[0]
+	ev.PriorMax = priorPrices[len(priorPrices)-1]
 	ev.PriorP25 = percentile(priorPrices, 25)
 	ev.PriorP50 = percentile(priorPrices, 50)
 	ev.PriorP75 = percentile(priorPrices, 75)
 
 	iqr := ev.PriorP75 - ev.PriorP25
-	// Using standard 1.5 * IQR for mild outliers, 3.0 * IQR for extreme outliers
+	// Using standard 1.5 * IQR for mild outliers
 	ev.LowerBound = math.Max(0, ev.PriorP25-(1.5*iqr))
 	ev.IsAnomaly = priceCAD < ev.LowerBound && priceCAD > 0
 
@@ -487,13 +695,32 @@ func evaluatePrice(priceCAD float64, priorPrices []float64) priceEvaluation {
 		return ev
 	}
 
+	// Cluster-based analysis
+	clusters := clusterPrices(priorPrices)
+	mainCluster := findMainCluster(clusters)
+	refPrice := mainCluster.Median
+
+	// Calculate anomaly score: % drop from the main cluster median
+	if refPrice > 0 {
+		ev.AnomalyScore = (refPrice - priceCAD) / refPrice * 100
+	}
+
 	if ev.IsAnomaly {
+		// Classification based on severity
+		if ev.AnomalyScore > 35 {
+			ev.AnomalyType = "Price Error / Used"
+		} else if ev.AnomalyScore > 15 {
+			ev.AnomalyType = "Steal"
+		} else {
+			ev.AnomalyType = "Deal"
+		}
+
 		// Prevent duplicates: Check if we already have a very similar price in history
-		// (e.g., within 2% of an existing price). This avoids duplicate alerts for currency swings.
+		// (e.g., within 3% of an existing price). Handles currency swings and rounding.
 		isDupe := false
 		for _, prev := range priorPrices {
 			diff := math.Abs(prev - priceCAD)
-			if diff/priceCAD < 0.02 {
+			if diff/priceCAD < 0.03 {
 				isDupe = true
 				break
 			}
@@ -514,12 +741,18 @@ func evaluatePrice(priceCAD float64, priorPrices []float64) priceEvaluation {
 
 // GenerateBoxPlot creates an ASCII representation of the price distribution and the new outlier.
 func GenerateBoxPlot(ev priceEvaluation, currentPrice float64) string {
-	const width = 40
+	const width = 60
 	minP := math.Min(ev.PriorMin, currentPrice)
 	maxP := math.Max(ev.PriorMax, currentPrice)
 	
 	if maxP == minP {
-		return "[ Price Distribution Not Available ]"
+		const msg = "[ Price Distribution Not Available ]"
+		msgLen := utf8.RuneCountInString(msg)
+		if msgLen >= width {
+			return msg
+		}
+		padding := (width - msgLen) / 2
+		return strings.Repeat(" ", padding) + msg + strings.Repeat(" ", width-msgLen-padding)
 	}
 
 	scale := func(val float64) int {
@@ -536,6 +769,13 @@ func GenerateBoxPlot(ev priceEvaluation, currentPrice float64) string {
 
 	line := make([]rune, width)
 	for i := range line {
+		line[i] = ' '
+	}
+
+	// Draw the whiskers line
+	minPos := scale(ev.PriorMin)
+	maxPos := scale(ev.PriorMax)
+	for i := minPos; i <= maxPos; i++ {
 		line[i] = '-'
 	}
 
@@ -549,15 +789,13 @@ func GenerateBoxPlot(ev priceEvaluation, currentPrice float64) string {
 		line[p50Pos] = '|'
 	}
 
-	// Draw whiskers
-	minPos := scale(ev.PriorMin)
-	maxPos := scale(ev.PriorMax)
+	// Draw whiskers caps
 	if minPos >= 0 && minPos < width { line[minPos] = '[' }
 	if maxPos >= 0 && maxPos < width { line[maxPos] = ']' }
 
 	// Draw current price
 	if currPos >= 0 && currPos < width {
-		if line[currPos] == '█' || line[currPos] == '|' {
+		if line[currPos] == '█' || line[currPos] == '|' || line[currPos] == '[' || line[currPos] == ']' {
 			line[currPos] = 'X' // Overlap
 		} else {
 			line[currPos] = '▼' // Current price mark
@@ -649,18 +887,27 @@ func NormalizeProductName(name string, rules []models.CoreRule, category string)
 	norm := normalizeProductNameWithRules(name, compiled)
 
 	// Special handling for RAM
-	if isRAMCategory(category) {
+	if isRAMCategory(category) || isRAMProduct(norm) {
 		if ramSpec := extractRAMSpecs(norm); ramSpec != "" {
 			return ramSpec
 		}
 		// If it's a RAM category but we extracted absolutely nothing, mark it as ram unknown
 		// so it at least groups with itself instead of forming a highly brittle unique key
-		return "ram unknown " + norm
+		if isRAMCategory(category) {
+			return "ram unknown " + norm
+		}
 	}
 
 	// Special handling for TCG (Pokemon/Magic)
-	if isTCGCategory(category) {
+	if isTCGCategory(category) || isTCGProduct(norm) {
 		return normalizeTCG(norm)
+	}
+
+	// Special handling for Storage (SSD/HDD)
+	if isStorageProduct(norm) {
+		if storageSpec := extractStorageSpecs(norm); storageSpec != "" {
+			return storageSpec
+		}
 	}
 
 	return norm
@@ -683,20 +930,28 @@ func isRAMCategory(category string) bool {
 	if strings.Contains(cat, "ddr5") || strings.Contains(cat, "ddr4") || strings.Contains(cat, "ram") {
 		return true
 	}
-	return strings.Contains(cat, "gb") && strings.HasPrefix(cat, "#")
+	// Matches things like "64gb", "32gb", "16gb"
+	return ramCapacityRegex.MatchString(cat)
+}
+
+func isRAMProduct(name string) bool {
+	name = strings.ToLower(name)
+	return strings.Contains(name, "ddr5") || strings.Contains(name, "ddr4") || strings.Contains(name, "ram") || strings.Contains(name, "memory") || strings.Contains(name, "dimm")
 }
 
 var (
 	ramCapacityRegex  = regexp.MustCompile(`\b(\d+)\s*(?:gb|g|go)\b`)
 	ramConfigRegex    = regexp.MustCompile(`\b(\d+)\s*[x*]\s*(\d+)\s*(?:gb|g|go)?\b`)
 	ramConfigRevRegex = regexp.MustCompile(`\b(\d+)\s*(?:gb|g|go)\s*[x*]\s*(\d+)\b`)
-	ramTruncatedRegex = regexp.MustCompile(`\b(8|16|24|32|48|64|96|128|192)(?:\.{3,}|…)$`)
+	ramTruncatedRegex = regexp.MustCompile(`\b(8|16|24|32|48|64|96|128|192)\s*(?:\.{3,}|…)$`)
+	ramSpeedRegex     = regexp.MustCompile(`\b(\d{4})\s*(?:mhz|mt/s|mts)\b`)
+	ramCLRegex        = regexp.MustCompile(`\bcl\s*(\d{2})\b`)
 
 	// Manufacturer Part Numbers
 	// G.Skill: F5-6000J3038F16GX2-TZ5N (16GB x 2 = 32GB)
-	ramGSkillPNRegex = regexp.MustCompile(`(?i)\bf[45]-\w+?(\d+)gx(\d+)\b`)
+	ramGSkillPNRegex = regexp.MustCompile(`(?i)\bf[45][-\s]*\w+?(\d+)gx(\d+)\b`)
 	// Kingston: KF560C36BBEAK2-32 (Kit of 2, 32GB total) or KF560C36BBE-8 (8GB total)
-	ramKingstonPNRegex = regexp.MustCompile(`(?i)\bkf[45]\w+?(?:k(\d+))?-(\d{1,3})\b`)
+	ramKingstonPNRegex = regexp.MustCompile(`(?i)\bkf[45]\w+?(?:k(\d+))?[-\s]*(\d{1,3})\b`)
 	// TeamGroup: TED532G4800C40DC01 (32GB total, DC = Dual Channel = 2 sticks)
 	ramTeamPNRegex = regexp.MustCompile(`(?i)\b(?:ted|ff|ctced)[45](\d{1,3})g\w+?(dc|hc)?01\b`)
 )
@@ -705,28 +960,39 @@ func extractRAMSpecs(name string) string {
 	var countStr, sizeStr string
 	var totalCapacity int
 
+	speedMatch := ramSpeedRegex.FindStringSubmatch(name)
+	clMatch := ramCLRegex.FindStringSubmatch(name)
+	
+	suffix := ""
+	if speedMatch != nil {
+		suffix += " " + speedMatch[1]
+	}
+	if clMatch != nil {
+		suffix += " cl" + clMatch[1]
+	}
+
 	// 1. Try Part Numbers First (most precise)
 	if match := ramGSkillPNRegex.FindStringSubmatch(name); len(match) > 0 {
 		size, _ := strconv.Atoi(match[1])
 		count, _ := strconv.Atoi(match[2])
-		return fmt.Sprintf("ram %dgb %dx%dgb", size*count, count, size)
+		return fmt.Sprintf("ram %dgb %dx%dgb%s", size*count, count, size, suffix)
 	}
 	if match := ramKingstonPNRegex.FindStringSubmatch(name); len(match) > 0 {
 		total, _ := strconv.Atoi(match[2])
 		if match[1] != "" {
 			count, _ := strconv.Atoi(match[1])
 			if count > 0 && total%count == 0 {
-				return fmt.Sprintf("ram %dgb %dx%dgb", total, count, total/count)
+				return fmt.Sprintf("ram %dgb %dx%dgb%s", total, count, total/count, suffix)
 			}
 		}
-		return fmt.Sprintf("ram %dgb", total)
+		return fmt.Sprintf("ram %dgb%s", total, suffix)
 	}
 	if match := ramTeamPNRegex.FindStringSubmatch(name); len(match) > 0 {
 		total, _ := strconv.Atoi(match[1])
 		if strings.ToLower(match[2]) == "dc" {
-			return fmt.Sprintf("ram %dgb 2x%dgb", total, total/2)
+			return fmt.Sprintf("ram %dgb 2x%dgb%s", total, total/2, suffix)
 		}
-		return fmt.Sprintf("ram %dgb", total)
+		return fmt.Sprintf("ram %dgb%s", total, suffix)
 	}
 
 	// 2. Try standard config (e.g. 2x16)
@@ -743,17 +1009,17 @@ func extractRAMSpecs(name string) string {
 		count, _ := strconv.Atoi(countStr)
 		size, _ := strconv.Atoi(sizeStr)
 		totalCapacity = count * size
-		return fmt.Sprintf("ram %dgb %dx%dgb", totalCapacity, count, size)
+		return fmt.Sprintf("ram %dgb %dx%dgb%s", totalCapacity, count, size, suffix)
 	}
 
 	// 3. Try plain capacity (e.g. 16gb)
 	if match := ramCapacityRegex.FindStringSubmatch(name); len(match) > 0 {
-		return fmt.Sprintf("ram %sgb", match[1])
+		return fmt.Sprintf("ram %sgb%s", match[1], suffix)
 	}
 
 	// 4. Try truncated capacity (e.g. DDR5 16...)
 	if match := ramTruncatedRegex.FindStringSubmatch(name); len(match) > 0 {
-		return fmt.Sprintf("ram %sgb", match[1])
+		return fmt.Sprintf("ram %sgb%s", match[1], suffix)
 	}
 
 	return ""
@@ -764,11 +1030,16 @@ func isTCGCategory(category string) bool {
 	return strings.Contains(cat, "pokemon") || strings.Contains(cat, "magic") || strings.Contains(cat, "tcg") || strings.Contains(cat, "mtg")
 }
 
+func isTCGProduct(name string) bool {
+	name = strings.ToLower(name)
+	return strings.Contains(name, "pokemon") || strings.Contains(name, "magic the gathering") || strings.Contains(name, "tcg") || strings.Contains(name, "booster box") || strings.Contains(name, "etb")
+}
+
 var tcgTypes = []string{
 	"collector booster", "booster box", "booster pack", "elite trainer box", "elite trainer", "etb",
-	"blister", "case", "triple pack", "premium collection",
-	"starter deck", "commander deck", "deck", "bundle", "tin",
-	"small pack", "big pack", "booster", "mega premium",
+	"sleeved booster", "sleeved", "blister", "case", "triple pack", "premium collection", "ultra premium", "upc",
+	"starter deck", "commander deck", "deck", "bundle", "mini tin", "tin",
+	"small pack", "big pack", "booster", "mega premium", "box set",
 }
 
 func normalizeTCG(name string) string {
@@ -800,6 +1071,54 @@ func normalizeTCG(name string) string {
 	return "tcg " + set
 }
 
+func isStorageProduct(name string) bool {
+	name = strings.ToLower(name)
+	return strings.Contains(name, "ssd") || strings.Contains(name, "nvme") || strings.Contains(name, "hard drive") || strings.Contains(name, "hdd") || strings.Contains(name, "internal drive") || strings.Contains(name, "external drive")
+}
+
+var (
+	storageCapacityRegex = regexp.MustCompile(`\b(\d+)\s*(?:tb|gb)\b`)
+)
+
+func extractStorageSpecs(name string) string {
+	// Extract capacity (e.g. 1TB, 2TB, 500GB)
+	match := storageCapacityRegex.FindStringSubmatch(strings.ToLower(name))
+	if len(match) > 1 {
+		capacity := match[0]
+		// Find the brand if possible (Samsung, Western Digital, WD, Seagate, Crucial)
+		brand := ""
+		brands := []string{"samsung", "western digital", "wd", "seagate", "crucial", "kingston", "sandisk", "pny", "lexar", "sabrent"}
+		for _, b := range brands {
+			if strings.Contains(strings.ToLower(name), b) {
+				brand = b
+				break
+			}
+		}
+
+		// Find model if possible (980 pro, 990 pro, sn850x, sn770, etc.)
+		model := ""
+		models := []string{"980 pro", "990 pro", "sn850x", "sn770", "sn850", "sn570", "sn750", "t7", "t5", "mx500", "p5 plus"}
+		for _, m := range models {
+			if strings.Contains(strings.ToLower(name), m) {
+				model = m
+				break
+			}
+		}
+
+		res := "storage"
+		if brand != "" {
+			res += " " + brand
+		}
+		if model != "" {
+			res += " " + model
+		}
+		res += " " + capacity
+		return res
+	}
+	return ""
+}
+
+
 func isAmbiguous(normName string, truncated bool) bool {
 	// If it's already specialized (starts with ram or tcg), it's not ambiguous enough to skip
 	if strings.HasPrefix(normName, "ram ") || strings.HasPrefix(normName, "tcg ") {
@@ -817,48 +1136,6 @@ func isAmbiguous(normName string, truncated bool) bool {
 	}
 
 	return false
-}
-
-func getTCGTier(priceCAD float64) string {
-	if priceCAD < 15 {
-		return "pack"
-	}
-	if priceCAD < 75 {
-		return "bundle"
-	}
-	if priceCAD < 250 {
-		return "booster_box"
-	}
-	if priceCAD < 400 {
-		return "collector_box"
-	}
-	return "case"
-}
-
-func minOf(slice []float64) float64 {
-	if len(slice) == 0 {
-		return 0
-	}
-	m := slice[0]
-	for _, v := range slice[1:] {
-		if v < m {
-			m = v
-		}
-	}
-	return m
-}
-
-func maxOf(slice []float64) float64 {
-	if len(slice) == 0 {
-		return 0
-	}
-	m := slice[0]
-	for _, v := range slice[1:] {
-		if v > m {
-			m = v
-		}
-	}
-	return m
 }
 
 func minFloat(a, b float64) float64 {

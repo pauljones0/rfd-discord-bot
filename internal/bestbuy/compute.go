@@ -432,6 +432,11 @@ func compatibleComputeComp(product Product, spec ComputeSpec, comp ComputeObserv
 			return false
 		}
 	}
+	if spec.GPU != "" || compSpec.GPU != "" {
+		if !similarGPU(spec.GPU, compSpec.GPU) {
+			return false
+		}
+	}
 	if spec.CoreCount > 0 && compSpec.CoreCount > 0 {
 		diff := math.Abs(float64(spec.CoreCount - compSpec.CoreCount))
 		if diff > math.Max(8, float64(spec.CoreCount)/2) {
@@ -439,6 +444,31 @@ func compatibleComputeComp(product Product, spec ComputeSpec, comp ComputeObserv
 		}
 	}
 	return true
+}
+
+func similarGPU(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	
+	normalize := func(s string) string {
+		s = strings.ToLower(s)
+		prefixes := []string{"nvidia quadro ", "nvidia tesla ", "nvidia ", "quadro ", "rtx ", "radeon pro ", "tesla ", "amd instinct ", "amd ", "intel data center gpu ", "intel "}
+		for _, p := range prefixes {
+			if strings.HasPrefix(s, p) {
+				s = strings.TrimPrefix(s, p)
+			}
+		}
+		s = strings.TrimSpace(s)
+		return s
+	}
+
+	normA := normalize(a)
+	normB := normalize(b)
+
+	// A T1000 (Turing) is fundamentally different from a P1000 (Pascal). 
+	// We must enforce an exact case-insensitive match (after normalization) to ensure generation and tier match.
+	return normA == normB
 }
 
 func isExtremeComputeSpec(spec ComputeSpec, price float64) bool {
@@ -906,9 +936,33 @@ func storageFromText(text string) (float64, float64, string) {
 
 func gpuFromText(text string) string {
 	patterns := []*regexp.Regexp{
+		// Modern NVIDIA Server/AI GPUs (e.g., A40, L40S, A100, H100, V100, B200, A2, L4)
+		// We require 'nvidia' or 'rtx' prefix if it's a very short name like A2 to prevent false positives.
+		regexp.MustCompile(`(?i)\b(?:nvidia\s+|rtx\s+)[alvhb]\d{1,3}[a-z]{0,4}\b`),
+		regexp.MustCompile(`(?i)\b[alvhb]\d{2,3}[a-z]{0,4}\b`), // Naked A100, H100, etc. (2-3 digits safe)
+		// NVIDIA Grace/Blackwell Superchips (e.g., GH200, GB200)
+		regexp.MustCompile(`(?i)\b(?:nvidia\s+)?(?:gh|gb)\d{3}\b`),
+		// NVIDIA Tesla series with explicit prefix (e.g., Tesla V100, NVIDIA T4)
+		regexp.MustCompile(`(?i)\b(?:nvidia\s+|tesla\s+)[kmptvc]\d{1,2}0?[a-z]?\b`),
+		// Naked Tesla series (e.g., T4, P40). Exclude 'v' to avoid Xeon v1/v2/v3/v4 matches
+		regexp.MustCompile(`(?i)\b[kmptc]\d{1,2}0?[a-z]?\b`),
+		// NVIDIA GRID series (e.g., GRID K1, GRID M10)
+		regexp.MustCompile(`(?i)\b(?:nvidia\s+)?grid\s+[km]\d{1,2}\b`),
+		// AMD Instinct (e.g., MI300X, MI250, MI50)
+		regexp.MustCompile(`(?i)\b(?:amd\s+)?instinct\s+mi\d{2,3}[a-z]?\b`),
+		// AMD FirePro S-Series (Server) (e.g., FirePro S9150, S7150)
+		regexp.MustCompile(`(?i)\b(?:amd\s+)?firepro\s+s\d{4}\b`),
+		// Intel Data Center GPUs (e.g., Flex 140, Max 1550)
+		regexp.MustCompile(`(?i)\b(?:intel\s+)?(?:data\s+center\s+gpu\s+)?(?:max|flex)\s+\d{3,4}\b`),
+		// Intel Gaudi AI Accelerators (e.g., Gaudi 2, Gaudi3)
+		regexp.MustCompile(`(?i)\b(?:intel\s+)?gaudi\s*\d?\b`),
+		// NVIDIA RTX A-series workstation (e.g., RTX A4000)
 		regexp.MustCompile(`(?i)\brtx\s+a\d{4}\b`),
+		// NVIDIA Quadro specific
 		regexp.MustCompile(`(?i)\bquadro\s+[a-z]?\d{3,4}\b`),
+		// NVIDIA workstation generic (P1000, K2000, T1000, etc.)
 		regexp.MustCompile(`(?i)\b(?:nvidia\s+)?(?:quadro\s+)?[kmpt]\d{3,4}m?\b`),
+		// AMD Radeon Pro
 		regexp.MustCompile(`(?i)\bradeon\s+pro\s+[a-z0-9\s]+`),
 	}
 	for _, pattern := range patterns {

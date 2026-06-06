@@ -49,8 +49,8 @@ func TestLoad(t *testing.T) {
 	if cfg.BestBuyComputeEnabled {
 		t.Errorf("Expected Best Buy compute scheduler to be disabled by default")
 	}
-	if !cfg.BestBuyComputeSoldVerifyEnabled {
-		t.Errorf("Expected Best Buy compute eBay sold verification to be enabled by default")
+	if cfg.BestBuyComputeSoldVerifyEnabled {
+		t.Errorf("Expected Best Buy compute eBay sold verification to be disabled by default")
 	}
 	if !reflect.DeepEqual(cfg.BestBuyComputeSoldBackends, []string{"http", "external-stealth", "camoufox", "ai-crawler"}) {
 		t.Errorf("Expected default Best Buy compute sold backends, got %v", cfg.BestBuyComputeSoldBackends)
@@ -218,7 +218,7 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	t.Setenv("BESTBUY_COMPUTE_ENABLED", "true")
 	t.Setenv("BESTBUY_COMPUTE_POLL_INTERVAL", "2h")
 	t.Setenv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", "true")
-	t.Setenv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", "false")
+	t.Setenv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", "true")
 	t.Setenv("BESTBUY_COMPUTE_SOLD_CACHE_TTL", "12h")
 	t.Setenv("BESTBUY_COMPUTE_SOLD_QUERY_DELAY", "4s")
 	t.Setenv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_ENABLED", "true")
@@ -261,8 +261,8 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	if !cfg.BestBuyComputeAlertFirstSeen {
 		t.Fatal("BestBuyComputeAlertFirstSeen = false, want true")
 	}
-	if cfg.BestBuyComputeSoldVerifyEnabled {
-		t.Fatal("BestBuyComputeSoldVerifyEnabled = true, want false")
+	if !cfg.BestBuyComputeSoldVerifyEnabled {
+		t.Fatal("BestBuyComputeSoldVerifyEnabled = false, want true")
 	}
 	if cfg.BestBuyComputeSoldCacheTTL != 12*time.Hour {
 		t.Fatalf("BestBuyComputeSoldCacheTTL = %s, want 12h", cfg.BestBuyComputeSoldCacheTTL)

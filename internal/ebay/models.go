@@ -146,6 +146,7 @@ type CouponObservation struct {
 	Seller         string    `docstore:"seller"`
 	Signature      string    `docstore:"signature"`
 	ItemID         string    `docstore:"itemID"`
+	CategoryID     string    `docstore:"categoryID,omitempty"`
 	ItemURL        string    `docstore:"itemURL,omitempty"`
 	BasePrice      float64   `docstore:"basePrice"`
 	DiscountAmount float64   `docstore:"discountAmount"`
@@ -177,8 +178,9 @@ type BrowseAPIItem struct {
 	CouponMessage    string      `json:"-"`
 	CouponSource     string      `json:"-"`
 	CouponSignature  string      `json:"-"`
-	ItemCreationDate string      `json:"itemCreationDate"` // ISO8601
-	Marketplace      string      `json:"-"`
+	ItemCreationDate           string      `json:"itemCreationDate"` // ISO8601
+	Marketplace                string      `json:"-"`
+	EstimatedAvailableQuantity *int        `json:"estimatedAvailableQuantity"`
 }
 
 // Price represents the eBay API price object.

@@ -278,7 +278,7 @@ func Load() (*Config, error) {
 		BestBuyComputePollInterval:       bestBuyComputePollInterval,
 		BestBuyComputeAlertFirstSeen:     boolEnv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", false),
 		BestBuyComputeEmbedCommand:       os.Getenv("BESTBUY_COMPUTE_EMBED_COMMAND"),
-		BestBuyComputeSoldVerifyEnabled:  boolEnv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", true),
+		BestBuyComputeSoldVerifyEnabled:  boolEnv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", false),
 		BestBuyComputeSoldBackends:       csvEnv("BESTBUY_COMPUTE_SOLD_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler"}),
 		BestBuyComputeSoldCacheTTL:       bestBuyComputeSoldCacheTTL,
 		BestBuyComputeSoldQueryDelay:     bestBuyComputeSoldQueryDelay,

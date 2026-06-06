@@ -49,13 +49,22 @@ func (m *mockStore) GetCoreRules(ctx context.Context) ([]models.CoreRule, error)
 	return m.rules, nil
 }
 
+func (m *mockStore) WipeCorePriceHistory(ctx context.Context) error {
+	m.history = make(map[string]*models.CorePriceHistory)
+	return nil
+}
+
 type mockNotifier struct {
 	sent []models.CoreDeal
 }
 
-func (m *mockNotifier) SendCoreDeal(ctx context.Context, deal models.CoreDeal, subs []models.Subscription) (map[string]string, error) {
-	m.sent = append(m.sent, deal)
+func (m *mockNotifier) SendCoreAlert(ctx context.Context, alert models.CoreAlert, subs []models.Subscription) (map[string]string, error) {
+	m.sent = append(m.sent, alert.Deal)
 	return map[string]string{"123": "456"}, nil
+}
+
+func (m *mockNotifier) UpdateCoreAlert(ctx context.Context, alert models.CoreAlert) error {
+	return nil
 }
 
 func TestParseNotificationText(t *testing.T) {
@@ -187,21 +196,25 @@ func TestNormalizeProductName(t *testing.T) {
 		category string
 		want     string
 	}{
-		{"Pokemon Twilight Masquerade Booster Box - Deal of the Day!", "#pokemon", "tcg twilight masquerade booster box"},
-		{"Nvidia RTX 5060 Ti 8g", "#rtx5060ti", "nvidia rtx 5060 ti 8gb"},
-		{"Amazon Pokemon TCG Scarlet & Violet 16g", "#pokemon", "tcg scarlet & violet 16gb"},
-		{"Crucial Pro RAM DDR5 64Go Kit (2x32Go) 6000MHz", "#64gb", "ram 64gb 2x32gb"},
-		{"CORSAIR VENGEANCE DDR5 RAM 64GB (2x32GB) Bis zu", "#64gb", "ram 64gb 2x32gb"},
-		{"CORSAIR Vengeance 16 GB RGB DDR5 6000 MHz PC RAM - 8 GB x 2", "#16gb", "ram 16gb 2x8gb"},
-		{"Patriot Memory Viper Venom Kit DDR5 RAM 16Go (2", "#16gb", "ram 16gb"},
-		{"Crucial Pro Overclocking Edition Module DDR5 16...", "#16gb", "ram 16gb"},
-		{"Crucial Pro Overclocking Edition Module DDR5 32 ...", "#32gb", "ram 32gb"},
-		{"TEAMGROUP Elite TED532G4800C40DC01 Lot de 2", "#unknown-ddr5", "ram 32gb 2x16gb"},
-		{"Kingston FURY Beast KF560C36BBE-8 Module", "#unknown-ddr5", "ram 8gb"},
-		{"Kingston FURY Beast KF560C36BBEAK2-32", "#unknown-ddr5", "ram 32gb 2x16gb"},
-		{"G Skill F5-5200J3636D32GX2-FX5 Memor", "#unknown-ddr5", "ram 64gb 2x32gb"},
-		{"G.skill Trident Z5 Royal Neo - Ddr5 - Kit", "#unknown-ddr5", "ram unknown ddr5 kit"}, // Fallback for zero info
-		{"Magic: The Gathering | Avatar: The Last Airbender Booster Box", "#magic-the-gathering", "tcg avatar the last airbender booster box"},
+		{"Pokemon Twilight Masquerade Booster Box - Deal of the Day!", "pokemon", "tcg twilight masquerade booster box"},
+		{"Nvidia RTX 5060 Ti 8g", "rtx5060ti", "nvidia rtx 5060 ti 8gb"},
+		{"Amazon Pokemon TCG Scarlet & Violet 16g", "pokemon", "tcg scarlet & violet 16gb"},
+		{"Crucial Pro RAM DDR5 64Go Kit (2x32Go) 6000MHz", "64gb", "ram 64gb 2x32gb 6000"},
+		{"CORSAIR VENGEANCE DDR5 RAM 64GB (2x32GB) Bis zu", "64gb", "ram 64gb 2x32gb"},
+		{"CORSAIR Vengeance 16 GB RGB DDR5 6000 MHz PC RAM - 8 GB x 2", "16gb", "ram 16gb 2x8gb 6000"},
+		{"Patriot Memory Viper Venom Kit DDR5 RAM 16Go (2", "16gb", "ram 16gb"},
+		{"Crucial Pro Overclocking Edition Module DDR5 16...", "16gb", "ram 16gb"},
+		{"Crucial Pro Overclocking Edition Module DDR5 32 ...", "32gb", "ram 32gb"},
+		{"TEAMGROUP Elite TED532G4800C40DC01 Lot de 2", "unknown-ddr5", "ram 32gb 2x16gb"},
+		{"Kingston FURY Beast KF560C36BBE-8 Module", "unknown-ddr5", "ram 8gb"},
+		{"Kingston FURY Beast KF560C36BBEAK2-32", "unknown-ddr5", "ram 32gb 2x16gb"},
+		{"G Skill F5-5200J3636D32GX2-FX5 Memor", "unknown-ddr5", "ram 64gb 2x32gb"},
+		{"G.skill Trident Z5 Royal Neo - Ddr5 - Kit", "unknown-ddr5", "ram unknown g.skill trident z5 royal neo ddr5 kit"}, 
+		{"Magic: The Gathering | Avatar: The Last Airbender Booster Box", "magic-the-gathering", "tcg avatar the last airbender booster box"},
+		{"Samsung 980 Pro 2TB NVMe SSD Gen4", "Core Deal", "storage samsung 980 pro 2tb"},
+		{"WD Black SN850X 1TB SSD", "Core Deal", "storage wd sn850x 1tb"},
+		{"Crucial MX500 4TB SATA SSD", "Core Deal", "storage crucial mx500 4tb"},
+		{"Seagate BarraCuda 8TB Hard Drive", "Core Deal", "storage seagate 8tb"},
 	}
 
 	for _, tt := range tests {
@@ -250,13 +263,13 @@ func TestProcessNotification(t *testing.T) {
 	// Need to warm up category first
 	for i := 0; i < 10; i++ {
 		msg := fmt.Sprintf("$100 | Store | Cat Warmup %d @USA", i)
-		p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, fmt.Sprintf("warm%d", i), "com.discord", "")
+		p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, fmt.Sprintf("warm%d", i), "com.discord", "", "", "")
 	}
 
 	prices := []float64{100, 150, 140, 130, 120, 110, 160, 170, 180, 190}
 	for i, price := range prices {
 		msg := fmt.Sprintf("$%.2f | Amazon US | Test Product @USA", price)
-		err := p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, fmt.Sprintf("ev%d", i+1), "com.discord", "")
+		err := p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, fmt.Sprintf("ev%d", i+1), "com.discord", "", "", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -272,7 +285,7 @@ func TestProcessNotification(t *testing.T) {
 	}
 
 	msg := "$20.00 | Amazon US | Test Product @USA"
-	err := p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, "ev-low", "com.discord", "")
+	err := p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", msg, nil, "ev-low", "com.discord", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -307,7 +320,7 @@ func TestCategoryThreshold(t *testing.T) {
 
 	// This should be a drop, but suppressed by category threshold
 	msg := "$50.00 | Store | Test Product @USA"
-	err := p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, "ev1", "com.discord", "")
+	err := p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, "ev1", "com.discord", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,12 +332,12 @@ func TestCategoryThreshold(t *testing.T) {
 	// Warm up category
 	for i := 0; i < 9; i++ { // we already have 1 from the suppressed call
 		msg := fmt.Sprintf("$100 | Store | Cat Warmup %d @USA", i)
-		p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, fmt.Sprintf("warm%d", i), "com.discord", "")
+		p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, fmt.Sprintf("warm%d", i), "com.discord", "", "", "")
 	}
 
 	// Now it should fire with a slightly different price to avoid duplicate detection
 	msg = "$40.00 | Store | Test Product @USA"
-	err = p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, "ev2", "com.discord", "")
+	err = p.ProcessNotification(ctx, "CoreFinder #newcat: CoreFinder", msg, nil, "ev2", "com.discord", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

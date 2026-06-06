@@ -44,6 +44,14 @@ func (c *Client) SaveCoreCategoryStats(ctx context.Context, stats models.CoreCat
 	return c.SetDocument(ctx, coreCategoryStatsCollection, stats.Category, stats)
 }
 
+// WipeCorePriceHistory clears all core price history and category stats.
+func (c *Client) WipeCorePriceHistory(ctx context.Context) error {
+	if _, err := c.pg.Exec(ctx, "DELETE FROM documents WHERE collection = $1 OR collection = $2", corePriceHistoryCollection, coreCategoryStatsCollection); err != nil {
+		return err
+	}
+	return nil
+}
+
 // GetCoreSubscriptionsByGuild retrieves all core subscriptions for a specific guild.
 func (c *Client) GetCoreSubscriptionsByGuild(ctx context.Context, guildID string) ([]models.Subscription, error) {
 	return c.subscriptionsMatching(ctx, map[string]any{

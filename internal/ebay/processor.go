@@ -184,6 +184,9 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 	var itemsToWrite []TrackedItem
 
 	for _, apiItem := range apiItems {
+		if apiItem.EstimatedAvailableQuantity != nil && *apiItem.EstimatedAvailableQuantity == 0 {
+			continue
+		}
 		itemID := ExtractItemID(apiItem.ItemID)
 		currentIDs[itemID] = true
 
@@ -651,6 +654,7 @@ func (p *Processor) applyCouponForPriceDrop(ctx context.Context, apiItem BrowseA
 		Seller:         seller,
 		Signature:      pageCoupon.Signature,
 		ItemID:         ExtractItemID(apiItem.ItemID),
+		CategoryID:     apiItem.CategoryID,
 		ItemURL:        apiItem.ItemWebURL,
 		BasePrice:      basePrice,
 		DiscountAmount: pageCoupon.DiscountAmount,
@@ -768,7 +772,7 @@ func (p *Processor) storeCouponFromObservation(marketplace, seller string, pageC
 	inference := couponinfer.Infer(samples)
 
 	scope := "item"
-	if pageCoupon.Scope == "store" || distinctPositiveObservationItems(observations) >= 2 {
+	if pageCoupon.Scope == "store" || distinctPositiveObservationCategories(observations) >= 2 {
 		scope = "store"
 	}
 
@@ -848,20 +852,16 @@ func couponSamplesFromObservations(observations []CouponObservation) []couponinf
 	return samples
 }
 
-func distinctPositiveObservationItems(observations []CouponObservation) int {
+func distinctPositiveObservationCategories(observations []CouponObservation) int {
 	seen := make(map[string]bool)
 	for _, obs := range observations {
 		if obs.DiscountAmount <= 0 {
 			continue
 		}
-		key := obs.ItemID
-		if key == "" {
-			key = obs.ItemURL
-		}
-		if key == "" {
+		if obs.CategoryID == "" {
 			continue
 		}
-		seen[key] = true
+		seen[obs.CategoryID] = true
 	}
 	return len(seen)
 }
@@ -923,6 +923,9 @@ func (p *Processor) retroactiveCouponAlerts(ctx context.Context, apiItems []Brow
 	var alerts []EbayItem
 	var writes []TrackedItem
 	for _, apiItem := range apiItems {
+		if apiItem.EstimatedAvailableQuantity != nil && *apiItem.EstimatedAvailableQuantity == 0 {
+			continue
+		}
 		itemID := ExtractItemID(apiItem.ItemID)
 		if notifiedIDs[itemID] {
 			continue
