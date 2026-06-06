@@ -927,16 +927,15 @@ func normalizeProductNameWithRules(name string, rules []compiledRule) string {
 
 func isRAMCategory(category string) bool {
 	cat := strings.ToLower(category)
-	if strings.Contains(cat, "ddr5") || strings.Contains(cat, "ddr4") || strings.Contains(cat, "ram") {
+	if strings.Contains(cat, "ddr5") || strings.Contains(cat, "ddr4") || regexp.MustCompile(`\bram\b`).MatchString(cat) {
 		return true
 	}
-	// Matches things like "64gb", "32gb", "16gb"
-	return ramCapacityRegex.MatchString(cat)
+	return false
 }
 
 func isRAMProduct(name string) bool {
 	name = strings.ToLower(name)
-	return strings.Contains(name, "ddr5") || strings.Contains(name, "ddr4") || strings.Contains(name, "ram") || strings.Contains(name, "memory") || strings.Contains(name, "dimm")
+	return strings.Contains(name, "ddr5") || strings.Contains(name, "ddr4") || regexp.MustCompile(`\b(?:ram|memory|dimm)\b`).MatchString(name)
 }
 
 var (
