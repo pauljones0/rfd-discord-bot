@@ -346,11 +346,9 @@ func applyEbaySoldVerification(observation *ComputeObservation, verification Eba
 }
 
 func buildEbaySoldQuery(observation ComputeObservation) string {
-	queries := buildEbaySoldQueries(observation)
-	if len(queries) == 0 {
-		return ""
-	}
-	return queries[0]
+	// For the normal Best Buy pipeline, return the most relaxed query possible 
+	// to avoid 0-match failures caused by strict RAM/spec formatting.
+	return buildEbaySoldQueryWithRAM(observation, false)
 }
 
 func buildEbaySoldQueries(observation ComputeObservation) []string {
@@ -421,11 +419,11 @@ func buildEbaySoldQueryWithRAM(observation ComputeObservation, includeRAM bool) 
 
 func cleanSoldQueryTitle(title string) string {
 	title = html.UnescapeString(title)
-	title = regexp.MustCompile(`(?i)\b(refurbished|excellent|good|fair|open box|brand new|renewed|windows|win\s*1[01]\s*pro|warranty)\b`).ReplaceAllString(title, " ")
+	title = regexp.MustCompile(`(?i)\b(refurbished|excellent|good|fair|open box|brand new|renewed|windows|win\s*1[01]\s*pro|warranty|unlocked|wifi|bluetooth|generation|gen)\b`).ReplaceAllString(title, " ")
 	title = regexp.MustCompile(`[^\pL\pN]+`).ReplaceAllString(title, " ")
 	words := strings.Fields(title)
-	if len(words) > 12 {
-		words = words[:12]
+	if len(words) > 8 {
+		words = words[:8]
 	}
 	return strings.Join(words, " ")
 }
