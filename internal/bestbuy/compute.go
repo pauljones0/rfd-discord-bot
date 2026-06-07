@@ -621,6 +621,11 @@ func rejectComputeReason(lower string) string {
 		"bench buffer":          "not_compute",
 		"chafing dish":          "not_compute",
 		"buffet":                "not_compute",
+		"screwdriver":           "accessory",
+		"tool kit":              "accessory",
+		"toolkit":               "accessory",
+		"pry tool":              "accessory",
+		"spudger":               "accessory",
 	}
 	for needle, reason := range rejects {
 		if strings.Contains(lower, needle) {
