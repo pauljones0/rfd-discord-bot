@@ -28,6 +28,7 @@ type Config struct {
 	GeminiFallbackModels   []string
 	LocalSchedulerEnabled  bool
 	RFDAdminToken          string
+	SwordswallowerSecret   string
 
 	// Discord App Auth
 	DiscordAppID                     string
@@ -298,6 +299,7 @@ func Load() (*Config, error) {
 		CarfaxTokenServiceSecret:         os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
 		RedditServiceURL:                 os.Getenv("REDDIT_SERVICE_URL"),
 		RedditServiceSecret:              os.Getenv("REDDIT_SERVICE_SECRET"),
+		SwordswallowerSecret:             os.Getenv("SWORDSWALLOWER_SECRET"),
 		FacebookEnabled:                  boolEnv("FACEBOOK_ENABLED", false),
 		HardwareSwapEnabled:              boolEnv("HARDWARESWAP_ENABLED", false),
 	}, nil

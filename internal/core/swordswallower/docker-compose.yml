@@ -1,0 +1,88 @@
+name: swordswallower
+
+services:
+  android-toolchain:
+    build:
+      context: .
+      dockerfile: docker/android-build.Dockerfile
+    profiles:
+      - android
+    working_dir: /workspace
+    environment:
+      ANDROID_AVD_HOME: /android-avd
+      GRADLE_USER_HOME: /workspace/.gradle
+    volumes:
+      - .:/workspace
+      - android-avd:/android-avd
+      - android-sdk:/opt/android-sdk
+    networks:
+      - rfd-discord-bot
+    command: sleep infinity
+
+  android-emulator:
+    build:
+      context: .
+      dockerfile: docker/android-build.Dockerfile
+    container_name: swordswallower-android
+    profiles:
+      - android
+    working_dir: /workspace
+    environment:
+      ANDROID_AVD_HOME: /android-avd
+      AVD_NAME: ${AVD_NAME:-swordswallower-api24}
+      ANDROID_ACCEL: ${ANDROID_ACCEL:-off}
+      ANDROID_HEADLESS: ${ANDROID_HEADLESS:-1}
+      WEBHOOK_PROXY_TARGET: ${WEBHOOK_PROXY_TARGET:-rfd-discord-bot:8080}
+    volumes:
+      - .:/workspace
+      - android-avd:/android-avd
+      - android-sdk:/opt/android-sdk
+    networks:
+      - rfd-discord-bot
+    command:
+      - bash
+      - -lc
+      - |
+        socat TCP-LISTEN:8787,fork,reuseaddr TCP:$${WEBHOOK_PROXY_TARGET} &
+        window_flag=""
+        if [ "$${ANDROID_HEADLESS}" = "1" ]; then window_flag="-no-window"; fi
+        emulator -avd "$${AVD_NAME}" \
+          $${window_flag} \
+          -no-audio \
+          -no-boot-anim \
+          -gpu swiftshader_indirect \
+          -memory 1536 \
+          -cores 2 \
+          -accel "$${ANDROID_ACCEL}" \
+          -netfast
+
+  notification-receiver:
+    build:
+      context: .
+      dockerfile: docker/receiver.Dockerfile
+    container_name: swordswallower-receiver
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8787"
+      EVENTS_PATH: /events
+      EVENTS_OUTPUT: /data/events.jsonl
+      SWORDSWALLOWER_SECRET: ${SWORDSWALLOWER_SECRET:-}
+      FORWARD_URL: ${FORWARD_URL:-http://rfd-discord-bot:8080/ingest/discord-notification}
+      FORWARD_BEARER_TOKEN: ${FORWARD_BEARER_TOKEN:-}
+      FORWARD_TIMEOUT: ${FORWARD_TIMEOUT:-5}
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./data:/data
+    networks:
+      - rfd-discord-bot
+
+networks:
+  rfd-discord-bot:
+    name: rfd-discord-bot_default
+    external: true
+
+volumes:
+  android-avd:
+  android-sdk:

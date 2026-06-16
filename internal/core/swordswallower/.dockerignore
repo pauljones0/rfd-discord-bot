@@ -1,0 +1,11 @@
+.git/
+.gradle/
+build/
+app/build/
+
+.env
+events.jsonl
+*.apk
+*.apks
+*.apkm
+*.xapk

@@ -622,6 +622,32 @@ func (c *Client) UpdateCoreAlert(ctx context.Context, alert models.CoreAlert) er
 	return errors.Join(errs...)
 }
 
+// SendCoreSystemAlert sends operational Core pipeline failures to Core channels.
+func (c *Client) SendCoreSystemAlert(ctx context.Context, alert models.CoreSystemAlert, subs []models.Subscription) error {
+	if c.botToken == "" {
+		return nil
+	}
+
+	payload := createCoreSystemAlertPayload(alert)
+	sentChannels := make(map[string]bool)
+	var errs []error
+
+	for _, sub := range subs {
+		if sentChannels[sub.ChannelID] {
+			continue
+		}
+		sentChannels[sub.ChannelID] = true
+
+		urlStr := fmt.Sprintf("%s/channels/%s/messages", discordAPIBase, sub.ChannelID)
+		if _, err := c.doRequest(ctx, "POST", urlStr, payload); err != nil {
+			slog.Error("Failed to send Core system alert", "processor", "core", "channel", sub.ChannelID, "title", alert.Title, "error", err)
+			errs = append(errs, fmt.Errorf("channel %s: %w", sub.ChannelID, err))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
 func createCoreAlertPayload(alert models.CoreAlert) discordWebhookPayload {
 	embed := formatCoreAlertEmbed(alert)
 	payload := discordWebhookPayload{
@@ -638,6 +664,103 @@ func createCoreAlertPayload(alert models.CoreAlert) discordWebhookPayload {
 		}
 	}
 	return payload
+}
+
+func createCoreSystemAlertPayload(alert models.CoreSystemAlert) discordWebhookPayload {
+	return discordWebhookPayload{
+		Content: "",
+		Embeds:  []discordEmbed{formatCoreSystemAlertEmbed(alert)},
+	}
+}
+
+func formatCoreSystemAlertEmbed(alert models.CoreSystemAlert) discordEmbed {
+	title := strings.TrimSpace(alert.Title)
+	if title == "" {
+		title = "Core notification pipeline issue"
+	}
+	severity := strings.ToLower(strings.TrimSpace(alert.Severity))
+	if severity == "" {
+		severity = "warning"
+	}
+	component := strings.TrimSpace(alert.Component)
+	if component == "" {
+		component = "core-notification-ingest"
+	}
+	occurredAt := alert.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = time.Now()
+	}
+
+	var desc strings.Builder
+	desc.WriteString("Severity: **")
+	desc.WriteString(strings.ToUpper(severity))
+	desc.WriteString("**\n")
+	desc.WriteString("Component: `")
+	desc.WriteString(discordLimit(component, 256))
+	desc.WriteString("`")
+	if alert.Details != "" {
+		desc.WriteString("\n\n")
+		desc.WriteString(discordLimit(alert.Details, 3500))
+	}
+
+	fields := []discordEmbedField{
+		{Name: "Occurred", Value: occurredAt.UTC().Format(time.RFC3339), Inline: true},
+	}
+	if alert.EventID != "" {
+		fields = append(fields, discordEmbedField{Name: "Event", Value: discordLimit(alert.EventID, 1024), Inline: true})
+	}
+	if alert.SourcePackage != "" {
+		fields = append(fields, discordEmbedField{Name: "Source", Value: discordLimit(alert.SourcePackage, 1024), Inline: true})
+	}
+	for _, field := range alert.Fields {
+		if len(fields) >= 25 {
+			break
+		}
+		name := strings.TrimSpace(field.Name)
+		value := strings.TrimSpace(field.Value)
+		if name == "" || value == "" {
+			continue
+		}
+		fields = append(fields, discordEmbedField{
+			Name:   discordLimit(name, 256),
+			Value:  discordLimit(value, 1024),
+			Inline: false,
+		})
+	}
+
+	return discordEmbed{
+		Title:       discordLimit(title, 256),
+		Description: desc.String(),
+		Timestamp:   occurredAt.UTC().Format(time.RFC3339),
+		Color:       coreSystemSeverityColor(severity),
+		Fields:      fields,
+		Footer: discordEmbedFooter{
+			Text: "Core System Alert",
+		},
+	}
+}
+
+func coreSystemSeverityColor(severity string) int {
+	switch severity {
+	case "critical", "error":
+		return 15158332 // red
+	case "info", "test":
+		return 3447003 // blue
+	default:
+		return 15844367 // yellow
+	}
+}
+
+func discordLimit(value string, max int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if max <= 0 || len(runes) <= max {
+		return value
+	}
+	if max <= 1 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-1]) + "…"
 }
 
 func formatCoreAlertEmbed(alert models.CoreAlert) discordEmbed {
@@ -700,7 +823,7 @@ func formatCoreAlertEmbed(alert models.CoreAlert) discordEmbed {
 	case "Steal":
 		embedColor = 15844367 // #F1C40F (vibrant gold) - high value
 	case "Deal":
-		embedColor = 3447003  // #3498DB (blue) - solid deal
+		embedColor = 3447003 // #3498DB (blue) - solid deal
 	}
 
 	return discordEmbed{
@@ -1026,6 +1149,15 @@ func (c *Client) SendBestBuyDeal(ctx context.Context, product bestbuy.AnalyzedPr
 	return c.sendEmbedToSubscriptions(ctx, "bestbuy", title, embed, subs)
 }
 
+func (c *Client) SendBestBuyComputeIssue(ctx context.Context, issue bestbuy.ComputeIssue, subs []models.Subscription) error {
+	embed := formatBestBuyComputeIssueEmbed(issue)
+	title := issue.Title
+	if title == "" {
+		title = "Best Buy compute eBay verification issue"
+	}
+	return c.sendEmbedToSubscriptions(ctx, "bestbuy_compute", title, embed, subs)
+}
+
 func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 	title := product.CleanTitle
 	if title == "" {
@@ -1139,6 +1271,95 @@ func formatBestBuyEmbed(product bestbuy.AnalyzedProduct) discordEmbed {
 		Thumbnail:   thumbnail,
 		Footer: discordEmbedFooter{
 			Text: footerText,
+		},
+	}
+}
+
+func formatBestBuyComputeIssueEmbed(issue bestbuy.ComputeIssue) discordEmbed {
+	title := strings.TrimSpace(issue.Title)
+	if title == "" {
+		title = "Best Buy compute eBay verification issue"
+	}
+	productTitle := strings.TrimSpace(issue.Product.Name)
+	if productTitle != "" {
+		title = title + ": " + discordLimit(productTitle, 120)
+	}
+
+	reason := strings.TrimSpace(issue.Reason)
+	if reason == "" {
+		reason = "unknown"
+	}
+	details := strings.TrimSpace(issue.Details)
+	if details == "" {
+		details = strings.TrimSpace(issue.Verification.Error)
+	}
+
+	var desc strings.Builder
+	desc.WriteString("The compute scanner found a would-be Best Buy alert, but it was not posted as a deal because eBay sold verification did not pass.\n\n")
+	desc.WriteString("Reason: `")
+	desc.WriteString(discordLimit(reason, 128))
+	desc.WriteString("`")
+	if details != "" {
+		desc.WriteString("\n")
+		desc.WriteString(discordLimit(details, 1200))
+	}
+
+	fields := []discordEmbedField{}
+	price := bestBuyEffectivePrice(issue.Product)
+	if price > 0 {
+		fields = append(fields, discordEmbedField{Name: "Best Buy Price", Value: fmt.Sprintf("$%.2f", price), Inline: true})
+	}
+	if issue.Product.SellerName != "" {
+		fields = append(fields, discordEmbedField{Name: "Seller", Value: discordLimit(issue.Product.SellerName, 1024), Inline: true})
+	}
+	if issue.Product.SKU != "" {
+		fields = append(fields, discordEmbedField{Name: "SKU", Value: discordLimit(issue.Product.SKU, 1024), Inline: true})
+	}
+	if issue.Score.ComparableCount > 0 {
+		value := fmt.Sprintf("%d comps", issue.Score.ComparableCount)
+		if issue.Score.MedianPrice > 0 {
+			value += fmt.Sprintf(" | $%.2f median", issue.Score.MedianPrice)
+		}
+		if issue.Score.GapPct > 0 {
+			value += fmt.Sprintf(" | %.0f%% internal gap", issue.Score.GapPct)
+		}
+		fields = append(fields, discordEmbedField{Name: "Best Buy Internal Score", Value: discordLimit(value, 1024), Inline: false})
+	}
+	if issue.Verification.Query != "" || issue.Verification.Backend != "" || issue.Verification.Verdict != "" {
+		value := []string{}
+		if issue.Verification.Query != "" {
+			value = append(value, "Query: `"+discordLimit(issue.Verification.Query, 240)+"`")
+		}
+		if issue.Verification.Backend != "" {
+			value = append(value, "Backend: `"+discordLimit(issue.Verification.Backend, 80)+"`")
+		}
+		if issue.Verification.Verdict != "" {
+			value = append(value, "Verdict: `"+discordLimit(issue.Verification.Verdict, 80)+"`")
+		}
+		if issue.Verification.ComparableCount > 0 {
+			value = append(value, fmt.Sprintf("Matching sold comps: %d", issue.Verification.ComparableCount))
+		}
+		fields = append(fields, discordEmbedField{Name: "eBay Sold Check", Value: discordLimit(strings.Join(value, "\n"), 1024), Inline: false})
+	}
+
+	var thumbnail discordEmbedThumbnail
+	if issue.Product.ImageURL != "" {
+		thumbnail.URL = issue.Product.ImageURL
+	}
+	timestamp := issue.OccurredAt
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	return discordEmbed{
+		Title:       title,
+		URL:         issue.Product.URL,
+		Description: desc.String(),
+		Color:       colorWarmDeal,
+		Timestamp:   timestamp.Format(time.RFC3339),
+		Fields:      fields,
+		Thumbnail:   thumbnail,
+		Footer: discordEmbedFooter{
+			Text: "Best Buy Compute Verification Issue",
 		},
 	}
 }

@@ -36,14 +36,32 @@ type CoreAlert struct {
 	Deal       CoreDeal          `docstore:"deal"` // Original deal data to regenerate the embed
 }
 
+// CoreSystemAlert is an operational alert sent to Core subscriptions when the
+// Swordswallower notification path is unhealthy or needs attention.
+type CoreSystemAlert struct {
+	Title         string
+	Severity      string
+	Component     string
+	EventID       string
+	SourcePackage string
+	Details       string
+	Fields        []CoreSystemAlertField
+	OccurredAt    time.Time
+}
+
+type CoreSystemAlertField struct {
+	Name  string
+	Value string
+}
+
 // CorePriceHistory stores the historical price points for a specific product.
 type CorePriceHistory struct {
-	ProductName  string       `docstore:"productName"`
-	Category     string       `docstore:"category"`
-	Prices       []float64    `docstore:"prices"` // CAD prices
-	EventIDs     []string     `docstore:"eventIds,omitempty"`
-	RecentAlerts []CoreAlert  `docstore:"recentAlerts,omitempty"`
-	LastUpdated  time.Time    `docstore:"lastUpdated"`
+	ProductName  string      `docstore:"productName"`
+	Category     string      `docstore:"category"`
+	Prices       []float64   `docstore:"prices"` // CAD prices
+	EventIDs     []string    `docstore:"eventIds,omitempty"`
+	RecentAlerts []CoreAlert `docstore:"recentAlerts,omitempty"`
+	LastUpdated  time.Time   `docstore:"lastUpdated"`
 }
 
 // CoreCategoryStats tracks how many observations have been seen in a category.

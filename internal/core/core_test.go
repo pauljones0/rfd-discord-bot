@@ -55,7 +55,8 @@ func (m *mockStore) WipeCorePriceHistory(ctx context.Context) error {
 }
 
 type mockNotifier struct {
-	sent []models.CoreDeal
+	sent       []models.CoreDeal
+	systemSent []models.CoreSystemAlert
 }
 
 func (m *mockNotifier) SendCoreAlert(ctx context.Context, alert models.CoreAlert, subs []models.Subscription) (map[string]string, error) {
@@ -64,6 +65,11 @@ func (m *mockNotifier) SendCoreAlert(ctx context.Context, alert models.CoreAlert
 }
 
 func (m *mockNotifier) UpdateCoreAlert(ctx context.Context, alert models.CoreAlert) error {
+	return nil
+}
+
+func (m *mockNotifier) SendCoreSystemAlert(ctx context.Context, alert models.CoreSystemAlert, subs []models.Subscription) error {
+	m.systemSent = append(m.systemSent, alert)
 	return nil
 }
 
@@ -209,7 +215,7 @@ func TestNormalizeProductName(t *testing.T) {
 		{"Kingston FURY Beast KF560C36BBE-8 Module", "unknown-ddr5", "ram 8gb"},
 		{"Kingston FURY Beast KF560C36BBEAK2-32", "unknown-ddr5", "ram 32gb 2x16gb"},
 		{"G Skill F5-5200J3636D32GX2-FX5 Memor", "unknown-ddr5", "ram 64gb 2x32gb"},
-		{"G.skill Trident Z5 Royal Neo - Ddr5 - Kit", "unknown-ddr5", "ram unknown g.skill trident z5 royal neo ddr5 kit"}, 
+		{"G.skill Trident Z5 Royal Neo - Ddr5 - Kit", "unknown-ddr5", "ram unknown g.skill trident z5 royal neo ddr5 kit"},
 		{"Magic: The Gathering | Avatar: The Last Airbender Booster Box", "magic-the-gathering", "tcg avatar the last airbender booster box"},
 		{"Samsung 980 Pro 2TB NVMe SSD Gen4", "Core Deal", "storage samsung 980 pro 2tb"},
 		{"WD Black SN850X 1TB SSD", "Core Deal", "storage wd sn850x 1tb"},

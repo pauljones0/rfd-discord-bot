@@ -204,6 +204,46 @@ func TestAdminOnlyAllowsValidBearer(t *testing.T) {
 	}
 }
 
+func TestSwordswallowerOnlyAllowsListenerSecretHeader(t *testing.T) {
+	called := false
+	handler := swordswallowerOnly("admin-token", "listener-token", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/ingest/discord-notification", nil)
+	req.Header.Set("X-Swordswallower-Secret", "listener-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if !called {
+		t.Fatal("handler was not called with valid listener secret")
+	}
+}
+
+func TestSwordswallowerOnlyAllowsAdminBearer(t *testing.T) {
+	called := false
+	handler := swordswallowerOnly("admin-token", "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/ingest/discord-notification", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if !called {
+		t.Fatal("handler was not called with valid admin bearer")
+	}
+}
+
 func TestLoggingMiddlewareRecordsResponseStatusAndBytes(t *testing.T) {
 	var logs bytes.Buffer
 	previous := slog.Default()

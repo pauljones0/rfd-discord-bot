@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+bot_logs.txt
+logs/
+scratch/
+
+internal/core/swordswallower/.gradle/
+internal/core/swordswallower/app/build/
+internal/core/swordswallower/data/
+internal/core/swordswallower/tools/__pycache__/

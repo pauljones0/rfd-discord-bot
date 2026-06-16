@@ -39,6 +39,7 @@ type Store interface {
 type Notifier interface {
 	SendCoreAlert(ctx context.Context, alert models.CoreAlert, subs []models.Subscription) (map[string]string, error)
 	UpdateCoreAlert(ctx context.Context, alert models.CoreAlert) error
+	SendCoreSystemAlert(ctx context.Context, alert models.CoreSystemAlert, subs []models.Subscription) error
 }
 
 // Processor handles parsing and tracking Core deal alerts without AI.
@@ -66,10 +67,10 @@ func (p *Processor) Rebin(ctx context.Context) error {
 	// 2. Fetch raw notifications from the last 30 days
 	// We use the storage.Client directly if possible, or assume the store satisfies an interface.
 	// Since Store is an interface, let's see if we need to add a method to it.
-	
+
 	// Actually, for simplicity in this YOLO fix, I'll just look at what's available.
 	// storage.Client has GetRecentCoreRawNotifications.
-	
+
 	// Let's assume we can fetch them. I'll need to cast or update the interface.
 	type fullStore interface {
 		Store
@@ -374,37 +375,114 @@ type DiscordNotificationMsg struct {
 	Sender string `json:"sender"`
 	Text   string `json:"text"`
 	Time   int64  `json:"time"`
+	URI    string `json:"uri,omitempty"`
 }
 
-func (p *Processor) ProcessNotificationBatch(ctx context.Context, conversationTitle, tag, tickerText string, messages []DiscordNotificationMsg, pictureBase64, eventID, sourcePackage string) {
+type DiscordNotificationBatch struct {
+	ConversationTitle string
+	Tag               string
+	TickerText        string
+	Lines             []string
+	Messages          []DiscordNotificationMsg
+	PictureBase64     string
+	EventID           string
+	SourcePackage     string
+	RawLink           string
+}
+
+func (p *Processor) ProcessNotificationBatch(ctx context.Context, batch DiscordNotificationBatch) error {
 	// Construct fallback link from Discord Snowflake tag
-	var fallbackLink string
-	if strings.HasPrefix(tag, "MESSAGE_CREATE") {
-		channelID := strings.TrimPrefix(tag, "MESSAGE_CREATE")
+	fallbackLink := strings.TrimSpace(batch.RawLink)
+	if fallbackLink == "" && strings.HasPrefix(batch.Tag, "MESSAGE_CREATE") {
+		channelID := strings.TrimPrefix(batch.Tag, "MESSAGE_CREATE")
 		if channelID != "" {
 			fallbackLink = "https://discord.com/channels/@me/" + channelID
 		}
 	}
 
-	category := ParseCategoryFromTitle(conversationTitle)
+	category := ParseCategoryFromTitle(batch.ConversationTitle)
+	var errs []error
 
-	// Process tickerText as a primary candidate if present
-	if tickerText != "" {
-		if err := p.ProcessNotification(ctx, conversationTitle, tickerText, nil, eventID+"-ticker", sourcePackage, fallbackLink, category, pictureBase64); err != nil {
-			slog.Error("Failed to process tickerText", "error", err)
+	primary, lines := primaryNotificationCandidate(batch.TickerText, batch.Lines)
+	if primary != "" {
+		if err := p.ProcessNotification(ctx, batch.ConversationTitle, primary, lines, batch.EventID+"-payload", batch.SourcePackage, fallbackLink, category, batch.PictureBase64); err != nil {
+			slog.Error("Failed to process notification payload", "event_id", batch.EventID, "error", err)
+			errs = append(errs, fmt.Errorf("payload: %w", err))
 		}
 	}
 
 	// Process each message in the batch
-	for i, msg := range messages {
+	for i, msg := range batch.Messages {
 		if msg.Text == "" {
 			continue
 		}
-		subEventID := fmt.Sprintf("%s-%d", eventID, i)
-		if err := p.ProcessNotification(ctx, conversationTitle, msg.Text, nil, subEventID, sourcePackage, fallbackLink, category, pictureBase64); err != nil {
+		messageLink := fallbackLink
+		if strings.TrimSpace(msg.URI) != "" {
+			messageLink = strings.TrimSpace(msg.URI)
+		}
+		subEventID := fmt.Sprintf("%s-%d", batch.EventID, i)
+		if err := p.ProcessNotification(ctx, batch.ConversationTitle, msg.Text, nil, subEventID, batch.SourcePackage, messageLink, category, batch.PictureBase64); err != nil {
 			slog.Error("Failed to process grouped message", "subEventID", subEventID, "error", err)
+			errs = append(errs, fmt.Errorf("message %d: %w", i, err))
 		}
 	}
+
+	return errors.Join(errs...)
+}
+
+func primaryNotificationCandidate(tickerText string, lines []string) (string, []string) {
+	candidates := appendUniqueNonEmpty(nil, lines...)
+	candidates = appendUniqueNonEmpty(candidates, tickerText)
+	if len(candidates) == 0 {
+		return "", nil
+	}
+	return candidates[0], candidates[1:]
+}
+
+func appendUniqueNonEmpty(values []string, candidates ...string) []string {
+	seen := make(map[string]struct{}, len(values)+len(candidates))
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		values = append(values, candidate)
+	}
+	return values
+}
+
+func (p *Processor) ReportSystemIssue(ctx context.Context, alert models.CoreSystemAlert) error {
+	if p == nil || p.notifier == nil {
+		return nil
+	}
+	if p.store == nil {
+		return fmt.Errorf("core store is not configured")
+	}
+	if alert.OccurredAt.IsZero() {
+		alert.OccurredAt = time.Now()
+	}
+	if alert.Component == "" {
+		alert.Component = "core-notification-ingest"
+	}
+	if alert.Severity == "" {
+		alert.Severity = "warning"
+	}
+	coreSubs, err := p.coreSubscriptions(ctx)
+	if err != nil {
+		return err
+	}
+	if len(coreSubs) == 0 {
+		slog.Warn("Core bot: No active subscriptions for system alert", "title", alert.Title)
+		return nil
+	}
+	return p.notifier.SendCoreSystemAlert(ctx, alert, coreSubs)
 }
 
 // ProcessNotification ingests, parses, checks price percentiles, and alerts if eligible.
@@ -430,7 +508,10 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 		slog.Warn("Core bot: Ignoring invalid normalization rules", "error", ruleErr)
 	}
 
-	category := ParseCategoryFromTitle(title)
+	category := strings.TrimSpace(explicitCategory)
+	if category == "" {
+		category = ParseCategoryFromTitle(title)
+	}
 	normName := NormalizeProductName(parsed.ProductName, rules, category)
 	if normName == "" {
 		normName = NormalizeProductName(parsed.ProductName, nil, category)
@@ -514,7 +595,7 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 					if !hasStore {
 						recent.StoreNames = append(recent.StoreNames, parsed.StoreName)
 						recent.Links = append(recent.Links, parsed.Link)
-						
+
 						if err := p.notifier.UpdateCoreAlert(ctx, *recent); err != nil {
 							slog.Error("Core bot: Failed to update core deal alert", "error", err)
 						} else {
@@ -575,9 +656,9 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 	if err != nil {
 		return fmt.Errorf("failed to send core deal alerts: %w", err)
 	}
-	
+
 	alert.MessageIDs = msgIDs
-	
+
 	var recentAlerts []models.CoreAlert
 	for _, a := range history.RecentAlerts {
 		if time.Since(a.FiredAt) < 24*time.Hour {
@@ -744,7 +825,7 @@ func GenerateBoxPlot(ev priceEvaluation, currentPrice float64) string {
 	const width = 60
 	minP := math.Min(ev.PriorMin, currentPrice)
 	maxP := math.Max(ev.PriorMax, currentPrice)
-	
+
 	if maxP == minP {
 		const msg = "[ Price Distribution Not Available ]"
 		msgLen := utf8.RuneCountInString(msg)
@@ -757,8 +838,12 @@ func GenerateBoxPlot(ev priceEvaluation, currentPrice float64) string {
 
 	scale := func(val float64) int {
 		pos := int(math.Round((val - minP) / (maxP - minP) * float64(width-1)))
-		if pos < 0 { return 0 }
-		if pos >= width { return width - 1 }
+		if pos < 0 {
+			return 0
+		}
+		if pos >= width {
+			return width - 1
+		}
 		return pos
 	}
 
@@ -790,8 +875,12 @@ func GenerateBoxPlot(ev priceEvaluation, currentPrice float64) string {
 	}
 
 	// Draw whiskers caps
-	if minPos >= 0 && minPos < width { line[minPos] = '[' }
-	if maxPos >= 0 && maxPos < width { line[maxPos] = ']' }
+	if minPos >= 0 && minPos < width {
+		line[minPos] = '['
+	}
+	if maxPos >= 0 && maxPos < width {
+		line[maxPos] = ']'
+	}
 
 	// Draw current price
 	if currPos >= 0 && currPos < width {
@@ -961,7 +1050,7 @@ func extractRAMSpecs(name string) string {
 
 	speedMatch := ramSpeedRegex.FindStringSubmatch(name)
 	clMatch := ramCLRegex.FindStringSubmatch(name)
-	
+
 	suffix := ""
 	if speedMatch != nil {
 		suffix += " " + speedMatch[1]
@@ -1116,7 +1205,6 @@ func extractStorageSpecs(name string) string {
 	}
 	return ""
 }
-
 
 func isAmbiguous(normName string, truncated bool) bool {
 	// If it's already specialized (starts with ram or tcg), it's not ambiguous enough to skip

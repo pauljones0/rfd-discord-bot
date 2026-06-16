@@ -1,0 +1,15 @@
+.gradle/
+build/
+app/build/
+
+.android/
+.env
+*.apk
+*.apks
+*.apkm
+*.xapk
+
+events.jsonl
+data/
+__pycache__/
+*.pyc

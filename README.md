@@ -137,6 +137,36 @@ margin, comp count, high-value compute signal, and model/brand confidence. eBay
 sold comps verify warm/hot labels when enough matches exist; blocked, errored,
 or thin eBay evidence fails open to the existing AI/Best Buy behavior.
 
+### Core Discord Notifications
+
+Core deal observations are ingested from the bundled Android notification
+listener under `internal/core/swordswallower`. The listener posts directly to:
+
+```text
+POST /ingest/discord-notification
+```
+
+Authenticate it with `Authorization: Bearer $RFD_ADMIN_TOKEN`, or set
+`SWORDSWALLOWER_SECRET` and use that listener-only token. The endpoint also
+accepts the legacy `X-Swordswallower-Secret` header for the bundled receiver and
+older listener configs.
+
+The ingest path stores richer raw notification candidates (`bigText`, stacked
+lines, message text, links, and images), processes them through the Core
+pipeline, and sends operational failures to the configured Core subscription
+channel. Listener test events, listener exceptions, raw-notification storage
+failures, Core processing failures, and mark-as-read action failures are
+reported there with throttling.
+
+Build and configure the listener from this repo:
+
+```powershell
+cd internal/core/swordswallower
+make build-listener
+RFD_ADMIN_TOKEN=... make configure-listener
+make enable-listener
+```
+
 ## Discord Commands
 
 Register slash commands after changing command definitions:

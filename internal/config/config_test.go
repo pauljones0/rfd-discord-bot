@@ -332,6 +332,7 @@ func TestLoadLooseDotEnv_IgnoresMultilineJSONBlock(t *testing.T) {
 
 func TestLoad_AdminAndUnsignedInteractionConfig(t *testing.T) {
 	t.Setenv("RFD_ADMIN_TOKEN", "test-admin-token")
+	t.Setenv("SWORDSWALLOWER_SECRET", "test-listener-token")
 	t.Setenv("ALLOW_UNSIGNED_DISCORD_INTERACTIONS", "true")
 
 	cfg, err := Load()
@@ -340,6 +341,9 @@ func TestLoad_AdminAndUnsignedInteractionConfig(t *testing.T) {
 	}
 	if cfg.RFDAdminToken != "test-admin-token" {
 		t.Fatalf("RFDAdminToken = %q, want test-admin-token", cfg.RFDAdminToken)
+	}
+	if cfg.SwordswallowerSecret != "test-listener-token" {
+		t.Fatalf("SwordswallowerSecret = %q, want test-listener-token", cfg.SwordswallowerSecret)
 	}
 	if !cfg.AllowUnsignedDiscordInteractions {
 		t.Fatal("AllowUnsignedDiscordInteractions = false, want true")

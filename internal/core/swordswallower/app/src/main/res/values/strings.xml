@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Swordswallower</string>
+    <string name="listener_label">Swordswallower Notification Listener</string>
+</resources>

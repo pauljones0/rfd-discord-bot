@@ -346,7 +346,7 @@ func applyEbaySoldVerification(observation *ComputeObservation, verification Eba
 }
 
 func buildEbaySoldQuery(observation ComputeObservation) string {
-	// For the normal Best Buy pipeline, return the most relaxed query possible 
+	// For the normal Best Buy pipeline, return the most relaxed query possible
 	// to avoid 0-match failures caused by strict RAM/spec formatting.
 	return buildEbaySoldQueryWithRAM(observation, false)
 }
@@ -553,7 +553,7 @@ func familyTitleMatch(family, model, title string) bool {
 }
 
 func sameGPU(a, b string) bool {
-	return normalizeModel(a) == normalizeModel(b)
+	return normalizeGPU(a) == normalizeGPU(b)
 }
 
 func tokenOverlap(a, b string) float64 {

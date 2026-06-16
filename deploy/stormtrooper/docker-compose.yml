@@ -56,6 +56,7 @@ services:
       EBAY_SOLD_AI_CRAWLER_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/crawl4ai_fetch.py","{url}","--headless","--wait-ms","7000"]'
       EBAY_SOLD_PAID_TRIAL_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/browserless_bql_fetch.py","{url}","--endpoint","https://production-sfo.browserless.io/stealth/bql?proxy=residential&proxyCountry=ca","--wait-ms","15000","--solve-captcha"]'
       BESTBUY_COMPUTE_EMBED_COMMAND: /opt/scrape-venv/bin/python /root/scripts/local_embed.py
+      BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED: ${BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED:-true}
       MEMEXPRESS_EXTERNAL_STEALTH_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/nodriver_fetch.py","{url}","--profile-dir","/data/nodriver-profile","--headless","--wait-seconds","7"]'
       MEMEXPRESS_CAMOUFOX_COMMAND_ARGS: '["xvfb-run","-a","/opt/scrape-venv/bin/python","/root/scripts/camoufox_fetch.py","{url}","--wait-ms","7000"]'
       MEMEXPRESS_AI_CRAWLER_COMMAND_ARGS: '["/opt/scrape-venv/bin/python","/root/scripts/crawl4ai_fetch.py","{url}","--headless","--wait-ms","7000"]'

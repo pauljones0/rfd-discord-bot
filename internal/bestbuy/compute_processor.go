@@ -15,6 +15,7 @@ import (
 const (
 	bestBuyComputeMaxRecords                    = 20000
 	bestBuyComputeMaxExtremeSoldFallbacksPerRun = 5
+	bestBuyComputeIssueRepeatInterval           = 6 * time.Hour
 )
 
 type ComputeStore interface {
@@ -31,6 +32,7 @@ type ComputeClient interface {
 
 type ComputeNotifier interface {
 	SendBestBuyDeal(ctx context.Context, product AnalyzedProduct, subs []models.Subscription) error
+	SendBestBuyComputeIssue(ctx context.Context, issue ComputeIssue, subs []models.Subscription) error
 }
 
 type ComputeProcessor struct {
@@ -53,6 +55,7 @@ type ComputeStats struct {
 	SoldRejected  int    `json:"soldRejected"`
 	SoldFallbacks int    `json:"soldFallbacks"`
 	Notified      int    `json:"notified"`
+	IssueAlerts   int    `json:"issueAlerts"`
 	NotifyErrors  int    `json:"notifyErrors"`
 	Subscriptions int    `json:"subscriptions"`
 	ExitReason    string `json:"exitReason"`
@@ -96,6 +99,7 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 			"sold_rejected", stats.SoldRejected,
 			"sold_fallbacks", stats.SoldFallbacks,
 			"notified", stats.Notified,
+			"issue_alerts", stats.IssueAlerts,
 			"notify_errors", stats.NotifyErrors,
 			"subscriptions", stats.Subscriptions,
 			"exit_reason", stats.ExitReason,
@@ -155,6 +159,8 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 			observation.FirstSeen = firstNonZeroTime(prior.FirstSeen, prior.LastSeen, now)
 			observation.LastAlertAt = prior.LastAlertAt
 			observation.LastAlertKey = prior.LastAlertKey
+			observation.LastIssueAlertAt = prior.LastIssueAlertAt
+			observation.LastIssueAlertKey = prior.LastIssueAlertKey
 		}
 		observations = append(observations, observation)
 	}
@@ -261,21 +267,46 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 				if p.affiliatePrefix != "" && observation.URL != "" {
 					observation.URL = p.affiliatePrefix + url.QueryEscape(observation.URL)
 				}
-				verified := true
-				verification := EbaySoldVerification{Pass: true, Verdict: "already_verified"}
+				verified := false
+				verification := EbaySoldVerification{}
 				alreadyVerified := false
-				if p.soldVerifier != nil {
+				if p.soldVerifier == nil {
+					verification = EbaySoldVerification{
+						Pass:      false,
+						Verdict:   "disabled",
+						AlertKey:  computeAlertKey(observation),
+						CheckedAt: now,
+						Error:     "Best Buy compute eBay sold verification is not configured",
+					}
+					p.reportComputeIssue(ctx, &observation, prior, score, verification, now, computeSubs, logger, &stats)
+				} else {
 					if observation.EbaySoldVerdict == ebaySoldVerdictPass && observation.EbaySoldAlertKey == computeAlertKey(observation) {
 						alreadyVerified = true
 						verified = true
+						verification = EbaySoldVerification{
+							Pass:            true,
+							Verdict:         "already_verified",
+							ComparableCount: observation.EbaySoldComparableCount,
+							MedianPrice:     observation.EbaySoldMedianPrice,
+							P25Price:        observation.EbaySoldP25Price,
+							GapPct:          observation.EbaySoldGapPct,
+							GapAmount:       observation.EbaySoldGapAmount,
+							MarketLabel: ebaySoldMarketLabel(&observation, EbaySoldVerification{
+								ComparableCount: observation.EbaySoldComparableCount,
+								MedianPrice:     observation.EbaySoldMedianPrice,
+								P25Price:        observation.EbaySoldP25Price,
+							}),
+							AlertKey:  observation.EbaySoldAlertKey,
+							CheckedAt: observation.EbaySoldCheckedAt,
+						}
 					} else {
 						verification = p.soldVerifier.Verify(ctx, observation, prior, now, logger)
 						applyEbaySoldVerification(&observation, verification)
-						verified = verification.Pass
+						verified = ebaySoldVerificationConfirmsMarket(verification)
 					}
 					if ebaySoldVerificationConfirmsMarket(verification) && !alreadyVerified {
 						stats.SoldVerified++
-					} else if !verified {
+					} else if verification.Verdict == ebaySoldVerdictFail {
 						stats.SoldRejected++
 						logger.Info("Best Buy compute outlier skipped after eBay sold verification",
 							"sku", observation.SKU,
@@ -288,8 +319,8 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 							"sold_median", verification.MedianPrice,
 							"sold_gap_pct", verification.GapPct,
 						)
-					} else if p.soldVerifier != nil && !alreadyVerified {
-						logger.Info("Best Buy compute outlier proceeding without decisive eBay sold verification",
+					} else if !alreadyVerified {
+						logger.Warn("Best Buy compute outlier blocked because eBay sold verification was not decisive",
 							"sku", observation.SKU,
 							"sellerID", observation.SellerID,
 							"query", verification.Query,
@@ -298,6 +329,7 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 							"error", verification.Error,
 							"sold_comps", verification.ComparableCount,
 						)
+						p.reportComputeIssue(ctx, &observation, prior, score, verification, now, computeSubs, logger, &stats)
 					}
 				}
 				if verified {
@@ -465,6 +497,69 @@ func shouldBaselineComputeAlertKey(observation, prior ComputeObservation, subscr
 		return false
 	}
 	return subscriptionCount == 0 || (prior.SKU == "" && !alertFirstSeen)
+}
+
+func (p *ComputeProcessor) reportComputeIssue(ctx context.Context, observation *ComputeObservation, prior ComputeObservation, score ComputeScore, verification EbaySoldVerification, now time.Time, subs []models.Subscription, logger *slog.Logger, stats *ComputeStats) {
+	if p == nil || p.notifier == nil || observation == nil || len(subs) == 0 {
+		return
+	}
+	reason := computeIssueReason(verification)
+	issueKey := computeIssueAlertKey(*observation, reason)
+	if !shouldNotifyComputeIssue(prior, issueKey, now) {
+		return
+	}
+	issue := ComputeIssue{
+		Title:        "Best Buy compute eBay verification issue",
+		Severity:     "warning",
+		Reason:       reason,
+		Details:      verification.Error,
+		Product:      observation.Product,
+		Spec:         observation.Spec,
+		Score:        score,
+		Verification: verification,
+		OccurredAt:   now,
+	}
+	if err := p.notifier.SendBestBuyComputeIssue(ctx, issue, subs); err != nil {
+		if stats != nil {
+			stats.NotifyErrors++
+		}
+		if logger != nil {
+			logger.Warn("Failed to send Best Buy compute issue", "sku", observation.SKU, "reason", reason, "error", err)
+		}
+		return
+	}
+	if stats != nil {
+		stats.IssueAlerts++
+	}
+	observation.LastIssueAlertAt = now
+	observation.LastIssueAlertKey = issueKey
+}
+
+func computeIssueReason(verification EbaySoldVerification) string {
+	reason := strings.TrimSpace(verification.Verdict)
+	if reason == "" {
+		reason = "unknown"
+	}
+	return reason
+}
+
+func computeIssueAlertKey(observation ComputeObservation, reason string) string {
+	key := computeAlertKey(observation)
+	reason = strings.TrimSpace(reason)
+	if key == "" || reason == "" {
+		return ""
+	}
+	return key + "|issue|" + reason
+}
+
+func shouldNotifyComputeIssue(prior ComputeObservation, issueKey string, now time.Time) bool {
+	if issueKey == "" {
+		return false
+	}
+	if prior.LastIssueAlertKey == issueKey && !prior.LastIssueAlertAt.IsZero() && now.Sub(prior.LastIssueAlertAt) < bestBuyComputeIssueRepeatInterval {
+		return false
+	}
+	return true
 }
 
 func computeAnalyzedProduct(observation ComputeObservation) AnalyzedProduct {

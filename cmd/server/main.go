@@ -55,6 +55,8 @@ type Server struct {
 	bestbuySem          chan struct{} // Semaphore to limit concurrent Best Buy processing requests
 	bestbuyComputeSem   chan struct{} // Semaphore to limit concurrent Best Buy compute sweeps
 	hwSem               chan struct{} // Semaphore to limit concurrent HardwareSwap processing requests
+	coreIssueMu         sync.Mutex
+	coreIssueLast       map[string]time.Time
 }
 
 func main() {
@@ -226,6 +228,7 @@ func main() {
 		bestbuySem:          make(chan struct{}, 1), // Allow 1 concurrent Best Buy processing attempt
 		bestbuyComputeSem:   make(chan struct{}, 1), // Allow 1 concurrent Best Buy compute sweep
 		hwSem:               make(chan struct{}, 1), // Allow 1 concurrent HardwareSwap processing attempt
+		coreIssueLast:       make(map[string]time.Time),
 	}
 
 	// Build HardwareSwap store for the API handler (may be nil if AI is unavailable)
@@ -253,7 +256,7 @@ func main() {
 	adminHandle("GET /process-bestbuy", srv.ProcessBestBuyHandler)
 	adminHandle("GET /process-bestbuy-compute", srv.ProcessBestBuyComputeHandler)
 	adminHandle("POST /prime-bestbuy-baseline", srv.PrimeBestBuyBaselineHandler)
-	adminHandle("POST /ingest/discord-notification", srv.DiscordNotificationIngestHandler)
+	mux.Handle("POST /ingest/discord-notification", swordswallowerOnly(cfg.RFDAdminToken, cfg.SwordswallowerSecret, http.HandlerFunc(srv.DiscordNotificationIngestHandler)))
 	adminHandle("POST /core/rebin", srv.CoreRebinHandler)
 	adminHandle("GET /core/raw-notifications", srv.CoreRawNotificationsHandler)
 	if cfg.HardwareSwapEnabled {

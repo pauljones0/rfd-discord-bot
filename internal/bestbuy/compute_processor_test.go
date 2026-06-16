@@ -54,11 +54,17 @@ func (c computeTestClient) ValidateSellerOffer(_ context.Context, product Produc
 }
 
 type computeTestNotifier struct {
-	sent []AnalyzedProduct
+	sent   []AnalyzedProduct
+	issues []ComputeIssue
 }
 
 func (n *computeTestNotifier) SendBestBuyDeal(_ context.Context, product AnalyzedProduct, _ []models.Subscription) error {
 	n.sent = append(n.sent, product)
+	return nil
+}
+
+func (n *computeTestNotifier) SendBestBuyComputeIssue(_ context.Context, issue ComputeIssue, _ []models.Subscription) error {
+	n.issues = append(n.issues, issue)
 	return nil
 }
 
@@ -98,7 +104,16 @@ func TestComputeProcessorBaselinesFirstSeenWithoutAlert(t *testing.T) {
 		subs:         []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_compute", ChannelID: "chan"}},
 	}
 	notifier := &computeTestNotifier{}
+	verifier := &computeTestSoldVerifier{verification: EbaySoldVerification{
+		Pass:            true,
+		Verdict:         ebaySoldVerdictPass,
+		Query:           "Dell Precision 5820",
+		ComparableCount: 5,
+		MedianPrice:     2500,
+		GapPct:          74,
+	}}
 	processor := NewComputeProcessor(store, computeTestClient{products: products}, notifier, "", false, nil)
+	processor.SetSoldVerifier(verifier)
 
 	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
 		t.Fatalf("ProcessComputeOutliers() error = %v", err)
@@ -133,7 +148,16 @@ func TestComputeProcessorAlertsExistingOutlierOnce(t *testing.T) {
 		}
 	}
 	notifier := &computeTestNotifier{}
+	verifier := &computeTestSoldVerifier{verification: EbaySoldVerification{
+		Pass:            true,
+		Verdict:         ebaySoldVerdictPass,
+		Query:           "Dell Precision 5820",
+		ComparableCount: 5,
+		MedianPrice:     2500,
+		GapPct:          74,
+	}}
 	processor := NewComputeProcessor(store, computeTestClient{products: products}, notifier, "", false, nil)
+	processor.SetSoldVerifier(verifier)
 
 	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
 		t.Fatalf("ProcessComputeOutliers() error = %v", err)
@@ -153,6 +177,44 @@ func TestComputeProcessorAlertsExistingOutlierOnce(t *testing.T) {
 	}
 	if len(notifier.sent) != 1 {
 		t.Fatalf("sent after duplicate run = %d, want still 1", len(notifier.sent))
+	}
+}
+
+func TestComputeProcessorMissingSoldVerifierSendsIssueInsteadOfDeal(t *testing.T) {
+	products := append([]Product{computeCandidate("candidate", "seller-a", 650)}, computeCompsForProcessor()...)
+	store := &computeTestStore{
+		observations: make(map[string]ComputeObservation),
+		subs:         []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_compute", ChannelID: "chan"}},
+	}
+	for _, product := range products {
+		store.observations[computeObservationKey(product)] = ComputeObservation{
+			Product:   product,
+			Spec:      ParseComputeSpec(product),
+			FirstSeen: time.Now().Add(-time.Hour),
+			LastSeen:  time.Now().Add(-time.Hour),
+		}
+	}
+	notifier := &computeTestNotifier{}
+	processor := NewComputeProcessor(store, computeTestClient{products: products}, notifier, "", false, nil)
+
+	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
+		t.Fatalf("ProcessComputeOutliers() error = %v", err)
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("sent = %d, want no deal without eBay verifier", len(notifier.sent))
+	}
+	if len(notifier.issues) != 1 {
+		t.Fatalf("issues = %d, want 1 verifier issue", len(notifier.issues))
+	}
+	if notifier.issues[0].Verification.Verdict != "disabled" {
+		t.Fatalf("issue verdict = %q, want disabled", notifier.issues[0].Verification.Verdict)
+	}
+	saved := store.observations[computeObservationKey(products[0])]
+	if saved.LastAlertKey != "" {
+		t.Fatalf("LastAlertKey = %q, want empty so deal can retry when eBay is configured", saved.LastAlertKey)
+	}
+	if saved.LastIssueAlertKey == "" {
+		t.Fatalf("LastIssueAlertKey is empty after issue alert")
 	}
 }
 
@@ -240,7 +302,7 @@ func TestComputeProcessorSoldVerifierAllowsNotification(t *testing.T) {
 	}
 }
 
-func TestComputeProcessorSoldVerifierFetchErrorFailsOpen(t *testing.T) {
+func TestComputeProcessorSoldVerifierFetchErrorSendsIssueInsteadOfDeal(t *testing.T) {
 	products := append([]Product{computeCandidate("candidate", "seller-a", 650)}, computeCompsForProcessor()...)
 	store := &computeTestStore{
 		observations: make(map[string]ComputeObservation),
@@ -267,15 +329,24 @@ func TestComputeProcessorSoldVerifierFetchErrorFailsOpen(t *testing.T) {
 	if err := processor.ProcessComputeOutliers(context.Background()); err != nil {
 		t.Fatalf("ProcessComputeOutliers() error = %v", err)
 	}
-	if len(notifier.sent) != 1 {
-		t.Fatalf("sent = %d, want fail-open notification", len(notifier.sent))
+	if len(notifier.sent) != 0 {
+		t.Fatalf("sent = %d, want no deal after fetch error", len(notifier.sent))
+	}
+	if len(notifier.issues) != 1 {
+		t.Fatalf("issues = %d, want 1 fetch-error issue", len(notifier.issues))
+	}
+	if notifier.issues[0].Verification.Verdict != ebaySoldVerdictFetchError {
+		t.Fatalf("issue verdict = %q, want fetch_error", notifier.issues[0].Verification.Verdict)
 	}
 	saved := store.observations[computeObservationKey(products[0])]
 	if saved.EbaySoldVerdict != ebaySoldVerdictFetchError {
 		t.Fatalf("EbaySoldVerdict = %q, want fetch_error", saved.EbaySoldVerdict)
 	}
-	if saved.LastAlertKey == "" {
-		t.Fatalf("LastAlertKey is empty after fail-open send")
+	if saved.LastAlertKey != "" {
+		t.Fatalf("LastAlertKey = %q, want empty so deal can retry after eBay recovers", saved.LastAlertKey)
+	}
+	if saved.LastIssueAlertKey == "" {
+		t.Fatalf("LastIssueAlertKey is empty after issue alert")
 	}
 }
 

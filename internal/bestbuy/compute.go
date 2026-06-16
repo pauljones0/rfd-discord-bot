@@ -105,6 +105,8 @@ type ComputeObservation struct {
 	LastSeen                time.Time                   `docstore:"lastSeen,omitempty"`
 	LastAlertAt             time.Time                   `docstore:"lastAlertAt,omitempty"`
 	LastAlertKey            string                      `docstore:"lastAlertKey,omitempty"`
+	LastIssueAlertAt        time.Time                   `docstore:"lastIssueAlertAt,omitempty"`
+	LastIssueAlertKey       string                      `docstore:"lastIssueAlertKey,omitempty"`
 }
 
 type ComputeExternalComparable struct {
@@ -128,6 +130,18 @@ type ComputeScore struct {
 	IsWarm          bool
 	IsLavaHot       bool
 	Summary         string
+}
+
+type ComputeIssue struct {
+	Title        string
+	Severity     string
+	Reason       string
+	Details      string
+	Product      Product
+	Spec         ComputeSpec
+	Score        ComputeScore
+	Verification EbaySoldVerification
+	OccurredAt   time.Time
 }
 
 func ParseComputeSpec(product Product) ComputeSpec {
@@ -379,6 +393,11 @@ func compatibleExternalComputeComp(observation, comp ComputeObservation) bool {
 			return false
 		}
 	}
+	if spec.GPU != "" || compSpec.GPU != "" {
+		if !similarGPU(spec.GPU, compSpec.GPU) {
+			return false
+		}
+	}
 	return true
 }
 
@@ -450,25 +469,33 @@ func similarGPU(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	
-	normalize := func(s string) string {
-		s = strings.ToLower(s)
-		prefixes := []string{"nvidia quadro ", "nvidia tesla ", "nvidia ", "quadro ", "rtx ", "radeon pro ", "tesla ", "amd instinct ", "amd ", "intel data center gpu ", "intel "}
-		for _, p := range prefixes {
-			if strings.HasPrefix(s, p) {
-				s = strings.TrimPrefix(s, p)
-			}
-		}
-		s = strings.TrimSpace(s)
-		return s
+	return normalizeGPU(a) == normalizeGPU(b)
+}
+
+func normalizeGPU(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	prefixes := []string{
+		"nvidia quadro ",
+		"nvidia geforce ",
+		"nvidia tesla ",
+		"nvidia ",
+		"geforce ",
+		"quadro ",
+		"rtx ",
+		"radeon pro ",
+		"tesla ",
+		"amd instinct ",
+		"amd ",
+		"intel data center gpu ",
+		"intel ",
 	}
-
-	normA := normalize(a)
-	normB := normalize(b)
-
-	// A T1000 (Turing) is fundamentally different from a P1000 (Pascal). 
-	// We must enforce an exact case-insensitive match (after normalization) to ensure generation and tier match.
-	return normA == normB
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			s = strings.TrimPrefix(s, p)
+			break
+		}
+	}
+	return strings.Join(strings.Fields(s), "")
 }
 
 func isExtremeComputeSpec(spec ComputeSpec, price float64) bool {
@@ -573,6 +600,14 @@ func rejectComputeReason(lower string) string {
 		"fan module":            "server_part",
 		"fan assembly":          "server_part",
 		"blower fan":            "server_part",
+		"front access storage":  "storage_component",
+		"storage enclosure":     "storage_component",
+		"ethernet adapter":      "network_adapter",
+		"gigabit adapter":       "network_adapter",
+		"wlan module":           "network_adapter",
+		"wi-fi module":          "network_adapter",
+		"wifi module":           "network_adapter",
+		"dc power jack":         "power_accessory",
 		"heatsink":              "server_part",
 		"heat sink":             "server_part",
 		"riser kit":             "server_part",
@@ -635,6 +670,9 @@ func rejectComputeReason(lower string) string {
 	if strings.Contains(lower, "processor upgrade") && !strings.Contains(lower, "desktop") {
 		return "component"
 	}
+	if regexp.MustCompile(`(?i)\b(?:gpu\s+)?graphics?\s+card\b`).MatchString(lower) && !containsWholeComputeSystemTerm(lower) {
+		return "gpu_component"
+	}
 	if strings.Contains(lower, " processor") && !containsComputeSystemTerm(lower) {
 		return "processor_component"
 	}
@@ -664,6 +702,34 @@ func containsComputeSystemTerm(lower string) bool {
 		"thinksystem",
 		"thinkstation",
 		"zbook",
+	}
+	for _, term := range terms {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsWholeComputeSystemTerm(lower string) bool {
+	terms := []string{
+		"desktop",
+		"server",
+		"laptop",
+		"notebook",
+		"mini pc",
+		"gaming pc",
+		"workstation pc",
+		"workstation computer",
+		"tower pc",
+		"desktop pc",
+		"poweredge",
+		"proliant",
+		"thinksystem",
+		"zbook",
+		"mac studio",
+		"macbook",
+		"mac pro",
 	}
 	for _, term := range terms {
 		if strings.Contains(lower, term) {
@@ -950,7 +1016,7 @@ func gpuFromText(text string) string {
 		// NVIDIA Tesla series with explicit prefix (e.g., Tesla V100, NVIDIA T4)
 		regexp.MustCompile(`(?i)\b(?:nvidia\s+|tesla\s+)[kmptvc]\d{1,2}0?[a-z]?\b`),
 		// Naked Tesla series (e.g., T4, P40). Exclude 'v' to avoid Xeon v1/v2/v3/v4 matches
-		regexp.MustCompile(`(?i)\b[kmptc]\d{1,2}0?[a-z]?\b`),
+		regexp.MustCompile(`(?i)\b(?:t4|p4|p40|k80|m10|m40|m60)\b`),
 		// NVIDIA GRID series (e.g., GRID K1, GRID M10)
 		regexp.MustCompile(`(?i)\b(?:nvidia\s+)?grid\s+[km]\d{1,2}\b`),
 		// AMD Instinct (e.g., MI300X, MI250, MI50)
@@ -963,6 +1029,8 @@ func gpuFromText(text string) string {
 		regexp.MustCompile(`(?i)\b(?:intel\s+)?gaudi\s*\d?\b`),
 		// NVIDIA RTX A-series workstation (e.g., RTX A4000)
 		regexp.MustCompile(`(?i)\brtx\s+a\d{4}\b`),
+		// NVIDIA GeForce GTX/RTX cards commonly bundled in lower-end workstations.
+		regexp.MustCompile(`(?i)\b(?:nvidia\s+)?(?:geforce\s+)?(?:gtx|rtx)\s+\d{3,4}(?:\s*ti)?\b`),
 		// NVIDIA Quadro specific
 		regexp.MustCompile(`(?i)\bquadro\s+[a-z]?\d{3,4}\b`),
 		// NVIDIA workstation generic (P1000, K2000, T1000, etc.)

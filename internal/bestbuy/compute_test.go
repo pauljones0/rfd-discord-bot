@@ -68,6 +68,11 @@ func TestParseComputeSpecRejectsAccessories(t *testing.T) {
 		{Name: `MSI Gaming Mouse 26000 DPI Optical Sensor`},
 		{Name: `Dell Precision 7730 Replacement LCD Screen`},
 		{Name: `Intel Xeon E3-1220 V3 Quad-core (4 Core) 3.10 Ghz Processor`, CategoryName: "CPU / Computer Processors"},
+		{Name: `Lenovo ThinkStation Intel I210-T1 Single Port Gigabit Ethernet Adapter`},
+		{Name: `Lenovo ThinkStation Front Access Storage Enclosure for P3 Tower (4XF1M24244)`},
+		{Name: `Lenovo ThinkStation Intel Wi-Fi AX211 WLAN Module - P3`},
+		{Name: `NVIDIA RTX A1000 Workstation GPU Graphic Card, 8GB GDDR6 (900-5G172-2580-000)`},
+		{Name: `DC Power Jack Charging Port for Dell XPS 15 9530 9550 9560 9570 7590 P56F P56F001 P56F003/Precision 15 5510`},
 	}
 	for _, product := range products {
 		spec := ParseComputeSpec(product)
@@ -77,6 +82,19 @@ func TestParseComputeSpecRejectsAccessories(t *testing.T) {
 		if spec.RejectReason == "" {
 			t.Fatalf("%q missing reject reason: %#v", product.Name, spec)
 		}
+	}
+}
+
+func TestParseComputeSpecParsesGTXWorkstationGPU(t *testing.T) {
+	product := Product{
+		Name: "Refurbished (Excellent) 3.60Ghz/3.90Ghz Dell Precision GTX Workstation PC 32GB Ram/500GB M.2 SSD/6.0GB Nvidia GTX 1660 Graphics",
+	}
+	spec := ParseComputeSpec(product)
+	if !spec.IsCompute {
+		t.Fatalf("IsCompute = false, reason=%q spec=%#v", spec.RejectReason, spec)
+	}
+	if !strings.Contains(strings.ToLower(spec.GPU), "gtx 1660") {
+		t.Fatalf("GPU = %q, want GTX 1660", spec.GPU)
 	}
 }
 
