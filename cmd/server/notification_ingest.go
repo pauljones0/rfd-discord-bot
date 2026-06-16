@@ -13,9 +13,14 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/core"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/oneverycorner"
 )
 
-const discordNotificationIngestMaxBytes = 128 * 1024
+const (
+	discordNotificationIngestMaxBytes = 128 * 1024
+	discordPackageName                = "com.discord"
+	oneEveryCornerMaxNotificationAge  = 3 * time.Minute
+)
 
 type discordNotificationIngestEvent struct {
 	Type            string                      `json:"type"`
@@ -88,7 +93,9 @@ type normalizedDiscordNotification struct {
 	PictureBase64     string
 	RawLink           string
 	ReceivedAt        int64
+	PostTime          int64
 	EventID           string
+	StableID          string
 	MarkRead          discordMarkReadResult
 	Actions           []discordNotificationAction
 }
@@ -109,11 +116,6 @@ func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	if s.coreProcessor == nil {
-		http.Error(w, "core processor not configured", http.StatusServiceUnavailable)
-		return
-	}
-
 	if handled := s.handleSwordswallowerControlEvent(w, event); handled {
 		return
 	}
@@ -124,6 +126,30 @@ func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http
 	}
 
 	normalized := normalizeDiscordNotification(event)
+	switch {
+	case normalized.SourcePackage == discordPackageName:
+		s.handleDiscordNotification(w, r, normalized)
+	case isBet365Package(normalized.SourcePackage):
+		s.handleBet365Notification(w, normalized)
+	default:
+		slog.Info("Notification ignored for unsupported package",
+			"event_id", normalized.EventID,
+			"source_package", normalized.SourcePackage,
+		)
+		writeNotificationIngestAccepted(w, map[string]any{
+			"status":            "ignored",
+			"route":             "unsupported",
+			"notification":      normalized,
+			"clearNotification": false,
+		})
+	}
+}
+
+func (s *Server) handleDiscordNotification(w http.ResponseWriter, r *http.Request, normalized normalizedDiscordNotification) {
+	if s.coreProcessor == nil {
+		http.Error(w, "core processor not configured", http.StatusServiceUnavailable)
+		return
+	}
 
 	// Pass the batched messages to the core processor
 	go func() {
@@ -185,14 +211,59 @@ func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http
 
 	s.reportMarkReadIssue(normalized)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	if err := json.NewEncoder(w).Encode(map[string]any{
+	writeNotificationIngestAccepted(w, map[string]any{
 		"status":       "accepted",
+		"route":        "core",
 		"notification": normalized,
-	}); err != nil {
-		slog.Error("Failed to encode notification ingest response", "error", err)
+	})
+}
+
+func (s *Server) handleBet365Notification(w http.ResponseWriter, normalized normalizedDiscordNotification) {
+	if s.onEveryCorner == nil {
+		http.Error(w, "oneverycorner processor not configured", http.StatusServiceUnavailable)
+		return
 	}
+
+	event := oneveryCornerNotificationEvent(normalized)
+	_, parsed := oneverycorner.ParseNotification(event)
+	stale := parsed && isStaleOneEveryCornerNotification(event.ReceivedAt, time.Now())
+	if parsed && !stale {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := s.onEveryCorner.ProcessNotification(ctx, event); err != nil {
+				slog.Error("OnEveryCorner notification processing failed", "event_id", normalized.EventID, "error", err)
+				s.reportCoreSystemIssue("oneverycorner:"+normalized.EventID, models.CoreSystemAlert{
+					Title:         "OnEveryCorner notification processing failed",
+					Severity:      "error",
+					Component:     "oneverycorner-notification-ingest",
+					EventID:       normalized.EventID,
+					SourcePackage: normalized.SourcePackage,
+					Details:       err.Error(),
+				})
+			}
+		}()
+	} else if parsed {
+		slog.Info("Stale Bet365 notification parsed and skipped",
+			"event_id", normalized.EventID,
+			"received_at", event.ReceivedAt,
+			"raw", primaryRawMessage(normalized),
+		)
+	} else {
+		slog.Info("Bet365 notification ignored by OnEveryCorner parser",
+			"event_id", normalized.EventID,
+			"raw", primaryRawMessage(normalized),
+		)
+	}
+
+	writeNotificationIngestAccepted(w, map[string]any{
+		"status":            "accepted",
+		"route":             "oneverycorner",
+		"handled":           parsed,
+		"stale":             stale,
+		"clearNotification": parsed,
+		"notification":      normalized,
+	})
 }
 
 func normalizeDiscordNotification(event discordNotificationIngestEvent) normalizedDiscordNotification {
@@ -209,6 +280,7 @@ func normalizeDiscordNotification(event discordNotificationIngestEvent) normaliz
 	conversationTitle := firstNonEmptyString(event.Extras.ConversationTitle, event.Extras.TitleBig, event.Extras.Title)
 	normalized := normalizedDiscordNotification{
 		EventID:           notificationEventID(event),
+		StableID:          notificationStableID(event),
 		SourcePackage:     event.PackageName,
 		NotificationKey:   event.NotificationKey,
 		Tag:               event.Tag,
@@ -222,6 +294,7 @@ func normalizeDiscordNotification(event discordNotificationIngestEvent) normaliz
 		PictureBase64:     event.Extras.PictureBase64,
 		RawLink:           firstNonEmptyString(event.Extras.Link, event.Extras.URI, event.Extras.DataLink),
 		ReceivedAt:        event.ReceivedAt,
+		PostTime:          event.PostTime,
 		MarkRead:          event.MarkRead,
 		Actions:           event.Actions,
 	}
@@ -229,6 +302,38 @@ func normalizeDiscordNotification(event discordNotificationIngestEvent) normaliz
 		normalized.ConversationTitle = conversationTitle
 	}
 	return normalized
+}
+
+func oneveryCornerNotificationEvent(normalized normalizedDiscordNotification) oneverycorner.NotificationEvent {
+	receivedAt := time.Now()
+	if normalized.PostTime > 0 {
+		receivedAt = time.UnixMilli(normalized.PostTime).UTC()
+	} else if normalized.ReceivedAt > 0 {
+		receivedAt = time.UnixMilli(normalized.ReceivedAt).UTC()
+	}
+	return oneverycorner.NotificationEvent{
+		EventID:       normalized.EventID,
+		StableID:      normalized.StableID,
+		SourcePackage: normalized.SourcePackage,
+		Title:         normalized.Title,
+		Text:          normalized.Text,
+		BigText:       normalized.BigText,
+		TickerText:    normalized.TickerText,
+		Lines:         normalized.Lines,
+		ReceivedAt:    receivedAt,
+	}
+}
+
+func isBet365Package(pkg string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(pkg)), "bet365")
+}
+
+func isStaleOneEveryCornerNotification(receivedAt, now time.Time) bool {
+	if receivedAt.IsZero() {
+		return false
+	}
+	age := now.Sub(receivedAt)
+	return age > oneEveryCornerMaxNotificationAge || age < -oneEveryCornerMaxNotificationAge
 }
 
 func notificationCandidateLines(event discordNotificationIngestEvent) []string {
@@ -419,6 +524,27 @@ func notificationEventID(event discordNotificationIngestEvent) string {
 	_, _ = h.Write([]byte(fmt.Sprint(event.PostTime)))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(fmt.Sprint(event.ReceivedAt)))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(event.TickerText))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(event.Extras.ConversationTitle))
+	for _, line := range notificationCandidateLines(event) {
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(line))
+	}
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:12])
+}
+
+func notificationStableID(event discordNotificationIngestEvent) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(event.PackageName))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(event.NotificationKey))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(event.Tag))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(fmt.Sprint(event.PostTime)))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(event.TickerText))
 	_, _ = h.Write([]byte{0})

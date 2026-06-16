@@ -11,7 +11,7 @@ type Subscription struct {
 	DealType         string    `docstore:"dealType" validate:"required"` // The type of deals to post in this channel
 	AddedBy          string    `docstore:"addedBy"`
 	AddedAt          time.Time `docstore:"addedAt"`
-	SubscriptionType string    `docstore:"subscriptionType"` // values: "rfd", "ebay", "facebook"
+	SubscriptionType string    `docstore:"subscriptionType"` // values: "rfd", "ebay", "facebook", "memoryexpress", "bestbuy", "core", "oneverycorner"
 	City             string    `docstore:"city,omitempty"`
 	RadiusKm         int       `docstore:"radiusKm,omitempty"`
 	FilterBrands     []string  `docstore:"filterBrands,omitempty"`
@@ -32,3 +32,6 @@ func (s *Subscription) IsBestBuy() bool { return s.SubscriptionType == "bestbuy"
 
 // IsCore returns true if this is a Core subscription.
 func (s *Subscription) IsCore() bool { return s.SubscriptionType == "core" }
+
+// IsOnEveryCorner returns true if this is an OnEveryCorner subscription.
+func (s *Subscription) IsOnEveryCorner() bool { return s.SubscriptionType == "oneverycorner" }

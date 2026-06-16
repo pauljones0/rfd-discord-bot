@@ -549,16 +549,15 @@ func buildBestBuySoldCompQuery(product Product) string {
 			return query
 		}
 	}
-	query := cleanSoldQueryTitle(product.Name)
-	if len(meaningfulTokens(query)) >= 2 {
-		return query
-	}
-
 	if product.BrandName != "" && product.ModelNumber != "" {
 		return strings.TrimSpace(product.BrandName + " " + product.ModelNumber)
 	}
 	if product.ModelNumber != "" {
 		return strings.TrimSpace(product.ModelNumber)
+	}
+	query := cleanSoldQueryTitle(product.Name)
+	if len(meaningfulTokens(query)) >= 2 {
+		return query
 	}
 	return query
 }

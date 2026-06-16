@@ -673,6 +673,90 @@ func createCoreSystemAlertPayload(alert models.CoreSystemAlert) discordWebhookPa
 	}
 }
 
+// SendOnEveryCornerAlert sends a Bet365-derived corner or possible corner-goal prompt.
+func (c *Client) SendOnEveryCornerAlert(ctx context.Context, alert models.OnEveryCornerAlert, subs []models.Subscription) error {
+	embed := formatOnEveryCornerAlertEmbed(alert)
+	return c.sendEmbedToSubscriptions(ctx, "oneverycorner", alert.MatchName, embed, subs)
+}
+
+func formatOnEveryCornerAlertEmbed(alert models.OnEveryCornerAlert) discordEmbed {
+	occurredAt := alert.ReceivedAt
+	if occurredAt.IsZero() {
+		occurredAt = time.Now()
+	}
+
+	title := "CORNER AWARDED - manual X entry window"
+	color := colorWarmDeal
+	footer := "OnEveryCorner Alert"
+	if alert.Kind == models.OnEveryCornerAlertPossibleCornerGoal {
+		title = "POSSIBLE CORNER-KICK GOAL - post now"
+		color = colorHotDeal
+		footer = "OnEveryCorner Possible Goal"
+	}
+
+	matchName := strings.TrimSpace(alert.MatchName)
+	if matchName == "" {
+		matchName = "Unknown match"
+	}
+	tweetText := strings.TrimSpace(alert.TweetText)
+	if tweetText == "" {
+		tweetText = "@Enterprise #OnEveryCorner #Sweepstakes"
+	}
+	tweetURL := strings.TrimSpace(alert.TweetURL)
+	if tweetURL == "" {
+		tweetURL = "https://twitter.com/intent/tweet?text=%40Enterprise%20%23OnEveryCorner%20%23Sweepstakes"
+	}
+
+	var desc strings.Builder
+	desc.WriteString("Manual entry text:\n")
+	desc.WriteString("`")
+	desc.WriteString(tweetText)
+	desc.WriteString("`\n")
+	desc.WriteString("[Open X compose](")
+	desc.WriteString(tweetURL)
+	desc.WriteString(")")
+
+	fields := []discordEmbedField{
+		{Name: "Match", Value: discordLimit(matchName, 1024), Inline: true},
+		{Name: "Source", Value: discordLimit(firstNonEmptyForDiscord(alert.SourceApp, alert.SourcePackage, "Android"), 1024), Inline: true},
+		{Name: "Received", Value: occurredAt.UTC().Format(time.RFC3339), Inline: true},
+	}
+	if alert.Kind == models.OnEveryCornerAlertPossibleCornerGoal {
+		timing := "Goal notification followed a recent corner"
+		if alert.SecondsAfterCorner > 0 {
+			timing = fmt.Sprintf("Goal notification was %ds after the latest parsed corner.", alert.SecondsAfterCorner)
+		}
+		fields = append(fields, discordEmbedField{Name: "Timing", Value: timing})
+	}
+	if alert.RawText != "" {
+		fields = append(fields, discordEmbedField{Name: "Raw notification", Value: discordLimit(alert.RawText, 1024)})
+	}
+	if alert.EventID != "" {
+		fields = append(fields, discordEmbedField{Name: "Event", Value: discordLimit(alert.EventID, 1024), Inline: true})
+	}
+
+	return discordEmbed{
+		Title:       title,
+		Description: desc.String(),
+		Timestamp:   occurredAt.UTC().Format(time.RFC3339),
+		Color:       color,
+		Fields:      fields,
+		Footer: discordEmbedFooter{
+			Text: footer,
+		},
+	}
+}
+
+func firstNonEmptyForDiscord(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func formatCoreSystemAlertEmbed(alert models.CoreSystemAlert) discordEmbed {
 	title := strings.TrimSpace(alert.Title)
 	if title == "" {

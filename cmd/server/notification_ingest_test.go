@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/core"
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/oneverycorner"
 )
 
 type notificationTestStore struct {
@@ -26,10 +28,13 @@ func newNotificationTestServer() *Server {
 		catStats: make(map[string]*models.CoreCategoryStats),
 		subs: []models.Subscription{
 			{GuildID: "g1", ChannelID: "c1", SubscriptionType: "core", DealType: "core_alerts"},
+			{GuildID: "g1", ChannelID: "c2", SubscriptionType: dealtypes.SubscriptionOnEveryCorner, DealType: dealtypes.OnEveryCornerAlerts},
 		},
 	}
+	notifier := &notificationTestNotifier{}
 	return &Server{
-		coreProcessor: core.NewProcessor(store, &notificationTestNotifier{}, core.NewRateManager()),
+		coreProcessor: core.NewProcessor(store, notifier, core.NewRateManager()),
+		onEveryCorner: oneverycorner.NewProcessor(store, notifier),
 		coreIssueLast: make(map[string]time.Time),
 	}
 }
@@ -69,6 +74,7 @@ func (s *notificationTestStore) GetCoreRules(ctx context.Context) ([]models.Core
 
 type notificationTestNotifier struct {
 	systemAlerts []models.CoreSystemAlert
+	oecAlerts    []models.OnEveryCornerAlert
 }
 
 func (n *notificationTestNotifier) SendCoreAlert(ctx context.Context, alert models.CoreAlert, subs []models.Subscription) (map[string]string, error) {
@@ -81,6 +87,11 @@ func (n *notificationTestNotifier) UpdateCoreAlert(ctx context.Context, alert mo
 
 func (n *notificationTestNotifier) SendCoreSystemAlert(ctx context.Context, alert models.CoreSystemAlert, subs []models.Subscription) error {
 	n.systemAlerts = append(n.systemAlerts, alert)
+	return nil
+}
+
+func (n *notificationTestNotifier) SendOnEveryCornerAlert(ctx context.Context, alert models.OnEveryCornerAlert, subs []models.Subscription) error {
+	n.oecAlerts = append(n.oecAlerts, alert)
 	return nil
 }
 
@@ -169,6 +180,45 @@ func TestDiscordNotificationIngestHandlerTickerText(t *testing.T) {
 	}
 	if len(body.Notification.Lines) == 0 || body.Notification.Lines[0] != "$161.18 | Amazon COM | Magic: The Gathering | Avatar: The Last..." {
 		t.Fatalf("expected bigText to be the first candidate line, got: %#v", body.Notification.Lines)
+	}
+}
+
+func TestDiscordNotificationIngestHandlerRoutesBet365Corner(t *testing.T) {
+	srv := newNotificationTestServer()
+	req := httptest.NewRequest(http.MethodPost, "/ingest/discord-notification", strings.NewReader(`{
+		"type": "notification",
+		"receivedAt": 1780000000123,
+		"packageName": "com.bet365SportsCA.Bet365_Application",
+		"notificationKey": "0|com.bet365SportsCA.Bet365_Application|-832562125|null|10190",
+		"postTime": 1781578865947,
+		"extras": {
+			"title": "Corner",
+			"text": "Iran v New Zealand 90+4 min\n4th Iran - 5th Total"
+		}
+	}`))
+	rec := httptest.NewRecorder()
+
+	srv.DiscordNotificationIngestHandler(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	var body struct {
+		Status            string                        `json:"status"`
+		Route             string                        `json:"route"`
+		Handled           bool                          `json:"handled"`
+		ClearNotification bool                          `json:"clearNotification"`
+		Notification      normalizedDiscordNotification `json:"notification"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if body.Route != "oneverycorner" || !body.Handled || !body.ClearNotification {
+		t.Fatalf("unexpected body: %#v", body)
+	}
+	if body.Notification.StableID == "" {
+		t.Fatal("stable id should be populated")
 	}
 }
 

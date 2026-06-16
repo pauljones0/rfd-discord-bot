@@ -200,6 +200,28 @@ func main() {
 						},
 					},
 				},
+				// setup-oneverycorner subcommand
+				{
+					"name":        "setup-oneverycorner",
+					"description": "Subscribe this channel to Bet365 corner and possible corner-goal alerts.",
+					"type":        1, // SUB_COMMAND
+					"options": []map[string]interface{}{
+						{
+							"name":          "channel",
+							"description":   "The channel to publish alerts to.",
+							"type":          7,           // CHANNEL
+							"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
+							"required":      true,
+						},
+						{
+							"name":        "filter",
+							"description": "Which OnEveryCorner alerts to publish.",
+							"type":        3, // STRING
+							"required":    true,
+							"choices":     stringChoices(dealtypes.OnEveryCornerChoices),
+						},
+					},
+				},
 				// suggest-rules subcommand
 				{
 					"name":        "suggest-rules",

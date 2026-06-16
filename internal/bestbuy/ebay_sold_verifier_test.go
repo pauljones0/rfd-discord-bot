@@ -156,13 +156,28 @@ func TestBuildEbaySoldQueryUsesStructuredSpec(t *testing.T) {
 	observation := soldVerifierObservation(650)
 	query := buildEbaySoldQuery(observation)
 
-	for _, want := range []string{"Dell", "Precision", "5820", "32GB RAM", "P4000"} {
+	for _, want := range []string{"Dell", "Precision", "5820", "P4000"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("query %q does not contain %q", query, want)
 		}
 	}
+	if strings.Contains(query, "32GB RAM") {
+		t.Fatalf("relaxed query %q should not contain RAM", query)
+	}
 	if strings.Contains(strings.ToLower(query), "open box") {
 		t.Fatalf("query %q should not include condition filler", query)
+	}
+
+	queries := buildEbaySoldQueries(observation)
+	foundExact := false
+	for _, candidate := range queries {
+		if strings.Contains(candidate, "32GB RAM") {
+			foundExact = true
+			break
+		}
+	}
+	if !foundExact {
+		t.Fatalf("queries %#v should include exact RAM query", queries)
 	}
 }
 

@@ -3,6 +3,9 @@ package dev.swordswallower;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.util.HashSet;
+import java.util.Set;
+
 final class Prefs {
     static final String DEFAULT_TARGET_PACKAGE = "com.discord";
     private static final String DEFAULT_ACTION_REGEX =
@@ -32,6 +35,25 @@ final class Prefs {
 
     String getTargetPackage() {
         return prefs.getString(KEY_TARGET_PACKAGE, DEFAULT_TARGET_PACKAGE);
+    }
+
+    Set<String> getTargetPackages() {
+        String raw = getTargetPackage();
+        Set<String> packages = new HashSet<>();
+        for (String part : raw.split(",")) {
+            String clean = clean(part);
+            if (clean.length() > 0) {
+                packages.add(clean);
+            }
+        }
+        if (packages.isEmpty()) {
+            packages.add(DEFAULT_TARGET_PACKAGE);
+        }
+        return packages;
+    }
+
+    boolean isTargetPackage(String packageName) {
+        return getTargetPackages().contains(clean(packageName));
     }
 
     String getActionRegex() {

@@ -25,6 +25,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
+	"github.com/pauljones0/rfd-discord-bot/internal/oneverycorner"
 	"github.com/pauljones0/rfd-discord-bot/internal/paidbrowser"
 	"github.com/pauljones0/rfd-discord-bot/internal/processor"
 	"github.com/pauljones0/rfd-discord-bot/internal/reddit"
@@ -43,6 +44,7 @@ type Server struct {
 	bestbuyCompute      *bestbuy.ComputeProcessor
 	hwProcessor         *hardwareswap.Processor
 	coreProcessor       *core.Processor
+	onEveryCorner       *oneverycorner.Processor
 	aiClient            *ai.Client
 	store               processor.DealStore
 	db                  *storage.Client
@@ -208,6 +210,7 @@ func main() {
 	rates.StartAutoRefresh(schedulerCtx, 24*time.Hour)
 
 	coreProc := core.NewProcessor(store, n, rates)
+	onEveryCornerProc := oneverycorner.NewProcessor(store, n)
 
 	srv := &Server{
 		processor:           p,
@@ -218,6 +221,7 @@ func main() {
 		bestbuyCompute:      bbComputeProc,
 		hwProcessor:         hwProc,
 		coreProcessor:       coreProc,
+		onEveryCorner:       onEveryCornerProc,
 		aiClient:            aiClient,
 		store:               store,
 		db:                  store,

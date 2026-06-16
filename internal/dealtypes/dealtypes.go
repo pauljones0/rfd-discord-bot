@@ -13,6 +13,7 @@ const (
 	SubscriptionBestBuy       = "bestbuy"
 	SubscriptionHardwareSwap  = "hardwareswap"
 	SubscriptionCore          = "core"
+	SubscriptionOnEveryCorner = "oneverycorner"
 
 	RFDAll         = "rfd_all"
 	RFDTech        = "rfd_tech"
@@ -33,6 +34,8 @@ const (
 	BestBuyCompute = "bb_compute"
 
 	CoreAlerts = "core_alerts"
+
+	OnEveryCornerAlerts = "oneverycorner_alerts"
 )
 
 var RFDChoices = []Choice{
@@ -65,6 +68,10 @@ var CoreChoices = []Choice{
 	{Name: "Lowest or p25 deals", Value: CoreAlerts},
 }
 
+var OnEveryCornerChoices = []Choice{
+	{Name: "Corners and possible corner-goal alerts", Value: OnEveryCornerAlerts},
+}
+
 var RemoveChoices = []Choice{
 	{Name: "RFD", Value: SubscriptionRFD},
 	{Name: "eBay", Value: SubscriptionEbay},
@@ -72,6 +79,7 @@ var RemoveChoices = []Choice{
 	{Name: "Memory Express", Value: SubscriptionMemoryExpress},
 	{Name: "Best Buy", Value: SubscriptionBestBuy},
 	{Name: "Core", Value: SubscriptionCore},
+	{Name: "OnEveryCorner", Value: SubscriptionOnEveryCorner},
 }
 
 func ActiveRemoveChoices(facebookEnabled, hardwareSwapEnabled bool) []Choice {
@@ -87,7 +95,7 @@ func ActiveRemoveChoices(facebookEnabled, hardwareSwapEnabled bool) []Choice {
 
 func ValidSubscriptionType(value string, facebookEnabled, hardwareSwapEnabled bool) bool {
 	switch value {
-	case SubscriptionRFD, SubscriptionEbay, SubscriptionMemoryExpress, SubscriptionBestBuy, SubscriptionCore:
+	case SubscriptionRFD, SubscriptionEbay, SubscriptionMemoryExpress, SubscriptionBestBuy, SubscriptionCore, SubscriptionOnEveryCorner:
 		return true
 	case SubscriptionFacebook:
 		return facebookEnabled
@@ -116,6 +124,10 @@ func IsBestBuy(value string) bool {
 
 func IsCore(value string) bool {
 	return containsValue(CoreChoices, value)
+}
+
+func IsOnEveryCorner(value string) bool {
+	return containsValue(OnEveryCornerChoices, value)
 }
 
 func Label(value string) string {
@@ -152,6 +164,8 @@ func Label(value string) string {
 		return "Best Buy high-compute workstation/server outliers"
 	case CoreAlerts:
 		return "Core lowest or p25 deals"
+	case OnEveryCornerAlerts:
+		return "OnEveryCorner corner and possible corner-goal alerts"
 	default:
 		return value
 	}

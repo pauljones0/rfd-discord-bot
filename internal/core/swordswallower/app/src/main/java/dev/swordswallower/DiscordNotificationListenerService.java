@@ -51,7 +51,7 @@ public class DiscordNotificationListenerService extends NotificationListenerServ
     public void onNotificationPosted(StatusBarNotification sbn) {
         try {
             Prefs prefs = new Prefs(this);
-            if (!prefs.getTargetPackage().equals(sbn.getPackageName())) {
+            if (!prefs.isTargetPackage(sbn.getPackageName())) {
                 return;
             }
             Log.i(TAG, "Processing notification key=" + sbn.getKey());
@@ -84,7 +84,13 @@ public class DiscordNotificationListenerService extends NotificationListenerServ
                 Log.w(TAG, "Failed to add action result", e);
             }
 
-            EventForwarder.forward(this, event);
+            EventForwarder.forward(this, event, result -> {
+                if (shouldClearNotification(result)) {
+                    boolean cleared = cancelPostedNotification(sbn);
+                    Log.i(TAG, "Server requested notification clear key=" + sbn.getKey()
+                            + " cleared=" + cleared);
+                }
+            });
             Log.i(TAG, "Forwarded notification key=" + sbn.getKey()
                     + " markReadSent=" + actionResult.sent
                     + " markReadReason=" + actionResult.reason);
@@ -269,6 +275,13 @@ public class DiscordNotificationListenerService extends NotificationListenerServ
             Log.w(TAG, "Failed to cancel notification", e);
             return false;
         }
+    }
+
+    private boolean shouldClearNotification(EventForwarder.Result result) {
+        if (result == null || !result.accepted() || result.response == null) {
+            return false;
+        }
+        return result.response.optBoolean("clearNotification", false);
     }
 
     private void forwardListenerError(String stage, Exception error) {

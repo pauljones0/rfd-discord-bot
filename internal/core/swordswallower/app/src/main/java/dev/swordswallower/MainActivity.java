@@ -61,8 +61,8 @@ public class MainActivity extends Activity {
         root.addView(label("Optional shared secret"));
         root.addView(webhookSecret, fillWrap());
 
-        targetPackage = input("Target package", prefs.getTargetPackage(), InputType.TYPE_CLASS_TEXT);
-        root.addView(label("Target package"));
+        targetPackage = input("Target package(s), comma-separated", prefs.getTargetPackage(), InputType.TYPE_CLASS_TEXT);
+        root.addView(label("Target package(s), comma-separated"));
         root.addView(targetPackage, fillWrap());
 
         actionRegex = input("Action match regex", prefs.getActionRegex(), InputType.TYPE_CLASS_TEXT);

@@ -128,6 +128,17 @@ var channelFilterSetupSpecs = map[string]channelFilterSetupSpec{
 			return fmt.Sprintf("✅ Core deal alerts will be posted in <#%s> with filter **%s**.", channelID, dealTypeLabel(filter))
 		},
 	},
+	"oneverycorner": {
+		SubscriptionType: dealtypes.SubscriptionOnEveryCorner,
+		Validate:         dealtypes.IsOnEveryCorner,
+		InvalidMessage:   "Invalid OnEveryCorner filter type.",
+		Save: func(store Store, ctx context.Context, sub models.Subscription) error {
+			return store.SaveSubscription(ctx, sub)
+		},
+		SuccessMessage: func(channelID, filter string) string {
+			return fmt.Sprintf("✅ OnEveryCorner alerts will be posted in <#%s> with filter **%s**.", channelID, dealTypeLabel(filter))
+		},
+	},
 }
 
 func (h *Handler) handleChannelFilterSetup(w http.ResponseWriter, req interactionRequest, options []interactionOption, kind string) {
@@ -544,6 +555,8 @@ func (h *Handler) handleDealsCommand(w http.ResponseWriter, req interactionReque
 		h.handleSetupBestBuy(w, req, subCommand.Options)
 	case "setup-core":
 		h.handleSetupCore(w, req, subCommand.Options)
+	case "setup-oneverycorner":
+		h.handleSetupOnEveryCorner(w, req, subCommand.Options)
 	case "suggest-rules":
 		h.handleCoreSuggestRules(w, req)
 	case "remove":
@@ -684,6 +697,11 @@ func (h *Handler) handleSetupCore(w http.ResponseWriter, req interactionRequest,
 	h.handleChannelFilterSetup(w, req, options, "core")
 }
 
+// handleSetupOnEveryCorner handles /deals setup-oneverycorner channel:<#channel> filter:<type>
+func (h *Handler) handleSetupOnEveryCorner(w http.ResponseWriter, req interactionRequest, options []interactionOption) {
+	h.handleChannelFilterSetup(w, req, options, "oneverycorner")
+}
+
 type subscriptionRemoveSpec struct {
 	NoActiveMessage string
 	Prompt          string
@@ -741,6 +759,14 @@ func (h *Handler) subscriptionRemoveSpec(removeType string) (subscriptionRemoveS
 			},
 			BuildButtons: buildRemoveButtons,
 		},
+		"oneverycorner": {
+			NoActiveMessage: "No active **OnEveryCorner** subscriptions found for this server.",
+			Prompt:          "Here are the active **OnEveryCorner** subscriptions. Click to remove:",
+			List: func(h *Handler, ctx context.Context, guildID string) ([]models.Subscription, error) {
+				return h.listDealSubscriptions(ctx, guildID, func(sub models.Subscription) bool { return sub.IsOnEveryCorner() })
+			},
+			BuildButtons: buildRemoveButtons,
+		},
 	}
 	spec, ok := specs[removeType]
 	return spec, ok
@@ -772,19 +798,21 @@ func respondRemoveChoices(w http.ResponseWriter, prompt string, components []dis
 	writeJSON(w, res)
 }
 
-func splitDealSubscriptions(subs []models.Subscription) ([]models.Subscription, []models.Subscription, []models.Subscription) {
-	var rfdSubs, ebaySubs, coreSubs []models.Subscription
+func splitDealSubscriptions(subs []models.Subscription) ([]models.Subscription, []models.Subscription, []models.Subscription, []models.Subscription) {
+	var rfdSubs, ebaySubs, coreSubs, onEveryCornerSubs []models.Subscription
 	for _, sub := range subs {
 		switch {
 		case sub.IsEbay():
 			ebaySubs = append(ebaySubs, sub)
 		case sub.IsCore():
 			coreSubs = append(coreSubs, sub)
+		case sub.IsOnEveryCorner():
+			onEveryCornerSubs = append(onEveryCornerSubs, sub)
 		case sub.IsRFD():
 			rfdSubs = append(rfdSubs, sub)
 		}
 	}
-	return rfdSubs, ebaySubs, coreSubs
+	return rfdSubs, ebaySubs, coreSubs, onEveryCornerSubs
 }
 
 func appendDealListSection(msg *strings.Builder, title string, subs []models.Subscription) {
@@ -844,6 +872,7 @@ func appendCoreListSection(msg *strings.Builder, subs []models.Subscription) {
 	for _, sub := range subs {
 		msg.WriteString(fmt.Sprintf("  • <#%s> — %s\n", sub.ChannelID, dealTypeLabel(sub.DealType)))
 	}
+	msg.WriteString("\n")
 }
 
 func hasAnySubscription(groups ...[]models.Subscription) bool {
@@ -901,13 +930,13 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 		h.respondPrivateMessage(w, "Failed to retrieve subscriptions due to an internal error.")
 		return
 	}
-	rfdSubs, ebaySubs, coreSubs := splitDealSubscriptions(subs)
+	rfdSubs, ebaySubs, coreSubs, onEveryCornerSubs := splitDealSubscriptions(subs)
 
 	fbSubs := h.facebookSubscriptionsForList(ctx, req.GuildID)
 	meSubs := h.memExpressSubscriptionsForList(ctx, req.GuildID)
 	bbSubs := h.bestBuySubscriptionsForList(ctx, req.GuildID)
 
-	if !hasAnySubscription(rfdSubs, ebaySubs, fbSubs, meSubs, bbSubs, coreSubs) {
+	if !hasAnySubscription(rfdSubs, ebaySubs, fbSubs, meSubs, bbSubs, coreSubs, onEveryCornerSubs) {
 		h.respondPrivateMessage(w, "No active deal subscriptions for this server.")
 		return
 	}
@@ -920,6 +949,7 @@ func (h *Handler) handleDealsList(w http.ResponseWriter, req interactionRequest)
 	appendMemExpressListSection(&msg, meSubs)
 	appendBestBuyListSection(&msg, bbSubs)
 	appendCoreListSection(&msg, coreSubs)
+	appendDealListSection(&msg, "OnEveryCorner", onEveryCornerSubs)
 
 	h.respondPrivateMessage(w, msg.String())
 }

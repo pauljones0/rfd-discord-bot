@@ -1,7 +1,6 @@
 package bestbuy
 
 import (
-	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"context"
 	"fmt"
 	"net/url"
@@ -10,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/scrapebackend"
 )
 
