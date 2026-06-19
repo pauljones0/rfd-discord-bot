@@ -393,12 +393,22 @@ def main() -> int:
         page = browser.new_page()
 
         def refresh_metadata(force: bool = False) -> None:
-            nonlocal metadata, last_metadata_refresh
+            nonlocal metadata, last_metadata_refresh, last_poll_error
             now = time.monotonic()
             if not force and now - last_metadata_refresh < 30:
                 return
-            metadata = extract_metadata(page.content())
-            last_metadata_refresh = now
+            try:
+                if force or not metadata:
+                    page.locator("tr[data-match_id]").first.wait_for(state="attached", timeout=15000)
+                refreshed = extract_metadata(page.content())
+            except Exception as exc:
+                if now - last_poll_error >= 60:
+                    print(f"totalcorner metadata refresh failed: {exc!r}", file=sys.stderr, flush=True)
+                    last_poll_error = now
+                return
+            if refreshed:
+                metadata = refreshed
+                last_metadata_refresh = now
 
         def mark_totalcorner_healthy(status: int, source: str, suppressed_events: int = 0) -> None:
             nonlocal last_response, last_heartbeat, last_heartbeat_poll_count
@@ -556,7 +566,6 @@ def main() -> int:
             mark_totalcorner_problem(status, "active", str(result.get("error") or result.get("statusText") or ""))
 
         page.goto(args.url, wait_until="domcontentloaded", timeout=args.timeout_ms)
-        page.wait_for_timeout(3000)
         refresh_metadata(force=True)
 
         poll_seconds = max(0.5, args.poll_ms / 1000.0)
@@ -572,7 +581,6 @@ def main() -> int:
                 print("totalcorner monitor reloading page after unhealthy polling", file=sys.stderr, flush=True)
                 try:
                     page.reload(wait_until="domcontentloaded", timeout=args.timeout_ms)
-                    page.wait_for_timeout(3000)
                     refresh_metadata(force=True)
                 except Exception as exc:
                     emit_system_event(
@@ -606,7 +614,6 @@ def main() -> int:
                 last_response = time.monotonic()
                 try:
                     page.reload(wait_until="domcontentloaded", timeout=args.timeout_ms)
-                    page.wait_for_timeout(3000)
                     refresh_metadata(force=True)
                 except Exception as exc:
                     emit_system_event(
