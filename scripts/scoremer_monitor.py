@@ -503,6 +503,9 @@ def main() -> int:
                 )
                 last_poll_error = now
 
+        def active_poll_failure_is_covered_by_page_feed() -> bool:
+            return time.monotonic() - last_response < HEARTBEAT_SECONDS
+
         def process_scoremer_payload(body: str, source: str) -> None:
             nonlocal last_mt, suppress_next_delta
             try:
@@ -627,6 +630,9 @@ def main() -> int:
                 if now - token_wait_started >= HEARTBEAT_SECONDS and now - last_poll_error >= 60:
                     print("scoremer active poll waiting for csrf_token", file=sys.stderr, flush=True)
                     last_poll_error = now
+                if active_poll_failure_is_covered_by_page_feed():
+                    return
+                if now - token_wait_started >= HEARTBEAT_SECONDS:
                     mark_scoremer_problem(status, "active", "missing csrf_token")
                 return
             if now - last_poll_error >= 60:
@@ -636,6 +642,8 @@ def main() -> int:
                     flush=True,
                 )
                 last_poll_error = now
+            if active_poll_failure_is_covered_by_page_feed():
+                return
             mark_scoremer_problem(status, "active", str(result.get("error") or ""))
 
         page.on("request", remember_scoremer_request)
