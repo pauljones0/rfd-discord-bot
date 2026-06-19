@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
@@ -22,6 +23,11 @@ const (
 	minPriceObservationsForAlert = 10
 	minCategoryObservations      = 10
 	maxPriceHistoryEntries       = 100
+)
+
+const (
+	gpuBucketAlertWindow         = 24 * time.Hour
+	gpuBucketMeaningfulDropRatio = 0.90
 )
 
 // Store abstracts database operations for the Core processor.
@@ -196,7 +202,7 @@ func findMainCluster(clusters []priceCluster) priceCluster {
 var (
 	countryTagRegex  = regexp.MustCompile(`\s*[\x{2068}\x{2069}]*@[a-zA-Z0-9]+\s*[\x{2068}\x{2069}]*`)
 	urlRegex         = regexp.MustCompile(`https?://[^\s<>"']+`)
-	priceNumberRegex = regexp.MustCompile(`[0-9]+(?:[,\s][0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?`)
+	priceNumberRegex = regexp.MustCompile(`[0-9](?:[0-9]|[.,\s\x{00a0}\x{202f}])*`)
 	nameReplacer     = strings.NewReplacer(
 		"é", "e",
 		"í", "i",
@@ -291,13 +297,61 @@ func parsePrice(pricePart string) (float64, bool) {
 	if match == "" {
 		return 0, false
 	}
-	match = strings.ReplaceAll(match, ",", "")
-	match = strings.ReplaceAll(match, " ", "")
+	match = normalizePriceNumber(match)
+	if match == "" {
+		return 0, false
+	}
 	price, err := strconv.ParseFloat(match, 64)
 	if err != nil || price <= 0 {
 		return 0, false
 	}
 	return price, true
+}
+
+func normalizePriceNumber(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r == '\u00a0' || r == '\u202f' || unicode.IsSpace(r) {
+			return ' '
+		}
+		return r
+	}, value)
+	value = strings.ReplaceAll(strings.TrimSpace(value), " ", "")
+	if value == "" {
+		return ""
+	}
+
+	lastComma := strings.LastIndex(value, ",")
+	lastDot := strings.LastIndex(value, ".")
+	switch {
+	case lastComma >= 0 && lastDot >= 0:
+		if lastComma > lastDot {
+			value = strings.ReplaceAll(value, ".", "")
+			return strings.ReplaceAll(value, ",", ".")
+		}
+		return strings.ReplaceAll(value, ",", "")
+	case lastComma >= 0:
+		return normalizeSingleSeparatorPrice(value, ",")
+	case lastDot >= 0:
+		return normalizeSingleSeparatorPrice(value, ".")
+	default:
+		return value
+	}
+}
+
+func normalizeSingleSeparatorPrice(value, sep string) string {
+	parts := strings.Split(value, sep)
+	if len(parts) == 1 {
+		return value
+	}
+	last := parts[len(parts)-1]
+	if len(last) > 0 && len(last) <= 2 {
+		whole := strings.Join(parts[:len(parts)-1], "")
+		if whole == "" {
+			whole = "0"
+		}
+		return whole + "." + last
+	}
+	return strings.Join(parts, "")
 }
 
 func firstURL(text string) string {
@@ -404,18 +458,13 @@ func (p *Processor) ProcessNotificationBatch(ctx context.Context, batch DiscordN
 	var errs []error
 
 	primary, lines := primaryNotificationCandidate(batch.TickerText, batch.Lines)
-	if primary != "" {
-		if err := p.ProcessNotification(ctx, batch.ConversationTitle, primary, lines, batch.EventID+"-payload", batch.SourcePackage, fallbackLink, category, batch.PictureBase64); err != nil {
-			slog.Error("Failed to process notification payload", "event_id", batch.EventID, "error", err)
-			errs = append(errs, fmt.Errorf("payload: %w", err))
-		}
-	}
-
-	// Process each message in the batch
+	messageCount := 0
 	for i, msg := range batch.Messages {
+		msg.Text = strings.TrimSpace(msg.Text)
 		if msg.Text == "" {
 			continue
 		}
+		messageCount++
 		messageLink := fallbackLink
 		if strings.TrimSpace(msg.URI) != "" {
 			messageLink = strings.TrimSpace(msg.URI)
@@ -424,6 +473,13 @@ func (p *Processor) ProcessNotificationBatch(ctx context.Context, batch DiscordN
 		if err := p.ProcessNotification(ctx, batch.ConversationTitle, msg.Text, nil, subEventID, batch.SourcePackage, messageLink, category, batch.PictureBase64); err != nil {
 			slog.Error("Failed to process grouped message", "subEventID", subEventID, "error", err)
 			errs = append(errs, fmt.Errorf("message %d: %w", i, err))
+		}
+	}
+
+	if primary != "" && messageCount == 0 {
+		if err := p.ProcessNotification(ctx, batch.ConversationTitle, primary, lines, batch.EventID+"-payload", batch.SourcePackage, fallbackLink, category, batch.PictureBase64); err != nil {
+			slog.Error("Failed to process notification payload", "event_id", batch.EventID, "error", err)
+			errs = append(errs, fmt.Errorf("payload: %w", err))
 		}
 	}
 
@@ -613,12 +669,17 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 		return nil
 	}
 
-	coreSubs, err := p.coreSubscriptions(ctx)
+	if suppressed, recentPrice, recentAge := shouldSuppressRecentGPUBucketAlert(normName, history, priceCAD, time.Now()); suppressed {
+		slog.Info("Core bot: Suppressed repeated GPU bucket alert", "normalized", normName, "price_cad", priceCAD, "recent_alert_price_cad", recentPrice, "recent_alert_age", recentAge.String())
+		return nil
+	}
+
+	coreSubs, err := p.coreDealSubscriptions(ctx, evaluation.AnomalyType, priceCAD, evaluation.PriorMin)
 	if err != nil {
 		return err
 	}
 	if len(coreSubs) == 0 {
-		slog.Info("Core bot: No active subscriptions for core alerts")
+		slog.Info("Core bot: No active subscriptions for core alerts", "anomaly_type", evaluation.AnomalyType, "price_cad", priceCAD, "prior_min_cad", evaluation.PriorMin)
 		return nil
 	}
 
@@ -738,6 +799,50 @@ func (p *Processor) coreSubscriptions(ctx context.Context) ([]models.Subscriptio
 		}
 	}
 	return coreSubs, nil
+}
+
+func (p *Processor) coreDealSubscriptions(ctx context.Context, anomalyType string, priceCAD, priorMin float64) ([]models.Subscription, error) {
+	coreSubs, err := p.coreSubscriptions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	eligible := make([]models.Subscription, 0, len(coreSubs))
+	for _, sub := range coreSubs {
+		if dealtypes.CoreEligible(sub.DealType, anomalyType, priceCAD, priorMin) {
+			eligible = append(eligible, sub)
+		}
+	}
+	return eligible, nil
+}
+
+func shouldSuppressRecentGPUBucketAlert(normName string, history *models.CorePriceHistory, priceCAD float64, now time.Time) (bool, float64, time.Duration) {
+	if !strings.HasPrefix(normName, "gpu ") || history == nil || priceCAD <= 0 {
+		return false, 0, 0
+	}
+
+	var bestRecentPrice float64
+	var bestRecentAge time.Duration
+	for _, alert := range history.RecentAlerts {
+		if alert.FiredAt.IsZero() || alert.PriceCAD <= 0 {
+			continue
+		}
+		age := now.Sub(alert.FiredAt)
+		if age < 0 {
+			age = 0
+		}
+		if age > gpuBucketAlertWindow {
+			continue
+		}
+		if bestRecentPrice == 0 || alert.PriceCAD < bestRecentPrice {
+			bestRecentPrice = alert.PriceCAD
+			bestRecentAge = age
+		}
+	}
+	if bestRecentPrice == 0 {
+		return false, 0, 0
+	}
+
+	return priceCAD > bestRecentPrice*gpuBucketMeaningfulDropRatio, bestRecentPrice, bestRecentAge
 }
 
 func (p *Processor) productLock(normName string) *sync.Mutex {
@@ -975,6 +1080,14 @@ func NormalizeProductName(name string, rules []models.CoreRule, category string)
 	compiled, _ := compileRules(rules)
 	norm := normalizeProductNameWithRules(name, compiled)
 
+	// Special handling for GPUs must run before RAM. GPU titles often include
+	// phrases like "8GB GDDR7 RAM", which should not be treated as system RAM.
+	if isGPUCategory(category) || (isGPUProduct(norm) && !isRAMCategory(category)) {
+		if gpuSpec := extractGPUSpecs(norm, category); gpuSpec != "" {
+			return gpuSpec
+		}
+	}
+
 	// Special handling for RAM
 	if isRAMCategory(category) || isRAMProduct(norm) {
 		if ramSpec := extractRAMSpecs(norm); ramSpec != "" {
@@ -1012,6 +1125,250 @@ func normalizeProductNameWithRules(name string, rules []compiledRule) string {
 
 	words := strings.Fields(name)
 	return strings.Join(words, " ")
+}
+
+func isGPUCategory(category string) bool {
+	cat := strings.ToLower(category)
+	cat = strings.ReplaceAll(cat, "-", "")
+	return strings.Contains(cat, "nvidiartx") || strings.Contains(cat, "amdrx") || extractGPUModelOK(cat)
+}
+
+func isGPUProduct(name string) bool {
+	return extractGPUModelOK(name)
+}
+
+var (
+	gpuRTXModelRegex     = regexp.MustCompile(`\brtx\s*(?:™\s*)?(\d{4})\s*(ti)?\b|\brtx(\d{4})(ti)?\b`)
+	gpuRXModelRegex      = regexp.MustCompile(`\bradeon\s*rx\s*(\d{4})\s*(xt)?\b|\brx\s*(\d{4})\s*(xt)?\b|\brx(\d{4})(xt)?\b`)
+	gpuGDDRVRAMRegex     = regexp.MustCompile(`\b(4|6|8|10|12|16|20|24|32|48)\s*g(?:b|o|d)?\s+gddr\d?\b|\bgddr\d?\s*(4|6|8|10|12|16|20|24|32|48)\s*g(?:b|o|d)?\b`)
+	gpuVRAMRegex         = regexp.MustCompile(`\b(4|6|8|10|12|16|20|24|32|48)\s*g(?:b|o|d)?\b`)
+	gpuMBVRAMRegex       = regexp.MustCompile(`\b(8192|16384|24576|32768|49152)\s*mb\b|\b(8|16|24|32|48)[.,](?:192|384|576|768)\s*mb\b`)
+	gpuPartVRAMRegex     = regexp.MustCompile(`\bo(4|6|8|10|12|16|20|24|32|48)g\b`)
+	gpuTrailingVRAMRegex = regexp.MustCompile(`\b(4|6|8|10|12|16|20|24|32|48)\b\s*$`)
+)
+
+func extractGPUModelOK(value string) bool {
+	_, _, ok := extractGPUModel(value)
+	return ok
+}
+
+func extractGPUSpecs(name, category string) string {
+	categoryFamily, categoryModel, categoryOK := extractGPUModel(category)
+	family, model, ok := extractGPUModel(name)
+	if !ok {
+		family, model, ok = categoryFamily, categoryModel, categoryOK
+	}
+	if !ok {
+		return ""
+	}
+	if categoryOK && categoryFamily == family && isMoreSpecificGPUModel(categoryModel, model) {
+		model = categoryModel
+	}
+
+	modelKey := family + " " + model
+	vram := extractGPUVRAM(name)
+	vram = normalizeGPUVRAMForModel(modelKey, vram)
+	if vram == "" {
+		vram = "unknown-vram"
+	}
+
+	return "gpu " + modelKey + " " + vram
+}
+
+func isMoreSpecificGPUModel(candidate, current string) bool {
+	if candidate == "" || current == "" || candidate == current {
+		return false
+	}
+	return strings.HasPrefix(candidate, current+" ")
+}
+
+func extractGPUModel(value string) (family, model string, ok bool) {
+	if model, ok := extractRTXModel(value); ok {
+		return "rtx", model, true
+	}
+	if model, ok := extractRXModel(value); ok {
+		return "rx", model, true
+	}
+	return "", "", false
+}
+
+func extractRTXModel(value string) (string, bool) {
+	value = strings.ToLower(value)
+	match := gpuRTXModelRegex.FindStringSubmatch(value)
+	if len(match) == 0 {
+		return "", false
+	}
+
+	model := match[1]
+	ti := match[2]
+	if model == "" {
+		model = match[3]
+		ti = match[4]
+	}
+	if model == "" {
+		return "", false
+	}
+	if ti != "" {
+		return model + " ti", true
+	}
+	return model, true
+}
+
+func extractRXModel(value string) (string, bool) {
+	value = strings.ToLower(value)
+	value = strings.NewReplacer("-", " ", "_", " ").Replace(value)
+	match := gpuRXModelRegex.FindStringSubmatch(value)
+	if len(match) == 0 {
+		return "", false
+	}
+
+	model := match[1]
+	xt := match[2]
+	if model == "" {
+		model = match[3]
+		xt = match[4]
+	}
+	if model == "" {
+		model = match[5]
+		xt = match[6]
+	}
+	if model == "" {
+		return "", false
+	}
+	if xt != "" {
+		return model + " xt", true
+	}
+	return model, true
+}
+
+func extractGPUVRAM(name string) string {
+	if match := gpuPartVRAMRegex.FindStringSubmatch(name); len(match) > 0 {
+		return match[1] + "gb"
+	}
+	if match := gpuMBVRAMRegex.FindStringSubmatch(name); len(match) > 0 {
+		if match[1] != "" {
+			switch match[1] {
+			case "8192":
+				return "8gb"
+			case "16384":
+				return "16gb"
+			case "24576":
+				return "24gb"
+			case "32768":
+				return "32gb"
+			case "49152":
+				return "48gb"
+			}
+		}
+		return match[2] + "gb"
+	}
+	if match := gpuGDDRVRAMRegex.FindStringSubmatch(name); len(match) > 0 {
+		if match[1] != "" {
+			return match[1] + "gb"
+		}
+		return match[2] + "gb"
+	}
+
+	window := gpuModelWindow(name)
+	if window == "" {
+		return ""
+	}
+	for _, loc := range gpuVRAMRegex.FindAllStringSubmatchIndex(window, -1) {
+		if len(loc) < 4 || loc[2] < 0 || loc[3] < 0 {
+			continue
+		}
+		after := strings.TrimSpace(window[loc[1]:])
+		if strings.HasPrefix(after, "ram") {
+			continue
+		}
+		return window[loc[2]:loc[3]] + "gb"
+	}
+	if match := gpuTrailingVRAMRegex.FindStringSubmatch(window); len(match) > 0 {
+		return match[1] + "gb"
+	}
+	return ""
+}
+
+func gpuModelWindow(name string) string {
+	loc := gpuRTXModelRegex.FindStringIndex(name)
+	if len(loc) == 0 {
+		loc = gpuRXModelRegex.FindStringIndex(name)
+	}
+	if len(loc) == 0 {
+		return ""
+	}
+	end := loc[1] + 80
+	if end > len(name) {
+		end = len(name)
+	}
+	return name[loc[0]:end]
+}
+
+func defaultGPUVRAM(model string) string {
+	switch model {
+	case "rtx 4090":
+		return "24gb"
+	case "rtx 5060":
+		return "8gb"
+	case "rtx 5070":
+		return "12gb"
+	case "rtx 5070 ti":
+		return "16gb"
+	case "rtx 5080":
+		return "16gb"
+	case "rtx 5090":
+		return "32gb"
+	case "rx 9060 xt":
+		return ""
+	case "rx 9070":
+		return "16gb"
+	case "rx 9070 xt":
+		return "16gb"
+	default:
+		return ""
+	}
+}
+
+func normalizeGPUVRAMForModel(model, extracted string) string {
+	allowed := allowedGPUVRAM(model)
+	if len(allowed) == 0 {
+		return extracted
+	}
+	if extracted != "" {
+		for _, value := range allowed {
+			if extracted == value {
+				return extracted
+			}
+		}
+	}
+	return defaultGPUVRAM(model)
+}
+
+func allowedGPUVRAM(model string) []string {
+	switch model {
+	case "rtx 4090":
+		return []string{"24gb"}
+	case "rtx 5060":
+		return []string{"8gb"}
+	case "rtx 5060 ti":
+		return []string{"8gb", "16gb"}
+	case "rtx 5070":
+		return []string{"12gb"}
+	case "rtx 5070 ti":
+		return []string{"16gb"}
+	case "rtx 5080":
+		return []string{"16gb"}
+	case "rtx 5090":
+		return []string{"32gb"}
+	case "rx 9060 xt":
+		return []string{"8gb", "16gb"}
+	case "rx 9070":
+		return []string{"16gb"}
+	case "rx 9070 xt":
+		return []string{"16gb"}
+	default:
+		return nil
+	}
 }
 
 func isRAMCategory(category string) bool {

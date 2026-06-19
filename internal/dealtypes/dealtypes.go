@@ -33,10 +33,15 @@ const (
 	BestBuyHot     = "bb_hot"
 	BestBuyCompute = "bb_compute"
 
-	CoreAlerts = "core_alerts"
+	CoreAlerts      = "core_alerts"
+	CorePriceErrors = "core_price_errors"
+	CoreSteals      = "core_steals"
 
-	OnEveryCornerAlerts = "oneverycorner_alerts"
+	OnEveryCornerAlerts         = "oneverycorner_alerts"
+	OnEveryCornerPotentialGoals = "oneverycorner_potential_goals"
 )
+
+const CorePriceErrorATLRatio = 0.90
 
 var RFDChoices = []Choice{
 	{Name: "All deals", Value: RFDAll},
@@ -65,11 +70,14 @@ var BestBuyChoices = []Choice{
 }
 
 var CoreChoices = []Choice{
-	{Name: "Lowest or p25 deals", Value: CoreAlerts},
+	{Name: "All low-price anomalies", Value: CoreAlerts},
+	{Name: "Price errors only", Value: CorePriceErrors},
+	{Name: "Steals only", Value: CoreSteals},
 }
 
 var OnEveryCornerChoices = []Choice{
 	{Name: "Corners and possible corner-goal alerts", Value: OnEveryCornerAlerts},
+	{Name: "Potential corner-goal alerts only", Value: OnEveryCornerPotentialGoals},
 }
 
 var RemoveChoices = []Choice{
@@ -163,9 +171,15 @@ func Label(value string) string {
 	case BestBuyCompute:
 		return "Best Buy high-compute workstation/server outliers"
 	case CoreAlerts:
-		return "Core lowest or p25 deals"
+		return "Core all low-price anomalies"
+	case CorePriceErrors:
+		return "Core price errors only"
+	case CoreSteals:
+		return "Core steals only"
 	case OnEveryCornerAlerts:
 		return "OnEveryCorner corner and possible corner-goal alerts"
+	case OnEveryCornerPotentialGoals:
+		return "OnEveryCorner potential corner-goal alerts only"
 	default:
 		return value
 	}
@@ -222,6 +236,19 @@ func BestBuyEligible(dealType string, isWarm, isLavaHot bool) bool {
 		return isLavaHot
 	case BestBuyCompute:
 		return false
+	default:
+		return false
+	}
+}
+
+func CoreEligible(dealType, anomalyType string, priceCAD, priorMin float64) bool {
+	switch dealType {
+	case "", CoreAlerts:
+		return true
+	case CorePriceErrors:
+		return anomalyType == "Price Error / Used" && priorMin > 0 && priceCAD <= priorMin*CorePriceErrorATLRatio
+	case CoreSteals:
+		return anomalyType == "Steal"
 	default:
 		return false
 	}

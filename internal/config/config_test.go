@@ -91,6 +91,15 @@ func TestLoad(t *testing.T) {
 	if cfg.LocalSchedulerEnabled {
 		t.Errorf("Expected local scheduler to be disabled by default")
 	}
+	if cfg.OnEveryCornerScoremerEnabled {
+		t.Errorf("Expected OnEveryCorner Scoremer monitor to be disabled by default")
+	}
+	if cfg.OnEveryCornerScoremerURL != "https://lv.scoremer.com/" {
+		t.Errorf("Expected default Scoremer URL, got %q", cfg.OnEveryCornerScoremerURL)
+	}
+	if cfg.OnEveryCornerScoremerPollInterval != time.Second || !reflect.DeepEqual(cfg.OnEveryCornerScoremerLeagueIDs, []string{"3559"}) {
+		t.Errorf("Expected default Scoremer interval/leagues 1s/[3559], got %s/%v", cfg.OnEveryCornerScoremerPollInterval, cfg.OnEveryCornerScoremerLeagueIDs)
+	}
 	if cfg.MaxStoredDeals != 500 {
 		t.Errorf("Expected default MaxStoredDeals 500, got %d", cfg.MaxStoredDeals)
 	}
@@ -231,6 +240,10 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	t.Setenv("BESTBUY_SOLD_COMP_PAID_BROWSER_ENABLED", "true")
 	t.Setenv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_RUN", "1")
 	t.Setenv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_DAY", "2")
+	t.Setenv("ONEVERYCORNER_SCOREMER_ENABLED", "true")
+	t.Setenv("ONEVERYCORNER_SCOREMER_URL", "https://example.test/live")
+	t.Setenv("ONEVERYCORNER_SCOREMER_POLL_INTERVAL", "3s")
+	t.Setenv("ONEVERYCORNER_SCOREMER_LEAGUE_IDS", "3559, 1234")
 
 	cfg, err := Load()
 	if err != nil {
@@ -284,6 +297,15 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	}
 	if cfg.BestBuyComputeSoldPaidMaxPerRun != 1 || cfg.BestBuyComputeSoldPaidMaxPerDay != 2 {
 		t.Fatalf("BestBuyComputeSoldPaid caps = %d/%d, want 1/2", cfg.BestBuyComputeSoldPaidMaxPerRun, cfg.BestBuyComputeSoldPaidMaxPerDay)
+	}
+	if !cfg.OnEveryCornerScoremerEnabled {
+		t.Fatal("OnEveryCornerScoremerEnabled = false, want true")
+	}
+	if cfg.OnEveryCornerScoremerURL != "https://example.test/live" || cfg.OnEveryCornerScoremerPollInterval != 3*time.Second {
+		t.Fatalf("Scoremer URL/interval = %q/%s, want example/3s", cfg.OnEveryCornerScoremerURL, cfg.OnEveryCornerScoremerPollInterval)
+	}
+	if !reflect.DeepEqual(cfg.OnEveryCornerScoremerLeagueIDs, []string{"3559", "1234"}) {
+		t.Fatalf("Scoremer league IDs = %v, want [3559 1234]", cfg.OnEveryCornerScoremerLeagueIDs)
 	}
 }
 

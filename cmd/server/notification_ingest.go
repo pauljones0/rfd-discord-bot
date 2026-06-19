@@ -13,13 +13,11 @@ import (
 
 	"github.com/pauljones0/rfd-discord-bot/internal/core"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
-	"github.com/pauljones0/rfd-discord-bot/internal/oneverycorner"
 )
 
 const (
 	discordNotificationIngestMaxBytes = 128 * 1024
 	discordPackageName                = "com.discord"
-	oneEveryCornerMaxNotificationAge  = 3 * time.Minute
 )
 
 type discordNotificationIngestEvent struct {
@@ -129,8 +127,6 @@ func (s *Server) DiscordNotificationIngestHandler(w http.ResponseWriter, r *http
 	switch {
 	case normalized.SourcePackage == discordPackageName:
 		s.handleDiscordNotification(w, r, normalized)
-	case isBet365Package(normalized.SourcePackage):
-		s.handleBet365Notification(w, normalized)
 	default:
 		slog.Info("Notification ignored for unsupported package",
 			"event_id", normalized.EventID,
@@ -218,54 +214,6 @@ func (s *Server) handleDiscordNotification(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-func (s *Server) handleBet365Notification(w http.ResponseWriter, normalized normalizedDiscordNotification) {
-	if s.onEveryCorner == nil {
-		http.Error(w, "oneverycorner processor not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	event := oneveryCornerNotificationEvent(normalized)
-	_, parsed := oneverycorner.ParseNotification(event)
-	stale := parsed && isStaleOneEveryCornerNotification(event.ReceivedAt, time.Now())
-	if parsed && !stale {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := s.onEveryCorner.ProcessNotification(ctx, event); err != nil {
-				slog.Error("OnEveryCorner notification processing failed", "event_id", normalized.EventID, "error", err)
-				s.reportCoreSystemIssue("oneverycorner:"+normalized.EventID, models.CoreSystemAlert{
-					Title:         "OnEveryCorner notification processing failed",
-					Severity:      "error",
-					Component:     "oneverycorner-notification-ingest",
-					EventID:       normalized.EventID,
-					SourcePackage: normalized.SourcePackage,
-					Details:       err.Error(),
-				})
-			}
-		}()
-	} else if parsed {
-		slog.Info("Stale Bet365 notification parsed and skipped",
-			"event_id", normalized.EventID,
-			"received_at", event.ReceivedAt,
-			"raw", primaryRawMessage(normalized),
-		)
-	} else {
-		slog.Info("Bet365 notification ignored by OnEveryCorner parser",
-			"event_id", normalized.EventID,
-			"raw", primaryRawMessage(normalized),
-		)
-	}
-
-	writeNotificationIngestAccepted(w, map[string]any{
-		"status":            "accepted",
-		"route":             "oneverycorner",
-		"handled":           parsed,
-		"stale":             stale,
-		"clearNotification": parsed,
-		"notification":      normalized,
-	})
-}
-
 func normalizeDiscordNotification(event discordNotificationIngestEvent) normalizedDiscordNotification {
 	var coreMsgs []core.DiscordNotificationMsg
 	for _, m := range event.Extras.Messages {
@@ -302,38 +250,6 @@ func normalizeDiscordNotification(event discordNotificationIngestEvent) normaliz
 		normalized.ConversationTitle = conversationTitle
 	}
 	return normalized
-}
-
-func oneveryCornerNotificationEvent(normalized normalizedDiscordNotification) oneverycorner.NotificationEvent {
-	receivedAt := time.Now()
-	if normalized.PostTime > 0 {
-		receivedAt = time.UnixMilli(normalized.PostTime).UTC()
-	} else if normalized.ReceivedAt > 0 {
-		receivedAt = time.UnixMilli(normalized.ReceivedAt).UTC()
-	}
-	return oneverycorner.NotificationEvent{
-		EventID:       normalized.EventID,
-		StableID:      normalized.StableID,
-		SourcePackage: normalized.SourcePackage,
-		Title:         normalized.Title,
-		Text:          normalized.Text,
-		BigText:       normalized.BigText,
-		TickerText:    normalized.TickerText,
-		Lines:         normalized.Lines,
-		ReceivedAt:    receivedAt,
-	}
-}
-
-func isBet365Package(pkg string) bool {
-	return strings.Contains(strings.ToLower(strings.TrimSpace(pkg)), "bet365")
-}
-
-func isStaleOneEveryCornerNotification(receivedAt, now time.Time) bool {
-	if receivedAt.IsZero() {
-		return false
-	}
-	age := now.Sub(receivedAt)
-	return age > oneEveryCornerMaxNotificationAge || age < -oneEveryCornerMaxNotificationAge
 }
 
 func notificationCandidateLines(event discordNotificationIngestEvent) []string {

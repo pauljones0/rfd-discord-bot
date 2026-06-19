@@ -31,6 +31,20 @@ func (s *Server) StartLocalScheduler(ctx context.Context, cfg *config.Config) {
 	if cfg.BestBuyComputeEnabled && s.bestbuyCompute != nil {
 		s.startScheduledLoop(ctx, "bestbuy_compute", cfg.BestBuyComputePollInterval, 20*time.Minute, s.bestbuyComputeSem, s.bestbuyCompute.ProcessComputeOutliers)
 	}
+	if cfg.OnEveryCornerScoremerEnabled && s.onEveryCornerScoremer != nil {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			slog.Info("OnEveryCorner Scoremer monitor starting",
+				"url", cfg.OnEveryCornerScoremerURL,
+				"league_ids", cfg.OnEveryCornerScoremerLeagueIDs,
+				"poll_interval", cfg.OnEveryCornerScoremerPollInterval.String(),
+			)
+			if err := s.onEveryCornerScoremer.Run(ctx); err != nil && ctx.Err() == nil {
+				slog.Error("OnEveryCorner Scoremer monitor stopped", "error", err)
+			}
+		}()
+	}
 
 	// Prune core raw notifications daily
 	if s.db != nil {

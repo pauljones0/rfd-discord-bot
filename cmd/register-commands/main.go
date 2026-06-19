@@ -203,7 +203,7 @@ func main() {
 				// setup-oneverycorner subcommand
 				{
 					"name":        "setup-oneverycorner",
-					"description": "Subscribe this channel to Bet365 corner and possible corner-goal alerts.",
+					"description": "Subscribe this channel to OnEveryCorner alerts.",
 					"type":        1, // SUB_COMMAND
 					"options": []map[string]interface{}{
 						{

@@ -1,0 +1,26 @@
+[
+    {
+        "data": {
+            "addedAt": "2026-06-16T05:33:42.669736+00:00",
+            "addedBy": "codex",
+            "guildID": "1446739226149392488",
+            "dealType": "oneverycorner_alerts",
+            "channelID": "1509056812186468462",
+            "channelName": "core",
+            "subscriptionType": "oneverycorner"
+        },
+        "doc_id": "1446739226149392488_1509056812186468462_oneverycorner_oneverycorner_alerts"
+    },
+    {
+        "data": {
+            "addedAt": "2026-06-16T07:00:37.680981303Z",
+            "addedBy": "pauljones0",
+            "guildID": "1446739226149392488",
+            "dealType": "oneverycorner_alerts",
+            "channelID": "1516336483513143307",
+            "channelName": "kia",
+            "subscriptionType": "oneverycorner"
+        },
+        "doc_id": "1446739226149392488_1516336483513143307_oneverycorner_oneverycorner_alerts"
+    }
+]

@@ -3,17 +3,22 @@ package notifier
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -22,6 +27,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/oneverycorner"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
@@ -39,20 +45,50 @@ const (
 	maxRetries = 3
 
 	discordAPIBase = "https://discord.com/api/v10"
+
+	xPostIssueRepeatInterval = 10 * time.Minute
 )
 
 type Client struct {
 	botToken    string
 	client      *http.Client
 	rateLimiter *rate.Limiter
+
+	// X credentials (optional). Supports up to two accounts.
+	// Goal alerts are posted to X accounts (random order, 5-10s apart).
+	xAccounts      []xAccount
+	xPostIssueMu   sync.Mutex
+	xPostIssueLast map[string]time.Time
 }
 
-func New(botToken string) *Client {
-	return &Client{
-		botToken:    botToken,
-		client:      &http.Client{Timeout: 10 * time.Second},
-		rateLimiter: rate.NewLimiter(rate.Every(60*time.Second/50), 1), // Discord allows 50 req/sec globally, let's play it safe
+type xAccount struct {
+	apiKey, apiKeySecret, accessToken, accessTokenSecret string
+}
+
+func New(botToken string, xCreds ...string) *Client {
+	c := &Client{
+		botToken:       botToken,
+		client:         &http.Client{Timeout: 10 * time.Second},
+		rateLimiter:    rate.NewLimiter(rate.Every(60*time.Second/50), 1), // Discord allows 50 req/sec globally, let's play it safe
+		xPostIssueLast: make(map[string]time.Time),
 	}
+	if len(xCreds) >= 4 && (xCreds[0] != "" || xCreds[2] != "") {
+		c.xAccounts = append(c.xAccounts, xAccount{
+			apiKey:            xCreds[0],
+			apiKeySecret:      xCreds[1],
+			accessToken:       xCreds[2],
+			accessTokenSecret: xCreds[3],
+		})
+	}
+	if len(xCreds) >= 8 && (xCreds[4] != "" || xCreds[6] != "") {
+		c.xAccounts = append(c.xAccounts, xAccount{
+			apiKey:            xCreds[4],
+			apiKeySecret:      xCreds[5],
+			accessToken:       xCreds[6],
+			accessTokenSecret: xCreds[7],
+		})
+	}
+	return c
 }
 
 // Send sends a new deal notification to all subscribed channels.
@@ -107,12 +143,17 @@ func (c *Client) Update(ctx context.Context, deal models.DealInfo) error {
 
 // Internal structures
 type discordWebhookPayload struct {
-	Content     string              `json:"content"`
-	Embeds      []discordEmbed      `json:"embeds"`
-	Attachments []discordAttachment `json:"attachments,omitempty"`
+	Content         string                  `json:"content"`
+	Embeds          []discordEmbed          `json:"embeds"`
+	Attachments     []discordAttachment     `json:"attachments,omitempty"`
+	AllowedMentions *discordAllowedMentions `json:"allowed_mentions,omitempty"`
 
 	// Internal field for multipart payload
 	ImageBase64 string `json:"-"`
+}
+
+type discordAllowedMentions struct {
+	Parse []string `json:"parse"`
 }
 
 type discordAttachment struct {
@@ -435,13 +476,15 @@ func (c *Client) IsHot(deal models.DealInfo) bool {
 }
 
 func (c *Client) sendEmbedToSubscriptions(ctx context.Context, processor, title string, embed discordEmbed, subs []models.Subscription) error {
-	if c.botToken == "" {
-		return nil
-	}
-
-	payload := discordWebhookPayload{
+	return c.sendPayloadToSubscriptions(ctx, processor, title, discordWebhookPayload{
 		Content: "",
 		Embeds:  []discordEmbed{embed},
+	}, subs)
+}
+
+func (c *Client) sendPayloadToSubscriptions(ctx context.Context, processor, title string, payload discordWebhookPayload, subs []models.Subscription) error {
+	if c.botToken == "" {
+		return nil
 	}
 
 	for i, sub := range subs {
@@ -673,78 +716,417 @@ func createCoreSystemAlertPayload(alert models.CoreSystemAlert) discordWebhookPa
 	}
 }
 
-// SendOnEveryCornerAlert sends a Bet365-derived corner or possible corner-goal prompt.
+// SendOnEveryCornerAlert sends a corner or possible corner-goal prompt.
 func (c *Client) SendOnEveryCornerAlert(ctx context.Context, alert models.OnEveryCornerAlert, subs []models.Subscription) error {
-	embed := formatOnEveryCornerAlertEmbed(alert)
-	return c.sendEmbedToSubscriptions(ctx, "oneverycorner", alert.MatchName, embed, subs)
+	if alert.Kind == models.OnEveryCornerAlertPossibleCornerGoal {
+		c.maybePostGoalToX(alert, subs)
+	}
+	return c.sendPayloadToSubscriptions(ctx, "oneverycorner", alert.MatchName, createOnEveryCornerAlertPayload(alert), subs)
+}
+
+func createOnEveryCornerAlertPayload(alert models.OnEveryCornerAlert) discordWebhookPayload {
+	return discordWebhookPayload{
+		Content:         formatOnEveryCornerAlertContent(alert),
+		Embeds:          []discordEmbed{formatOnEveryCornerAlertEmbed(alert)},
+		AllowedMentions: &discordAllowedMentions{Parse: []string{}},
+	}
+}
+
+func formatOnEveryCornerAlertContent(alert models.OnEveryCornerAlert) string {
+	if alert.Kind == models.OnEveryCornerAlertSystem {
+		return ""
+	}
+	return onEveryCornerTweetText(alert)
 }
 
 func formatOnEveryCornerAlertEmbed(alert models.OnEveryCornerAlert) discordEmbed {
+	if alert.Kind == models.OnEveryCornerAlertSystem {
+		return formatOnEveryCornerSystemAlertEmbed(alert)
+	}
+
 	occurredAt := alert.ReceivedAt
 	if occurredAt.IsZero() {
 		occurredAt = time.Now()
 	}
 
-	title := "CORNER AWARDED - manual X entry window"
+	title := "Corner recorded"
 	color := colorWarmDeal
-	footer := "OnEveryCorner Alert"
+	footer := "OnEveryCorner"
 	if alert.Kind == models.OnEveryCornerAlertPossibleCornerGoal {
-		title = "POSSIBLE CORNER-KICK GOAL - post now"
+		title = "Potential corner-kick goal"
 		color = colorHotDeal
-		footer = "OnEveryCorner Possible Goal"
+		footer = "OnEveryCorner potential goal"
 	}
 
 	matchName := strings.TrimSpace(alert.MatchName)
 	if matchName == "" {
 		matchName = "Unknown match"
 	}
-	tweetText := strings.TrimSpace(alert.TweetText)
-	if tweetText == "" {
-		tweetText = "@Enterprise #OnEveryCorner #Sweepstakes"
-	}
-	tweetURL := strings.TrimSpace(alert.TweetURL)
-	if tweetURL == "" {
-		tweetURL = "https://twitter.com/intent/tweet?text=%40Enterprise%20%23OnEveryCorner%20%23Sweepstakes"
-	}
+	tweetURL := onEveryCornerTweetURL(alert)
+	variantTweetText := onEveryCornerVariantTweetText(alert)
+	variantTweetURL := onEveryCornerVariantTweetURL(alert)
 
-	var desc strings.Builder
-	desc.WriteString("Manual entry text:\n")
-	desc.WriteString("`")
-	desc.WriteString(tweetText)
-	desc.WriteString("`\n")
-	desc.WriteString("[Open X compose](")
-	desc.WriteString(tweetURL)
-	desc.WriteString(")")
-
-	fields := []discordEmbedField{
-		{Name: "Match", Value: discordLimit(matchName, 1024), Inline: true},
-		{Name: "Source", Value: discordLimit(firstNonEmptyForDiscord(alert.SourceApp, alert.SourcePackage, "Android"), 1024), Inline: true},
-		{Name: "Received", Value: occurredAt.UTC().Format(time.RFC3339), Inline: true},
+	lines := []string{
+		fmt.Sprintf("Safe entry: [Open X compose](%s)", tweetURL),
 	}
+	if variantTweetText != "" && variantTweetURL != "" {
+		lines = append(lines,
+			fmt.Sprintf("Varied entry: [Open X compose](%s)", variantTweetURL),
+			"Varied text: "+variantTweetText,
+		)
+	}
+	lines = append(lines, "Match: "+matchName)
 	if alert.Kind == models.OnEveryCornerAlertPossibleCornerGoal {
-		timing := "Goal notification followed a recent corner"
+		timing := "Goal followed a recent corner"
 		if alert.SecondsAfterCorner > 0 {
-			timing = fmt.Sprintf("Goal notification was %ds after the latest parsed corner.", alert.SecondsAfterCorner)
+			timing = fmt.Sprintf("%ds after latest corner", alert.SecondsAfterCorner)
 		}
-		fields = append(fields, discordEmbedField{Name: "Timing", Value: timing})
+		lines = append(lines, "Timing: "+timing)
 	}
-	if alert.RawText != "" {
-		fields = append(fields, discordEmbedField{Name: "Raw notification", Value: discordLimit(alert.RawText, 1024)})
+	scoreLine := compactOnEveryCornerScoreLine(alert)
+	if scoreLine != "" {
+		lines = append(lines, scoreLine)
 	}
-	if alert.EventID != "" {
-		fields = append(fields, discordEmbedField{Name: "Event", Value: discordLimit(alert.EventID, 1024), Inline: true})
-	}
+	desc := discordLimit(strings.Join(lines, "\n"), 4096)
 
 	return discordEmbed{
 		Title:       title,
-		Description: desc.String(),
+		Description: desc,
 		Timestamp:   occurredAt.UTC().Format(time.RFC3339),
 		Color:       color,
-		Fields:      fields,
 		Footer: discordEmbedFooter{
 			Text: footer,
 		},
 	}
+}
+
+func formatOnEveryCornerSystemAlertEmbed(alert models.OnEveryCornerAlert) discordEmbed {
+	occurredAt := alert.ReceivedAt
+	if occurredAt.IsZero() {
+		occurredAt = time.Now()
+	}
+	title := strings.TrimSpace(alert.RawTitle)
+	if title == "" {
+		title = "OnEveryCorner system alert"
+	}
+	severity := strings.TrimSpace(alert.SystemSeverity)
+	if severity == "" {
+		severity = "warning"
+	}
+	details := strings.TrimSpace(alert.SystemDetails)
+	if details == "" {
+		details = strings.TrimSpace(alert.RawText)
+	}
+	if details == "" {
+		details = "The OnEveryCorner monitor reported a status change."
+	}
+
+	fields := make([]discordEmbedField, 0, len(alert.SystemFields)+1)
+	fields = append(fields, discordEmbedField{Name: "Severity", Value: strings.ToUpper(severity), Inline: true})
+	for _, field := range alert.SystemFields {
+		if len(fields) >= 25 {
+			break
+		}
+		name := strings.TrimSpace(field.Name)
+		value := strings.TrimSpace(field.Value)
+		if name == "" || value == "" {
+			continue
+		}
+		fields = append(fields, discordEmbedField{
+			Name:   discordLimit(name, 256),
+			Value:  discordLimit(value, 1024),
+			Inline: false,
+		})
+	}
+
+	return discordEmbed{
+		Title:       discordLimit(title, 256),
+		Description: discordLimit(details, 4096),
+		Timestamp:   occurredAt.UTC().Format(time.RFC3339),
+		Color:       onEveryCornerSystemColor(severity),
+		Fields:      fields,
+		Footer: discordEmbedFooter{
+			Text: "OnEveryCorner system",
+		},
+	}
+}
+
+func onEveryCornerSystemColor(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical", "error", "failed":
+		return 15158332
+	case "info", "ok", "recovered":
+		return 3447003
+	default:
+		return colorWarmDeal
+	}
+}
+
+func compactOnEveryCornerScoreLine(alert models.OnEveryCornerAlert) string {
+	parts := make([]string, 0, 2)
+	if strings.TrimSpace(alert.Score) != "" {
+		parts = append(parts, "Score: "+strings.TrimSpace(alert.Score))
+	}
+	if strings.TrimSpace(alert.CornerScore) != "" {
+		parts = append(parts, "Corners: "+strings.TrimSpace(alert.CornerScore))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func onEveryCornerTweetText(alert models.OnEveryCornerAlert) string {
+	tweetText := strings.TrimSpace(alert.TweetText)
+	if tweetText == "" {
+		return "@Enterprise #OnEveryCorner #Sweepstakes"
+	}
+	return tweetText
+}
+
+func onEveryCornerTweetURL(alert models.OnEveryCornerAlert) string {
+	tweetURL := strings.TrimSpace(alert.TweetURL)
+	if tweetURL == "" {
+		return "https://x.com/intent/tweet?text=%40Enterprise+%23OnEveryCorner+%23Sweepstakes"
+	}
+	return tweetURL
+}
+
+func onEveryCornerVariantTweetText(alert models.OnEveryCornerAlert) string {
+	return strings.TrimSpace(alert.VariantTweetText)
+}
+
+func onEveryCornerVariantTweetURL(alert models.OnEveryCornerAlert) string {
+	return strings.TrimSpace(alert.VariantTweetURL)
+}
+
+// maybePostGoalToX fires (async) posts to X account(s) for actual goals
+// (goal right after corner within 75s).
+// - Random order of accounts
+// - 5-10s random delay between posts
+// - Each post gets its own completely random fancy variant text
+func (c *Client) maybePostGoalToX(alert models.OnEveryCornerAlert, subs []models.Subscription) {
+	if len(c.xAccounts) == 0 {
+		return
+	}
+
+	go func() {
+		// Build independent random variant texts for each account.
+		// Use extra salt so each is different.
+		seeds := []string{alert.StableID, alert.EventID, alert.MatchName}
+		variants := make([]string, len(c.xAccounts))
+		for i := range c.xAccounts {
+			salt := append(seeds, fmt.Sprintf("acct%d-%d", i, time.Now().UnixNano()))
+			variants[i] = oneverycorner.ComposeGoalVariantTweetTextForContext(alert.ScoringTeam, alert.Score, salt...)
+		}
+
+		// Random order of accounts
+		order := make([]int, len(c.xAccounts))
+		for i := range order {
+			order[i] = i
+		}
+		rand.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+
+		for pos, idx := range order {
+			acct := c.xAccounts[idx]
+			text := variants[idx]
+
+			if pos > 0 {
+				delay := 5 + rand.Intn(6) // 5 to 10 seconds
+				time.Sleep(time.Duration(delay) * time.Second)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			if err := c.postToAccount(ctx, text, acct); err != nil {
+				slog.Warn("X auto-post failed for goal", "account", idx, "error", err)
+				c.reportXPostIssue(alert, subs, idx, err)
+			} else {
+				slog.Info("Posted goal alert to X", "account", idx, "text", text)
+			}
+			cancel()
+		}
+	}()
+}
+
+func (c *Client) reportXPostIssue(alert models.OnEveryCornerAlert, subs []models.Subscription, account int, postErr error) {
+	if c == nil || postErr == nil || len(subs) == 0 {
+		return
+	}
+	errorText := postErr.Error()
+	key := fmt.Sprintf("x:%d:%s", account, discordLimit(errorText, 160))
+	if !c.shouldReportXPostIssue(key) {
+		return
+	}
+
+	fields := []models.CoreSystemAlertField{
+		{Name: "Account", Value: fmt.Sprintf("%d", account)},
+		{Name: "Attempted action", Value: "post goal alert to X"},
+		{Name: "Error", Value: errorText},
+	}
+	if alert.MatchName != "" {
+		fields = append(fields, models.CoreSystemAlertField{Name: "Match", Value: alert.MatchName})
+	}
+	if alert.EventID != "" {
+		fields = append(fields, models.CoreSystemAlertField{Name: "Event", Value: alert.EventID})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	systemAlert := models.OnEveryCornerAlert{
+		Kind:           models.OnEveryCornerAlertSystem,
+		MatchName:      "X auto-post",
+		EventID:        fmt.Sprintf("x-post:%d:%d", account, time.Now().UnixMilli()),
+		StableID:       key,
+		SourcePackage:  "x",
+		SourceApp:      "X",
+		RawTitle:       "OnEveryCorner X auto-post failed",
+		RawText:        errorText,
+		ReceivedAt:     time.Now(),
+		SystemSeverity: "error",
+		SystemDetails:  fmt.Sprintf("X account %d failed to post a goal alert. Discord alerts still sent.", account),
+		SystemFields:   fields,
+	}
+	if err := c.sendPayloadToSubscriptions(ctx, "oneverycorner", systemAlert.MatchName, createOnEveryCornerAlertPayload(systemAlert), subs); err != nil {
+		slog.Error("Failed to send X post issue alert", "account", account, "error", err)
+	}
+}
+
+func (c *Client) shouldReportXPostIssue(key string) bool {
+	c.xPostIssueMu.Lock()
+	defer c.xPostIssueMu.Unlock()
+	if c.xPostIssueLast == nil {
+		c.xPostIssueLast = make(map[string]time.Time)
+	}
+	now := time.Now()
+	if last, ok := c.xPostIssueLast[key]; ok && now.Sub(last) < xPostIssueRepeatInterval {
+		return false
+	}
+	c.xPostIssueLast[key] = now
+	return true
+}
+
+func (c *Client) postToX(ctx context.Context, status string) error {
+	// legacy single account path (for compatibility)
+	if len(c.xAccounts) > 0 {
+		return c.postToAccount(ctx, status, c.xAccounts[0])
+	}
+	return fmt.Errorf("no X credentials configured for posting")
+}
+
+func (c *Client) postToAccount(ctx context.Context, status string, acct xAccount) error {
+	if acct.apiKey != "" && acct.apiKeySecret != "" && acct.accessToken != "" && acct.accessTokenSecret != "" {
+		return c.postOAuth1WithCreds(ctx, status, acct.apiKey, acct.apiKeySecret, acct.accessToken, acct.accessTokenSecret)
+	}
+	if acct.accessToken != "" {
+		return c.postWithBearer(ctx, status, acct.accessToken)
+	}
+	return fmt.Errorf("no valid X credentials for account")
+}
+
+func (c *Client) postOAuth1WithCreds(ctx context.Context, status, apiKey, apiKeySecret, accessToken, accessTokenSecret string) error {
+	// Use v2 /tweets with OAuth 1.0a User Context signing.
+	// Only the oauth_* params are used for the signature base string.
+	const endpoint = "https://api.twitter.com/2/tweets"
+	method := "POST"
+
+	nonce := strconv.FormatInt(time.Now().UnixNano(), 10)
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	oauth := map[string]string{
+		"oauth_consumer_key":     apiKey,
+		"oauth_nonce":            nonce,
+		"oauth_signature_method": "HMAC-SHA1",
+		"oauth_timestamp":        ts,
+		"oauth_token":            accessToken,
+		"oauth_version":          "1.0",
+	}
+
+	// Signature base uses ONLY the oauth params (no body content for JSON)
+	all := url.Values{}
+	for k, v := range oauth {
+		all.Set(k, v)
+	}
+	var pairs []string
+	for k := range all {
+		for _, v := range all[k] {
+			pairs = append(pairs, percentEncode(k)+"="+percentEncode(v))
+		}
+	}
+	sort.Strings(pairs)
+	paramStr := strings.Join(pairs, "&")
+
+	base := method + "&" + percentEncode(endpoint) + "&" + percentEncode(paramStr)
+	signingKey := percentEncode(apiKeySecret) + "&" + percentEncode(accessTokenSecret)
+
+	h := hmac.New(sha1.New, []byte(signingKey))
+	h.Write([]byte(base))
+	sig := base64.StdEncoding.EncodeToString(h.Sum(nil))
+	oauth["oauth_signature"] = sig
+
+	// Build Authorization header
+	var authParts []string
+	for k, v := range oauth {
+		authParts = append(authParts, percentEncode(k)+"=\""+percentEncode(v)+"\"")
+	}
+	sort.Strings(authParts)
+	auth := "OAuth " + strings.Join(authParts, ", ")
+
+	// Actual request body is JSON for v2
+	payload := map[string]string{"text": status}
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(string(jsonBody)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", auth)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("x post status %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+func percentEncode(s string) string {
+	// OAuth1 percent-encode: use QueryEscape then normalize space as %20 (not +)
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
+}
+
+// postWithBearer posts using Twitter API v2 with a Bearer token (OAuth 2.0 User Context Access Token).
+// Used when only X_ACCESS_TOKEN is provided (no consumer secret etc.).
+func (c *Client) postWithBearer(ctx context.Context, status, bearer string) error {
+	const endpoint = "https://api.twitter.com/2/tweets"
+
+	payload := map[string]string{"text": status}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("x post status %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
 }
 
 func firstNonEmptyForDiscord(values ...string) string {

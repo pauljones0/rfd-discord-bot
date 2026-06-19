@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -111,6 +112,42 @@ func TestParseNotificationText(t *testing.T) {
 			wantIsDeal:   true,
 		},
 		{
+			text:         "362,36 € | Proshop | PNY GeForce RTX 5060 Dual Fan OC - 8GB GDDR7 RAM - Grafikkarte - VCG50608DFXPB1-O ⁨@Germany⁩",
+			wantProduct:  "PNY GeForce RTX 5060 Dual Fan OC - 8GB GDDR7 RAM - Grafikkarte - VCG50608DFXPB1-O",
+			wantStore:    "Proshop",
+			wantPrice:    362.36,
+			wantCurrency: "EUR",
+			wantLink:     "",
+			wantIsDeal:   true,
+		},
+		{
+			text:         "1.652,00 € | Proshop | Inno3D GeForce RTX 5080 iCHILL X3 - 16GB GDDR7 RAM - Grafikkarte - C50803-16D7X-176069R ⁨@Germany⁩",
+			wantProduct:  "Inno3D GeForce RTX 5080 iCHILL X3 - 16GB GDDR7 RAM - Grafikkarte - C50803-16D7X-176069R",
+			wantStore:    "Proshop",
+			wantPrice:    1652.00,
+			wantCurrency: "EUR",
+			wantLink:     "",
+			wantIsDeal:   true,
+		},
+		{
+			text:         "1 585,00 zł | Proshop | PNY GeForce RTX 5060 Dual Fan OC - 8GB GDDR7 RAM - Karta graficzna - VCG50608DFXPB1-O ⁨@Poland⁩",
+			wantProduct:  "PNY GeForce RTX 5060 Dual Fan OC - 8GB GDDR7 RAM - Karta graficzna - VCG50608DFXPB1-O",
+			wantStore:    "Proshop",
+			wantPrice:    1585.00,
+			wantCurrency: "PLN",
+			wantLink:     "",
+			wantIsDeal:   true,
+		},
+		{
+			text:         "US$1,652.00 | Example Store | GPU ⁨@USA⁩",
+			wantProduct:  "GPU",
+			wantStore:    "Example Store",
+			wantPrice:    1652.00,
+			wantCurrency: "USD",
+			wantLink:     "",
+			wantIsDeal:   true,
+		},
+		{
 			text:         "\u00a31.30 | Waitrose | Essential Eggs \u2068@UK\u2069",
 			wantProduct:  "Essential Eggs",
 			wantStore:    "Waitrose",
@@ -203,7 +240,32 @@ func TestNormalizeProductName(t *testing.T) {
 		want     string
 	}{
 		{"Pokemon Twilight Masquerade Booster Box - Deal of the Day!", "pokemon", "tcg twilight masquerade booster box"},
-		{"Nvidia RTX 5060 Ti 8g", "rtx5060ti", "nvidia rtx 5060 ti 8gb"},
+		{"Nvidia RTX 5060 Ti 8g", "rtx5060ti", "gpu rtx 5060 ti 8gb"},
+		{"ASUS GeForce RTX 5060 Ti Dual 8GB OC Gaming Graphics Card", "rtx5060ti", "gpu rtx 5060 ti 8gb"},
+		{"Gigabyte Geforce Rtx 5060 Ti Aero Oc 8Gd Gddr7", "rtx5060ti", "gpu rtx 5060 ti 8gb"},
+		{"ASUS PRIME GeForce RTX5060TI O8G OC", "rtx5060ti", "gpu rtx 5060 ti 8gb"},
+		{"ASUS The SFF-Ready Prime GeForce RTX™ 5060 Ti 16GB", "rtx5060ti", "gpu rtx 5060 ti 16gb"},
+		{"ASUS Dual NVIDIA GeForce RTX 5060 Ti OC Edition", "rtx5060ti", "gpu rtx 5060 ti unknown-vram"},
+		{"MSI GeForce RTX 5070 Ti 16G Shadow 3X OC", "rtx5070ti", "gpu rtx 5070 ti 16gb"},
+		{"PNY GeForce RTX™ 5070 Ti Overclocked Triple Fan", "rtx5070ti", "gpu rtx 5070 ti 16gb"},
+		{"ASUS Dual NVIDIA GeForce RTX 5060 8GB GDDR7 RAM", "rtx5060", "gpu rtx 5060 8gb"},
+		{"ASUS PRIME NVIDIA GeForce RTX 5070 OC Edition 12GB", "rtx5070", "gpu rtx 5070 12gb"},
+		{"NVIDIA GeForce RTX 5060 Ti 32GB DDR5 RAM", "rtx5060ti", "gpu rtx 5060 ti unknown-vram"},
+		{"NVIDIA GeForce RTX 5080 4GB DDR5 RAM", "rtx5080", "gpu rtx 5080 16gb"},
+		{"NVIDIA GeForce RTX 5090 4GB DDR5 RAM", "rtx5090", "gpu rtx 5090 32gb"},
+		{"NVIDIA GeForce RTX 4090 32GB DDR5 RAM", "nvidia-rtx-deals", "gpu rtx 4090 24gb"},
+		{"ASUS Dual Radeon RX 9060 XT 8GB GDDR6 PCIe", "rx-9060xt", "gpu rx 9060 xt 8gb"},
+		{"ASUS Dual Radeon RX9060XT 16G GDDR6 Gaming", "rx-9060xt", "gpu rx 9060 xt 16gb"},
+		{"PowerColor RX 9060XT Reaper DDR6 Retail 8.192 MB", "rx-9060xt", "gpu rx 9060 xt 8gb"},
+		{"PowerColor RX 9060XT Reaper Retail 16.384 MB", "rx-9060xt", "gpu rx 9060 xt 16gb"},
+		{"ASRock AMD Radeon RX 9060 XT Challenger", "rx-9060xt", "gpu rx 9060 xt unknown-vram"},
+		{"Sapphire Technology Nitro Plus AMD Radeon RX", "rx-9060xt", "gpu rx 9060 xt unknown-vram"},
+		{"Sapphire 11350-04-20G Pulse AMD Radeon RX 9060...", "rx-9060xt", "gpu rx 9060 xt unknown-vram"},
+		{"ASUS Prime Radeon RX 9070 OC Edition 16GB GDDR6", "rx-9070", "gpu rx 9070 16gb"},
+		{"Gigabyte GV R9070GAMING OC 16GD", "rx-9070", "gpu rx 9070 16gb"},
+		{"ASUS Prime Radeon RX 9070 XT OC Edition 16GB GDDR6", "rx-9070xt", "gpu rx 9070 xt 16gb"},
+		{"ASUS Prime Radeon RX 9070 XT OC Edition 32GB DDR5 RAM", "rx-9070xt", "gpu rx 9070 xt 16gb"},
+		{"Gaming PC NVIDIA GeForce RTX 5070 16GB DDR5 RAM", "ddr5-deals", "ram 16gb"},
 		{"Amazon Pokemon TCG Scarlet & Violet 16g", "pokemon", "tcg scarlet & violet 16gb"},
 		{"Crucial Pro RAM DDR5 64Go Kit (2x32Go) 6000MHz", "64gb", "ram 64gb 2x32gb 6000"},
 		{"CORSAIR VENGEANCE DDR5 RAM 64GB (2x32GB) Bis zu", "64gb", "ram 64gb 2x32gb"},
@@ -350,5 +412,131 @@ func TestCategoryThreshold(t *testing.T) {
 
 	if len(notifier.sent) != 1 {
 		t.Errorf("expected notification after category warmup, got %d", len(notifier.sent))
+	}
+}
+
+func TestProcessNotificationBatchDoesNotDuplicateStructuredMessage(t *testing.T) {
+	ctx := context.Background()
+	store := &mockStore{
+		history: map[string]*models.CorePriceHistory{
+			"test product": {
+				ProductName: "test product",
+				Category:    "test",
+				Prices:      []float64{100, 100, 100, 100, 100, 100, 100, 100, 100, 100},
+			},
+		},
+		catStats: map[string]*models.CoreCategoryStats{
+			"test": {Category: "test", TotalCount: 10},
+		},
+		subs: []models.Subscription{
+			{GuildID: "g1", ChannelID: "c1", SubscriptionType: "core", DealType: "core_alerts"},
+		},
+	}
+	notifier := &mockNotifier{}
+	p := NewProcessor(store, notifier, NewRateManager())
+
+	msg := "$20.00 | Amazon US | Test Product @USA"
+	err := p.ProcessNotificationBatch(ctx, DiscordNotificationBatch{
+		ConversationTitle: "CoreFinder #test: CoreFinder",
+		TickerText:        msg,
+		Lines:             []string{msg},
+		Messages: []DiscordNotificationMsg{
+			{Text: msg},
+		},
+		EventID:       "batch-event",
+		SourcePackage: "com.discord",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(notifier.sent) != 1 {
+		t.Fatalf("expected one alert from structured message, got %d", len(notifier.sent))
+	}
+	if notifier.sent[0].EventID != "batch-event-0" {
+		t.Fatalf("alert event ID = %q, want batch-event-0", notifier.sent[0].EventID)
+	}
+}
+
+func TestCorePriceErrorOnlySubscriptionRequiresMeaningfulATL(t *testing.T) {
+	ctx := context.Background()
+	store := &mockStore{
+		history: map[string]*models.CorePriceHistory{
+			"test product": {
+				ProductName: "test product",
+				Category:    "test",
+				Prices:      []float64{100, 180, 180, 180, 180, 180, 180, 180, 180, 180},
+			},
+		},
+		catStats: map[string]*models.CoreCategoryStats{
+			"test": {Category: "test", TotalCount: 10},
+		},
+		subs: []models.Subscription{
+			{GuildID: "g1", ChannelID: "c1", SubscriptionType: "core", DealType: "core_price_errors"},
+		},
+	}
+	notifier := &mockNotifier{}
+	p := NewProcessor(store, notifier, NewRateManager())
+
+	err := p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", "C$95.00 | Amazon CA | Test Product @Canada", nil, "not-meaningful-atl", "com.discord", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("expected price error above 10%% under ATL to be filtered, got %d alerts", len(notifier.sent))
+	}
+
+	err = p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", "C$80.00 | Amazon CA | Test Product @Canada", nil, "price-error", "com.discord", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(notifier.sent) != 1 {
+		t.Fatalf("expected price error to notify price-error-only subscription, got %d alerts", len(notifier.sent))
+	}
+	if notifier.sent[0].AnomalyType != "Price Error / Used" {
+		t.Fatalf("anomaly type = %q, want Price Error / Used", notifier.sent[0].AnomalyType)
+	}
+}
+
+func TestGPUBucketSuppressesRecentNearDuplicateAlert(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	store := &mockStore{
+		history: map[string]*models.CorePriceHistory{
+			"gpu rtx 5070 12gb": {
+				ProductName: "gpu rtx 5070 12gb",
+				Category:    "rtx5070",
+				Prices:      []float64{850, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000},
+				RecentAlerts: []models.CoreAlert{
+					{PriceCAD: 850, FiredAt: now.Add(-time.Hour)},
+				},
+			},
+		},
+		catStats: map[string]*models.CoreCategoryStats{
+			"rtx5070": {Category: "rtx5070", TotalCount: 10},
+		},
+		subs: []models.Subscription{
+			{GuildID: "g1", ChannelID: "c1", SubscriptionType: "core", DealType: "core_alerts"},
+		},
+	}
+	notifier := &mockNotifier{}
+	p := NewProcessor(store, notifier, NewRateManager())
+
+	err := p.ProcessNotification(ctx, "CoreFinder #rtx5070: CoreFinder", "C$825.00 | Amazon CA | PNY GeForce RTX 5070 Overclocked Triple Fan @Canada", nil, "gpu-near-duplicate", "com.discord", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("expected repeated 5070 bucket alert to be suppressed, got %d alerts", len(notifier.sent))
+	}
+
+	err = p.ProcessNotification(ctx, "CoreFinder #rtx5070: CoreFinder", "C$700.00 | Amazon CA | MSI GeForce RTX 5070 Ventus 2X OC @Canada", nil, "gpu-meaningfully-lower", "com.discord", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(notifier.sent) != 1 {
+		t.Fatalf("expected meaningfully lower 5070 bucket alert to send, got %d alerts", len(notifier.sent))
+	}
+	if notifier.sent[0].Category != "rtx5070" {
+		t.Fatalf("category = %q, want rtx5070", notifier.sent[0].Category)
 	}
 }

@@ -183,17 +183,17 @@ func TestDiscordNotificationIngestHandlerTickerText(t *testing.T) {
 	}
 }
 
-func TestDiscordNotificationIngestHandlerRoutesBet365Corner(t *testing.T) {
+func TestDiscordNotificationIngestHandlerIgnoresUnsupportedPackage(t *testing.T) {
 	srv := newNotificationTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/ingest/discord-notification", strings.NewReader(`{
 		"type": "notification",
 		"receivedAt": 1780000000123,
-		"packageName": "com.bet365SportsCA.Bet365_Application",
-		"notificationKey": "0|com.bet365SportsCA.Bet365_Application|-832562125|null|10190",
+		"packageName": "com.example.sports",
+		"notificationKey": "0|com.example.sports|-832562125|null|10190",
 		"postTime": 1781578865947,
 		"extras": {
-			"title": "Corner",
-			"text": "Iran v New Zealand 90+4 min\n4th Iran - 5th Total"
+			"title": "Ignored sports notification",
+			"text": "This package is not a supported ingest source."
 		}
 	}`))
 	rec := httptest.NewRecorder()
@@ -207,14 +207,13 @@ func TestDiscordNotificationIngestHandlerRoutesBet365Corner(t *testing.T) {
 	var body struct {
 		Status            string                        `json:"status"`
 		Route             string                        `json:"route"`
-		Handled           bool                          `json:"handled"`
 		ClearNotification bool                          `json:"clearNotification"`
 		Notification      normalizedDiscordNotification `json:"notification"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if body.Route != "oneverycorner" || !body.Handled || !body.ClearNotification {
+	if body.Status != "ignored" || body.Route != "unsupported" || body.ClearNotification {
 		t.Fatalf("unexpected body: %#v", body)
 	}
 	if body.Notification.StableID == "" {

@@ -112,6 +112,97 @@ func TestFormatDealToEmbed_FallsBackWhenActualDealURLContainsSpaces(t *testing.T
 	}
 }
 
+func TestCreateOnEveryCornerAlertPayloadIncludesPlainTweetText(t *testing.T) {
+	alert := models.OnEveryCornerAlert{
+		Kind:             models.OnEveryCornerAlertCorner,
+		MatchName:        "Austria v Jordan",
+		TweetText:        "@Enterprise #OnEveryCorner #Sweepstakes",
+		TweetURL:         "https://x.com/intent/tweet?text=%40Enterprise+%23OnEveryCorner+%23Sweepstakes",
+		VariantTweetText: "@Enterprise #OnEveryCorner #Jeu Corner chaos is unmatched - near-post traffic, one bounce is all it takes",
+		VariantTweetURL:  "https://x.com/intent/tweet?text=%40Enterprise+%23OnEveryCorner+%23Jeu+Corner+chaos+is+unmatched+-+near-post+traffic%2C+one+bounce+is+all+it+takes",
+		ReceivedAt:       time.Date(2026, 6, 17, 4, 14, 8, 0, time.UTC),
+	}
+
+	payload := createOnEveryCornerAlertPayload(alert)
+
+	if payload.Content != "@Enterprise #OnEveryCorner #Sweepstakes" {
+		t.Fatalf("content = %q, want exact tweet text", payload.Content)
+	}
+	if len(payload.Embeds) != 1 {
+		t.Fatalf("embeds = %d, want 1", len(payload.Embeds))
+	}
+	if payload.AllowedMentions == nil || len(payload.AllowedMentions.Parse) != 0 {
+		t.Fatalf("allowed mentions = %#v, want no parsed mentions", payload.AllowedMentions)
+	}
+	embed := payload.Embeds[0]
+	if !strings.Contains(embed.Description, "Safe entry: [Open X compose](") {
+		t.Fatalf("description missing compose link: %q", embed.Description)
+	}
+	if !strings.Contains(embed.Description, "Varied entry: [Open X compose](") {
+		t.Fatalf("description missing varied compose link: %q", embed.Description)
+	}
+	if !strings.Contains(embed.Description, "Varied text: @Enterprise #OnEveryCorner #Jeu") {
+		t.Fatalf("description missing varied text: %q", embed.Description)
+	}
+	if len(embed.Fields) != 0 {
+		t.Fatalf("fields = %#v, want compact embed without fields", embed.Fields)
+	}
+}
+
+func TestFormatOnEveryCornerAlertEmbedUsesTweetDefaults(t *testing.T) {
+	embed := formatOnEveryCornerAlertEmbed(models.OnEveryCornerAlert{
+		Kind:      models.OnEveryCornerAlertCorner,
+		MatchName: "Austria v Jordan",
+	})
+
+	if !strings.Contains(embed.Description, "https://x.com/intent/tweet?text=%40Enterprise+%23OnEveryCorner+%23Sweepstakes") {
+		t.Fatalf("description missing default compose URL: %q", embed.Description)
+	}
+	if !strings.Contains(embed.Description, "Match: Austria v Jordan") {
+		t.Fatalf("description missing match: %q", embed.Description)
+	}
+	if len(embed.Fields) != 0 {
+		t.Fatalf("fields = %#v, want compact embed without fields", embed.Fields)
+	}
+}
+
+func TestCreateOnEveryCornerSystemAlertPayload(t *testing.T) {
+	payload := createOnEveryCornerAlertPayload(models.OnEveryCornerAlert{
+		Kind:           models.OnEveryCornerAlertSystem,
+		RawTitle:       "OnEveryCorner Scoremer recovery attempted",
+		SystemSeverity: "warning",
+		SystemDetails:  "Scoremer polling is unhealthy; attempting to reload the browser page.",
+		SystemFields: []models.CoreSystemAlertField{
+			{Name: "Attempted fix", Value: "page.reload"},
+			{Name: "Status", Value: "403"},
+		},
+		ReceivedAt: time.Date(2026, 6, 19, 20, 40, 0, 0, time.UTC),
+	})
+
+	if payload.Content != "" {
+		t.Fatalf("content = %q, want empty system alert content", payload.Content)
+	}
+	if payload.AllowedMentions == nil || len(payload.AllowedMentions.Parse) != 0 {
+		t.Fatalf("allowed mentions = %#v, want no parsed mentions", payload.AllowedMentions)
+	}
+	if len(payload.Embeds) != 1 {
+		t.Fatalf("embeds = %d, want 1", len(payload.Embeds))
+	}
+	embed := payload.Embeds[0]
+	if embed.Title != "OnEveryCorner Scoremer recovery attempted" {
+		t.Fatalf("title = %q", embed.Title)
+	}
+	if !strings.Contains(embed.Description, "Scoremer polling is unhealthy") {
+		t.Fatalf("description = %q", embed.Description)
+	}
+	if len(embed.Fields) < 3 {
+		t.Fatalf("fields = %#v, want severity plus status fields", embed.Fields)
+	}
+	if embed.Footer.Text != "OnEveryCorner system" {
+		t.Fatalf("footer = %q", embed.Footer.Text)
+	}
+}
+
 func TestFormatDealToEmbed_OmitsViewsWhenUnavailable(t *testing.T) {
 	deal := models.DealInfo{
 		Title:   "Great Deal",

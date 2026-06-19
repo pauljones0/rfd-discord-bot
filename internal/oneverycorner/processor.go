@@ -17,16 +17,100 @@ import (
 )
 
 const (
-	TweetText = "@Enterprise #OnEveryCorner #Sweepstakes"
-	TweetURL  = "https://twitter.com/intent/tweet?text=%40Enterprise%20%23OnEveryCorner%20%23Sweepstakes"
+	TweetMention = "@Enterprise"
+	TweetTag     = "#OnEveryCorner"
+	TweetText    = TweetMention + " " + TweetTag + " #Sweepstakes"
+	TweetURL     = "https://x.com/intent/tweet?text=%40Enterprise+%23OnEveryCorner+%23Sweepstakes"
 
-	DefaultGoalCorrelationWindow = 120 * time.Second
+	DefaultGoalCorrelationWindow = 75 * time.Second
+)
+
+// Auto-posting implementation note:
+//
+// This package intentionally stops at alerting and operator-assisted compose
+// links. A future owner evaluating real account posting outside this code path
+// would need to solve account/session custody, explicit contest and platform
+// compliance, event-to-post idempotency, durable audit logs for every attempted
+// entry, reliable post verification, browser/app failure handling, rate limits,
+// and immediate disable/rollback controls so a bad parser cannot submit posts.
+// Those are product and operational controls, not parsing concerns, so the live
+// bot should keep this path limited to Discord notifications and compose URLs.
+
+var (
+	allowedSweepstakesTags = []string{"#Sweepstakes", "#Sorteo", "#Gewinnspiele", "#Jeu", "#Concours"}
+
+	tweetCornerReactions = []string{
+		"Good delivery here and anything can happen",
+		"Keeper has to fight through traffic on this one",
+		"Near-post run is there if the ball beats the first defender",
+		"Everyone is packed inside the six-yard box",
+		"This is exactly where second balls get messy",
+		"One clean header changes this fast",
+		"Back post looks dangerous if someone attacks it",
+		"That is a tough spot to defend",
+		"Set-piece chance with bodies everywhere",
+		"Someone has to win the first contact",
+		"The box is loaded for this delivery",
+		"This has a scramble written all over it",
+		"Beat the first defender and it is trouble",
+		"Good chance to put the keeper under pressure",
+		"The delivery has to be sharp from there",
+		"Defenders will hate this setup",
+		"A clean flick-on could do it",
+		"Everyone is waiting on the drop",
+		"Classic second-phase danger here",
+		"You can feel the pressure building",
+	}
+	tweetGoalReactions = []string{
+		"I am never calm when a corner starts bouncing around like that",
+		"That is the kind of set-piece mess that ruins defenders",
+		"Pure box chaos and somehow it ends up in the net",
+		"You could feel that coming as soon as the first ball stayed alive",
+		"The keeper never got a clean second to breathe",
+		"That whole sequence was panic stations",
+		"Nothing clean about it and that is why I love it",
+		"That is why you crash the six-yard box",
+		"Set pieces are just controlled madness",
+		"I would hate defending that with the ball dropping everywhere",
+		"The first contact did not even need to be perfect",
+		"That is a proper corner-scramble finish",
+	}
+	tweetGoalTeamReactions = []string{
+		"{team} turn the corner into absolute chaos",
+		"{team} just kept that alive and got paid",
+		"{team} wanted the second ball more",
+		"{team} make the set piece count",
+		"{team} punish the mess in the box",
+		"{team} from a corner and I am out of my chair",
+		"{team} turn pressure into a goal",
+		"{team} score from the kind of corner defenders hate",
+	}
+	tweetGoalContextReactions = []string{
+		"{team} make it {score} from the corner chaos",
+		"No chance I am sitting still after {team} make it {score}",
+		"{team} turn a messy corner into {score}",
+		"The corner drops, the box panics, {team} score. {score}",
+		"{team} wanted the loose ball more and now it is {score}",
+		"That is pure set-piece adrenaline. {team} make it {score}",
+		"{team} crash the box and suddenly it is {score}",
+		"I swear corners are just chaos with a scoreboard. {team} make it {score}",
+		"One loose ball, one finish, {team} make it {score}",
+		"{team} turn the second phase into {score}",
+		"That delivery caused panic and {team} cash in for {score}",
+		"Blink and the corner scramble becomes {score} for {team}",
+	}
+	tweetVariantEmojiGroups = []string{"⚽", "👀", "🔥", "😮", "🎯", "🙌", "🚨", "🥅"}
+	tweetVariantPunct       = []string{".", "!", "!!"}
 )
 
 type NotificationEvent struct {
 	EventID       string
 	StableID      string
 	SourcePackage string
+	MatchID       string
+	Team          string
+	HomeTeam      string
+	AwayTeam      string
 	Title         string
 	Text          string
 	BigText       string
@@ -65,10 +149,15 @@ type cornerState struct {
 }
 
 type parsedEvent struct {
-	Type      string
-	MatchName string
-	MatchKey  string
-	RawText   string
+	Type        string
+	MatchName   string
+	MatchKey    string
+	MatchID     string
+	ScoringSide string
+	ScoringTeam string
+	Score       string
+	CornerScore string
+	RawText     string
 }
 
 const (
@@ -81,8 +170,9 @@ var (
 	cornerPattern      = regexp.MustCompile(`(?i)\bcorner(?:\s+kick)?s?\b`)
 	versusMatchPattern = regexp.MustCompile(`(?i)^(.+?)\s+(?:v|vs\.?|versus|at)\s+(.+?)(?:\s+\d{1,3}(?:\+\d+)?\s*min\b|$)`)
 	scorelinePattern   = regexp.MustCompile(`(?i)^(.+?)\s+\[?\d+\]?\s*-\s*\[?\d+\]?\s+(.+)$`)
+	metricLinePattern  = regexp.MustCompile(`(?i)^(corners?|score)\s+(\d+)\s*[-:]\s*(\d+)\b`)
 	minutePattern      = regexp.MustCompile(`(?i)\s+\d{1,3}(?:\+\d+)?\s*min\b.*$`)
-	eventPrefixPattern = regexp.MustCompile(`(?i)\b(corner(?:\s+kick)?|go+al|goal\s+alert|score\s+update|football|soccer|fifa|world\s+cup|bet365|notification|alert)\b`)
+	eventPrefixPattern = regexp.MustCompile(`(?i)\b(corner(?:\s+kick)?|go+al|goal\s+alert|score\s+update|football|soccer|fifa|world\s+cup|notification|alert)\b`)
 	spacePattern       = regexp.MustCompile(`\s+`)
 	nonKeyPattern      = regexp.MustCompile(`[^a-z0-9]+`)
 )
@@ -143,17 +233,16 @@ func ParseNotification(event NotificationEvent) (parsedEvent, bool) {
 	if raw == "" {
 		return parsedEvent{}, false
 	}
-	eventType := ""
-	if goalPattern.MatchString(raw) {
-		eventType = eventTypeGoal
-	} else if cornerPattern.MatchString(raw) {
-		eventType = eventTypeCorner
-	} else {
+	eventType := detectEventType(event)
+	if eventType == "" {
 		return parsedEvent{}, false
 	}
 
 	matchName := extractMatchName(event)
-	matchKey := normalizeMatchKey(matchName)
+	matchKey := sourceMatchKey(event)
+	if matchKey == "" {
+		matchKey = normalizeMatchKey(matchName)
+	}
 	if matchKey == "" {
 		matchKey = normalizeMatchKey(firstNonEmpty(event.Title, event.BigText, event.Text, event.TickerText, raw))
 	}
@@ -161,12 +250,18 @@ func ParseNotification(event NotificationEvent) (parsedEvent, bool) {
 		matchName = "Unknown match"
 		matchKey = "unknown"
 	}
+	cornerScore, score := extractScoreContext(event)
 
 	return parsedEvent{
-		Type:      eventType,
-		MatchName: matchName,
-		MatchKey:  matchKey,
-		RawText:   raw,
+		Type:        eventType,
+		MatchName:   matchName,
+		MatchKey:    matchKey,
+		MatchID:     strings.TrimSpace(event.MatchID),
+		ScoringSide: scoringSide(event),
+		ScoringTeam: scoringTeam(event),
+		Score:       score,
+		CornerScore: cornerScore,
+		RawText:     raw,
 	}, true
 }
 
@@ -182,20 +277,29 @@ func (p *Processor) recordCorner(event NotificationEvent, parsed parsedEvent) mo
 	p.corners[parsed.MatchKey] = state
 	p.mu.Unlock()
 
+	tweetText := ComposeTweetText(event.StableID, event.EventID, parsed.MatchKey)
+	variantTweetText := ComposeCornerVariantTweetText(event.StableID, event.EventID, parsed.MatchKey)
+
 	return models.OnEveryCornerAlert{
-		Kind:          models.OnEveryCornerAlertCorner,
-		MatchName:     parsed.MatchName,
-		EventID:       event.EventID,
-		StableID:      event.StableID,
-		SourcePackage: event.SourcePackage,
-		SourceApp:     sourceAppName(event.SourcePackage),
-		RawTitle:      event.Title,
-		RawText:       parsed.RawText,
-		Lines:         event.Lines,
-		ReceivedAt:    event.ReceivedAt,
-		CornerAt:      event.ReceivedAt,
-		TweetText:     TweetText,
-		TweetURL:      TweetURL,
+		Kind:             models.OnEveryCornerAlertCorner,
+		MatchName:        parsed.MatchName,
+		Score:            parsed.Score,
+		CornerScore:      parsed.CornerScore,
+		ScoringSide:      parsed.ScoringSide,
+		ScoringTeam:      parsed.ScoringTeam,
+		EventID:          event.EventID,
+		StableID:         event.StableID,
+		SourcePackage:    event.SourcePackage,
+		SourceApp:        sourceAppName(event.SourcePackage),
+		RawTitle:         event.Title,
+		RawText:          parsed.RawText,
+		Lines:            event.Lines,
+		ReceivedAt:       event.ReceivedAt,
+		CornerAt:         event.ReceivedAt,
+		TweetText:        tweetText,
+		TweetURL:         ComposeURL(tweetText),
+		VariantTweetText: variantTweetText,
+		VariantTweetURL:  ComposeURL(variantTweetText),
 	}
 }
 
@@ -211,9 +315,16 @@ func (p *Processor) correlateGoal(event NotificationEvent, parsed parsedEvent) (
 		return models.OnEveryCornerAlert{}, false
 	}
 
+	tweetText := ComposeTweetText(event.StableID, event.EventID, parsed.MatchKey)
+	variantTweetText := ComposeGoalVariantTweetTextForContext(parsed.ScoringTeam, parsed.Score, event.StableID, event.EventID, parsed.MatchKey)
+
 	return models.OnEveryCornerAlert{
 		Kind:               models.OnEveryCornerAlertPossibleCornerGoal,
 		MatchName:          firstNonEmpty(parsed.MatchName, state.MatchName),
+		Score:              parsed.Score,
+		CornerScore:        parsed.CornerScore,
+		ScoringSide:        parsed.ScoringSide,
+		ScoringTeam:        parsed.ScoringTeam,
 		EventID:            event.EventID,
 		StableID:           event.StableID,
 		SourcePackage:      event.SourcePackage,
@@ -225,8 +336,10 @@ func (p *Processor) correlateGoal(event NotificationEvent, parsed parsedEvent) (
 		CornerAt:           state.ReceivedAt,
 		GoalAt:             event.ReceivedAt,
 		SecondsAfterCorner: int(elapsed.Round(time.Second).Seconds()),
-		TweetText:          TweetText,
-		TweetURL:           TweetURL,
+		TweetText:          tweetText,
+		TweetURL:           ComposeURL(tweetText),
+		VariantTweetText:   variantTweetText,
+		VariantTweetURL:    ComposeURL(variantTweetText),
 	}, true
 }
 
@@ -235,7 +348,7 @@ func (p *Processor) sendAlert(ctx context.Context, alert models.OnEveryCornerAle
 	if err != nil {
 		return fmt.Errorf("load oneverycorner subscriptions: %w", err)
 	}
-	filtered := filterSubscriptions(subs)
+	filtered := filterSubscriptions(alert.Kind, subs)
 	if len(filtered) == 0 {
 		slog.Info("No OnEveryCorner subscriptions configured", "kind", alert.Kind, "match", alert.MatchName)
 		return nil
@@ -243,14 +356,14 @@ func (p *Processor) sendAlert(ctx context.Context, alert models.OnEveryCornerAle
 	return p.notifier.SendOnEveryCornerAlert(ctx, alert, filtered)
 }
 
-func filterSubscriptions(subs []models.Subscription) []models.Subscription {
+func filterSubscriptions(alertKind string, subs []models.Subscription) []models.Subscription {
 	filtered := make([]models.Subscription, 0, len(subs))
 	seenChannels := make(map[string]struct{}, len(subs))
 	for _, sub := range subs {
 		if !sub.IsOnEveryCorner() {
 			continue
 		}
-		if sub.DealType != "" && sub.DealType != dealtypes.OnEveryCornerAlerts {
+		if !subscriptionAllowsOnEveryCornerAlert(sub.DealType, alertKind) {
 			continue
 		}
 		if _, ok := seenChannels[sub.ChannelID]; ok {
@@ -260,6 +373,20 @@ func filterSubscriptions(subs []models.Subscription) []models.Subscription {
 		filtered = append(filtered, sub)
 	}
 	return filtered
+}
+
+func subscriptionAllowsOnEveryCornerAlert(dealType, alertKind string) bool {
+	if alertKind == models.OnEveryCornerAlertSystem {
+		return true
+	}
+	switch strings.TrimSpace(dealType) {
+	case "", dealtypes.OnEveryCornerAlerts:
+		return true
+	case dealtypes.OnEveryCornerPotentialGoals:
+		return alertKind == models.OnEveryCornerAlertPossibleCornerGoal
+	default:
+		return false
+	}
 }
 
 func (p *Processor) markSeen(id string, seenAt time.Time) bool {
@@ -287,12 +414,55 @@ func eventRawText(event NotificationEvent) string {
 	return strings.Join(uniqueNonEmpty(lines), "\n")
 }
 
+func detectEventType(event NotificationEvent) string {
+	lines := notificationLines(event)
+	for _, line := range lines {
+		if isMetricLine(line) {
+			continue
+		}
+		if goalPattern.MatchString(line) {
+			return eventTypeGoal
+		}
+	}
+	for _, line := range lines {
+		if isMetricLine(line) {
+			continue
+		}
+		if cornerPattern.MatchString(line) {
+			return eventTypeCorner
+		}
+	}
+	return ""
+}
+
+func extractScoreContext(event NotificationEvent) (cornerScore string, score string) {
+	for _, line := range notificationLines(event) {
+		match := metricLinePattern.FindStringSubmatch(strings.TrimSpace(line))
+		if len(match) != 4 {
+			continue
+		}
+		value := match[2] + "-" + match[3]
+		switch strings.ToLower(match[1]) {
+		case "corner", "corners":
+			if cornerScore == "" {
+				cornerScore = value
+			}
+		case "score":
+			if score == "" {
+				score = value
+			}
+		}
+	}
+	return cornerScore, score
+}
+
 func extractMatchName(event NotificationEvent) string {
-	candidates := append([]string{}, event.Title, event.BigText, event.Text, event.TickerText)
-	candidates = append(candidates, event.Lines...)
-	candidates = expandLines(uniqueNonEmpty(candidates))
+	candidates := notificationLines(event)
 
 	for _, candidate := range candidates {
+		if isMetricLine(candidate) {
+			continue
+		}
 		if match := versusMatchPattern.FindStringSubmatch(candidate); len(match) == 3 {
 			home := cleanTeamName(match[1])
 			away := cleanTeamName(match[2])
@@ -302,6 +472,9 @@ func extractMatchName(event NotificationEvent) string {
 		}
 	}
 	for _, candidate := range candidates {
+		if isMetricLine(candidate) {
+			continue
+		}
 		if match := scorelinePattern.FindStringSubmatch(candidate); len(match) == 3 {
 			home := cleanTeamName(match[1])
 			away := cleanTeamName(match[2])
@@ -311,8 +484,11 @@ func extractMatchName(event NotificationEvent) string {
 		}
 	}
 	for _, candidate := range candidates {
+		if isMetricLine(candidate) {
+			continue
+		}
 		cleaned := cleanMatchName(candidate)
-		if cleaned == "" || strings.EqualFold(cleaned, "bet365") {
+		if unusableMatchName(cleaned) {
 			continue
 		}
 		if strings.Contains(strings.ToLower(cleaned), "corner") || strings.Contains(strings.ToLower(cleaned), "goal") {
@@ -325,6 +501,9 @@ func extractMatchName(event NotificationEvent) string {
 
 func cleanMatchName(value string) string {
 	value = strings.TrimSpace(value)
+	if isMetricLine(value) {
+		return ""
+	}
 	if idx := strings.LastIndex(value, ":"); idx >= 0 && idx < len(value)-1 {
 		value = value[idx+1:]
 	}
@@ -351,6 +530,68 @@ func normalizeMatchKey(value string) string {
 	value = nonKeyPattern.ReplaceAllString(value, " ")
 	value = spacePattern.ReplaceAllString(value, " ")
 	return strings.TrimSpace(value)
+}
+
+func sourceMatchKey(event NotificationEvent) string {
+	source := strings.ToLower(strings.TrimSpace(event.SourcePackage))
+	matchID := strings.TrimSpace(event.MatchID)
+	if source != "scoremer" || matchID == "" {
+		return ""
+	}
+	matchID = strings.ToLower(matchID)
+	matchID = nonKeyPattern.ReplaceAllString(matchID, " ")
+	matchID = spacePattern.ReplaceAllString(matchID, " ")
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return ""
+	}
+	return source + ":" + matchID
+}
+
+func scoringSide(event NotificationEvent) string {
+	side := strings.ToLower(strings.TrimSpace(event.Team))
+	switch side {
+	case "home", "away":
+		return side
+	}
+	title := strings.ToLower(strings.TrimSpace(event.Title))
+	if strings.Contains(title, " - home") {
+		return "home"
+	}
+	if strings.Contains(title, " - away") {
+		return "away"
+	}
+	return ""
+}
+
+func scoringTeam(event NotificationEvent) string {
+	switch scoringSide(event) {
+	case "home":
+		return strings.TrimSpace(event.HomeTeam)
+	case "away":
+		return strings.TrimSpace(event.AwayTeam)
+	default:
+		return ""
+	}
+}
+
+func notificationLines(event NotificationEvent) []string {
+	candidates := append([]string{}, event.Title, event.BigText, event.Text, event.TickerText)
+	candidates = append(candidates, event.Lines...)
+	return expandLines(uniqueNonEmpty(candidates))
+}
+
+func isMetricLine(value string) bool {
+	return metricLinePattern.MatchString(strings.TrimSpace(value))
+}
+
+func unusableMatchName(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "home", "away", "total":
+		return true
+	default:
+		return false
+	}
 }
 
 func uniqueNonEmpty(values []string) []string {
@@ -385,7 +626,7 @@ func expandLines(values []string) []string {
 
 func eventHash(event NotificationEvent) string {
 	h := sha256.New()
-	for _, value := range []string{event.SourcePackage, event.Title, event.Text, event.BigText, event.TickerText} {
+	for _, value := range []string{event.SourcePackage, event.MatchID, event.Team, event.HomeTeam, event.AwayTeam, event.Title, event.Text, event.BigText, event.TickerText} {
 		_, _ = h.Write([]byte(value))
 		_, _ = h.Write([]byte{0})
 	}
@@ -399,13 +640,71 @@ func eventHash(event NotificationEvent) string {
 
 func sourceAppName(pkg string) string {
 	pkg = strings.TrimSpace(pkg)
-	if strings.Contains(strings.ToLower(pkg), "bet365") {
-		return "bet365"
-	}
 	if pkg == "" {
 		return "Android"
 	}
 	return pkg
+}
+
+func ComposeTweetText(seedValues ...string) string {
+	tag := allowedSweepstakesTags[stableIndex(allowedSweepstakesTags, seedValues...)]
+	return strings.Join([]string{TweetMention, TweetTag, tag}, " ")
+}
+
+func ComposeVariantTweetText(seedValues ...string) string {
+	return ComposeCornerVariantTweetText(seedValues...)
+}
+
+func ComposeCornerVariantTweetText(seedValues ...string) string {
+	return composeVariantTweetText(tweetCornerReactions, seedValues...)
+}
+
+func ComposeGoalVariantTweetText(seedValues ...string) string {
+	return composeVariantTweetText(tweetGoalReactions, seedValues...)
+}
+
+func ComposeGoalVariantTweetTextForContext(scoringTeam, score string, seedValues ...string) string {
+	scoringTeam = strings.TrimSpace(scoringTeam)
+	score = strings.TrimSpace(score)
+	if scoringTeam != "" && score != "" {
+		reaction := stableChoice(tweetGoalContextReactions, "context-reaction", append([]string{scoringTeam, score}, seedValues...)...)
+		reaction = strings.ReplaceAll(reaction, "{team}", scoringTeam)
+		reaction = strings.ReplaceAll(reaction, "{score}", score)
+		return composeVariantTweetReaction(reaction, append([]string{scoringTeam, score}, seedValues...)...)
+	}
+	if scoringTeam != "" {
+		reaction := stableChoice(tweetGoalTeamReactions, "team-reaction", append([]string{scoringTeam}, seedValues...)...)
+		reaction = strings.ReplaceAll(reaction, "{team}", scoringTeam)
+		return composeVariantTweetReaction(reaction, append([]string{scoringTeam}, seedValues...)...)
+	}
+	return ComposeGoalVariantTweetText(seedValues...)
+}
+
+func composeVariantTweetText(reactions []string, seedValues ...string) string {
+	return composeVariantTweetReaction(stableChoice(reactions, "reaction", seedValues...), seedValues...)
+}
+
+func composeVariantTweetReaction(reaction string, seedValues ...string) string {
+	safeText := ComposeTweetText(seedValues...)
+	if reaction == "" {
+		return safeText
+	}
+	reaction = strings.TrimRight(strings.TrimSpace(reaction), ".!?")
+	if reaction == "" {
+		return safeText
+	}
+
+	emoji := ""
+	if stableIndex(tweetVariantEmojiGroups, append([]string{"emojiinc"}, seedValues...)...)%3 == 0 {
+		emoji = stableChoice(tweetVariantEmojiGroups, "emoji", seedValues...)
+	}
+	punct := stableChoice(tweetVariantPunct, "punct", seedValues...)
+
+	addon := reaction + punct
+	if emoji != "" {
+		addon += " " + emoji
+	}
+	return safeText + " " + addon
 }
 
 func firstNonEmpty(values ...string) string {
@@ -420,5 +719,37 @@ func firstNonEmpty(values ...string) string {
 
 func ComposeURL(tweetText string) string {
 	tweetText = firstNonEmpty(tweetText, TweetText)
-	return "https://twitter.com/intent/tweet?text=" + url.QueryEscape(tweetText)
+	return "https://x.com/intent/tweet?text=" + url.QueryEscape(tweetText)
+}
+
+func stableIndex(values []string, seedValues ...string) int {
+	if len(values) == 0 {
+		return 0
+	}
+	h := sha256.New()
+	seeded := false
+	for _, value := range seedValues {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		seeded = true
+		_, _ = h.Write([]byte(value))
+		_, _ = h.Write([]byte{0})
+	}
+	if !seeded {
+		return 0
+	}
+	sum := h.Sum(nil)
+	return int(sum[0]) % len(values)
+}
+
+func stableChoice(values []string, salt string, seedValues ...string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	salted := make([]string, 0, len(seedValues)+1)
+	salted = append(salted, salt)
+	salted = append(salted, seedValues...)
+	return values[stableIndex(values, salted...)]
 }
