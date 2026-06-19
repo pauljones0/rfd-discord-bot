@@ -39,68 +39,7 @@ const (
 var (
 	allowedSweepstakesTags = []string{"#Sweepstakes", "#Sorteo", "#Gewinnspiele", "#Jeu", "#Concours"}
 
-	tweetCornerReactions = []string{
-		"Good delivery here and anything can happen",
-		"Keeper has to fight through traffic on this one",
-		"Near-post run is there if the ball beats the first defender",
-		"Everyone is packed inside the six-yard box",
-		"This is exactly where second balls get messy",
-		"One clean header changes this fast",
-		"Back post looks dangerous if someone attacks it",
-		"That is a tough spot to defend",
-		"Set-piece chance with bodies everywhere",
-		"Someone has to win the first contact",
-		"The box is loaded for this delivery",
-		"This has a scramble written all over it",
-		"Beat the first defender and it is trouble",
-		"Good chance to put the keeper under pressure",
-		"The delivery has to be sharp from there",
-		"Defenders will hate this setup",
-		"A clean flick-on could do it",
-		"Everyone is waiting on the drop",
-		"Classic second-phase danger here",
-		"You can feel the pressure building",
-	}
-	tweetGoalReactions = []string{
-		"I am never calm when a corner starts bouncing around like that",
-		"That is the kind of set-piece mess that ruins defenders",
-		"Pure box chaos and somehow it ends up in the net",
-		"You could feel that coming as soon as the first ball stayed alive",
-		"The keeper never got a clean second to breathe",
-		"That whole sequence was panic stations",
-		"Nothing clean about it and that is why I love it",
-		"That is why you crash the six-yard box",
-		"Set pieces are just controlled madness",
-		"I would hate defending that with the ball dropping everywhere",
-		"The first contact did not even need to be perfect",
-		"That is a proper corner-scramble finish",
-	}
-	tweetGoalTeamReactions = []string{
-		"{team} turn the corner into absolute chaos",
-		"{team} just kept that alive and got paid",
-		"{team} wanted the second ball more",
-		"{team} make the set piece count",
-		"{team} punish the mess in the box",
-		"{team} from a corner and I am out of my chair",
-		"{team} turn pressure into a goal",
-		"{team} score from the kind of corner defenders hate",
-	}
-	tweetGoalContextReactions = []string{
-		"{team} make it {score} from the corner chaos",
-		"No chance I am sitting still after {team} make it {score}",
-		"{team} turn a messy corner into {score}",
-		"The corner drops, the box panics, {team} score. {score}",
-		"{team} wanted the loose ball more and now it is {score}",
-		"That is pure set-piece adrenaline. {team} make it {score}",
-		"{team} crash the box and suddenly it is {score}",
-		"I swear corners are just chaos with a scoreboard. {team} make it {score}",
-		"One loose ball, one finish, {team} make it {score}",
-		"{team} turn the second phase into {score}",
-		"That delivery caused panic and {team} cash in for {score}",
-		"Blink and the corner scramble becomes {score} for {team}",
-	}
-	tweetVariantEmojiGroups = []string{"⚽", "👀", "🔥", "😮", "🎯", "🙌", "🚨", "🥅"}
-	tweetVariantPunct       = []string{".", "!", "!!"}
+	tweetVariantEmojiGroups = []string{"⚽", "🔥", "🚨", "🥅", "👀", "🎯", "🙌"}
 )
 
 type NotificationEvent struct {
@@ -277,8 +216,7 @@ func (p *Processor) recordCorner(event NotificationEvent, parsed parsedEvent) mo
 	p.corners[parsed.MatchKey] = state
 	p.mu.Unlock()
 
-	tweetText := ComposeTweetText(event.StableID, event.EventID, parsed.MatchKey)
-	variantTweetText := ComposeCornerVariantTweetText(event.StableID, event.EventID, parsed.MatchKey)
+	variantTweetText := ComposeCornerVariantTweetTextForContext(parsed.ScoringTeam, event.StableID, event.EventID, parsed.MatchKey)
 
 	return models.OnEveryCornerAlert{
 		Kind:             models.OnEveryCornerAlertCorner,
@@ -296,8 +234,8 @@ func (p *Processor) recordCorner(event NotificationEvent, parsed parsedEvent) mo
 		Lines:            event.Lines,
 		ReceivedAt:       event.ReceivedAt,
 		CornerAt:         event.ReceivedAt,
-		TweetText:        tweetText,
-		TweetURL:         ComposeURL(tweetText),
+		TweetText:        variantTweetText,
+		TweetURL:         ComposeURL(variantTweetText),
 		VariantTweetText: variantTweetText,
 		VariantTweetURL:  ComposeURL(variantTweetText),
 	}
@@ -315,7 +253,6 @@ func (p *Processor) correlateGoal(event NotificationEvent, parsed parsedEvent) (
 		return models.OnEveryCornerAlert{}, false
 	}
 
-	tweetText := ComposeTweetText(event.StableID, event.EventID, parsed.MatchKey)
 	variantTweetText := ComposeGoalVariantTweetTextForContext(parsed.ScoringTeam, parsed.Score, event.StableID, event.EventID, parsed.MatchKey)
 
 	return models.OnEveryCornerAlert{
@@ -336,8 +273,8 @@ func (p *Processor) correlateGoal(event NotificationEvent, parsed parsedEvent) (
 		CornerAt:           state.ReceivedAt,
 		GoalAt:             event.ReceivedAt,
 		SecondsAfterCorner: int(elapsed.Round(time.Second).Seconds()),
-		TweetText:          tweetText,
-		TweetURL:           ComposeURL(tweetText),
+		TweetText:          variantTweetText,
+		TweetURL:           ComposeURL(variantTweetText),
 		VariantTweetText:   variantTweetText,
 		VariantTweetURL:    ComposeURL(variantTweetText),
 	}, true
@@ -656,55 +593,48 @@ func ComposeVariantTweetText(seedValues ...string) string {
 }
 
 func ComposeCornerVariantTweetText(seedValues ...string) string {
-	return composeVariantTweetText(tweetCornerReactions, seedValues...)
+	return composeCompactTweetText("", "", seedValues...)
+}
+
+func ComposeCornerVariantTweetTextForContext(scoringTeam string, seedValues ...string) string {
+	return composeCompactTweetText(scoringTeam, "", seedValues...)
 }
 
 func ComposeGoalVariantTweetText(seedValues ...string) string {
-	return composeVariantTweetText(tweetGoalReactions, seedValues...)
+	return composeCompactTweetText("", "", seedValues...)
 }
 
 func ComposeGoalVariantTweetTextForContext(scoringTeam, score string, seedValues ...string) string {
+	return composeCompactTweetText(scoringTeam, score, seedValues...)
+}
+
+func composeCompactTweetText(scoringTeam, score string, seedValues ...string) string {
 	scoringTeam = strings.TrimSpace(scoringTeam)
 	score = strings.TrimSpace(score)
-	if scoringTeam != "" && score != "" {
-		reaction := stableChoice(tweetGoalContextReactions, "context-reaction", append([]string{scoringTeam, score}, seedValues...)...)
-		reaction = strings.ReplaceAll(reaction, "{team}", scoringTeam)
-		reaction = strings.ReplaceAll(reaction, "{score}", score)
-		return composeVariantTweetReaction(reaction, append([]string{scoringTeam, score}, seedValues...)...)
-	}
+
+	seed := append([]string{scoringTeam, score}, seedValues...)
+	parts := []string{ComposeTweetText(seed...)}
 	if scoringTeam != "" {
-		reaction := stableChoice(tweetGoalTeamReactions, "team-reaction", append([]string{scoringTeam}, seedValues...)...)
-		reaction = strings.ReplaceAll(reaction, "{team}", scoringTeam)
-		return composeVariantTweetReaction(reaction, append([]string{scoringTeam}, seedValues...)...)
+		parts = append(parts, scoringTeam)
 	}
-	return ComposeGoalVariantTweetText(seedValues...)
+	if score != "" {
+		parts = append(parts, score)
+	}
+	parts = append(parts, compactTweetEmojiSuffix(seed...))
+	return strings.Join(parts, " ")
 }
 
-func composeVariantTweetText(reactions []string, seedValues ...string) string {
-	return composeVariantTweetReaction(stableChoice(reactions, "reaction", seedValues...), seedValues...)
-}
-
-func composeVariantTweetReaction(reaction string, seedValues ...string) string {
-	safeText := ComposeTweetText(seedValues...)
-	if reaction == "" {
-		return safeText
-	}
-	reaction = strings.TrimRight(strings.TrimSpace(reaction), ".!?")
-	if reaction == "" {
-		return safeText
+func compactTweetEmojiSuffix(seedValues ...string) string {
+	first := stableChoice(tweetVariantEmojiGroups, "emoji-primary", seedValues...)
+	if stableIndex(tweetVariantEmojiGroups, append([]string{"emoji-secondary-toggle"}, seedValues...)...)%2 != 0 {
+		return first
 	}
 
-	emoji := ""
-	if stableIndex(tweetVariantEmojiGroups, append([]string{"emojiinc"}, seedValues...)...)%3 == 0 {
-		emoji = stableChoice(tweetVariantEmojiGroups, "emoji", seedValues...)
+	second := stableChoice(tweetVariantEmojiGroups, "emoji-secondary", seedValues...)
+	if second == "" || second == first {
+		return first
 	}
-	punct := stableChoice(tweetVariantPunct, "punct", seedValues...)
-
-	addon := reaction + punct
-	if emoji != "" {
-		addon += " " + emoji
-	}
-	return safeText + " " + addon
+	return first + second
 }
 
 func firstNonEmpty(values ...string) string {

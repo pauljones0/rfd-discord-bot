@@ -736,7 +736,7 @@ func formatOnEveryCornerAlertContent(alert models.OnEveryCornerAlert) string {
 	if alert.Kind == models.OnEveryCornerAlertSystem {
 		return ""
 	}
-	return onEveryCornerTweetText(alert)
+	return onEveryCornerPostText(alert)
 }
 
 func formatOnEveryCornerAlertEmbed(alert models.OnEveryCornerAlert) discordEmbed {
@@ -762,18 +762,12 @@ func formatOnEveryCornerAlertEmbed(alert models.OnEveryCornerAlert) discordEmbed
 	if matchName == "" {
 		matchName = "Unknown match"
 	}
-	tweetURL := onEveryCornerTweetURL(alert)
-	variantTweetText := onEveryCornerVariantTweetText(alert)
-	variantTweetURL := onEveryCornerVariantTweetURL(alert)
+	postText := onEveryCornerPostText(alert)
+	postURL := onEveryCornerPostURL(alert)
 
 	lines := []string{
-		fmt.Sprintf("Safe entry: [Open X compose](%s)", tweetURL),
-	}
-	if variantTweetText != "" && variantTweetURL != "" {
-		lines = append(lines,
-			fmt.Sprintf("Varied entry: [Open X compose](%s)", variantTweetURL),
-			"Varied text: "+variantTweetText,
-		)
+		fmt.Sprintf("X post: [Open compose](%s)", postURL),
+		"Text: " + postText,
 	}
 	lines = append(lines, "Match: "+matchName)
 	if alert.Kind == models.OnEveryCornerAlertPossibleCornerGoal {
@@ -897,11 +891,25 @@ func onEveryCornerVariantTweetURL(alert models.OnEveryCornerAlert) string {
 	return strings.TrimSpace(alert.VariantTweetURL)
 }
 
+func onEveryCornerPostText(alert models.OnEveryCornerAlert) string {
+	if tweetText := onEveryCornerVariantTweetText(alert); tweetText != "" {
+		return tweetText
+	}
+	return onEveryCornerTweetText(alert)
+}
+
+func onEveryCornerPostURL(alert models.OnEveryCornerAlert) string {
+	if tweetURL := onEveryCornerVariantTweetURL(alert); tweetURL != "" {
+		return tweetURL
+	}
+	return onEveryCornerTweetURL(alert)
+}
+
 // maybePostGoalToX fires (async) posts to X account(s) for actual goals
 // (goal right after corner within 75s).
 // - Random order of accounts
 // - 5-10s random delay between posts
-// - Each post gets its own completely random fancy variant text
+// - Each post gets its own compact variant text
 func (c *Client) maybePostGoalToX(alert models.OnEveryCornerAlert, subs []models.Subscription) {
 	if len(c.xAccounts) == 0 {
 		return

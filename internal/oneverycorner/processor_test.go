@@ -64,11 +64,14 @@ func TestProcessNotificationSendsCornerAlert(t *testing.T) {
 	if alert.TweetURL != ComposeURL(alert.TweetText) {
 		t.Fatalf("tweet URL = %q, want %q", alert.TweetURL, ComposeURL(alert.TweetText))
 	}
-	if !strings.HasPrefix(alert.VariantTweetText, alert.TweetText+" ") {
-		t.Fatalf("variant tweet text = %q, want safe text prefix %q", alert.VariantTweetText, alert.TweetText)
+	if alert.VariantTweetText != alert.TweetText {
+		t.Fatalf("variant tweet text = %q, want tweet text %q", alert.VariantTweetText, alert.TweetText)
 	}
 	if alert.VariantTweetURL != ComposeURL(alert.VariantTweetText) {
 		t.Fatalf("variant tweet URL = %q, want %q", alert.VariantTweetURL, ComposeURL(alert.VariantTweetText))
+	}
+	if !containsAnyEmoji(alert.TweetText) {
+		t.Fatalf("tweet text = %q, want emoji suffix", alert.TweetText)
 	}
 }
 
@@ -439,13 +442,14 @@ func TestComposeTweetTextUsesOnlyAllowedElements(t *testing.T) {
 	}
 }
 
-func TestComposeVariantTweetTextAddsNaturalSoccerReaction(t *testing.T) {
+func TestComposeVariantTweetTextUsesCompactContext(t *testing.T) {
 	cornerSeeds := []string{"stable-corner", "corner", "canada germany"}
 	goalSeeds := []string{"stable-goal", "goal", "canada germany"}
 	cornerSafe := ComposeTweetText(cornerSeeds...)
 	goalSafe := ComposeTweetText(goalSeeds...)
 	cornerVariant := ComposeCornerVariantTweetText(cornerSeeds...)
 	goalVariant := ComposeGoalVariantTweetText(goalSeeds...)
+	contextCornerVariant := ComposeCornerVariantTweetTextForContext("Canada", cornerSeeds...)
 	contextGoalVariant := ComposeGoalVariantTweetTextForContext("Uzbekistan", "1-0", goalSeeds...)
 
 	if !strings.HasPrefix(cornerVariant, cornerSafe+" ") {
@@ -457,20 +461,14 @@ func TestComposeVariantTweetTextAddsNaturalSoccerReaction(t *testing.T) {
 	if !strings.HasPrefix(contextGoalVariant, ComposeTweetText("Uzbekistan", "1-0", goalSeeds[0], goalSeeds[1], goalSeeds[2])+" ") {
 		t.Fatalf("context goal variant = %q, want safe text prefix", contextGoalVariant)
 	}
-	if cornerVariant == cornerSafe || goalVariant == goalSafe {
-		t.Fatalf("variants should add soccer text: corner=%q goal=%q", cornerVariant, goalVariant)
-	}
-	if !containsAnyPhrase(cornerVariant, tweetCornerReactions) {
-		t.Fatalf("corner variant = %q, want a corner reaction phrase", cornerVariant)
-	}
-	if !containsAnyPhrase(goalVariant, tweetGoalReactions) {
-		t.Fatalf("goal variant = %q, want a goal reaction phrase", goalVariant)
+	if !strings.Contains(contextCornerVariant, "Canada") {
+		t.Fatalf("context corner variant = %q, want team", contextCornerVariant)
 	}
 	if !strings.Contains(contextGoalVariant, "Uzbekistan") || !strings.Contains(contextGoalVariant, "1-0") {
 		t.Fatalf("context goal variant = %q, want team and score", contextGoalVariant)
 	}
-	if !containsAnyPhraseTemplate(contextGoalVariant, tweetGoalContextReactions, "Uzbekistan", "1-0") {
-		t.Fatalf("context goal variant = %q, want a context reaction phrase", contextGoalVariant)
+	if !containsAnyEmoji(cornerVariant) || !containsAnyEmoji(goalVariant) || !containsAnyEmoji(contextGoalVariant) {
+		t.Fatalf("variants should include emoji suffixes: corner=%q goal=%q context=%q", cornerVariant, goalVariant, contextGoalVariant)
 	}
 	if len([]rune(cornerVariant)) > 280 || len([]rune(goalVariant)) > 280 {
 		t.Fatalf("variant length over 280: corner=%d goal=%d", len([]rune(cornerVariant)), len([]rune(goalVariant)))
@@ -485,28 +483,26 @@ func TestComposeVariantTweetTextAddsNaturalSoccerReaction(t *testing.T) {
 		"Mark up",
 		"Delivery on point",
 		"All eyes",
+		"corner chaos",
+		"panic",
+		"delivery",
+		"keeper",
+		"box",
 	}
 	if containsAnyPhrase(cornerVariant, weakPhrases) || containsAnyPhrase(goalVariant, weakPhrases) {
-		t.Fatalf("variants still include weak legacy phrasing: corner=%q goal=%q", cornerVariant, goalVariant)
+		t.Fatalf("variants include legacy phrasing: corner=%q goal=%q", cornerVariant, goalVariant)
 	}
 
 	seen := map[string]struct{}{}
-	seenEmoji := false
 	for i := 0; i < 50; i++ {
 		candidate := ComposeGoalVariantTweetText("seed", time.Duration(i).String())
 		seen[candidate] = struct{}{}
-		for _, group := range tweetVariantEmojiGroups {
-			if strings.Contains(candidate, group) {
-				seenEmoji = true
-				break
-			}
+		if !containsAnyEmoji(candidate) {
+			t.Fatalf("variant sample = %q, want emoji", candidate)
 		}
 	}
 	if len(seen) < 10 {
 		t.Fatalf("variant diversity = %d unique outputs from 50 seeds, want at least 10", len(seen))
-	}
-	if !seenEmoji {
-		t.Fatal("variant samples did not include any emoji reaction groups")
 	}
 }
 
@@ -519,11 +515,9 @@ func containsAnyPhrase(value string, phrases []string) bool {
 	return false
 }
 
-func containsAnyPhraseTemplate(value string, templates []string, team, score string) bool {
-	for _, template := range templates {
-		phrase := strings.ReplaceAll(template, "{team}", team)
-		phrase = strings.ReplaceAll(phrase, "{score}", score)
-		if strings.Contains(value, phrase) {
+func containsAnyEmoji(value string) bool {
+	for _, emoji := range tweetVariantEmojiGroups {
+		if strings.Contains(value, emoji) {
 			return true
 		}
 	}
