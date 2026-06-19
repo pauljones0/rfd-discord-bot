@@ -20,7 +20,7 @@ from urllib.parse import parse_qs
 ACTIVE_POLL_HEADER = "x-oneverycorner-poll"
 HEARTBEAT_SECONDS = 15.0
 PROBLEM_ALERT_SECONDS = 30.0
-FIX_FAILED_SECONDS = 75.0
+FIX_FAILED_SECONDS = 30.0
 
 DEFAULT_FILTERS = {
     "filter": "",
@@ -374,9 +374,11 @@ def main() -> int:
     problem_stage = ""
     problem_status = ""
     fix_attempted_at = 0.0
+    fix_attempt = ""
     fix_failed_emitted = False
     suppress_next_delta = False
-    reload_requested = False
+    context_rotate_requested = False
+    context_rotation_in_progress = False
     restart_requested = False
     token_wait_started = 0.0
     active_poll_count = 0
@@ -390,10 +392,7 @@ def main() -> int:
 
     print(f"scoremer_monitor starting url={args.url!r} league_ids={sorted(league_ids)}", file=sys.stderr, flush=True)
     with Camoufox(headless=False, os=args.os, locale=args.locale, humanize=True, block_webrtc=True, window=(1440, 1000)) as browser:
-        page = browser.new_page()
-        page.add_init_script(
-            "localStorage.setItem('filters', JSON.stringify(%s));" % json.dumps(filters, separators=(",", ":"))
-        )
+        page = None
 
         def remember_scoremer_request(request) -> None:
             nonlocal csrf_token, last_mt
@@ -415,8 +414,8 @@ def main() -> int:
 
         def mark_scoremer_healthy(status: int, source: str, suppressed_events: int = 0) -> None:
             nonlocal last_response, last_heartbeat, last_heartbeat_poll_count
-            nonlocal problem_started, problem_stage, problem_status, fix_attempted_at, fix_failed_emitted
-            nonlocal suppress_next_delta, reload_requested
+            nonlocal problem_started, problem_stage, problem_status, fix_attempted_at, fix_attempt, fix_failed_emitted
+            nonlocal suppress_next_delta, context_rotate_requested
             now = time.monotonic()
             last_response = now
             if problem_started:
@@ -428,7 +427,7 @@ def main() -> int:
                         "Scoremer polling recovered; normal OnEveryCorner monitoring has resumed.",
                         stage=source,
                         status=str(status),
-                        attempt="page.reload" if fix_attempted_at else "",
+                        attempt=fix_attempt if fix_attempted_at else "",
                         stale_seconds=stale_seconds,
                         suppressed_events=suppressed_events,
                     )
@@ -436,9 +435,10 @@ def main() -> int:
                 problem_stage = ""
                 problem_status = ""
                 fix_attempted_at = 0.0
+                fix_attempt = ""
                 fix_failed_emitted = False
                 suppress_next_delta = False
-                reload_requested = False
+                context_rotate_requested = False
             if now - last_heartbeat >= HEARTBEAT_SECONDS:
                 polls_since_log = active_poll_count - last_heartbeat_poll_count
                 print(
@@ -455,8 +455,8 @@ def main() -> int:
             mark_scoremer_healthy(status, source)
 
         def mark_scoremer_problem(status: int, source: str, detail: str = "") -> None:
-            nonlocal problem_started, problem_stage, problem_status, fix_attempted_at, fix_failed_emitted
-            nonlocal suppress_next_delta, reload_requested, restart_requested, last_poll_error
+            nonlocal problem_started, problem_stage, problem_status, fix_attempted_at, fix_attempt, fix_failed_emitted
+            nonlocal suppress_next_delta, context_rotate_requested, restart_requested, last_poll_error
             now = time.monotonic()
             status_text = str(status)
             if problem_started == 0.0:
@@ -468,16 +468,17 @@ def main() -> int:
             stale_seconds = int(now - problem_started)
             if stale_seconds >= PROBLEM_ALERT_SECONDS and fix_attempted_at == 0.0:
                 fix_attempted_at = now
+                fix_attempt = "browser.context.rotate"
                 suppress_next_delta = True
-                reload_requested = True
+                context_rotate_requested = True
                 emit_system_event(
                     "system_fix_attempt",
                     "warning",
-                    "Scoremer polling is unhealthy; attempting to reload the browser page. "
+                    "Scoremer polling is unhealthy; attempting to rotate the browser context. "
                     "The next successful snapshot will be used as a new baseline so missed corners are not replayed.",
                     stage=source,
                     status=status_text,
-                    attempt="page.reload",
+                    attempt=fix_attempt,
                     detail=detail,
                     stale_seconds=stale_seconds,
                 )
@@ -488,12 +489,62 @@ def main() -> int:
                 emit_system_event(
                     "system_fix_failed",
                     "error",
-                    "Scoremer polling is still unhealthy after a page reload; restarting the Scoremer monitor process.",
+                    "Scoremer polling is still unhealthy after rotating the browser context; restarting the Scoremer monitor process.",
                     stage=problem_stage or source,
                     status=problem_status or status_text,
                     attempt="restart scoremer monitor process",
                     detail=detail,
                     stale_seconds=stale_seconds,
+                )
+            if now - last_poll_error >= 60:
+                print(
+                    f"scoremer unhealthy source={source} status={status_text} detail={detail!r} mt={last_mt}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                last_poll_error = now
+
+        def request_context_rotation(status: int, source: str, detail: str = "") -> None:
+            nonlocal problem_started, problem_stage, problem_status, fix_attempted_at, fix_attempt
+            nonlocal fix_failed_emitted, suppress_next_delta, context_rotate_requested, restart_requested, last_poll_error
+            now = time.monotonic()
+            status_text = str(status)
+            if problem_started == 0.0:
+                problem_started = now
+                problem_stage = source
+                problem_status = status_text
+                fix_attempted_at = 0.0
+                fix_attempt = ""
+                fix_failed_emitted = False
+            if fix_attempted_at == 0.0 and not context_rotation_in_progress:
+                fix_attempted_at = now
+                fix_attempt = "browser.context.rotate"
+                suppress_next_delta = True
+                context_rotate_requested = True
+                emit_system_event(
+                    "system_fix_attempt",
+                    "warning",
+                    "Scoremer returned 403; rotating the browser context immediately. "
+                    "The next successful snapshot will be used as a new baseline so missed corners are not replayed.",
+                    stage=source,
+                    status=status_text,
+                    attempt=fix_attempt,
+                    detail=detail,
+                    stale_seconds=int(now - problem_started),
+                )
+            elif fix_attempted_at and not fix_failed_emitted and now - fix_attempted_at >= FIX_FAILED_SECONDS:
+                fix_failed_emitted = True
+                suppress_next_delta = True
+                restart_requested = True
+                emit_system_event(
+                    "system_fix_failed",
+                    "error",
+                    "Scoremer polling is still unhealthy after rotating the browser context; restarting the Scoremer monitor process.",
+                    stage=problem_stage or source,
+                    status=problem_status or status_text,
+                    attempt="restart scoremer monitor process",
+                    detail=detail,
+                    stale_seconds=int(now - problem_started),
                 )
             if now - last_poll_error >= 60:
                 print(
@@ -644,9 +695,10 @@ def main() -> int:
                 last_poll_error = now
             if active_poll_failure_is_covered_by_page_feed():
                 return
+            if status == 403:
+                request_context_rotation(status, "active", str(result.get("error") or ""))
+                return
             mark_scoremer_problem(status, "active", str(result.get("error") or ""))
-
-        page.on("request", remember_scoremer_request)
 
         def on_response(response) -> None:
             if "/ajax/score/data" not in response.url:
@@ -656,6 +708,8 @@ def main() -> int:
             if response.status != 200:
                 if response.status in (204, 304):
                     note_scoremer_response(response.status, "page")
+                elif response.status == 403:
+                    request_context_rotation(response.status, "page", response.status_text)
                 else:
                     mark_scoremer_problem(response.status, "page", response.status_text)
                 return
@@ -666,8 +720,67 @@ def main() -> int:
                 return
             process_scoremer_payload(body, "page")
 
-        page.on("response", on_response)
-        page.goto(args.url, wait_until="domcontentloaded", timeout=args.timeout_ms)
+        def open_scoremer_page(reason: str):
+            new_page = browser.new_page()
+            new_page.add_init_script(
+                "localStorage.setItem('filters', JSON.stringify(%s));" % json.dumps(filters, separators=(",", ":"))
+            )
+            new_page.on("request", remember_scoremer_request)
+            new_page.on("response", on_response)
+            print(f"scoremer opening browser context reason={reason}", file=sys.stderr, flush=True)
+            new_page.goto(args.url, wait_until="domcontentloaded", timeout=args.timeout_ms)
+            return new_page
+
+        def rotate_browser_context(reason: str) -> None:
+            nonlocal page, csrf_token, token_wait_started, context_rotation_in_progress, last_response
+            print(f"scoremer rotating browser context reason={reason}", file=sys.stderr, flush=True)
+            old_page = page
+            page = None
+            context_rotation_in_progress = True
+            try:
+                old_context = None
+                if old_page is not None:
+                    try:
+                        old_context = old_page.context
+                    except Exception:
+                        old_context = None
+                    try:
+                        old_page.close(run_before_unload=False)
+                    except Exception as exc:
+                        print(f"scoremer old page close failed during context rotation: {exc!r}", file=sys.stderr, flush=True)
+                    if old_context is not None:
+                        try:
+                            old_context.close()
+                        except Exception as exc:
+                            print(f"scoremer old context close failed during context rotation: {exc!r}", file=sys.stderr, flush=True)
+                csrf_token = ""
+                token_wait_started = 0.0
+                page = open_scoremer_page(reason)
+                last_response = time.monotonic()
+            finally:
+                context_rotation_in_progress = False
+
+        def handle_context_rotation_request() -> None:
+            nonlocal context_rotate_requested
+            if not context_rotate_requested:
+                return
+            context_rotate_requested = False
+            try:
+                rotate_browser_context(f"{problem_stage or 'unknown'} {problem_status or ''}".strip())
+            except Exception as exc:
+                emit_system_event(
+                    "system_fix_failed",
+                    "error",
+                    "Scoremer browser context rotation failed; restarting the Scoremer monitor process.",
+                    stage=problem_stage or "active",
+                    status=problem_status,
+                    attempt="restart scoremer monitor process",
+                    detail=repr(exc),
+                    stale_seconds=int(time.monotonic() - problem_started) if problem_started else 0,
+                )
+                raise RuntimeError("scoremer browser context rotation failed") from exc
+
+        page = open_scoremer_page("startup")
 
         poll_seconds = max(0.25, args.poll_ms / 1000.0)
         next_poll = time.monotonic() + poll_seconds
@@ -676,56 +789,27 @@ def main() -> int:
             wait_ms = max(0, int((next_poll - time.monotonic()) * 1000))
             if wait_ms:
                 page.wait_for_timeout(wait_ms)
+            handle_context_rotation_request()
             active_poll_scoremer()
-            if reload_requested:
-                reload_requested = False
-                print("scoremer monitor reloading page after unhealthy polling", file=sys.stderr, flush=True)
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=args.timeout_ms)
-                except Exception as exc:
-                    emit_system_event(
-                        "system_fix_failed",
-                        "error",
-                        "Scoremer page reload failed; restarting the Scoremer monitor process.",
-                        stage=problem_stage or "active",
-                        status=problem_status,
-                        attempt="restart scoremer monitor process",
-                        detail=repr(exc),
-                        stale_seconds=int(time.monotonic() - problem_started) if problem_started else 0,
-                    )
-                    raise RuntimeError("scoremer page reload failed") from exc
+            handle_context_rotation_request()
             if restart_requested:
                 raise RuntimeError("scoremer monitor restart requested after failed recovery")
             next_poll += poll_seconds
             if next_poll < time.monotonic():
                 next_poll = time.monotonic()
             if time.monotonic() - last_response > watchdog_seconds:
-                print("scoremer monitor watchdog reloading page", file=sys.stderr, flush=True)
+                print("scoremer monitor watchdog rotating browser context", file=sys.stderr, flush=True)
                 suppress_next_delta = True
-                emit_system_event(
-                    "system_fix_attempt",
-                    "warning",
-                    "Scoremer monitor watchdog has not seen a healthy response; reloading the browser page.",
-                    stage="watchdog",
-                    status="timeout",
-                    attempt="page.reload",
-                    stale_seconds=int(time.monotonic() - last_response),
-                )
+                if problem_started == 0.0:
+                    problem_started = last_response
+                    problem_stage = "watchdog"
+                    problem_status = "timeout"
+                    fix_attempted_at = 0.0
+                    fix_attempt = ""
+                    fix_failed_emitted = False
+                mark_scoremer_problem(0, "watchdog", "timeout")
                 last_response = time.monotonic()
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=args.timeout_ms)
-                except Exception as exc:
-                    emit_system_event(
-                        "system_fix_failed",
-                        "error",
-                        "Scoremer watchdog reload failed; restarting the Scoremer monitor process.",
-                        stage="watchdog",
-                        status="timeout",
-                        attempt="restart scoremer monitor process",
-                        detail=repr(exc),
-                    )
-                    print(f"scoremer watchdog reload failed: {exc!r}", file=sys.stderr, flush=True)
-                    raise RuntimeError("scoremer watchdog reload failed") from exc
+                handle_context_rotation_request()
 
 
 if __name__ == "__main__":
