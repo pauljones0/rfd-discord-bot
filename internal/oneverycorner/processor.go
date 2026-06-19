@@ -72,6 +72,7 @@ type Processor struct {
 
 	mu         sync.Mutex
 	corners    map[string]cornerState
+	goalAlerts map[string]time.Time
 	seen       map[string]time.Time
 	seenOrder  []string
 	maxSeen    int
@@ -121,6 +122,7 @@ func NewProcessor(store Store, notifier Notifier) *Processor {
 		store:      store,
 		notifier:   notifier,
 		corners:    make(map[string]cornerState),
+		goalAlerts: make(map[string]time.Time),
 		seen:       make(map[string]time.Time),
 		maxSeen:    512,
 		window:     DefaultGoalCorrelationWindow,
@@ -156,9 +158,9 @@ func (p *Processor) ProcessNotification(ctx context.Context, event NotificationE
 		alert := p.recordCorner(event, parsed)
 		return p.sendAlert(ctx, alert)
 	case eventTypeGoal:
-		alert, ok := p.correlateGoal(event, parsed)
+		alert, ok, reason := p.correlateGoal(event, parsed)
 		if !ok {
-			slog.Info("OnEveryCorner goal notification had no recent corner", "match", parsed.MatchName, "event_id", event.EventID)
+			slog.Info("OnEveryCorner goal notification did not produce alert", "match", parsed.MatchName, "event_id", event.EventID, "reason", reason)
 			return nil
 		}
 		return p.sendAlert(ctx, alert)
@@ -214,6 +216,9 @@ func (p *Processor) recordCorner(event NotificationEvent, parsed parsedEvent) mo
 	}
 	p.mu.Lock()
 	p.corners[parsed.MatchKey] = state
+	if alias := matchAliasKey(parsed.MatchName); alias != "" && alias != parsed.MatchKey {
+		p.corners[alias] = state
+	}
 	p.mu.Unlock()
 
 	variantTweetText := ComposeCornerVariantTweetTextForContext(parsed.ScoringTeam, event.StableID, event.EventID, parsed.MatchKey)
@@ -241,21 +246,26 @@ func (p *Processor) recordCorner(event NotificationEvent, parsed parsedEvent) mo
 	}
 }
 
-func (p *Processor) correlateGoal(event NotificationEvent, parsed parsedEvent) (models.OnEveryCornerAlert, bool) {
+func (p *Processor) correlateGoal(event NotificationEvent, parsed parsedEvent) (models.OnEveryCornerAlert, bool, string) {
 	p.mu.Lock()
 	state, ok := p.corners[parsed.MatchKey]
+	if !ok {
+		if alias := matchAliasKey(parsed.MatchName); alias != "" {
+			state, ok = p.corners[alias]
+		}
+	}
 	p.mu.Unlock()
 	if !ok {
-		return models.OnEveryCornerAlert{}, false
+		return models.OnEveryCornerAlert{}, false, "no_recent_corner"
 	}
 	elapsed := event.ReceivedAt.Sub(state.ReceivedAt)
 	if elapsed < 0 || elapsed > p.window {
-		return models.OnEveryCornerAlert{}, false
+		return models.OnEveryCornerAlert{}, false, "outside_correlation_window"
 	}
 
 	variantTweetText := ComposeGoalVariantTweetTextForContext(parsed.ScoringTeam, parsed.Score, event.StableID, event.EventID, parsed.MatchKey)
 
-	return models.OnEveryCornerAlert{
+	alert := models.OnEveryCornerAlert{
 		Kind:               models.OnEveryCornerAlertPossibleCornerGoal,
 		MatchName:          firstNonEmpty(parsed.MatchName, state.MatchName),
 		Score:              parsed.Score,
@@ -277,7 +287,11 @@ func (p *Processor) correlateGoal(event NotificationEvent, parsed parsedEvent) (
 		TweetURL:           ComposeURL(variantTweetText),
 		VariantTweetText:   variantTweetText,
 		VariantTweetURL:    ComposeURL(variantTweetText),
-	}, true
+	}
+	if !p.markGoalAlert(alert) {
+		return models.OnEveryCornerAlert{}, false, "duplicate_goal_alert"
+	}
+	return alert, true, ""
 }
 
 func (p *Processor) sendAlert(ctx context.Context, alert models.OnEveryCornerAlert) error {
@@ -341,6 +355,43 @@ func (p *Processor) markSeen(id string, seenAt time.Time) bool {
 		delete(p.seen, oldest)
 	}
 	return true
+}
+
+func (p *Processor) markGoalAlert(alert models.OnEveryCornerAlert) bool {
+	key := goalAlertKey(alert)
+	if key == "" {
+		return true
+	}
+	seenAt := alert.ReceivedAt
+	if seenAt.IsZero() {
+		seenAt = time.Now()
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.goalAlerts == nil {
+		p.goalAlerts = make(map[string]time.Time)
+	}
+	for existingKey, at := range p.goalAlerts {
+		if seenAt.Sub(at) > 10*time.Minute {
+			delete(p.goalAlerts, existingKey)
+		}
+	}
+	if at, ok := p.goalAlerts[key]; ok && seenAt.Sub(at) <= 10*time.Minute {
+		return false
+	}
+	p.goalAlerts[key] = seenAt
+	return true
+}
+
+func goalAlertKey(alert models.OnEveryCornerAlert) string {
+	matchKey := matchAliasKey(alert.MatchName)
+	score := strings.TrimSpace(alert.Score)
+	if matchKey == "" || score == "" {
+		return ""
+	}
+	side := strings.ToLower(strings.TrimSpace(firstNonEmpty(alert.ScoringSide, alert.ScoringTeam)))
+	return strings.Join([]string{matchKey, score, side}, "|")
 }
 
 func eventRawText(event NotificationEvent) string {
@@ -467,10 +518,25 @@ func normalizeMatchKey(value string) string {
 	return strings.TrimSpace(value)
 }
 
+func matchAliasKey(matchName string) string {
+	key := normalizeMatchKey(matchName)
+	switch key {
+	case "", "unknown", "unknown match", "v":
+		return ""
+	default:
+		return key
+	}
+}
+
 func sourceMatchKey(event NotificationEvent) string {
 	source := strings.ToLower(strings.TrimSpace(event.SourcePackage))
 	matchID := strings.TrimSpace(event.MatchID)
-	if source != "scoremer" || matchID == "" {
+	if matchID == "" {
+		return ""
+	}
+	switch source {
+	case "scoremer", "totalcorner":
+	default:
 		return ""
 	}
 	matchID = strings.ToLower(matchID)

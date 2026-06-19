@@ -36,30 +36,31 @@ import (
 )
 
 type Server struct {
-	processor             processor.Processor
-	ebayProcessor         *ebay.Processor
-	facebookProcessor     *facebook.Processor
-	memexpressProcessor   *memoryexpress.Processor
-	bestbuyProcessor      *bestbuy.Processor
-	bestbuyCompute        *bestbuy.ComputeProcessor
-	hwProcessor           *hardwareswap.Processor
-	coreProcessor         *core.Processor
-	onEveryCorner         *oneverycorner.Processor
-	onEveryCornerScoremer *oneverycorner.ScoremerMonitor
-	aiClient              *ai.Client
-	store                 processor.DealStore
-	db                    *storage.Client
-	wg                    sync.WaitGroup
-	sem                   chan struct{} // Semaphore to limit concurrent RFD processing requests
-	ebaySem               chan struct{} // Semaphore to limit concurrent eBay processing requests
-	facebookSem           chan struct{} // Semaphore to limit concurrent Facebook processing requests
-	facebookRunStart      atomic.Int64  // Unix timestamp (seconds) when the current Facebook run started
-	memexpressSem         chan struct{} // Semaphore to limit concurrent Memory Express processing requests
-	bestbuySem            chan struct{} // Semaphore to limit concurrent Best Buy processing requests
-	bestbuyComputeSem     chan struct{} // Semaphore to limit concurrent Best Buy compute sweeps
-	hwSem                 chan struct{} // Semaphore to limit concurrent HardwareSwap processing requests
-	coreIssueMu           sync.Mutex
-	coreIssueLast         map[string]time.Time
+	processor                processor.Processor
+	ebayProcessor            *ebay.Processor
+	facebookProcessor        *facebook.Processor
+	memexpressProcessor      *memoryexpress.Processor
+	bestbuyProcessor         *bestbuy.Processor
+	bestbuyCompute           *bestbuy.ComputeProcessor
+	hwProcessor              *hardwareswap.Processor
+	coreProcessor            *core.Processor
+	onEveryCorner            *oneverycorner.Processor
+	onEveryCornerScoremer    *oneverycorner.ScoremerMonitor
+	onEveryCornerTotalCorner *oneverycorner.TotalCornerMonitor
+	aiClient                 *ai.Client
+	store                    processor.DealStore
+	db                       *storage.Client
+	wg                       sync.WaitGroup
+	sem                      chan struct{} // Semaphore to limit concurrent RFD processing requests
+	ebaySem                  chan struct{} // Semaphore to limit concurrent eBay processing requests
+	facebookSem              chan struct{} // Semaphore to limit concurrent Facebook processing requests
+	facebookRunStart         atomic.Int64  // Unix timestamp (seconds) when the current Facebook run started
+	memexpressSem            chan struct{} // Semaphore to limit concurrent Memory Express processing requests
+	bestbuySem               chan struct{} // Semaphore to limit concurrent Best Buy processing requests
+	bestbuyComputeSem        chan struct{} // Semaphore to limit concurrent Best Buy compute sweeps
+	hwSem                    chan struct{} // Semaphore to limit concurrent HardwareSwap processing requests
+	coreIssueMu              sync.Mutex
+	coreIssueLast            map[string]time.Time
 }
 
 func main() {
@@ -220,29 +221,36 @@ func main() {
 		PollInterval: cfg.OnEveryCornerScoremerPollInterval,
 		LeagueIDs:    cfg.OnEveryCornerScoremerLeagueIDs,
 	})
+	onEveryCornerTotalCorner := oneverycorner.NewTotalCornerMonitor(onEveryCornerProc, oneverycorner.TotalCornerConfig{
+		Enabled:      cfg.OnEveryCornerTotalCornerEnabled,
+		URL:          cfg.OnEveryCornerTotalCornerURL,
+		PollInterval: cfg.OnEveryCornerTotalCornerPollInterval,
+		LeagueIDs:    cfg.OnEveryCornerTotalCornerLeagueIDs,
+	})
 
 	srv := &Server{
-		processor:             p,
-		ebayProcessor:         ebayProc,
-		facebookProcessor:     fbProc,
-		memexpressProcessor:   meProc,
-		bestbuyProcessor:      bbProc,
-		bestbuyCompute:        bbComputeProc,
-		hwProcessor:           hwProc,
-		coreProcessor:         coreProc,
-		onEveryCorner:         onEveryCornerProc,
-		onEveryCornerScoremer: onEveryCornerScoremer,
-		aiClient:              aiClient,
-		store:                 store,
-		db:                    store,
-		sem:                   make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
-		ebaySem:               make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
-		facebookSem:           make(chan struct{}, 1), // Allow 1 concurrent Facebook processing attempt
-		memexpressSem:         make(chan struct{}, 1), // Allow 1 concurrent Memory Express processing attempt
-		bestbuySem:            make(chan struct{}, 1), // Allow 1 concurrent Best Buy processing attempt
-		bestbuyComputeSem:     make(chan struct{}, 1), // Allow 1 concurrent Best Buy compute sweep
-		hwSem:                 make(chan struct{}, 1), // Allow 1 concurrent HardwareSwap processing attempt
-		coreIssueLast:         make(map[string]time.Time),
+		processor:                p,
+		ebayProcessor:            ebayProc,
+		facebookProcessor:        fbProc,
+		memexpressProcessor:      meProc,
+		bestbuyProcessor:         bbProc,
+		bestbuyCompute:           bbComputeProc,
+		hwProcessor:              hwProc,
+		coreProcessor:            coreProc,
+		onEveryCorner:            onEveryCornerProc,
+		onEveryCornerScoremer:    onEveryCornerScoremer,
+		onEveryCornerTotalCorner: onEveryCornerTotalCorner,
+		aiClient:                 aiClient,
+		store:                    store,
+		db:                       store,
+		sem:                      make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
+		ebaySem:                  make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
+		facebookSem:              make(chan struct{}, 1), // Allow 1 concurrent Facebook processing attempt
+		memexpressSem:            make(chan struct{}, 1), // Allow 1 concurrent Memory Express processing attempt
+		bestbuySem:               make(chan struct{}, 1), // Allow 1 concurrent Best Buy processing attempt
+		bestbuyComputeSem:        make(chan struct{}, 1), // Allow 1 concurrent Best Buy compute sweep
+		hwSem:                    make(chan struct{}, 1), // Allow 1 concurrent HardwareSwap processing attempt
+		coreIssueLast:            make(map[string]time.Time),
 	}
 
 	// Build HardwareSwap store for the API handler (may be nil if AI is unavailable)

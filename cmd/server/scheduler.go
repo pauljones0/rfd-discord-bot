@@ -45,6 +45,20 @@ func (s *Server) StartLocalScheduler(ctx context.Context, cfg *config.Config) {
 			}
 		}()
 	}
+	if cfg.OnEveryCornerTotalCornerEnabled && s.onEveryCornerTotalCorner != nil {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			slog.Info("OnEveryCorner TotalCorner monitor starting",
+				"url", cfg.OnEveryCornerTotalCornerURL,
+				"league_ids", cfg.OnEveryCornerTotalCornerLeagueIDs,
+				"poll_interval", cfg.OnEveryCornerTotalCornerPollInterval.String(),
+			)
+			if err := s.onEveryCornerTotalCorner.Run(ctx); err != nil && ctx.Err() == nil {
+				slog.Error("OnEveryCorner TotalCorner monitor stopped", "error", err)
+			}
+		}()
+	}
 
 	// Prune core raw notifications daily
 	if s.db != nil {

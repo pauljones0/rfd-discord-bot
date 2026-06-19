@@ -100,6 +100,15 @@ func TestLoad(t *testing.T) {
 	if cfg.OnEveryCornerScoremerPollInterval != time.Second || !reflect.DeepEqual(cfg.OnEveryCornerScoremerLeagueIDs, []string{"3559"}) {
 		t.Errorf("Expected default Scoremer interval/leagues 1s/[3559], got %s/%v", cfg.OnEveryCornerScoremerPollInterval, cfg.OnEveryCornerScoremerLeagueIDs)
 	}
+	if cfg.OnEveryCornerTotalCornerEnabled {
+		t.Errorf("Expected OnEveryCorner TotalCorner monitor to be disabled by default")
+	}
+	if cfg.OnEveryCornerTotalCornerURL != "https://www.totalcorner.com/match/today" {
+		t.Errorf("Expected default TotalCorner URL, got %q", cfg.OnEveryCornerTotalCornerURL)
+	}
+	if cfg.OnEveryCornerTotalCornerPollInterval != time.Second || !reflect.DeepEqual(cfg.OnEveryCornerTotalCornerLeagueIDs, []string{"29754"}) {
+		t.Errorf("Expected default TotalCorner interval/leagues 1s/[29754], got %s/%v", cfg.OnEveryCornerTotalCornerPollInterval, cfg.OnEveryCornerTotalCornerLeagueIDs)
+	}
 	if cfg.MaxStoredDeals != 500 {
 		t.Errorf("Expected default MaxStoredDeals 500, got %d", cfg.MaxStoredDeals)
 	}
@@ -244,6 +253,10 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	t.Setenv("ONEVERYCORNER_SCOREMER_URL", "https://example.test/live")
 	t.Setenv("ONEVERYCORNER_SCOREMER_POLL_INTERVAL", "3s")
 	t.Setenv("ONEVERYCORNER_SCOREMER_LEAGUE_IDS", "3559, 1234")
+	t.Setenv("ONEVERYCORNER_TOTALCORNER_ENABLED", "true")
+	t.Setenv("ONEVERYCORNER_TOTALCORNER_URL", "https://example.test/totalcorner")
+	t.Setenv("ONEVERYCORNER_TOTALCORNER_POLL_INTERVAL", "2s")
+	t.Setenv("ONEVERYCORNER_TOTALCORNER_LEAGUE_IDS", "29754, 999")
 
 	cfg, err := Load()
 	if err != nil {
@@ -306,6 +319,15 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.OnEveryCornerScoremerLeagueIDs, []string{"3559", "1234"}) {
 		t.Fatalf("Scoremer league IDs = %v, want [3559 1234]", cfg.OnEveryCornerScoremerLeagueIDs)
+	}
+	if !cfg.OnEveryCornerTotalCornerEnabled {
+		t.Fatal("OnEveryCornerTotalCornerEnabled = false, want true")
+	}
+	if cfg.OnEveryCornerTotalCornerURL != "https://example.test/totalcorner" || cfg.OnEveryCornerTotalCornerPollInterval != 2*time.Second {
+		t.Fatalf("TotalCorner URL/interval = %q/%s, want example/2s", cfg.OnEveryCornerTotalCornerURL, cfg.OnEveryCornerTotalCornerPollInterval)
+	}
+	if !reflect.DeepEqual(cfg.OnEveryCornerTotalCornerLeagueIDs, []string{"29754", "999"}) {
+		t.Fatalf("TotalCorner league IDs = %v, want [29754 999]", cfg.OnEveryCornerTotalCornerLeagueIDs)
 	}
 }
 
