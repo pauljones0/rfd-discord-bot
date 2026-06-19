@@ -21,6 +21,7 @@ ACTIVE_POLL_HEADER = "x-oneverycorner-poll"
 HEARTBEAT_SECONDS = 15.0
 PROBLEM_ALERT_SECONDS = 30.0
 FIX_FAILED_SECONDS = 30.0
+ACTIVE_POLL_MIN_MS = 10000
 
 DEFAULT_FILTERS = {
     "filter": "",
@@ -357,6 +358,7 @@ def main() -> int:
     parser.add_argument("--url", default="https://lv.scoremer.com/")
     parser.add_argument("--league-ids", default="3559")
     parser.add_argument("--poll-ms", type=int, default=5000)
+    parser.add_argument("--active-poll-min-ms", type=int, default=ACTIVE_POLL_MIN_MS)
     parser.add_argument("--timeout-ms", type=int, default=60000)
     parser.add_argument("--locale", default="en-CA")
     parser.add_argument("--os", default="windows")
@@ -387,6 +389,10 @@ def main() -> int:
     last_mt = 0
     filters = dict(DEFAULT_FILTERS)
     filters["filter_league_ids"] = [0] + [int(v) for v in league_ids if v.isdigit()]
+    poll_seconds = max(0.25, args.poll_ms / 1000.0)
+    active_poll_ms = max(args.poll_ms, args.active_poll_min_ms)
+    active_poll_seconds = max(1.0, active_poll_ms / 1000.0)
+    watchdog_seconds = max(60, active_poll_seconds * 6)
 
     from camoufox.sync_api import Camoufox
 
@@ -444,7 +450,7 @@ def main() -> int:
                 print(
                     "scoremer heartbeat "
                     f"source={source} status={status} mt={last_mt} tracked={len(states)} "
-                    f"active_polls={polls_since_log} poll_ms={args.poll_ms}",
+                    f"active_polls={polls_since_log} poll_ms={args.poll_ms} active_poll_ms={active_poll_ms}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -683,8 +689,6 @@ def main() -> int:
                     last_poll_error = now
                 if active_poll_failure_is_covered_by_page_feed():
                     return
-                if now - token_wait_started >= HEARTBEAT_SECONDS:
-                    mark_scoremer_problem(status, "active", "missing csrf_token")
                 return
             if now - last_poll_error >= 60:
                 print(
@@ -782,9 +786,7 @@ def main() -> int:
 
         page = open_scoremer_page("startup")
 
-        poll_seconds = max(0.25, args.poll_ms / 1000.0)
-        next_poll = time.monotonic() + poll_seconds
-        watchdog_seconds = max(60, poll_seconds * 12)
+        next_poll = time.monotonic() + active_poll_seconds
         while True:
             wait_ms = max(0, int((next_poll - time.monotonic()) * 1000))
             if wait_ms:
@@ -794,7 +796,7 @@ def main() -> int:
             handle_context_rotation_request()
             if restart_requested:
                 raise RuntimeError("scoremer monitor restart requested after failed recovery")
-            next_poll += poll_seconds
+            next_poll += active_poll_seconds
             if next_poll < time.monotonic():
                 next_poll = time.monotonic()
             if time.monotonic() - last_response > watchdog_seconds:

@@ -183,3 +183,54 @@ func TestProcessScoremerSystemEventBuildsSystemAlert(t *testing.T) {
 		t.Fatalf("fields = %#v, want status fields", alert.SystemFields)
 	}
 }
+
+func TestProcessScoremerSystemEventSuppressesRepeatedAlerts(t *testing.T) {
+	store := &testStore{subs: []models.Subscription{
+		{GuildID: "g1", ChannelID: "c1", SubscriptionType: dealtypes.SubscriptionOnEveryCorner, DealType: dealtypes.OnEveryCornerPotentialGoals},
+	}}
+	notifier := &testNotifier{}
+	p := NewProcessor(store, notifier)
+	now := time.Date(2026, 6, 19, 23, 10, 0, 0, time.UTC)
+	p.timeSource = func() time.Time { return now }
+
+	event := ScoremerEvent{
+		Type:     scoremerSystemFixAttempt,
+		Severity: "warning",
+		Stage:    "active",
+		Status:   "0",
+		Attempt:  "browser.context.rotate",
+		Message:  "Scoremer polling is unhealthy.",
+	}
+	if err := p.ProcessScoremerSystemEvent(context.Background(), event); err != nil {
+		t.Fatalf("first ProcessScoremerSystemEvent error = %v", err)
+	}
+	now = now.Add(time.Minute)
+	if err := p.ProcessScoremerSystemEvent(context.Background(), event); err != nil {
+		t.Fatalf("second ProcessScoremerSystemEvent error = %v", err)
+	}
+	if len(notifier.alerts) != 1 {
+		t.Fatalf("alerts after duplicate = %d, want 1", len(notifier.alerts))
+	}
+
+	now = now.Add(DefaultSystemAlertCooldown + time.Second)
+	if err := p.ProcessScoremerSystemEvent(context.Background(), event); err != nil {
+		t.Fatalf("third ProcessScoremerSystemEvent error = %v", err)
+	}
+	if len(notifier.alerts) != 2 {
+		t.Fatalf("alerts after cooldown = %d, want 2", len(notifier.alerts))
+	}
+
+	now = now.Add(time.Minute)
+	if err := p.ProcessScoremerSystemEvent(context.Background(), ScoremerEvent{
+		Type:     scoremerSystemRecovered,
+		Severity: "recovered",
+		Stage:    "page",
+		Status:   "200",
+		Message:  "Scoremer polling recovered.",
+	}); err != nil {
+		t.Fatalf("recovery ProcessScoremerSystemEvent error = %v", err)
+	}
+	if len(notifier.alerts) != 3 {
+		t.Fatalf("alerts after recovery = %d, want 3", len(notifier.alerts))
+	}
+}

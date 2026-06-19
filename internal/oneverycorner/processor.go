@@ -23,6 +23,7 @@ const (
 	TweetURL     = "https://x.com/intent/tweet?text=%40Enterprise+%23OnEveryCorner+%23Sweepstakes"
 
 	DefaultGoalCorrelationWindow = 75 * time.Second
+	DefaultSystemAlertCooldown   = 15 * time.Minute
 )
 
 // Auto-posting implementation note:
@@ -70,14 +71,15 @@ type Processor struct {
 	store    Store
 	notifier Notifier
 
-	mu         sync.Mutex
-	corners    map[string]cornerState
-	goalAlerts map[string]time.Time
-	seen       map[string]time.Time
-	seenOrder  []string
-	maxSeen    int
-	window     time.Duration
-	timeSource func() time.Time
+	mu           sync.Mutex
+	corners      map[string]cornerState
+	goalAlerts   map[string]time.Time
+	systemAlerts map[string]time.Time
+	seen         map[string]time.Time
+	seenOrder    []string
+	maxSeen      int
+	window       time.Duration
+	timeSource   func() time.Time
 }
 
 type cornerState struct {
@@ -119,14 +121,15 @@ var (
 
 func NewProcessor(store Store, notifier Notifier) *Processor {
 	return &Processor{
-		store:      store,
-		notifier:   notifier,
-		corners:    make(map[string]cornerState),
-		goalAlerts: make(map[string]time.Time),
-		seen:       make(map[string]time.Time),
-		maxSeen:    512,
-		window:     DefaultGoalCorrelationWindow,
-		timeSource: time.Now,
+		store:        store,
+		notifier:     notifier,
+		corners:      make(map[string]cornerState),
+		goalAlerts:   make(map[string]time.Time),
+		systemAlerts: make(map[string]time.Time),
+		seen:         make(map[string]time.Time),
+		maxSeen:      512,
+		window:       DefaultGoalCorrelationWindow,
+		timeSource:   time.Now,
 	}
 }
 
@@ -295,6 +298,14 @@ func (p *Processor) correlateGoal(event NotificationEvent, parsed parsedEvent) (
 }
 
 func (p *Processor) sendAlert(ctx context.Context, alert models.OnEveryCornerAlert) error {
+	if !p.markSystemAlert(alert) {
+		slog.Info("Suppressed repeated OnEveryCorner system alert",
+			"source", alert.SourcePackage,
+			"title", alert.RawTitle,
+			"severity", alert.SystemSeverity,
+		)
+		return nil
+	}
 	subs, err := p.store.GetAllSubscriptions(ctx)
 	if err != nil {
 		return fmt.Errorf("load oneverycorner subscriptions: %w", err)
@@ -305,6 +316,71 @@ func (p *Processor) sendAlert(ctx context.Context, alert models.OnEveryCornerAle
 		return nil
 	}
 	return p.notifier.SendOnEveryCornerAlert(ctx, alert, filtered)
+}
+
+func (p *Processor) markSystemAlert(alert models.OnEveryCornerAlert) bool {
+	if alert.Kind != models.OnEveryCornerAlertSystem {
+		return true
+	}
+	seenAt := alert.ReceivedAt
+	if seenAt.IsZero() {
+		seenAt = time.Now()
+		if p != nil && p.timeSource != nil {
+			seenAt = p.timeSource()
+		}
+	}
+	source := strings.TrimSpace(alert.SourcePackage)
+	if strings.Contains(strings.ToLower(alert.RawTitle), "recovered") {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		for key := range p.systemAlerts {
+			if strings.HasPrefix(key, source+"|") {
+				delete(p.systemAlerts, key)
+			}
+		}
+		return true
+	}
+	key := systemAlertKey(alert)
+	if key == "" {
+		return true
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.systemAlerts == nil {
+		p.systemAlerts = make(map[string]time.Time)
+	}
+	for existingKey, at := range p.systemAlerts {
+		if seenAt.Sub(at) > DefaultSystemAlertCooldown {
+			delete(p.systemAlerts, existingKey)
+		}
+	}
+	if at, ok := p.systemAlerts[key]; ok && seenAt.Sub(at) <= DefaultSystemAlertCooldown {
+		return false
+	}
+	p.systemAlerts[key] = seenAt
+	return true
+}
+
+func systemAlertKey(alert models.OnEveryCornerAlert) string {
+	parts := []string{
+		strings.ToLower(strings.TrimSpace(alert.SourcePackage)),
+		strings.ToLower(strings.TrimSpace(alert.RawTitle)),
+		strings.ToLower(strings.TrimSpace(alert.SystemSeverity)),
+		strings.ToLower(strings.TrimSpace(systemAlertField(alert, "Stage"))),
+		strings.ToLower(strings.TrimSpace(systemAlertField(alert, "Status"))),
+		strings.ToLower(strings.TrimSpace(systemAlertField(alert, "Attempted fix"))),
+	}
+	return strings.Join(parts, "|")
+}
+
+func systemAlertField(alert models.OnEveryCornerAlert, name string) string {
+	for _, field := range alert.SystemFields {
+		if strings.EqualFold(strings.TrimSpace(field.Name), name) {
+			return field.Value
+		}
+	}
+	return ""
 }
 
 func filterSubscriptions(alertKind string, subs []models.Subscription) []models.Subscription {
