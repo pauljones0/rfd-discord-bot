@@ -29,7 +29,7 @@ func (n *testNotifier) SendOnEveryCornerAlert(_ context.Context, alert models.On
 	return nil
 }
 
-func TestProcessNotificationSendsCornerAlert(t *testing.T) {
+func TestProcessNotificationRecordsCornerWithoutRoutineDiscordAlert(t *testing.T) {
 	store := &testStore{subs: []models.Subscription{
 		{GuildID: "g1", ChannelID: "c1", SubscriptionType: dealtypes.SubscriptionOnEveryCorner, DealType: dealtypes.OnEveryCornerAlerts},
 	}}
@@ -48,30 +48,18 @@ func TestProcessNotificationSendsCornerAlert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessNotification error = %v", err)
 	}
-	if len(notifier.alerts) != 1 {
-		t.Fatalf("alerts = %d, want 1", len(notifier.alerts))
+	if len(notifier.alerts) != 0 {
+		t.Fatalf("alerts = %d, want 0 for routine corner awareness subscription", len(notifier.alerts))
 	}
-	alert := notifier.alerts[0]
-	if alert.Kind != models.OnEveryCornerAlertCorner {
-		t.Fatalf("kind = %q, want corner", alert.Kind)
+
+	p.mu.Lock()
+	state, ok := p.corners["canada v germany"]
+	p.mu.Unlock()
+	if !ok {
+		t.Fatal("corner was not recorded for later goal correlation")
 	}
-	if alert.MatchName != "Canada v Germany" {
-		t.Fatalf("match = %q, want Canada v Germany", alert.MatchName)
-	}
-	if !strings.HasPrefix(alert.TweetText, "@Enterprise #OnEveryCorner #") {
-		t.Fatalf("tweet text = %q, want allowed Enterprise format", alert.TweetText)
-	}
-	if alert.TweetURL != ComposeURL(alert.TweetText) {
-		t.Fatalf("tweet URL = %q, want %q", alert.TweetURL, ComposeURL(alert.TweetText))
-	}
-	if alert.VariantTweetText != alert.TweetText {
-		t.Fatalf("variant tweet text = %q, want tweet text %q", alert.VariantTweetText, alert.TweetText)
-	}
-	if alert.VariantTweetURL != ComposeURL(alert.VariantTweetText) {
-		t.Fatalf("variant tweet URL = %q, want %q", alert.VariantTweetURL, ComposeURL(alert.VariantTweetText))
-	}
-	if !containsAnyEmoji(alert.TweetText) {
-		t.Fatalf("tweet text = %q, want emoji suffix", alert.TweetText)
+	if state.MatchName != "Canada v Germany" || !state.ReceivedAt.Equal(now) {
+		t.Fatalf("recorded corner = %#v, want Canada v Germany at %s", state, now)
 	}
 }
 
@@ -104,10 +92,10 @@ func TestProcessNotificationCorrelatesGoalAfterCorner(t *testing.T) {
 		t.Fatalf("goal ProcessNotification error = %v", err)
 	}
 
-	if len(notifier.alerts) != 2 {
-		t.Fatalf("alerts = %d, want 2", len(notifier.alerts))
+	if len(notifier.alerts) != 1 {
+		t.Fatalf("alerts = %d, want 1 awareness alert", len(notifier.alerts))
 	}
-	alert := notifier.alerts[1]
+	alert := notifier.alerts[0]
 	if alert.Kind != models.OnEveryCornerAlertPossibleCornerGoal {
 		t.Fatalf("kind = %q, want possible_corner_goal", alert.Kind)
 	}
@@ -149,11 +137,11 @@ func TestProcessNotificationUsesScoremerMatchIDForCorrelation(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("goal ProcessNotification error = %v", err)
 		}
-		if len(notifier.alerts) != 2 {
-			t.Fatalf("alerts = %d, want corner and possible goal", len(notifier.alerts))
+		if len(notifier.alerts) != 1 {
+			t.Fatalf("alerts = %d, want possible goal only", len(notifier.alerts))
 		}
-		if notifier.alerts[1].Kind != models.OnEveryCornerAlertPossibleCornerGoal {
-			t.Fatalf("second alert kind = %q", notifier.alerts[1].Kind)
+		if notifier.alerts[0].Kind != models.OnEveryCornerAlertPossibleCornerGoal {
+			t.Fatalf("alert kind = %q", notifier.alerts[0].Kind)
 		}
 	})
 
@@ -180,8 +168,8 @@ func TestProcessNotificationUsesScoremerMatchIDForCorrelation(t *testing.T) {
 			Lines:         []string{"Unknown match", "Corners 1-0", "Score 1-0"},
 			ReceivedAt:    start.Add(42 * time.Second),
 		})
-		if len(notifier.alerts) != 1 {
-			t.Fatalf("alerts = %d, want only the corner alert", len(notifier.alerts))
+		if len(notifier.alerts) != 0 {
+			t.Fatalf("alerts = %d, want no awareness alerts", len(notifier.alerts))
 		}
 	})
 }
@@ -338,8 +326,8 @@ func TestProcessNotificationIgnoresOldGoalAfterCorner(t *testing.T) {
 		ReceivedAt:    start.Add(3 * time.Minute),
 	})
 
-	if len(notifier.alerts) != 1 {
-		t.Fatalf("alerts = %d, want only corner alert", len(notifier.alerts))
+	if len(notifier.alerts) != 0 {
+		t.Fatalf("alerts = %d, want no awareness alerts", len(notifier.alerts))
 	}
 }
 
@@ -354,8 +342,8 @@ func TestProcessNotificationGoalCorrelationWindowIsSeventyFiveSeconds(t *testing
 		goalAfter  time.Duration
 		wantAlerts int
 	}{
-		{name: "at window", goalAfter: 75 * time.Second, wantAlerts: 2},
-		{name: "past window", goalAfter: 76 * time.Second, wantAlerts: 1},
+		{name: "at window", goalAfter: 75 * time.Second, wantAlerts: 1},
+		{name: "past window", goalAfter: 76 * time.Second, wantAlerts: 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			notifier := &testNotifier{}
@@ -409,8 +397,18 @@ func TestProcessNotificationDedupesStableID(t *testing.T) {
 	event.ReceivedAt = event.ReceivedAt.Add(time.Second)
 	_ = p.ProcessNotification(context.Background(), event)
 
-	if len(notifier.alerts) != 1 {
-		t.Fatalf("alerts = %d, want 1 after duplicate", len(notifier.alerts))
+	if len(notifier.alerts) != 0 {
+		t.Fatalf("alerts = %d, want no routine corner alerts", len(notifier.alerts))
+	}
+	p.mu.Lock()
+	seenCount := len(p.seen)
+	state := p.corners["canada v germany"]
+	p.mu.Unlock()
+	if seenCount != 1 {
+		t.Fatalf("seen entries = %d, want one stable ID after duplicate", seenCount)
+	}
+	if state.EventID != "e1" {
+		t.Fatalf("corner state event ID = %q, want first event e1", state.EventID)
 	}
 }
 

@@ -76,8 +76,7 @@ var CoreChoices = []Choice{
 }
 
 var OnEveryCornerChoices = []Choice{
-	{Name: "Corners and possible corner-goal alerts", Value: OnEveryCornerAlerts},
-	{Name: "Potential corner-goal alerts only", Value: OnEveryCornerPotentialGoals},
+	{Name: "Awareness: corner goals, X failures, Scoremer issues", Value: OnEveryCornerPotentialGoals},
 }
 
 var RemoveChoices = []Choice{
@@ -135,6 +134,9 @@ func IsCore(value string) bool {
 }
 
 func IsOnEveryCorner(value string) bool {
+	if value == OnEveryCornerAlerts {
+		return true
+	}
 	return containsValue(OnEveryCornerChoices, value)
 }
 
@@ -176,10 +178,8 @@ func Label(value string) string {
 		return "Core price errors only"
 	case CoreSteals:
 		return "Core steals only"
-	case OnEveryCornerAlerts:
-		return "OnEveryCorner corner and possible corner-goal alerts"
-	case OnEveryCornerPotentialGoals:
-		return "OnEveryCorner potential corner-goal alerts only"
+	case OnEveryCornerAlerts, OnEveryCornerPotentialGoals:
+		return "OnEveryCorner awareness alerts"
 	default:
 		return value
 	}

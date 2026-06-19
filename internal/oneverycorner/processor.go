@@ -317,9 +317,7 @@ func subscriptionAllowsOnEveryCornerAlert(dealType, alertKind string) bool {
 		return true
 	}
 	switch strings.TrimSpace(dealType) {
-	case "", dealtypes.OnEveryCornerAlerts:
-		return true
-	case dealtypes.OnEveryCornerPotentialGoals:
+	case "", dealtypes.OnEveryCornerAlerts, dealtypes.OnEveryCornerPotentialGoals:
 		return alertKind == models.OnEveryCornerAlertPossibleCornerGoal
 	default:
 		return false

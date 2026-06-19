@@ -76,23 +76,20 @@ func TestProcessScoremerEventCorrelatesGoalAfterCorner(t *testing.T) {
 		t.Fatalf("goal error = %v", err)
 	}
 
-	if len(notifier.alerts) != 2 {
-		t.Fatalf("alerts = %d, want corner and possible goal", len(notifier.alerts))
+	if len(notifier.alerts) != 1 {
+		t.Fatalf("alerts = %d, want possible goal only", len(notifier.alerts))
 	}
-	if notifier.alerts[0].Kind != models.OnEveryCornerAlertCorner {
-		t.Fatalf("first alert kind = %q", notifier.alerts[0].Kind)
+	if notifier.alerts[0].Kind != models.OnEveryCornerAlertPossibleCornerGoal {
+		t.Fatalf("alert kind = %q", notifier.alerts[0].Kind)
 	}
-	if notifier.alerts[1].Kind != models.OnEveryCornerAlertPossibleCornerGoal {
-		t.Fatalf("second alert kind = %q", notifier.alerts[1].Kind)
+	if notifier.alerts[0].SecondsAfterCorner != 42 {
+		t.Fatalf("seconds after corner = %d, want 42", notifier.alerts[0].SecondsAfterCorner)
 	}
-	if notifier.alerts[1].SecondsAfterCorner != 42 {
-		t.Fatalf("seconds after corner = %d, want 42", notifier.alerts[1].SecondsAfterCorner)
+	if notifier.alerts[0].ScoringSide != "home" || notifier.alerts[0].ScoringTeam != "Uzbekistan" {
+		t.Fatalf("scoring context = %q/%q, want home/Uzbekistan", notifier.alerts[0].ScoringSide, notifier.alerts[0].ScoringTeam)
 	}
-	if notifier.alerts[1].ScoringSide != "home" || notifier.alerts[1].ScoringTeam != "Uzbekistan" {
-		t.Fatalf("scoring context = %q/%q, want home/Uzbekistan", notifier.alerts[1].ScoringSide, notifier.alerts[1].ScoringTeam)
-	}
-	if notifier.alerts[1].Score != "1-0" {
-		t.Fatalf("score = %q, want 1-0", notifier.alerts[1].Score)
+	if notifier.alerts[0].Score != "1-0" {
+		t.Fatalf("score = %q, want 1-0", notifier.alerts[0].Score)
 	}
 }
 
@@ -137,11 +134,14 @@ func TestProcessScoremerEventUsesProcessorClockWhenTimestampMissing(t *testing.T
 	}); err != nil {
 		t.Fatalf("ProcessScoremerEvent error = %v", err)
 	}
-	if len(notifier.alerts) != 1 {
-		t.Fatalf("alerts = %d, want 1", len(notifier.alerts))
+	if len(notifier.alerts) != 0 {
+		t.Fatalf("alerts = %d, want no routine corner alerts", len(notifier.alerts))
 	}
-	if !notifier.alerts[0].ReceivedAt.Equal(now) {
-		t.Fatalf("receivedAt = %s, want %s", notifier.alerts[0].ReceivedAt, now)
+	p.mu.Lock()
+	state := p.corners["scoremer:1533093"]
+	p.mu.Unlock()
+	if !state.ReceivedAt.Equal(now) {
+		t.Fatalf("recorded corner receivedAt = %s, want %s", state.ReceivedAt, now)
 	}
 }
 
