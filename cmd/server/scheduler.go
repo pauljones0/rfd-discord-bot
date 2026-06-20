@@ -31,31 +31,20 @@ func (s *Server) StartLocalScheduler(ctx context.Context, cfg *config.Config) {
 	if cfg.BestBuyComputeEnabled && s.bestbuyCompute != nil {
 		s.startScheduledLoop(ctx, "bestbuy_compute", cfg.BestBuyComputePollInterval, 20*time.Minute, s.bestbuyComputeSem, s.bestbuyCompute.ProcessComputeOutliers)
 	}
-	if cfg.OnEveryCornerScoremerEnabled && s.onEveryCornerScoremer != nil {
+	if cfg.OnEveryCornerEnabled && s.onEveryCornerController != nil {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			slog.Info("OnEveryCorner Scoremer monitor starting",
-				"url", cfg.OnEveryCornerScoremerURL,
-				"league_ids", cfg.OnEveryCornerScoremerLeagueIDs,
-				"poll_interval", cfg.OnEveryCornerScoremerPollInterval.String(),
+			slog.Info("OnEveryCorner controller starting",
+				"primary_source", cfg.OnEveryCornerPrimarySource,
+				"backup_sources", cfg.OnEveryCornerBackupSources,
+				"totalcorner_league_ids", cfg.OnEveryCornerTotalCornerLeagueIDs,
+				"scoremer_league_ids", cfg.OnEveryCornerScoremerLeagueIDs,
+				"live_poll_interval", cfg.OnEveryCornerLivePollInterval.String(),
+				"schedule_lookahead", cfg.OnEveryCornerScheduleLookahead.String(),
 			)
-			if err := s.onEveryCornerScoremer.Run(ctx); err != nil && ctx.Err() == nil {
-				slog.Error("OnEveryCorner Scoremer monitor stopped", "error", err)
-			}
-		}()
-	}
-	if cfg.OnEveryCornerTotalCornerEnabled && s.onEveryCornerTotalCorner != nil {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			slog.Info("OnEveryCorner TotalCorner monitor starting",
-				"url", cfg.OnEveryCornerTotalCornerURL,
-				"league_ids", cfg.OnEveryCornerTotalCornerLeagueIDs,
-				"poll_interval", cfg.OnEveryCornerTotalCornerPollInterval.String(),
-			)
-			if err := s.onEveryCornerTotalCorner.Run(ctx); err != nil && ctx.Err() == nil {
-				slog.Error("OnEveryCorner TotalCorner monitor stopped", "error", err)
+			if err := s.onEveryCornerController.Run(ctx); err != nil && ctx.Err() == nil {
+				slog.Error("OnEveryCorner controller stopped", "error", err)
 			}
 		}()
 	}

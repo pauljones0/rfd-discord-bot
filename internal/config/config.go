@@ -30,15 +30,23 @@ type Config struct {
 	RFDAdminToken          string
 	SwordswallowerSecret   string
 
-	// OnEveryCorner Scoremer browser monitor configuration.
-	OnEveryCornerScoremerEnabled         bool
-	OnEveryCornerScoremerURL             string
-	OnEveryCornerScoremerPollInterval    time.Duration
-	OnEveryCornerScoremerLeagueIDs       []string
-	OnEveryCornerTotalCornerEnabled      bool
-	OnEveryCornerTotalCornerURL          string
-	OnEveryCornerTotalCornerPollInterval time.Duration
-	OnEveryCornerTotalCornerLeagueIDs    []string
+	// OnEveryCorner source controller configuration.
+	OnEveryCornerEnabled                    bool
+	OnEveryCornerPrimarySource              string
+	OnEveryCornerBackupSources              []string
+	OnEveryCornerScheduleCachePath          string
+	OnEveryCornerScheduleLookahead          time.Duration
+	OnEveryCornerScheduleRefreshInterval    time.Duration
+	OnEveryCornerPendingKickoffPollInterval time.Duration
+	OnEveryCornerPendingKickoffTimeout      time.Duration
+	OnEveryCornerLivePollInterval           time.Duration
+	OnEveryCornerPostLiveGracePeriod        time.Duration
+	OnEveryCornerTotalCornerAPIToken        string
+	OnEveryCornerTotalCornerAPIURL          string
+	OnEveryCornerTotalCornerLeagueIDs       []string
+	OnEveryCornerScoremerURL                string
+	OnEveryCornerScoremerPollInterval       time.Duration
+	OnEveryCornerScoremerLeagueIDs          []string
 
 	// Discord App Auth
 	DiscordAppID                     string
@@ -217,16 +225,34 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	scoremerPollInterval, err := durationEnv("ONEVERYCORNER_SCOREMER_POLL_INTERVAL", time.Second)
+	oneverycornerScheduleLookahead, err := durationEnv("ONEVERYCORNER_SCHEDULE_LOOKAHEAD", 36*time.Hour)
 	if err != nil {
 		return nil, err
 	}
-	scoremerEnabled := boolEnv("ONEVERYCORNER_SCOREMER_ENABLED", false)
-	totalCornerPollInterval, err := durationEnv("ONEVERYCORNER_TOTALCORNER_POLL_INTERVAL", time.Second)
+	oneverycornerScheduleRefreshInterval, err := durationEnv("ONEVERYCORNER_SCHEDULE_REFRESH_INTERVAL", 15*time.Minute)
 	if err != nil {
 		return nil, err
 	}
-	totalCornerEnabled := boolEnv("ONEVERYCORNER_TOTALCORNER_ENABLED", false)
+	oneverycornerPendingKickoffPollInterval, err := durationEnv("ONEVERYCORNER_PENDING_KICKOFF_POLL_INTERVAL", 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	oneverycornerPendingKickoffTimeout, err := durationEnv("ONEVERYCORNER_PENDING_KICKOFF_TIMEOUT", time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	oneverycornerLivePollInterval, err := durationEnv("ONEVERYCORNER_LIVE_POLL_INTERVAL", 3500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	oneverycornerPostLiveGracePeriod, err := durationEnv("ONEVERYCORNER_POST_LIVE_GRACE_PERIOD", 10*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	scoremerPollInterval, err := durationEnv("ONEVERYCORNER_SCOREMER_POLL_INTERVAL", 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
 
 	geminiLocation := os.Getenv("GEMINI_LOCATION")
 	if geminiLocation == "" {
@@ -286,72 +312,80 @@ func Load() (*Config, error) {
 			"gemini-3.5-flash",
 			"gemini-2.5-pro",
 		},
-		RFDAdminToken:                        os.Getenv("RFD_ADMIN_TOKEN"),
-		DiscordAppID:                         os.Getenv("DISCORD_APP_ID"),
-		DiscordPublicKey:                     discordPublicKey,
-		DiscordBotToken:                      discordBotToken,
-		AllowUnsignedDiscordInteractions:     boolEnv("ALLOW_UNSIGNED_DISCORD_INTERACTIONS", false),
-		EbayClientID:                         os.Getenv("EBAY_CLIENT_ID"),
-		EbayClientSecret:                     os.Getenv("EBAY_CLIENT_SECRET"),
-		EbayCouponBackends:                   csvEnv("EBAY_COUPON_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
-		EbayPollInterval:                     ebayPollInterval,
-		EbayCouponDiscoveryInterval:          ebayCouponDiscoveryInterval,
-		EbayPaidBrowserEnabled:               boolEnv("EBAY_PAID_BROWSER_ENABLED", false),
-		EbayPaidBrowserMaxPerRun:             intEnv("EBAY_PAID_BROWSER_MAX_CALLS_PER_RUN", 1),
-		EbayPaidBrowserMaxPerDay:             intEnv("EBAY_PAID_BROWSER_MAX_CALLS_PER_DAY", 6),
-		ProxyURL:                             os.Getenv("PROXY_URL"),
-		MemoryExpressPollInterval:            memexpressPollInterval,
-		MemoryExpressChromePath:              firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
-		MemoryExpressChromeProfile:           os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
-		MemoryExpressBackends:                csvEnv("MEMEXPRESS_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
-		MemoryExpressPaidBrowserEnabled:      boolEnv("MEMEXPRESS_PAID_BROWSER_ENABLED", false),
-		MemoryExpressPaidMaxPerRun:           intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
-		MemoryExpressPaidMaxPerDay:           intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
-		BestBuyBackends:                      csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
-		BestBuyPollInterval:                  bestBuyPollInterval,
-		BestBuyComputeEnabled:                boolEnv("BESTBUY_COMPUTE_ENABLED", false),
-		BestBuyComputePollInterval:           bestBuyComputePollInterval,
-		BestBuyComputeAlertFirstSeen:         boolEnv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", false),
-		BestBuyComputeEmbedCommand:           os.Getenv("BESTBUY_COMPUTE_EMBED_COMMAND"),
-		BestBuyComputeSoldVerifyEnabled:      boolEnv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", false),
-		BestBuyComputeSoldBackends:           csvEnv("BESTBUY_COMPUTE_SOLD_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler"}),
-		BestBuyComputeSoldCacheTTL:           bestBuyComputeSoldCacheTTL,
-		BestBuyComputeSoldQueryDelay:         bestBuyComputeSoldQueryDelay,
-		BestBuyComputeSoldPaidEnabled:        boolEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_ENABLED", false),
-		BestBuyComputeSoldPaidMaxPerRun:      intEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
-		BestBuyComputeSoldPaidMaxPerDay:      intEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
-		BestBuySoldCompsEnabled:              boolEnv("BESTBUY_SOLD_COMPS_ENABLED", true),
-		BestBuySoldCompBackends:              csvEnv("BESTBUY_SOLD_COMP_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler"}),
-		BestBuySoldCompCacheTTL:              bestBuySoldCompCacheTTL,
-		BestBuySoldCompQueryDelay:            bestBuySoldCompQueryDelay,
-		BestBuySoldCompMaxPerRun:             intEnv("BESTBUY_SOLD_COMP_MAX_PER_RUN", 10),
-		BestBuySoldCompPaidEnabled:           boolEnv("BESTBUY_SOLD_COMP_PAID_BROWSER_ENABLED", false),
-		BestBuySoldCompPaidMaxPerRun:         intEnv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
-		BestBuySoldCompPaidMaxPerDay:         intEnv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
-		LocalSchedulerEnabled:                boolEnv("LOCAL_SCHEDULER_ENABLED", false),
-		CarfaxTokenServiceURL:                os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
-		CarfaxTokenServiceSecret:             os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
-		RedditServiceURL:                     os.Getenv("REDDIT_SERVICE_URL"),
-		RedditServiceSecret:                  os.Getenv("REDDIT_SERVICE_SECRET"),
-		XAPIKey:                              os.Getenv("X_API_KEY"),
-		XAPIKeySecret:                        os.Getenv("X_API_KEY_SECRET"),
-		XAccessToken:                         os.Getenv("X_ACCESS_TOKEN"),
-		XAccessTokenSecret:                   os.Getenv("X_ACCESS_TOKEN_SECRET"),
-		X2APIKey:                             os.Getenv("X2_API_KEY"),
-		X2APIKeySecret:                       os.Getenv("X2_API_KEY_SECRET"),
-		X2AccessToken:                        os.Getenv("X2_ACCESS_TOKEN"),
-		X2AccessTokenSecret:                  os.Getenv("X2_ACCESS_TOKEN_SECRET"),
-		OnEveryCornerScoremerEnabled:         scoremerEnabled,
-		OnEveryCornerScoremerURL:             firstNonEmpty(os.Getenv("ONEVERYCORNER_SCOREMER_URL"), "https://lv.scoremer.com/"),
-		OnEveryCornerScoremerPollInterval:    scoremerPollInterval,
-		OnEveryCornerScoremerLeagueIDs:       csvEnv("ONEVERYCORNER_SCOREMER_LEAGUE_IDS", []string{"3559"}),
-		OnEveryCornerTotalCornerEnabled:      totalCornerEnabled,
-		OnEveryCornerTotalCornerURL:          firstNonEmpty(os.Getenv("ONEVERYCORNER_TOTALCORNER_URL"), "https://www.totalcorner.com/match/today"),
-		OnEveryCornerTotalCornerPollInterval: totalCornerPollInterval,
-		OnEveryCornerTotalCornerLeagueIDs:    csvEnv("ONEVERYCORNER_TOTALCORNER_LEAGUE_IDS", []string{"29754"}),
-		SwordswallowerSecret:                 os.Getenv("SWORDSWALLOWER_SECRET"),
-		FacebookEnabled:                      boolEnv("FACEBOOK_ENABLED", false),
-		HardwareSwapEnabled:                  boolEnv("HARDWARESWAP_ENABLED", false),
+		RFDAdminToken:                           os.Getenv("RFD_ADMIN_TOKEN"),
+		DiscordAppID:                            os.Getenv("DISCORD_APP_ID"),
+		DiscordPublicKey:                        discordPublicKey,
+		DiscordBotToken:                         discordBotToken,
+		AllowUnsignedDiscordInteractions:        boolEnv("ALLOW_UNSIGNED_DISCORD_INTERACTIONS", false),
+		EbayClientID:                            os.Getenv("EBAY_CLIENT_ID"),
+		EbayClientSecret:                        os.Getenv("EBAY_CLIENT_SECRET"),
+		EbayCouponBackends:                      csvEnv("EBAY_COUPON_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
+		EbayPollInterval:                        ebayPollInterval,
+		EbayCouponDiscoveryInterval:             ebayCouponDiscoveryInterval,
+		EbayPaidBrowserEnabled:                  boolEnv("EBAY_PAID_BROWSER_ENABLED", false),
+		EbayPaidBrowserMaxPerRun:                intEnv("EBAY_PAID_BROWSER_MAX_CALLS_PER_RUN", 1),
+		EbayPaidBrowserMaxPerDay:                intEnv("EBAY_PAID_BROWSER_MAX_CALLS_PER_DAY", 6),
+		ProxyURL:                                os.Getenv("PROXY_URL"),
+		MemoryExpressPollInterval:               memexpressPollInterval,
+		MemoryExpressChromePath:                 firstNonEmpty(os.Getenv("MEMEXPRESS_CHROME_PATH"), os.Getenv("CHROME_PATH")),
+		MemoryExpressChromeProfile:              os.Getenv("MEMEXPRESS_CHROME_PROFILE_DIR"),
+		MemoryExpressBackends:                   csvEnv("MEMEXPRESS_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler", "paid-trial"}),
+		MemoryExpressPaidBrowserEnabled:         boolEnv("MEMEXPRESS_PAID_BROWSER_ENABLED", false),
+		MemoryExpressPaidMaxPerRun:              intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
+		MemoryExpressPaidMaxPerDay:              intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
+		BestBuyBackends:                         csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
+		BestBuyPollInterval:                     bestBuyPollInterval,
+		BestBuyComputeEnabled:                   boolEnv("BESTBUY_COMPUTE_ENABLED", false),
+		BestBuyComputePollInterval:              bestBuyComputePollInterval,
+		BestBuyComputeAlertFirstSeen:            boolEnv("BESTBUY_COMPUTE_ALERT_FIRST_SEEN", false),
+		BestBuyComputeEmbedCommand:              os.Getenv("BESTBUY_COMPUTE_EMBED_COMMAND"),
+		BestBuyComputeSoldVerifyEnabled:         boolEnv("BESTBUY_COMPUTE_SOLD_VERIFY_ENABLED", false),
+		BestBuyComputeSoldBackends:              csvEnv("BESTBUY_COMPUTE_SOLD_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler"}),
+		BestBuyComputeSoldCacheTTL:              bestBuyComputeSoldCacheTTL,
+		BestBuyComputeSoldQueryDelay:            bestBuyComputeSoldQueryDelay,
+		BestBuyComputeSoldPaidEnabled:           boolEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_ENABLED", false),
+		BestBuyComputeSoldPaidMaxPerRun:         intEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
+		BestBuyComputeSoldPaidMaxPerDay:         intEnv("BESTBUY_COMPUTE_SOLD_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
+		BestBuySoldCompsEnabled:                 boolEnv("BESTBUY_SOLD_COMPS_ENABLED", true),
+		BestBuySoldCompBackends:                 csvEnv("BESTBUY_SOLD_COMP_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler"}),
+		BestBuySoldCompCacheTTL:                 bestBuySoldCompCacheTTL,
+		BestBuySoldCompQueryDelay:               bestBuySoldCompQueryDelay,
+		BestBuySoldCompMaxPerRun:                intEnv("BESTBUY_SOLD_COMP_MAX_PER_RUN", 10),
+		BestBuySoldCompPaidEnabled:              boolEnv("BESTBUY_SOLD_COMP_PAID_BROWSER_ENABLED", false),
+		BestBuySoldCompPaidMaxPerRun:            intEnv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
+		BestBuySoldCompPaidMaxPerDay:            intEnv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
+		LocalSchedulerEnabled:                   boolEnv("LOCAL_SCHEDULER_ENABLED", false),
+		CarfaxTokenServiceURL:                   os.Getenv("CARFAX_TOKEN_SERVICE_URL"),
+		CarfaxTokenServiceSecret:                os.Getenv("CARFAX_TOKEN_SERVICE_SECRET"),
+		RedditServiceURL:                        os.Getenv("REDDIT_SERVICE_URL"),
+		RedditServiceSecret:                     os.Getenv("REDDIT_SERVICE_SECRET"),
+		XAPIKey:                                 os.Getenv("X_API_KEY"),
+		XAPIKeySecret:                           os.Getenv("X_API_KEY_SECRET"),
+		XAccessToken:                            os.Getenv("X_ACCESS_TOKEN"),
+		XAccessTokenSecret:                      os.Getenv("X_ACCESS_TOKEN_SECRET"),
+		X2APIKey:                                os.Getenv("X2_API_KEY"),
+		X2APIKeySecret:                          os.Getenv("X2_API_KEY_SECRET"),
+		X2AccessToken:                           os.Getenv("X2_ACCESS_TOKEN"),
+		X2AccessTokenSecret:                     os.Getenv("X2_ACCESS_TOKEN_SECRET"),
+		OnEveryCornerEnabled:                    boolEnv("ONEVERYCORNER_ENABLED", false),
+		OnEveryCornerPrimarySource:              firstNonEmpty(os.Getenv("ONEVERYCORNER_PRIMARY_SOURCE"), "totalcorner"),
+		OnEveryCornerBackupSources:              csvEnv("ONEVERYCORNER_BACKUP_SOURCES", []string{"scoremer"}),
+		OnEveryCornerScheduleCachePath:          firstNonEmpty(os.Getenv("ONEVERYCORNER_SCHEDULE_CACHE_PATH"), "/data/oneverycorner-schedule-cache.json"),
+		OnEveryCornerScheduleLookahead:          oneverycornerScheduleLookahead,
+		OnEveryCornerScheduleRefreshInterval:    oneverycornerScheduleRefreshInterval,
+		OnEveryCornerPendingKickoffPollInterval: oneverycornerPendingKickoffPollInterval,
+		OnEveryCornerPendingKickoffTimeout:      oneverycornerPendingKickoffTimeout,
+		OnEveryCornerLivePollInterval:           oneverycornerLivePollInterval,
+		OnEveryCornerPostLiveGracePeriod:        oneverycornerPostLiveGracePeriod,
+		OnEveryCornerTotalCornerAPIToken:        os.Getenv("ONEVERYCORNER_TOTALCORNER_API_TOKEN"),
+		OnEveryCornerTotalCornerAPIURL:          firstNonEmpty(os.Getenv("ONEVERYCORNER_TOTALCORNER_API_URL"), "https://api.totalcorner.com/v1"),
+		OnEveryCornerTotalCornerLeagueIDs:       csvEnv("ONEVERYCORNER_TOTALCORNER_LEAGUE_IDS", []string{"29754"}),
+		OnEveryCornerScoremerURL:                firstNonEmpty(os.Getenv("ONEVERYCORNER_SCOREMER_URL"), "https://lv.scoremer.com/"),
+		OnEveryCornerScoremerPollInterval:       scoremerPollInterval,
+		OnEveryCornerScoremerLeagueIDs:          csvEnv("ONEVERYCORNER_SCOREMER_LEAGUE_IDS", []string{"3559"}),
+		SwordswallowerSecret:                    os.Getenv("SWORDSWALLOWER_SECRET"),
+		FacebookEnabled:                         boolEnv("FACEBOOK_ENABLED", false),
+		HardwareSwapEnabled:                     boolEnv("HARDWARESWAP_ENABLED", false),
 	}, nil
 }
 

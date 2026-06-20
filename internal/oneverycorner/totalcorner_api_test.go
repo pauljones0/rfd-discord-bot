@@ -1,0 +1,111 @@
+package oneverycorner
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
+
+func TestTotalCornerAPIScheduleUsesLeaguePagesAndLookaheadFilter(t *testing.T) {
+	var requestedPages []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != "test-token" {
+			t.Fatalf("token query missing")
+		}
+		if r.URL.Path != "/league/schedule/29754" {
+			t.Fatalf("path = %q, want /league/schedule/29754", r.URL.Path)
+		}
+		page := r.URL.Query().Get("page")
+		requestedPages = append(requestedPages, page)
+		start := "2026-06-20 18:00:00"
+		if page == "2" {
+			start = "2026-06-21 18:00:00"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": 1,
+			"pagination": map[string]any{
+				"current": page,
+				"pages":   2,
+				"next":    page == "1",
+			},
+			"data": map[string]any{
+				"league": map[string]any{"league_id": "29754", "name": "World Cup 2026"},
+				"matches": []map[string]any{
+					{
+						"id": "target-" + page,
+						"h":  "Canada", "a": "Brazil",
+						"l": "World Cup", "l_id": "29754",
+						"start":  start,
+						"status": "upcoming",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewTotalCornerAPIClient(TotalCornerAPIConfig{
+		BaseURL:    server.URL,
+		Token:      "test-token",
+		LeagueIDs:  []string{"29754"},
+		HTTPClient: server.Client(),
+	})
+	from := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	through := from.Add(36 * time.Hour)
+	got, err := client.Schedule(context.Background(), from, through)
+	if err != nil {
+		t.Fatalf("Schedule returned error: %v", err)
+	}
+	if len(requestedPages) != 2 || requestedPages[0] != "1" || requestedPages[1] != "2" {
+		t.Fatalf("requested pages = %v, want [1 2]", requestedPages)
+	}
+	if len(got) != 1 {
+		t.Fatalf("matches = %d, want only match in lookahead window", len(got))
+	}
+	if got[0].ID != "target-1" || got[0].Start.Location() != time.UTC {
+		t.Fatalf("match = %+v", got[0])
+	}
+}
+
+func TestTotalCornerAPIInPlayParsesCounters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/match/today" || r.URL.Query().Get("type") != "inplay" {
+			t.Fatalf("request = %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":    1,
+			"pagination": map[string]any{"current": 1, "pages": 1, "next": false},
+			"data": []map[string]any{
+				{
+					"id": "m1",
+					"h":  "Canada", "a": "Brazil",
+					"l": "World Cup", "l_id": "29754",
+					"start":  "2026-06-20 18:00:00",
+					"status": "35",
+					"hc":     "2", "ac": "1", "hg": "0", "ag": "1",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewTotalCornerAPIClient(TotalCornerAPIConfig{
+		BaseURL:    server.URL,
+		Token:      "test-token",
+		LeagueIDs:  []string{"29754"},
+		HTTPClient: server.Client(),
+	})
+	got, err := client.InPlay(context.Background())
+	if err != nil {
+		t.Fatalf("InPlay returned error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(got))
+	}
+	if got[0].HomeCorners != 2 || got[0].AwayCorners != 1 || got[0].HomeScore != 0 || got[0].AwayScore != 1 {
+		t.Fatalf("counters = %+v", got[0])
+	}
+}

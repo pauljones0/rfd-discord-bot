@@ -91,23 +91,44 @@ func TestLoad(t *testing.T) {
 	if cfg.LocalSchedulerEnabled {
 		t.Errorf("Expected local scheduler to be disabled by default")
 	}
-	if cfg.OnEveryCornerScoremerEnabled {
-		t.Errorf("Expected OnEveryCorner Scoremer monitor to be disabled by default")
+	if cfg.OnEveryCornerEnabled {
+		t.Errorf("Expected OnEveryCorner controller to be disabled by default")
+	}
+	if cfg.OnEveryCornerPrimarySource != "totalcorner" {
+		t.Errorf("Expected default OnEveryCorner primary source totalcorner, got %q", cfg.OnEveryCornerPrimarySource)
+	}
+	if !reflect.DeepEqual(cfg.OnEveryCornerBackupSources, []string{"scoremer"}) {
+		t.Errorf("Expected default OnEveryCorner backups [scoremer], got %v", cfg.OnEveryCornerBackupSources)
+	}
+	if cfg.OnEveryCornerScheduleCachePath != "/data/oneverycorner-schedule-cache.json" {
+		t.Errorf("Expected default OnEveryCorner schedule cache path, got %q", cfg.OnEveryCornerScheduleCachePath)
+	}
+	if cfg.OnEveryCornerScheduleLookahead != 36*time.Hour ||
+		cfg.OnEveryCornerScheduleRefreshInterval != 15*time.Minute ||
+		cfg.OnEveryCornerPendingKickoffPollInterval != 30*time.Second ||
+		cfg.OnEveryCornerPendingKickoffTimeout != time.Hour ||
+		cfg.OnEveryCornerLivePollInterval != 3500*time.Millisecond ||
+		cfg.OnEveryCornerPostLiveGracePeriod != 10*time.Minute {
+		t.Errorf("Unexpected OnEveryCorner timing defaults: lookahead=%s refresh=%s pending_poll=%s pending_timeout=%s live=%s grace=%s",
+			cfg.OnEveryCornerScheduleLookahead,
+			cfg.OnEveryCornerScheduleRefreshInterval,
+			cfg.OnEveryCornerPendingKickoffPollInterval,
+			cfg.OnEveryCornerPendingKickoffTimeout,
+			cfg.OnEveryCornerLivePollInterval,
+			cfg.OnEveryCornerPostLiveGracePeriod,
+		)
 	}
 	if cfg.OnEveryCornerScoremerURL != "https://lv.scoremer.com/" {
 		t.Errorf("Expected default Scoremer URL, got %q", cfg.OnEveryCornerScoremerURL)
 	}
-	if cfg.OnEveryCornerScoremerPollInterval != time.Second || !reflect.DeepEqual(cfg.OnEveryCornerScoremerLeagueIDs, []string{"3559"}) {
-		t.Errorf("Expected default Scoremer interval/leagues 1s/[3559], got %s/%v", cfg.OnEveryCornerScoremerPollInterval, cfg.OnEveryCornerScoremerLeagueIDs)
+	if cfg.OnEveryCornerScoremerPollInterval != 10*time.Second || !reflect.DeepEqual(cfg.OnEveryCornerScoremerLeagueIDs, []string{"3559"}) {
+		t.Errorf("Expected default Scoremer interval/leagues 10s/[3559], got %s/%v", cfg.OnEveryCornerScoremerPollInterval, cfg.OnEveryCornerScoremerLeagueIDs)
 	}
-	if cfg.OnEveryCornerTotalCornerEnabled {
-		t.Errorf("Expected OnEveryCorner TotalCorner monitor to be disabled by default")
+	if cfg.OnEveryCornerTotalCornerAPIURL != "https://api.totalcorner.com/v1" {
+		t.Errorf("Expected default TotalCorner API URL, got %q", cfg.OnEveryCornerTotalCornerAPIURL)
 	}
-	if cfg.OnEveryCornerTotalCornerURL != "https://www.totalcorner.com/match/today" {
-		t.Errorf("Expected default TotalCorner URL, got %q", cfg.OnEveryCornerTotalCornerURL)
-	}
-	if cfg.OnEveryCornerTotalCornerPollInterval != time.Second || !reflect.DeepEqual(cfg.OnEveryCornerTotalCornerLeagueIDs, []string{"29754"}) {
-		t.Errorf("Expected default TotalCorner interval/leagues 1s/[29754], got %s/%v", cfg.OnEveryCornerTotalCornerPollInterval, cfg.OnEveryCornerTotalCornerLeagueIDs)
+	if cfg.OnEveryCornerTotalCornerAPIToken != "" || !reflect.DeepEqual(cfg.OnEveryCornerTotalCornerLeagueIDs, []string{"29754"}) {
+		t.Errorf("Expected default TotalCorner token empty/leagues [29754], got token_set=%v leagues=%v", cfg.OnEveryCornerTotalCornerAPIToken != "", cfg.OnEveryCornerTotalCornerLeagueIDs)
 	}
 	if cfg.MaxStoredDeals != 500 {
 		t.Errorf("Expected default MaxStoredDeals 500, got %d", cfg.MaxStoredDeals)
@@ -249,14 +270,22 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	t.Setenv("BESTBUY_SOLD_COMP_PAID_BROWSER_ENABLED", "true")
 	t.Setenv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_RUN", "1")
 	t.Setenv("BESTBUY_SOLD_COMP_PAID_BROWSER_MAX_CALLS_PER_DAY", "2")
-	t.Setenv("ONEVERYCORNER_SCOREMER_ENABLED", "true")
+	t.Setenv("ONEVERYCORNER_ENABLED", "true")
+	t.Setenv("ONEVERYCORNER_PRIMARY_SOURCE", "totalcorner")
+	t.Setenv("ONEVERYCORNER_BACKUP_SOURCES", "scoremer")
+	t.Setenv("ONEVERYCORNER_SCHEDULE_CACHE_PATH", "/tmp/oec-cache.json")
+	t.Setenv("ONEVERYCORNER_SCHEDULE_LOOKAHEAD", "24h")
+	t.Setenv("ONEVERYCORNER_SCHEDULE_REFRESH_INTERVAL", "12m")
+	t.Setenv("ONEVERYCORNER_PENDING_KICKOFF_POLL_INTERVAL", "20s")
+	t.Setenv("ONEVERYCORNER_PENDING_KICKOFF_TIMEOUT", "45m")
+	t.Setenv("ONEVERYCORNER_LIVE_POLL_INTERVAL", "4s")
+	t.Setenv("ONEVERYCORNER_POST_LIVE_GRACE_PERIOD", "8m")
+	t.Setenv("ONEVERYCORNER_TOTALCORNER_API_TOKEN", "test-token")
+	t.Setenv("ONEVERYCORNER_TOTALCORNER_API_URL", "https://api.example.test/v1")
+	t.Setenv("ONEVERYCORNER_TOTALCORNER_LEAGUE_IDS", "29754, 999")
 	t.Setenv("ONEVERYCORNER_SCOREMER_URL", "https://example.test/live")
 	t.Setenv("ONEVERYCORNER_SCOREMER_POLL_INTERVAL", "3s")
 	t.Setenv("ONEVERYCORNER_SCOREMER_LEAGUE_IDS", "3559, 1234")
-	t.Setenv("ONEVERYCORNER_TOTALCORNER_ENABLED", "true")
-	t.Setenv("ONEVERYCORNER_TOTALCORNER_URL", "https://example.test/totalcorner")
-	t.Setenv("ONEVERYCORNER_TOTALCORNER_POLL_INTERVAL", "2s")
-	t.Setenv("ONEVERYCORNER_TOTALCORNER_LEAGUE_IDS", "29754, 999")
 
 	cfg, err := Load()
 	if err != nil {
@@ -311,8 +340,28 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	if cfg.BestBuyComputeSoldPaidMaxPerRun != 1 || cfg.BestBuyComputeSoldPaidMaxPerDay != 2 {
 		t.Fatalf("BestBuyComputeSoldPaid caps = %d/%d, want 1/2", cfg.BestBuyComputeSoldPaidMaxPerRun, cfg.BestBuyComputeSoldPaidMaxPerDay)
 	}
-	if !cfg.OnEveryCornerScoremerEnabled {
-		t.Fatal("OnEveryCornerScoremerEnabled = false, want true")
+	if !cfg.OnEveryCornerEnabled {
+		t.Fatal("OnEveryCornerEnabled = false, want true")
+	}
+	if cfg.OnEveryCornerPrimarySource != "totalcorner" || !reflect.DeepEqual(cfg.OnEveryCornerBackupSources, []string{"scoremer"}) {
+		t.Fatalf("OnEveryCorner sources = %q/%v, want totalcorner/[scoremer]", cfg.OnEveryCornerPrimarySource, cfg.OnEveryCornerBackupSources)
+	}
+	if cfg.OnEveryCornerScheduleCachePath != "/tmp/oec-cache.json" ||
+		cfg.OnEveryCornerScheduleLookahead != 24*time.Hour ||
+		cfg.OnEveryCornerScheduleRefreshInterval != 12*time.Minute ||
+		cfg.OnEveryCornerPendingKickoffPollInterval != 20*time.Second ||
+		cfg.OnEveryCornerPendingKickoffTimeout != 45*time.Minute ||
+		cfg.OnEveryCornerLivePollInterval != 4*time.Second ||
+		cfg.OnEveryCornerPostLiveGracePeriod != 8*time.Minute {
+		t.Fatalf("Unexpected OnEveryCorner scheduler config: cache=%q lookahead=%s refresh=%s pending_poll=%s pending_timeout=%s live=%s grace=%s",
+			cfg.OnEveryCornerScheduleCachePath,
+			cfg.OnEveryCornerScheduleLookahead,
+			cfg.OnEveryCornerScheduleRefreshInterval,
+			cfg.OnEveryCornerPendingKickoffPollInterval,
+			cfg.OnEveryCornerPendingKickoffTimeout,
+			cfg.OnEveryCornerLivePollInterval,
+			cfg.OnEveryCornerPostLiveGracePeriod,
+		)
 	}
 	if cfg.OnEveryCornerScoremerURL != "https://example.test/live" || cfg.OnEveryCornerScoremerPollInterval != 3*time.Second {
 		t.Fatalf("Scoremer URL/interval = %q/%s, want example/3s", cfg.OnEveryCornerScoremerURL, cfg.OnEveryCornerScoremerPollInterval)
@@ -320,11 +369,8 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	if !reflect.DeepEqual(cfg.OnEveryCornerScoremerLeagueIDs, []string{"3559", "1234"}) {
 		t.Fatalf("Scoremer league IDs = %v, want [3559 1234]", cfg.OnEveryCornerScoremerLeagueIDs)
 	}
-	if !cfg.OnEveryCornerTotalCornerEnabled {
-		t.Fatal("OnEveryCornerTotalCornerEnabled = false, want true")
-	}
-	if cfg.OnEveryCornerTotalCornerURL != "https://example.test/totalcorner" || cfg.OnEveryCornerTotalCornerPollInterval != 2*time.Second {
-		t.Fatalf("TotalCorner URL/interval = %q/%s, want example/2s", cfg.OnEveryCornerTotalCornerURL, cfg.OnEveryCornerTotalCornerPollInterval)
+	if cfg.OnEveryCornerTotalCornerAPIToken != "test-token" || cfg.OnEveryCornerTotalCornerAPIURL != "https://api.example.test/v1" {
+		t.Fatalf("TotalCorner token/api_url = %q/%q, want test-token/api.example", cfg.OnEveryCornerTotalCornerAPIToken, cfg.OnEveryCornerTotalCornerAPIURL)
 	}
 	if !reflect.DeepEqual(cfg.OnEveryCornerTotalCornerLeagueIDs, []string{"29754", "999"}) {
 		t.Fatalf("TotalCorner league IDs = %v, want [29754 999]", cfg.OnEveryCornerTotalCornerLeagueIDs)
