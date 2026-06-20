@@ -84,7 +84,7 @@ def int_or_zero(value: Any) -> int:
 
 DEFAULT_TOTALCORNER_API_URL = "https://api.totalcorner.com/v1/match/today"
 DEFAULT_TOTALCORNER_API_TOKEN_ENV = "ONEVERYCORNER_TOTALCORNER_API_TOKEN"
-DEFAULT_TOTALCORNER_API_MIN_POLL_MS = 2500
+DEFAULT_TOTALCORNER_API_MIN_POLL_MS = 3500
 
 
 def clean_text(value: Any) -> str:
