@@ -5,9 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
@@ -78,8 +82,15 @@ def int_or_zero(value: Any) -> int:
     return parsed
 
 
-def clean_text(value: str) -> str:
-    return re.sub(r"\s+", " ", value or "").strip()
+DEFAULT_TOTALCORNER_API_URL = "https://api.totalcorner.com/v1/match/today"
+DEFAULT_TOTALCORNER_API_TOKEN_ENV = "ONEVERYCORNER_TOTALCORNER_API_TOKEN"
+DEFAULT_TOTALCORNER_API_MIN_POLL_MS = 2500
+
+
+def clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
 
 
 def element_text(parent: Any, selector: str) -> str:
@@ -121,16 +132,16 @@ def match_snapshot(row: dict[str, Any], metadata: dict[str, dict[str, Any]]) -> 
     if not match_id:
         return None
     meta = metadata.get(match_id, {})
-    home_team = clean_text(str(meta.get("home_team") or ""))
-    away_team = clean_text(str(meta.get("away_team") or ""))
+    home_team = clean_text(meta.get("home_team") or row.get("h") or row.get("home") or row.get("home_team") or "")
+    away_team = clean_text(meta.get("away_team") or row.get("a") or row.get("away") or row.get("away_team") or "")
     return {
         "match_id": match_id,
         "match_name": clean_text(str(meta.get("match_name") or "")) or f"{home_team} v {away_team}".strip(" v") or "Unknown match",
-        "league_id": clean_text(str(meta.get("league_id") or "")),
-        "league_name": clean_text(str(meta.get("league_name") or "")),
+        "league_id": clean_text(meta.get("league_id") or row.get("l_id") or row.get("league_id") or ""),
+        "league_name": clean_text(meta.get("league_name") or row.get("l") or row.get("league") or row.get("league_name") or ""),
         "home_team": home_team,
         "away_team": away_team,
-        "status": clean_text(str(row.get("sta") or meta.get("status") or "")),
+        "status": clean_text(row.get("sta") or row.get("status") or meta.get("status") or ""),
         "home_corners": first_int(row.get("hc"), meta.get("home_corners")),
         "away_corners": first_int(row.get("ac"), meta.get("away_corners")),
         "home_score": first_int(row.get("hg"), meta.get("home_score")),
@@ -215,6 +226,35 @@ def emit_system_event(
     )
 
 
+def log_system_event(
+    event_type: str,
+    severity: str,
+    message: str,
+    *,
+    stage: str = "",
+    status: str = "",
+    attempt: str = "",
+    detail: str = "",
+    stale_seconds: int = 0,
+    suppressed_events: int = 0,
+) -> None:
+    print(
+        "totalcorner system log_only=true "
+        f"type={event_type} severity={severity} stage={stage!r} status={status!r} "
+        f"attempt={attempt!r} stale_seconds={stale_seconds} suppressed_events={suppressed_events} "
+        f"detail={detail!r} message={message!r}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def report_system_event(emit_to_stdout: bool, *args: Any, **kwargs: Any) -> None:
+    if emit_to_stdout:
+        emit_system_event(*args, **kwargs)
+        return
+    log_system_event(*args, **kwargs)
+
+
 def count_delta_events(prev: MatchState, snapshot: dict[str, Any]) -> int:
     count = 0
     for current_key, previous_value in [
@@ -287,6 +327,17 @@ def league_allowed(snapshot: dict[str, Any], league_ids: set[str]) -> bool:
     return snapshot["league_id"] in league_ids
 
 
+def parse_bool(value: Any, fallback: bool = False) -> bool:
+    text = clean_text(value).lower()
+    if text == "":
+        return fallback
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return fallback
+
+
 def handle_totalcorner_data(
     rows: list[Any],
     league_ids: set[str],
@@ -328,6 +379,207 @@ def handle_totalcorner_data(
     return stats
 
 
+def build_totalcorner_api_url(api_url: str, token: str) -> str:
+    parts = urllib.parse.urlsplit(api_url)
+    query = dict(urllib.parse.parse_qsl(parts.query, keep_blank_values=True))
+    query["token"] = token
+    query.setdefault("type", "inplay")
+    return urllib.parse.urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urllib.parse.urlencode(query),
+            parts.fragment,
+        )
+    )
+
+
+def load_totalcorner_rows(body: str) -> tuple[list[Any] | None, str]:
+    try:
+        parsed = json.loads(body)
+    except Exception as exc:
+        return None, f"json parse failed: {exc!r}"
+    if isinstance(parsed, list):
+        return parsed, ""
+    if not isinstance(parsed, dict):
+        return None, "expected JSON list or object"
+    success = clean_text(parsed.get("success")).lower()
+    if success in {"0", "false", "no"}:
+        detail = parsed.get("message") or parsed.get("error") or parsed.get("reason") or "api success=0"
+        return None, clean_text(detail)
+    rows = parsed.get("data")
+    if not isinstance(rows, list):
+        return None, "expected API response data list"
+    return rows, ""
+
+
+def fetch_totalcorner_api(api_url: str, token: str, timeout_ms: int) -> tuple[int, str, str]:
+    request = urllib.request.Request(
+        build_totalcorner_api_url(api_url, token),
+        headers={
+            "accept": "application/json",
+            "user-agent": "rfd-discord-bot/1.0",
+            "connection": "close",
+        },
+        method="GET",
+    )
+    timeout_seconds = max(1.0, timeout_ms / 1000.0)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            return int(response.status), body, ""
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return int(exc.code), body, clean_text(body or exc.reason or "http error")
+    except Exception as exc:
+        return 0, "", repr(exc)
+
+
+def run_totalcorner_api(args: argparse.Namespace, league_ids: set[str], states: dict[str, MatchState], token: str) -> int:
+    metadata: dict[str, dict[str, Any]] = {}
+    last_response = time.monotonic()
+    last_heartbeat = 0.0
+    last_poll_error = 0.0
+    problem_started = 0.0
+    problem_stage = ""
+    problem_status = ""
+    fix_attempted_at = 0.0
+    fix_failed_emitted = False
+    suppress_next_delta = False
+    restart_requested = False
+    active_poll_count = 0
+    last_heartbeat_poll_count = 0
+
+    print(
+        f"totalcorner_monitor starting source=api api_url={args.api_url!r} "
+        f"token_env={args.api_token_env!r} league_ids={sorted(league_ids)}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    def mark_totalcorner_healthy(status: int, source: str, suppressed_events: int = 0) -> None:
+        nonlocal last_response, last_heartbeat, last_heartbeat_poll_count
+        nonlocal problem_started, problem_stage, problem_status, fix_attempted_at, fix_failed_emitted
+        nonlocal suppress_next_delta
+        now = time.monotonic()
+        last_response = now
+        if problem_started:
+            stale_seconds = int(now - problem_started)
+            if fix_attempted_at or stale_seconds >= PROBLEM_ALERT_SECONDS:
+                report_system_event(
+                    args.api_system_events,
+                    "system_recovered",
+                    "recovered",
+                    "TotalCorner official API polling recovered; primary OnEveryCorner monitoring has resumed.",
+                    stage=source,
+                    status=str(status),
+                    attempt="official_api.retry" if fix_attempted_at else "",
+                    stale_seconds=stale_seconds,
+                    suppressed_events=suppressed_events,
+                )
+            problem_started = 0.0
+            problem_stage = ""
+            problem_status = ""
+            fix_attempted_at = 0.0
+            fix_failed_emitted = False
+            suppress_next_delta = False
+        if now - last_heartbeat >= HEARTBEAT_SECONDS:
+            polls_since_log = active_poll_count - last_heartbeat_poll_count
+            print(
+                "totalcorner heartbeat "
+                f"source={source} status={status} tracked={len(states)} "
+                f"active_polls={polls_since_log} poll_ms={api_poll_ms}",
+                file=sys.stderr,
+                flush=True,
+            )
+            last_heartbeat = now
+            last_heartbeat_poll_count = active_poll_count
+
+    def mark_totalcorner_problem(status: int, source: str, detail: str = "") -> None:
+        nonlocal problem_started, problem_stage, problem_status, fix_attempted_at, fix_failed_emitted
+        nonlocal suppress_next_delta, restart_requested, last_poll_error
+        now = time.monotonic()
+        status_text = str(status)
+        if problem_started == 0.0:
+            problem_started = now
+            problem_stage = source
+            problem_status = status_text
+            fix_attempted_at = 0.0
+            fix_failed_emitted = False
+        stale_seconds = int(now - problem_started)
+        if stale_seconds >= PROBLEM_ALERT_SECONDS and fix_attempted_at == 0.0:
+            fix_attempted_at = now
+            suppress_next_delta = True
+            report_system_event(
+                args.api_system_events,
+                "system_fix_attempt",
+                "warning",
+                "TotalCorner official API polling is unhealthy; retrying with fresh HTTP requests. "
+                "The next successful snapshot will be used as a new baseline so missed corners are not replayed.",
+                stage=source,
+                status=status_text,
+                attempt="official_api.retry",
+                detail=detail,
+                stale_seconds=stale_seconds,
+            )
+        elif fix_attempted_at and not fix_failed_emitted and now - fix_attempted_at >= FIX_FAILED_SECONDS:
+            fix_failed_emitted = True
+            suppress_next_delta = True
+            restart_requested = True
+            report_system_event(
+                args.api_system_events,
+                "system_fix_failed",
+                "error",
+                "TotalCorner official API polling is still unhealthy after retrying; restarting the TotalCorner monitor process.",
+                stage=problem_stage or source,
+                status=problem_status or status_text,
+                attempt="restart totalcorner monitor process",
+                detail=detail,
+                stale_seconds=stale_seconds,
+            )
+        if now - last_poll_error >= 60:
+            print(f"totalcorner unhealthy source={source} status={status_text} detail={detail!r}", file=sys.stderr, flush=True)
+            last_poll_error = now
+
+    api_poll_ms = max(args.poll_ms, args.api_min_poll_ms)
+    if api_poll_ms != args.poll_ms:
+        print(
+            "totalcorner api poll interval raised "
+            f"requested_ms={args.poll_ms} effective_ms={api_poll_ms} "
+            "reason='official API limit is 5 requests per 10 seconds'",
+            file=sys.stderr,
+            flush=True,
+        )
+    poll_seconds = max(0.5, api_poll_ms / 1000.0)
+    while True:
+        loop_started = time.monotonic()
+        active_poll_count += 1
+        status, body, detail = fetch_totalcorner_api(args.api_url, token, args.timeout_ms)
+        if status == 200:
+            rows, parse_error = load_totalcorner_rows(body)
+            if rows is None:
+                mark_totalcorner_problem(status, "api", parse_error)
+            else:
+                emit_deltas = not suppress_next_delta
+                stats = handle_totalcorner_data(rows, league_ids, metadata, states, emit_deltas=emit_deltas)
+                suppressed = stats.get("suppressed", 0)
+                mark_totalcorner_healthy(status, "api", suppressed_events=suppressed)
+                print(
+                    "totalcorner data ok source=api rows={rows} matched={matched} tracked={tracked} "
+                    "emitted={emitted} suppressed={suppressed} unknown_meta={unknown_meta}".format(**stats),
+                    file=sys.stderr,
+                    flush=True,
+                )
+        else:
+            mark_totalcorner_problem(status, "api", detail)
+        if restart_requested:
+            raise RuntimeError("totalcorner api monitor restart requested after failed recovery")
+        elapsed = time.monotonic() - loop_started
+        if elapsed < poll_seconds:
+            time.sleep(poll_seconds - elapsed)
+
+
 def _selftest() -> int:
     metadata = {
         "194699784": {
@@ -352,12 +604,45 @@ def _selftest() -> int:
     if catchup_stats["emitted"] != 0 or catchup_stats["suppressed"] != 3:
         print(f"SELFTEST failed catchup suppression: {catchup_stats}", file=sys.stderr)
         return 1
+    api_states: dict[str, MatchState] = {}
+    api_row = {
+        "id": "194907896",
+        "h": "Türkiye",
+        "a": "Paraguay",
+        "l": "World Cup 2026",
+        "l_id": "29754",
+        "status": "25",
+        "hc": "4",
+        "ac": "0",
+        "hg": "0",
+        "ag": "1",
+    }
+    api_stats = handle_totalcorner_data([api_row], {"29754"}, {}, api_states)
+    print("SELFTEST api_row", api_stats, file=sys.stderr)
+    api_snapshot = match_snapshot(api_row, {})
+    if api_stats["matched"] != 1 or not api_snapshot or api_snapshot["match_name"] != "Türkiye v Paraguay":
+        print(f"SELFTEST failed api row parsing: stats={api_stats} snapshot={api_snapshot}", file=sys.stderr)
+        return 1
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="https://www.totalcorner.com/match/today")
+    parser.add_argument("--api-url", default=os.getenv("ONEVERYCORNER_TOTALCORNER_API_URL", DEFAULT_TOTALCORNER_API_URL))
+    parser.add_argument("--api-token-env", default=DEFAULT_TOTALCORNER_API_TOKEN_ENV)
+    parser.add_argument(
+        "--api-min-poll-ms",
+        type=int,
+        default=to_int(os.getenv("ONEVERYCORNER_TOTALCORNER_API_MIN_POLL_MS")) or DEFAULT_TOTALCORNER_API_MIN_POLL_MS,
+    )
+    parser.add_argument(
+        "--api-system-events",
+        action="store_true",
+        default=parse_bool(os.getenv("ONEVERYCORNER_TOTALCORNER_API_SYSTEM_EVENTS"), False),
+        help="emit official API failure/recovery events to stdout for Discord alerts; default is stderr logs only",
+    )
+    parser.add_argument("--source", choices=("auto", "api", "browser"), default=os.getenv("ONEVERYCORNER_TOTALCORNER_SOURCE", "auto"))
     parser.add_argument("--league-ids", default="29754")
     parser.add_argument("--poll-ms", type=int, default=1000)
     parser.add_argument("--timeout-ms", type=int, default=60000)
@@ -371,6 +656,21 @@ def main() -> int:
     league_ids = parse_csv(args.league_ids)
     states: dict[str, MatchState] = {}
     metadata: dict[str, dict[str, Any]] = {}
+    api_token = clean_text(os.getenv(args.api_token_env, ""))
+    if args.source == "api" or (args.source == "auto" and api_token):
+        if not api_token:
+            report_system_event(
+                args.api_system_events,
+                "system_issue",
+                "error",
+                "TotalCorner official API source is enabled but no API token is configured.",
+                stage="api",
+                status="missing_token",
+                detail=f"Set {args.api_token_env}.",
+            )
+            return 1
+        return run_totalcorner_api(args, league_ids, states, api_token)
+
     last_response = time.monotonic()
     last_heartbeat = 0.0
     last_poll_error = 0.0
