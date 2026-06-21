@@ -18,6 +18,10 @@ import (
 const (
 	discordNotificationIngestMaxBytes = 128 * 1024
 	discordPackageName                = "com.discord"
+
+	coreRawNotificationSaveAttempts = 2
+	coreRawNotificationSaveTimeout  = 45 * time.Second
+	coreRawNotificationSaveRetry    = 2 * time.Second
 )
 
 type discordNotificationIngestEvent struct {
@@ -191,19 +195,7 @@ func (s *Server) handleDiscordNotification(w http.ResponseWriter, r *http.Reques
 	if normalized.ReceivedAt > 0 {
 		rawNotif.ReceivedAt = time.UnixMilli(normalized.ReceivedAt).UTC()
 	}
-	if s.db != nil {
-		if err := s.db.SaveCoreRawNotification(r.Context(), rawNotif); err != nil {
-			slog.Error("Failed to save raw notification", "event_id", normalized.EventID, "error", err)
-			s.reportCoreSystemIssue("raw-save:"+normalized.SourcePackage, models.CoreSystemAlert{
-				Title:         "Core raw notification save failed",
-				Severity:      "error",
-				Component:     "core-notification-ingest",
-				EventID:       normalized.EventID,
-				SourcePackage: normalized.SourcePackage,
-				Details:       err.Error(),
-			})
-		}
-	}
+	s.saveCoreRawNotificationAsync(rawNotif)
 
 	s.reportMarkReadIssue(normalized)
 
@@ -211,6 +203,64 @@ func (s *Server) handleDiscordNotification(w http.ResponseWriter, r *http.Reques
 		"status":       "accepted",
 		"route":        "core",
 		"notification": normalized,
+	})
+}
+
+func (s *Server) saveCoreRawNotificationAsync(rawNotif models.CoreRawNotification) {
+	if s == nil || s.db == nil {
+		return
+	}
+	go s.saveCoreRawNotification(context.Background(), rawNotif)
+}
+
+func (s *Server) saveCoreRawNotification(ctx context.Context, rawNotif models.CoreRawNotification) {
+	var lastErr error
+retryLoop:
+	for attempt := 1; attempt <= coreRawNotificationSaveAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, coreRawNotificationSaveTimeout)
+		err := s.db.SaveCoreRawNotification(attemptCtx, rawNotif)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				slog.Info("Raw notification save recovered",
+					"event_id", rawNotif.EventID,
+					"attempt", attempt,
+				)
+			}
+			return
+		}
+
+		lastErr = err
+		slog.Warn("Raw notification save attempt failed",
+			"event_id", rawNotif.EventID,
+			"attempt", attempt,
+			"max_attempts", coreRawNotificationSaveAttempts,
+			"error", err,
+		)
+		if attempt == coreRawNotificationSaveAttempts {
+			break
+		}
+		timer := time.NewTimer(coreRawNotificationSaveRetry)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			lastErr = ctx.Err()
+			break retryLoop
+		case <-timer.C:
+		}
+	}
+
+	if lastErr == nil {
+		return
+	}
+	slog.Error("Failed to save raw notification", "event_id", rawNotif.EventID, "error", lastErr)
+	s.reportCoreSystemIssue("raw-save:"+rawNotif.SourcePackage, models.CoreSystemAlert{
+		Title:         "Core raw notification save failed",
+		Severity:      "error",
+		Component:     "core-notification-ingest",
+		EventID:       rawNotif.EventID,
+		SourcePackage: rawNotif.SourcePackage,
+		Details:       lastErr.Error(),
 	})
 }
 
