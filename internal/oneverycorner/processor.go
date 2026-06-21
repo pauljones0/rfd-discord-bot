@@ -754,14 +754,36 @@ func composeCompactTweetText(scoringTeam, score string, seedValues ...string) st
 
 	seed := append([]string{scoringTeam, score}, seedValues...)
 	parts := []string{ComposeTweetText(seed...)}
-	if scoringTeam != "" {
-		parts = append(parts, scoringTeam)
+	if suffix := compactTweetOptionalSuffix(scoringTeam, score, seed...); suffix != "" {
+		parts = append(parts, suffix)
 	}
-	if score != "" {
-		parts = append(parts, score)
-	}
-	parts = append(parts, compactTweetEmojiSuffix(seed...))
 	return strings.Join(parts, " ")
+}
+
+func compactTweetOptionalSuffix(scoringTeam, score string, seedValues ...string) string {
+	emoji := compactTweetEmojiSuffix(seedValues...)
+	mode := stableIndex([]string{"emoji", "team", "score", "team_score", "team_alt", "emoji_alt"}, append([]string{"optional-suffix-mode"}, seedValues...)...)
+
+	parts := make([]string, 0, 3)
+	switch mode {
+	case 1, 4:
+		if scoringTeam != "" {
+			parts = append(parts, scoringTeam)
+		}
+	case 2:
+		if score != "" {
+			parts = append(parts, score)
+		}
+	case 3:
+		if scoringTeam != "" {
+			parts = append(parts, scoringTeam)
+		}
+		if score != "" {
+			parts = append(parts, score)
+		}
+	}
+	parts = append(parts, emoji)
+	return strings.Join(uniqueNonEmpty(parts), " ")
 }
 
 func compactTweetEmojiSuffix(seedValues ...string) string {

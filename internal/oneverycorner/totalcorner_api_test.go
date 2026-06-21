@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,5 +108,38 @@ func TestTotalCornerAPIInPlayParsesCounters(t *testing.T) {
 	}
 	if got[0].HomeCorners != 2 || got[0].AwayCorners != 1 || got[0].HomeScore != 0 || got[0].AwayScore != 1 {
 		t.Fatalf("counters = %+v", got[0])
+	}
+}
+
+func TestTotalCornerAPIErrorObjectReturnsReadableError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/match/today" || r.URL.Query().Get("type") != "inplay" {
+			t.Fatalf("request = %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": 0,
+			"error": map[string]any{
+				"code":    "AUTH",
+				"message": "invalid token",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewTotalCornerAPIClient(TotalCornerAPIConfig{
+		BaseURL:    server.URL,
+		Token:      "test-token",
+		LeagueIDs:  []string{"29754"},
+		HTTPClient: server.Client(),
+	})
+	_, err := client.InPlay(context.Background())
+	if err == nil {
+		t.Fatal("InPlay error = nil, want API failure")
+	}
+	if strings.Contains(err.Error(), "decode totalcorner response") {
+		t.Fatalf("error = %q, want API error rather than decode failure", err)
+	}
+	if !strings.Contains(err.Error(), "invalid token") || !strings.Contains(err.Error(), "code=AUTH") {
+		t.Fatalf("error = %q, want readable error object details", err)
 	}
 }

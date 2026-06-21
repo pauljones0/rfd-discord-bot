@@ -57,7 +57,7 @@ type TotalCornerAPIClient struct {
 
 type totalCornerAPIResponse struct {
 	Success    int                      `json:"success"`
-	Error      string                   `json:"error"`
+	Error      any                      `json:"error"`
 	Message    string                   `json:"message"`
 	Pagination totalCornerAPIPagination `json:"pagination"`
 	Data       json.RawMessage          `json:"data"`
@@ -228,7 +228,7 @@ func (c *TotalCornerAPIClient) fetchMatches(ctx context.Context, path string, va
 				return
 			}
 			if apiResp.Success != 1 {
-				msg := firstNonEmpty(apiResp.Error, apiResp.Message, "unknown api error")
+				msg := firstNonEmpty(totalCornerAPIErrorMessage(apiResp.Error), apiResp.Message, "unknown api error")
 				err = fmt.Errorf("totalcorner api returned success=%d: %s", apiResp.Success, msg)
 				return
 			}
@@ -283,6 +283,47 @@ func (r totalCornerAPIResponse) hasNext(page int) bool {
 	default:
 		return false
 	}
+}
+
+func totalCornerAPIErrorMessage(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case json.Number:
+		return strings.TrimSpace(v.String())
+	case float64:
+		return strings.TrimSpace(strconv.FormatFloat(v, 'f', -1, 64))
+	case bool:
+		return strconv.FormatBool(v)
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if msg := totalCornerAPIErrorMessage(item); msg != "" {
+				parts = append(parts, msg)
+			}
+		}
+		return strings.Join(uniqueNonEmpty(parts), "; ")
+	case map[string]any:
+		parts := make([]string, 0, 4)
+		for _, key := range []string{"message", "msg", "detail", "error"} {
+			if msg := totalCornerAPIErrorMessage(v[key]); msg != "" {
+				parts = append(parts, msg)
+			}
+		}
+		if code := totalCornerAPIErrorMessage(v["code"]); code != "" {
+			parts = append(parts, "code="+code)
+		}
+		if len(parts) > 0 {
+			return strings.Join(uniqueNonEmpty(parts), " ")
+		}
+		body, err := json.Marshal(v)
+		if err == nil {
+			return string(body)
+		}
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func (c *TotalCornerAPIClient) endpoint(path string, values url.Values) string {

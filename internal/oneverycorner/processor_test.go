@@ -447,7 +447,6 @@ func TestComposeVariantTweetTextUsesCompactContext(t *testing.T) {
 	goalSafe := ComposeTweetText(goalSeeds...)
 	cornerVariant := ComposeCornerVariantTweetText(cornerSeeds...)
 	goalVariant := ComposeGoalVariantTweetText(goalSeeds...)
-	contextCornerVariant := ComposeCornerVariantTweetTextForContext("Canada", cornerSeeds...)
 	contextGoalVariant := ComposeGoalVariantTweetTextForContext("Uzbekistan", "1-0", goalSeeds...)
 
 	if !strings.HasPrefix(cornerVariant, cornerSafe+" ") {
@@ -458,12 +457,6 @@ func TestComposeVariantTweetTextUsesCompactContext(t *testing.T) {
 	}
 	if !strings.HasPrefix(contextGoalVariant, ComposeTweetText("Uzbekistan", "1-0", goalSeeds[0], goalSeeds[1], goalSeeds[2])+" ") {
 		t.Fatalf("context goal variant = %q, want safe text prefix", contextGoalVariant)
-	}
-	if !strings.Contains(contextCornerVariant, "Canada") {
-		t.Fatalf("context corner variant = %q, want team", contextCornerVariant)
-	}
-	if !strings.Contains(contextGoalVariant, "Uzbekistan") || !strings.Contains(contextGoalVariant, "1-0") {
-		t.Fatalf("context goal variant = %q, want team and score", contextGoalVariant)
 	}
 	if !containsAnyEmoji(cornerVariant) || !containsAnyEmoji(goalVariant) || !containsAnyEmoji(contextGoalVariant) {
 		t.Fatalf("variants should include emoji suffixes: corner=%q goal=%q context=%q", cornerVariant, goalVariant, contextGoalVariant)
@@ -492,15 +485,30 @@ func TestComposeVariantTweetTextUsesCompactContext(t *testing.T) {
 	}
 
 	seen := map[string]struct{}{}
+	withTeam := 0
+	withScore := 0
+	emojiOnly := 0
 	for i := 0; i < 50; i++ {
-		candidate := ComposeGoalVariantTweetText("seed", time.Duration(i).String())
+		candidate := ComposeGoalVariantTweetTextForContext("Spain", "4-0", "seed", time.Duration(i).String())
 		seen[candidate] = struct{}{}
 		if !containsAnyEmoji(candidate) {
 			t.Fatalf("variant sample = %q, want emoji", candidate)
 		}
+		if strings.Contains(candidate, "Spain") {
+			withTeam++
+		}
+		if strings.Contains(candidate, "4-0") {
+			withScore++
+		}
+		if !strings.Contains(candidate, "Spain") && !strings.Contains(candidate, "4-0") {
+			emojiOnly++
+		}
 	}
 	if len(seen) < 10 {
 		t.Fatalf("variant diversity = %d unique outputs from 50 seeds, want at least 10", len(seen))
+	}
+	if withTeam == 0 || withScore == 0 || emojiOnly == 0 {
+		t.Fatalf("optional suffix variety missing: withTeam=%d withScore=%d emojiOnly=%d", withTeam, withScore, emojiOnly)
 	}
 }
 
