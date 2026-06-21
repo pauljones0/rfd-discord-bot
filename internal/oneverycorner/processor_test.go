@@ -444,8 +444,12 @@ func TestCountryTeamFlagEmoji(t *testing.T) {
 	tests := map[string]string{
 		"Canada":          "🇨🇦",
 		"Côte d’Ivoire":   "🇨🇮",
+		"Curaçao":         "🇨🇼",
+		"IR Iran":         "🇮🇷",
+		"Korea Republic":  "🇰🇷",
 		"Saudi Arabia":    "🇸🇦",
 		"Spain":           "🇪🇸",
+		"Türkiye":         "🇹🇷",
 		"USA":             "🇺🇸",
 		"Uzbekistan U-20": "🇺🇿",
 	}
@@ -456,6 +460,86 @@ func TestCountryTeamFlagEmoji(t *testing.T) {
 	}
 	if got := countryTeamFlagOrName("Manchester City"); got != "Manchester City" {
 		t.Fatalf("countryTeamFlagOrName(club) = %q, want fallback name", got)
+	}
+
+	withFlag := 0
+	withName := 0
+	for i := 0; i < 50; i++ {
+		got := countryTeamFlagOrName("Spain", "seed", time.Duration(i).String())
+		switch got {
+		case "🇪🇸":
+			withFlag++
+		case "Spain":
+			withName++
+		default:
+			t.Fatalf("countryTeamFlagOrName(Spain) = %q, want flag or team name", got)
+		}
+	}
+	if withFlag == 0 || withName == 0 {
+		t.Fatalf("countryTeamFlagOrName should vary flag/name: withFlag=%d withName=%d", withFlag, withName)
+	}
+}
+
+func TestCountryTeamFlagEmojiCoversWorldCupSourceNames(t *testing.T) {
+	teams := []string{
+		"Algeria",
+		"Argentina",
+		"Australia",
+		"Austria",
+		"Belgium",
+		"Bosnia and Herzegovina",
+		"Brazil",
+		"Canada",
+		"Cape Verde",
+		"Colombia",
+		"Côte d’Ivoire",
+		"Curaçao",
+		"Czechia",
+		"Czech Republic",
+		"DR Congo",
+		"Ecuador",
+		"Egypt",
+		"England",
+		"France",
+		"Germany",
+		"Ghana",
+		"Haiti",
+		"IR Iran",
+		"Iran",
+		"Iraq",
+		"Ivory Coast",
+		"Japan",
+		"Jordan",
+		"Korea Republic",
+		"Mexico",
+		"Morocco",
+		"Netherlands",
+		"New Zealand",
+		"Norway",
+		"Panama",
+		"Paraguay",
+		"Portugal",
+		"Qatar",
+		"Saudi Arabia",
+		"Scotland",
+		"Senegal",
+		"South Africa",
+		"South Korea",
+		"Spain",
+		"Sweden",
+		"Switzerland",
+		"Tunisia",
+		"Turkey",
+		"Türkiye",
+		"United States",
+		"Uruguay",
+		"USA",
+		"Uzbekistan",
+	}
+	for _, team := range teams {
+		if got := countryTeamFlagEmoji(team); got == "" {
+			t.Fatalf("countryTeamFlagEmoji(%q) = empty, want World Cup country flag", team)
+		}
 	}
 }
 
@@ -505,6 +589,7 @@ func TestComposeVariantTweetTextUsesCompactContext(t *testing.T) {
 
 	seen := map[string]struct{}{}
 	withFlag := 0
+	withTeam := 0
 	withScore := 0
 	emojiOnly := 0
 	for i := 0; i < 50; i++ {
@@ -514,7 +599,7 @@ func TestComposeVariantTweetTextUsesCompactContext(t *testing.T) {
 			t.Fatalf("variant sample = %q, want emoji", candidate)
 		}
 		if strings.Contains(candidate, "Spain") {
-			t.Fatalf("variant sample = %q, want country flag instead of country name", candidate)
+			withTeam++
 		}
 		if strings.Contains(candidate, "🇪🇸") {
 			withFlag++
@@ -522,15 +607,15 @@ func TestComposeVariantTweetTextUsesCompactContext(t *testing.T) {
 		if strings.Contains(candidate, "4-0") {
 			withScore++
 		}
-		if !strings.Contains(candidate, "🇪🇸") && !strings.Contains(candidate, "4-0") {
+		if !strings.Contains(candidate, "Spain") && !strings.Contains(candidate, "🇪🇸") && !strings.Contains(candidate, "4-0") {
 			emojiOnly++
 		}
 	}
 	if len(seen) < 10 {
 		t.Fatalf("variant diversity = %d unique outputs from 50 seeds, want at least 10", len(seen))
 	}
-	if withFlag == 0 || withScore == 0 || emojiOnly == 0 {
-		t.Fatalf("optional suffix variety missing: withFlag=%d withScore=%d emojiOnly=%d", withFlag, withScore, emojiOnly)
+	if withFlag == 0 || withTeam == 0 || withScore == 0 || emojiOnly == 0 {
+		t.Fatalf("optional suffix variety missing: withFlag=%d withTeam=%d withScore=%d emojiOnly=%d", withFlag, withTeam, withScore, emojiOnly)
 	}
 }
 

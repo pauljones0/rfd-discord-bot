@@ -112,6 +112,7 @@ var countryTeamFlagCodes = map[string]string{
 	"india":                            "IN",
 	"indonesia":                        "ID",
 	"iran":                             "IR",
+	"ir iran":                          "IR",
 	"iran ir":                          "IR",
 	"iran islamic republic":            "IR",
 	"iraq":                             "IQ",
@@ -309,12 +310,13 @@ var countryTeamDecorators = map[string]struct{}{
 	"womens":   {},
 }
 
-func countryTeamFlagOrName(team string) string {
+func countryTeamFlagOrName(team string, seedValues ...string) string {
 	team = strings.TrimSpace(team)
 	if team == "" {
 		return ""
 	}
-	if flag := countryTeamFlagEmoji(team); flag != "" {
+	flag := countryTeamFlagEmoji(team)
+	if flag != "" && stableIndex([]string{"flag", "name"}, append([]string{"country-team-token"}, seedValues...)...) == 0 {
 		return flag
 	}
 	return team

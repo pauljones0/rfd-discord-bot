@@ -763,7 +763,7 @@ func composeCompactTweetText(scoringTeam, score string, seedValues ...string) st
 func compactTweetOptionalSuffix(scoringTeam, score string, seedValues ...string) string {
 	emoji := compactTweetEmojiSuffix(seedValues...)
 	mode := stableIndex([]string{"emoji", "team", "score", "team_score", "team_alt", "emoji_alt"}, append([]string{"optional-suffix-mode"}, seedValues...)...)
-	teamToken := countryTeamFlagOrName(scoringTeam)
+	teamToken := countryTeamFlagOrName(scoringTeam, seedValues...)
 
 	parts := make([]string, 0, 3)
 	switch mode {
