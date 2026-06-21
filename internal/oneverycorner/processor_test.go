@@ -440,6 +440,25 @@ func TestComposeTweetTextUsesOnlyAllowedElements(t *testing.T) {
 	}
 }
 
+func TestCountryTeamFlagEmoji(t *testing.T) {
+	tests := map[string]string{
+		"Canada":          "🇨🇦",
+		"Côte d’Ivoire":   "🇨🇮",
+		"Saudi Arabia":    "🇸🇦",
+		"Spain":           "🇪🇸",
+		"USA":             "🇺🇸",
+		"Uzbekistan U-20": "🇺🇿",
+	}
+	for team, want := range tests {
+		if got := countryTeamFlagEmoji(team); got != want {
+			t.Fatalf("countryTeamFlagEmoji(%q) = %q, want %q", team, got, want)
+		}
+	}
+	if got := countryTeamFlagOrName("Manchester City"); got != "Manchester City" {
+		t.Fatalf("countryTeamFlagOrName(club) = %q, want fallback name", got)
+	}
+}
+
 func TestComposeVariantTweetTextUsesCompactContext(t *testing.T) {
 	cornerSeeds := []string{"stable-corner", "corner", "canada germany"}
 	goalSeeds := []string{"stable-goal", "goal", "canada germany"}
@@ -485,7 +504,7 @@ func TestComposeVariantTweetTextUsesCompactContext(t *testing.T) {
 	}
 
 	seen := map[string]struct{}{}
-	withTeam := 0
+	withFlag := 0
 	withScore := 0
 	emojiOnly := 0
 	for i := 0; i < 50; i++ {
@@ -495,20 +514,23 @@ func TestComposeVariantTweetTextUsesCompactContext(t *testing.T) {
 			t.Fatalf("variant sample = %q, want emoji", candidate)
 		}
 		if strings.Contains(candidate, "Spain") {
-			withTeam++
+			t.Fatalf("variant sample = %q, want country flag instead of country name", candidate)
+		}
+		if strings.Contains(candidate, "🇪🇸") {
+			withFlag++
 		}
 		if strings.Contains(candidate, "4-0") {
 			withScore++
 		}
-		if !strings.Contains(candidate, "Spain") && !strings.Contains(candidate, "4-0") {
+		if !strings.Contains(candidate, "🇪🇸") && !strings.Contains(candidate, "4-0") {
 			emojiOnly++
 		}
 	}
 	if len(seen) < 10 {
 		t.Fatalf("variant diversity = %d unique outputs from 50 seeds, want at least 10", len(seen))
 	}
-	if withTeam == 0 || withScore == 0 || emojiOnly == 0 {
-		t.Fatalf("optional suffix variety missing: withTeam=%d withScore=%d emojiOnly=%d", withTeam, withScore, emojiOnly)
+	if withFlag == 0 || withScore == 0 || emojiOnly == 0 {
+		t.Fatalf("optional suffix variety missing: withFlag=%d withScore=%d emojiOnly=%d", withFlag, withScore, emojiOnly)
 	}
 }
 
