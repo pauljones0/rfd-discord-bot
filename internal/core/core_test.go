@@ -370,17 +370,18 @@ func TestCoreAlertUsesLifetimeObservationCountPastRetainedCap(t *testing.T) {
 		prices[i] = 100
 	}
 
+	priorObservationCount := maxPriceHistoryEntries + 150
 	store := &mockStore{
 		history: map[string]*models.CorePriceHistory{
 			"test product": {
 				ProductName:      "test product",
 				Category:         "test",
 				Prices:           prices,
-				ObservationCount: 250,
+				ObservationCount: priorObservationCount,
 			},
 		},
 		catStats: map[string]*models.CoreCategoryStats{
-			"test": {Category: "test", TotalCount: 250},
+			"test": {Category: "test", TotalCount: priorObservationCount},
 		},
 		subs: []models.Subscription{
 			{GuildID: "g1", ChannelID: "c1", SubscriptionType: "core", DealType: "core_alerts"},
@@ -396,12 +397,13 @@ func TestCoreAlertUsesLifetimeObservationCountPastRetainedCap(t *testing.T) {
 	if len(notifier.sent) != 1 {
 		t.Fatalf("expected 1 notification sent on price drop, got %d", len(notifier.sent))
 	}
-	if notifier.sent[0].HistoryCount != 251 || notifier.sent[0].PriceSampleCount != maxPriceHistoryEntries {
-		t.Fatalf("alert counts = total %d/sample %d, want 251/%d", notifier.sent[0].HistoryCount, notifier.sent[0].PriceSampleCount, maxPriceHistoryEntries)
+	wantTotal := priorObservationCount + 1
+	if notifier.sent[0].HistoryCount != wantTotal || notifier.sent[0].PriceSampleCount != maxPriceHistoryEntries {
+		t.Fatalf("alert counts = total %d/sample %d, want %d/%d", notifier.sent[0].HistoryCount, notifier.sent[0].PriceSampleCount, wantTotal, maxPriceHistoryEntries)
 	}
 	history := store.history["test product"]
-	if history.ObservationCount != 251 || len(history.Prices) != maxPriceHistoryEntries {
-		t.Fatalf("stored history counts = total %d/sample %d, want 251/%d", history.ObservationCount, len(history.Prices), maxPriceHistoryEntries)
+	if history.ObservationCount != wantTotal || len(history.Prices) != maxPriceHistoryEntries {
+		t.Fatalf("stored history counts = total %d/sample %d, want %d/%d", history.ObservationCount, len(history.Prices), wantTotal, maxPriceHistoryEntries)
 	}
 }
 

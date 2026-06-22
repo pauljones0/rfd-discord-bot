@@ -179,14 +179,14 @@ func TestFormatCoreAlertEmbedShowsTotalAndSampleObservationCounts(t *testing.T) 
 			MinPriceSeen:     20,
 			P25PriceSeen:     100,
 			P50PriceSeen:     100,
-			HistoryCount:     251,
-			PriceSampleCount: 100,
+			HistoryCount:     1251,
+			PriceSampleCount: 1000,
 			AnomalyType:      "Price Error / Used",
 			ReceivedAt:       time.Date(2026, 6, 22, 20, 0, 0, 0, time.UTC),
 		},
 	})
 
-	if !strings.Contains(embed.Description, "Total price observations: **251** (latest **100** historical observations used for stats)") {
+	if !strings.Contains(embed.Description, "Total price observations: **1251** (latest **1000** historical observations used for stats)") {
 		t.Fatalf("description missing total/sample observation counts: %q", embed.Description)
 	}
 }
