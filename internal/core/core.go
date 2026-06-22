@@ -22,7 +22,7 @@ import (
 const (
 	minPriceObservationsForAlert = 10
 	minCategoryObservations      = 10
-	maxPriceHistoryEntries       = 1000
+	maxPriceHistoryEntries       = 10000
 )
 
 const (
