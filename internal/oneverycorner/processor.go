@@ -37,11 +37,7 @@ const (
 // Those are product and operational controls, not parsing concerns, so the live
 // bot should keep this path limited to Discord notifications and compose URLs.
 
-var (
-	allowedSweepstakesTags = []string{"#Sweepstakes", "#Sorteo", "#Gewinnspiele", "#Jeu", "#Concours"}
-
-	tweetVariantEmojiGroups = []string{"⚽", "🔥", "🚨", "🥅", "👀", "🎯", "🙌"}
-)
+var tweetVariantEmojiGroups = []string{"⚽", "🔥", "🚨", "🥅", "👀", "🎯", "🙌"}
 
 type NotificationEvent struct {
 	EventID       string
@@ -724,8 +720,7 @@ func sourceAppName(pkg string) string {
 }
 
 func ComposeTweetText(seedValues ...string) string {
-	tag := allowedSweepstakesTags[stableIndex(allowedSweepstakesTags, seedValues...)]
-	return strings.Join([]string{TweetMention, TweetTag, tag}, " ")
+	return TweetText
 }
 
 func ComposeVariantTweetText(seedValues ...string) string {

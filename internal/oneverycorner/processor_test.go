@@ -420,22 +420,11 @@ func TestComposeURLUsesXIntent(t *testing.T) {
 	}
 }
 
-func TestComposeTweetTextUsesOnlyAllowedElements(t *testing.T) {
+func TestComposeTweetTextUsesFixedSweepstakesTag(t *testing.T) {
 	for _, seed := range []string{"a", "b", "c", "d", "e", "f"} {
 		text := ComposeTweetText(seed)
-		if !strings.HasPrefix(text, "@Enterprise #OnEveryCorner #") {
-			t.Fatalf("ComposeTweetText(%q) = %q, want Enterprise/OnEveryCorner prefix", seed, text)
-		}
-		tag := strings.TrimPrefix(text, "@Enterprise #OnEveryCorner ")
-		found := false
-		for _, allowed := range allowedSweepstakesTags {
-			if tag == allowed {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("ComposeTweetText(%q) used disallowed tag %q", seed, tag)
+		if text != TweetText {
+			t.Fatalf("ComposeTweetText(%q) = %q, want fixed text %q", seed, text, TweetText)
 		}
 	}
 }
