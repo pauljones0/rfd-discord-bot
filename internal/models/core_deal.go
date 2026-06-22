@@ -17,13 +17,14 @@ type CoreDeal struct {
 	ReceivedAt    time.Time `docstore:"receivedAt"`
 
 	// Price history stats at trigger time
-	MinPriceSeen float64 `docstore:"minPriceSeen"`
-	P25PriceSeen float64 `docstore:"p25PriceSeen"`
-	P50PriceSeen float64 `docstore:"p50PriceSeen"`
-	P75PriceSeen float64 `docstore:"p75PriceSeen"`
-	HistoryCount int     `docstore:"historyCount"`
-	AnomalyType  string  `docstore:"anomalyType,omitempty"`
-	BoxPlot      string  `docstore:"boxPlot,omitempty"`
+	MinPriceSeen     float64 `docstore:"minPriceSeen"`
+	P25PriceSeen     float64 `docstore:"p25PriceSeen"`
+	P50PriceSeen     float64 `docstore:"p50PriceSeen"`
+	P75PriceSeen     float64 `docstore:"p75PriceSeen"`
+	HistoryCount     int     `docstore:"historyCount"`
+	PriceSampleCount int     `docstore:"priceSampleCount,omitempty"`
+	AnomalyType      string  `docstore:"anomalyType,omitempty"`
+	BoxPlot          string  `docstore:"boxPlot,omitempty"`
 }
 
 // CoreAlert tracks an active Discord alert to allow appending new stores/links to the same embed.
@@ -56,12 +57,13 @@ type CoreSystemAlertField struct {
 
 // CorePriceHistory stores the historical price points for a specific product.
 type CorePriceHistory struct {
-	ProductName  string      `docstore:"productName"`
-	Category     string      `docstore:"category"`
-	Prices       []float64   `docstore:"prices"` // CAD prices
-	EventIDs     []string    `docstore:"eventIds,omitempty"`
-	RecentAlerts []CoreAlert `docstore:"recentAlerts,omitempty"`
-	LastUpdated  time.Time   `docstore:"lastUpdated"`
+	ProductName      string      `docstore:"productName"`
+	Category         string      `docstore:"category"`
+	Prices           []float64   `docstore:"prices"` // CAD prices
+	ObservationCount int         `docstore:"observationCount,omitempty"`
+	EventIDs         []string    `docstore:"eventIds,omitempty"`
+	RecentAlerts     []CoreAlert `docstore:"recentAlerts,omitempty"`
+	LastUpdated      time.Time   `docstore:"lastUpdated"`
 }
 
 // CoreCategoryStats tracks how many observations have been seen in a category.

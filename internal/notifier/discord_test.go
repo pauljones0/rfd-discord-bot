@@ -166,6 +166,31 @@ func TestFormatOnEveryCornerAlertEmbedUsesTweetDefaults(t *testing.T) {
 	}
 }
 
+func TestFormatCoreAlertEmbedShowsTotalAndSampleObservationCounts(t *testing.T) {
+	embed := formatCoreAlertEmbed(models.CoreAlert{
+		StoreNames: []string{"Amazon CA"},
+		Links:      []string{"https://example.com/item"},
+		FiredAt:    time.Date(2026, 6, 22, 20, 0, 0, 0, time.UTC),
+		Deal: models.CoreDeal{
+			ProductName:      "Test Product",
+			StoreName:        "Amazon CA",
+			Category:         "test",
+			PriceCAD:         20,
+			MinPriceSeen:     20,
+			P25PriceSeen:     100,
+			P50PriceSeen:     100,
+			HistoryCount:     251,
+			PriceSampleCount: 100,
+			AnomalyType:      "Price Error / Used",
+			ReceivedAt:       time.Date(2026, 6, 22, 20, 0, 0, 0, time.UTC),
+		},
+	})
+
+	if !strings.Contains(embed.Description, "Total price observations: **251** (latest **100** historical observations used for stats)") {
+		t.Fatalf("description missing total/sample observation counts: %q", embed.Description)
+	}
+}
+
 func TestCreateOnEveryCornerSystemAlertPayload(t *testing.T) {
 	payload := createOnEveryCornerAlertPayload(models.OnEveryCornerAlert{
 		Kind:           models.OnEveryCornerAlertSystem,

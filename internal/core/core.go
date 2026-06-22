@@ -684,24 +684,25 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 	}
 
 	deal := models.CoreDeal{
-		EventID:       eventID,
-		SourcePackage: sourcePackage,
-		ProductName:   parsed.ProductName,
-		StoreName:     parsed.StoreName,
-		Category:      category,
-		PriceCAD:      priceCAD,
-		OriginalPrice: parsed.Price,
-		OriginalCurr:  parsed.Currency,
-		Link:          parsed.Link,
-		ImageBase64:   pictureBase64,
-		ReceivedAt:    time.Now(),
-		MinPriceSeen:  minFloat(priceCAD, evaluation.PriorMin),
-		P25PriceSeen:  evaluation.PriorP25,
-		P50PriceSeen:  evaluation.PriorP50,
-		P75PriceSeen:  evaluation.PriorP75,
-		HistoryCount:  len(history.Prices),
-		AnomalyType:   evaluation.AnomalyType,
-		BoxPlot:       GenerateBoxPlot(evaluation, priceCAD),
+		EventID:          eventID,
+		SourcePackage:    sourcePackage,
+		ProductName:      parsed.ProductName,
+		StoreName:        parsed.StoreName,
+		Category:         category,
+		PriceCAD:         priceCAD,
+		OriginalPrice:    parsed.Price,
+		OriginalCurr:     parsed.Currency,
+		Link:             parsed.Link,
+		ImageBase64:      pictureBase64,
+		ReceivedAt:       time.Now(),
+		MinPriceSeen:     minFloat(priceCAD, evaluation.PriorMin),
+		P25PriceSeen:     evaluation.PriorP25,
+		P50PriceSeen:     evaluation.PriorP50,
+		P75PriceSeen:     evaluation.PriorP75,
+		HistoryCount:     coreObservationCount(history),
+		PriceSampleCount: evaluation.PriorCount,
+		AnomalyType:      evaluation.AnomalyType,
+		BoxPlot:          GenerateBoxPlot(evaluation, priceCAD),
 	}
 
 	alert := models.CoreAlert{
@@ -712,7 +713,7 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 		Deal:       deal,
 	}
 
-	slog.Info("Core bot: Price drop/low price detected; sending alert", "product", parsed.ProductName, "store", parsed.StoreName, "price_cad", priceCAD, "min_cad", deal.MinPriceSeen, "p25_cad", deal.P25PriceSeen, "history_count", deal.HistoryCount)
+	slog.Info("Core bot: Price drop/low price detected; sending alert", "product", parsed.ProductName, "store", parsed.StoreName, "price_cad", priceCAD, "min_cad", deal.MinPriceSeen, "p25_cad", deal.P25PriceSeen, "history_count", deal.HistoryCount, "sample_count", deal.PriceSampleCount)
 	msgIDs, err := p.notifier.SendCoreAlert(ctx, alert, coreSubs)
 	if err != nil {
 		return fmt.Errorf("failed to send core deal alerts: %w", err)
@@ -1000,6 +1001,10 @@ func GenerateBoxPlot(ev priceEvaluation, currentPrice float64) string {
 }
 
 func appendPriceObservation(history *models.CorePriceHistory, priceCAD float64, eventID string) {
+	if history.ObservationCount < len(history.Prices) {
+		history.ObservationCount = len(history.Prices)
+	}
+	history.ObservationCount++
 	history.Prices = append(history.Prices, priceCAD)
 	if eventID != "" {
 		history.EventIDs = append(history.EventIDs, eventID)
@@ -1015,6 +1020,16 @@ func appendPriceObservation(history *models.CorePriceHistory, priceCAD float64, 
 	if len(history.EventIDs) > maxPriceHistoryEntries {
 		history.EventIDs = history.EventIDs[len(history.EventIDs)-maxPriceHistoryEntries:]
 	}
+}
+
+func coreObservationCount(history *models.CorePriceHistory) int {
+	if history == nil {
+		return 0
+	}
+	if history.ObservationCount < len(history.Prices) {
+		return len(history.Prices)
+	}
+	return history.ObservationCount
 }
 
 func eventAlreadyRecorded(history *models.CorePriceHistory, eventID string) bool {

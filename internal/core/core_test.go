@@ -363,6 +363,48 @@ func TestProcessNotification(t *testing.T) {
 	}
 }
 
+func TestCoreAlertUsesLifetimeObservationCountPastRetainedCap(t *testing.T) {
+	ctx := context.Background()
+	prices := make([]float64, maxPriceHistoryEntries)
+	for i := range prices {
+		prices[i] = 100
+	}
+
+	store := &mockStore{
+		history: map[string]*models.CorePriceHistory{
+			"test product": {
+				ProductName:      "test product",
+				Category:         "test",
+				Prices:           prices,
+				ObservationCount: 250,
+			},
+		},
+		catStats: map[string]*models.CoreCategoryStats{
+			"test": {Category: "test", TotalCount: 250},
+		},
+		subs: []models.Subscription{
+			{GuildID: "g1", ChannelID: "c1", SubscriptionType: "core", DealType: "core_alerts"},
+		},
+	}
+	notifier := &mockNotifier{}
+	p := NewProcessor(store, notifier, NewRateManager())
+
+	err := p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", "$20.00 | Amazon US | Test Product @USA", nil, "ev-low", "com.discord", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(notifier.sent) != 1 {
+		t.Fatalf("expected 1 notification sent on price drop, got %d", len(notifier.sent))
+	}
+	if notifier.sent[0].HistoryCount != 251 || notifier.sent[0].PriceSampleCount != maxPriceHistoryEntries {
+		t.Fatalf("alert counts = total %d/sample %d, want 251/%d", notifier.sent[0].HistoryCount, notifier.sent[0].PriceSampleCount, maxPriceHistoryEntries)
+	}
+	history := store.history["test product"]
+	if history.ObservationCount != 251 || len(history.Prices) != maxPriceHistoryEntries {
+		t.Fatalf("stored history counts = total %d/sample %d, want 251/%d", history.ObservationCount, len(history.Prices), maxPriceHistoryEntries)
+	}
+}
+
 func TestCategoryThreshold(t *testing.T) {
 	ctx := context.Background()
 

@@ -1275,7 +1275,11 @@ func formatCoreAlertEmbed(alert models.CoreAlert) discordEmbed {
 	descBuilder.WriteString(fmt.Sprintf("• Min price seen: **C$%.2f**\n", deal.MinPriceSeen))
 	descBuilder.WriteString(fmt.Sprintf("• Median (p50): **C$%.2f**\n", deal.P50PriceSeen))
 	descBuilder.WriteString(fmt.Sprintf("• 25th percentile (p25): **C$%.2f**\n", deal.P25PriceSeen))
-	descBuilder.WriteString(fmt.Sprintf("• Total price observations: **%d**\n", deal.HistoryCount))
+	if deal.PriceSampleCount > 0 && deal.PriceSampleCount < deal.HistoryCount {
+		descBuilder.WriteString(fmt.Sprintf("• Total price observations: **%d** (latest **%d** historical observations used for stats)\n", deal.HistoryCount, deal.PriceSampleCount))
+	} else {
+		descBuilder.WriteString(fmt.Sprintf("• Price observations used: **%d**\n", deal.HistoryCount))
+	}
 
 	if deal.BoxPlot != "" {
 		descBuilder.WriteString("\n**Price Distribution:**\n")
