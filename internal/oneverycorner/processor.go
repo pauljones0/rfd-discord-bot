@@ -155,14 +155,23 @@ func (p *Processor) ProcessNotification(ctx context.Context, event NotificationE
 	switch parsed.Type {
 	case eventTypeCorner:
 		alert := p.recordCorner(event, parsed)
-		return p.sendAlert(ctx, alert)
+		if err := p.sendAlert(ctx, alert); err != nil {
+			p.unmarkSeen(dedupeID)
+			return err
+		}
+		return nil
 	case eventTypeGoal:
 		alert, ok, reason := p.correlateGoal(event, parsed)
 		if !ok {
 			slog.Info("OnEveryCorner goal notification did not produce alert", "match", parsed.MatchName, "event_id", event.EventID, "reason", reason)
 			return nil
 		}
-		return p.sendAlert(ctx, alert)
+		if err := p.sendAlert(ctx, alert); err != nil {
+			p.unmarkSeen(dedupeID)
+			p.unmarkGoalAlert(alert)
+			return err
+		}
+		return nil
 	default:
 		return nil
 	}
@@ -429,6 +438,16 @@ func (p *Processor) markSeen(id string, seenAt time.Time) bool {
 	return true
 }
 
+func (p *Processor) unmarkSeen(id string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.seen, id)
+}
+
 func (p *Processor) markGoalAlert(alert models.OnEveryCornerAlert) bool {
 	key := goalAlertKey(alert)
 	if key == "" {
@@ -454,6 +473,16 @@ func (p *Processor) markGoalAlert(alert models.OnEveryCornerAlert) bool {
 	}
 	p.goalAlerts[key] = seenAt
 	return true
+}
+
+func (p *Processor) unmarkGoalAlert(alert models.OnEveryCornerAlert) {
+	key := goalAlertKey(alert)
+	if key == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.goalAlerts, key)
 }
 
 func goalAlertKey(alert models.OnEveryCornerAlert) string {

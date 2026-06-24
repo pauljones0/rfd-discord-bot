@@ -214,6 +214,20 @@ func (c *Controller) Run(ctx context.Context) error {
 			continue
 		}
 
+		if liveWindow, ok := c.scheduledLiveWindow(now, schedule); ok {
+			sleepFor := c.config.PendingKickoffPollInterval
+			slog.Info("schedule.live_window_retry",
+				"matches", matchWindowNames(liveWindow.matches),
+				"started_at", liveWindow.startedAt.Format(time.RFC3339),
+				"deadline", liveWindow.deadline.Format(time.RFC3339),
+				"sleep_for", sleepFor.String(),
+			)
+			if err := sleepContext(ctx, sleepFor); err != nil {
+				return err
+			}
+			continue
+		}
+
 		sleepFor := c.scheduleSleepDuration(now, schedule)
 		if next, ok := nextFutureMatch(now, schedule); ok {
 			slog.Info("schedule.next_match",
@@ -600,6 +614,32 @@ func (c *Controller) pendingKickoff(now time.Time, schedule []MatchWindow) (pend
 			continue
 		}
 		matchDeadline := match.Start.Add(c.config.PendingKickoffTimeout)
+		if now.After(matchDeadline) {
+			continue
+		}
+		matches = append(matches, match)
+		if startedAt.IsZero() || match.Start.Before(startedAt) {
+			startedAt = match.Start
+		}
+		if deadline.IsZero() || matchDeadline.After(deadline) {
+			deadline = matchDeadline
+		}
+	}
+	if len(matches) == 0 {
+		return pendingKickoffState{}, false
+	}
+	return pendingKickoffState{matches: matches, startedAt: startedAt, deadline: deadline}, true
+}
+
+func (c *Controller) scheduledLiveWindow(now time.Time, schedule []MatchWindow) (pendingKickoffState, bool) {
+	matches := make([]MatchWindow, 0)
+	var startedAt time.Time
+	var deadline time.Time
+	for _, match := range schedule {
+		if match.Start.IsZero() || match.Start.After(now) {
+			continue
+		}
+		matchDeadline := match.Start.Add(estimatedMatchDuration).Add(c.config.PostLiveGracePeriod)
 		if now.After(matchDeadline) {
 			continue
 		}

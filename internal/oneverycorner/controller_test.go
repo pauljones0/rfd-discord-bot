@@ -89,6 +89,31 @@ func TestControllerPendingKickoffWindowStartsAtKickoffOnly(t *testing.T) {
 	}
 }
 
+func TestControllerScheduledLiveWindowContinuesAfterPendingTimeout(t *testing.T) {
+	kickoff := time.Date(2026, 6, 20, 18, 0, 0, 0, time.UTC)
+	controller := NewController(nil, ControllerConfig{
+		PendingKickoffTimeout: time.Hour,
+		PostLiveGracePeriod:   10 * time.Minute,
+		TotalCornerSource:     &fakeTotalCornerSource{},
+	})
+	schedule := []MatchWindow{{ID: "m1", Start: kickoff, HomeTeam: "Scotland", AwayTeam: "Brazil"}}
+	now := kickoff.Add(61 * time.Minute)
+
+	if _, ok := controller.pendingKickoff(now, schedule); ok {
+		t.Fatal("pending kickoff should have elapsed")
+	}
+	live, ok := controller.scheduledLiveWindow(now, schedule)
+	if !ok {
+		t.Fatal("scheduled live window should remain active after pending timeout")
+	}
+	if len(live.matches) != 1 || live.matches[0].ID != "m1" {
+		t.Fatalf("live matches = %+v, want m1", live.matches)
+	}
+	if want := kickoff.Add(estimatedMatchDuration).Add(10 * time.Minute); !live.deadline.Equal(want) {
+		t.Fatalf("deadline = %s, want %s", live.deadline, want)
+	}
+}
+
 func TestControllerScheduleCacheHonorsLookaheadTTL(t *testing.T) {
 	now := time.Date(2026, 6, 20, 18, 0, 0, 0, time.UTC)
 	controller := NewController(nil, ControllerConfig{

@@ -153,7 +153,11 @@ func (m *TotalCornerMonitor) runOnce(ctx context.Context) error {
 		"--league-ids", strings.Join(m.config.LeagueIDs, ","),
 	)
 
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cmd := exec.Command(args[0], args[1:]...)
+	prepareMonitorCommand(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("open totalcorner stdout: %w", err)
@@ -165,6 +169,8 @@ func (m *TotalCornerMonitor) runOnce(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start totalcorner monitor: %w", err)
 	}
+	stopWatcher := watchMonitorContext(ctx, cmd)
+	defer stopWatcher()
 
 	stderrDone := make(chan struct{})
 	go func() {
@@ -175,6 +181,9 @@ func (m *TotalCornerMonitor) runOnce(ctx context.Context) error {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
+		if ctx.Err() != nil {
+			break
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue

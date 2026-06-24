@@ -2,6 +2,7 @@ package oneverycorner
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,21 @@ type testNotifier struct {
 func (n *testNotifier) SendOnEveryCornerAlert(_ context.Context, alert models.OnEveryCornerAlert, subs []models.Subscription) error {
 	n.alerts = append(n.alerts, alert)
 	n.subs = append(n.subs, subs)
+	return nil
+}
+
+type failOnceNotifier struct {
+	alerts []models.OnEveryCornerAlert
+	err    error
+	calls  int
+}
+
+func (n *failOnceNotifier) SendOnEveryCornerAlert(_ context.Context, alert models.OnEveryCornerAlert, _ []models.Subscription) error {
+	n.calls++
+	if n.calls == 1 {
+		return n.err
+	}
+	n.alerts = append(n.alerts, alert)
 	return nil
 }
 
@@ -101,6 +117,46 @@ func TestProcessNotificationCorrelatesGoalAfterCorner(t *testing.T) {
 	}
 	if alert.SecondsAfterCorner != 42 {
 		t.Fatalf("seconds after corner = %d, want 42", alert.SecondsAfterCorner)
+	}
+}
+
+func TestProcessNotificationAllowsRetryAfterGoalAlertSendFailure(t *testing.T) {
+	store := &testStore{subs: []models.Subscription{
+		{GuildID: "g1", ChannelID: "c1", SubscriptionType: dealtypes.SubscriptionOnEveryCorner, DealType: dealtypes.OnEveryCornerAlerts},
+	}}
+	notifier := &failOnceNotifier{err: errors.New("discord unavailable")}
+	p := NewProcessor(store, notifier)
+
+	start := time.Date(2026, 6, 24, 22, 49, 30, 0, time.UTC)
+	if err := p.ProcessNotification(context.Background(), NotificationEvent{
+		EventID:       "corner",
+		StableID:      "stable-corner",
+		SourcePackage: "scoremer",
+		Title:         "Scotland v Brazil",
+		Text:          "Corner - Brazil",
+		ReceivedAt:    start,
+	}); err != nil {
+		t.Fatalf("corner ProcessNotification error = %v", err)
+	}
+	goal := NotificationEvent{
+		EventID:       "goal",
+		StableID:      "stable-goal",
+		SourcePackage: "scoremer",
+		Title:         "Scotland v Brazil",
+		Text:          "Goal - Brazil\nScore 0-2",
+		ReceivedAt:    start,
+	}
+	if err := p.ProcessNotification(context.Background(), goal); err == nil {
+		t.Fatal("goal ProcessNotification error = nil, want send failure")
+	}
+	if err := p.ProcessNotification(context.Background(), goal); err != nil {
+		t.Fatalf("retry ProcessNotification error = %v", err)
+	}
+	if len(notifier.alerts) != 1 {
+		t.Fatalf("alerts = %d, want retry to send one alert", len(notifier.alerts))
+	}
+	if notifier.alerts[0].Kind != models.OnEveryCornerAlertPossibleCornerGoal {
+		t.Fatalf("kind = %q, want possible_corner_goal", notifier.alerts[0].Kind)
 	}
 }
 
