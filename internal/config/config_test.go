@@ -130,6 +130,9 @@ func TestLoad(t *testing.T) {
 	if cfg.OnEveryCornerTotalCornerAPIToken != "" || !reflect.DeepEqual(cfg.OnEveryCornerTotalCornerLeagueIDs, []string{"29754"}) {
 		t.Errorf("Expected default TotalCorner token empty/leagues [29754], got token_set=%v leagues=%v", cfg.OnEveryCornerTotalCornerAPIToken != "", cfg.OnEveryCornerTotalCornerLeagueIDs)
 	}
+	if cfg.OnEveryCornerTotalCornerTimezone != "Europe/London" {
+		t.Errorf("Expected default TotalCorner timezone Europe/London, got %q", cfg.OnEveryCornerTotalCornerTimezone)
+	}
 	if cfg.MaxStoredDeals != 500 {
 		t.Errorf("Expected default MaxStoredDeals 500, got %d", cfg.MaxStoredDeals)
 	}
@@ -283,6 +286,7 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	t.Setenv("ONEVERYCORNER_TOTALCORNER_API_TOKEN", "test-token")
 	t.Setenv("ONEVERYCORNER_TOTALCORNER_API_URL", "https://api.example.test/v1")
 	t.Setenv("ONEVERYCORNER_TOTALCORNER_LEAGUE_IDS", "29754, 999")
+	t.Setenv("ONEVERYCORNER_TOTALCORNER_TIMEZONE", "UTC")
 	t.Setenv("ONEVERYCORNER_SCOREMER_URL", "https://example.test/live")
 	t.Setenv("ONEVERYCORNER_SCOREMER_POLL_INTERVAL", "3s")
 	t.Setenv("ONEVERYCORNER_SCOREMER_LEAGUE_IDS", "3559, 1234")
@@ -374,6 +378,9 @@ func TestLoad_CustomSchedulerConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.OnEveryCornerTotalCornerLeagueIDs, []string{"29754", "999"}) {
 		t.Fatalf("TotalCorner league IDs = %v, want [29754 999]", cfg.OnEveryCornerTotalCornerLeagueIDs)
+	}
+	if cfg.OnEveryCornerTotalCornerTimezone != "UTC" {
+		t.Fatalf("TotalCorner timezone = %q, want UTC", cfg.OnEveryCornerTotalCornerTimezone)
 	}
 }
 

@@ -229,6 +229,7 @@ func main() {
 			BaseURL:   cfg.OnEveryCornerTotalCornerAPIURL,
 			Token:     cfg.OnEveryCornerTotalCornerAPIToken,
 			LeagueIDs: cfg.OnEveryCornerTotalCornerLeagueIDs,
+			Timezone:  cfg.OnEveryCornerTotalCornerTimezone,
 		},
 		Scoremer: oneverycorner.ScoremerConfig{
 			URL:          cfg.OnEveryCornerScoremerURL,

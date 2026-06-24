@@ -44,6 +44,7 @@ type Config struct {
 	OnEveryCornerTotalCornerAPIToken        string
 	OnEveryCornerTotalCornerAPIURL          string
 	OnEveryCornerTotalCornerLeagueIDs       []string
+	OnEveryCornerTotalCornerTimezone        string
 	OnEveryCornerScoremerURL                string
 	OnEveryCornerScoremerPollInterval       time.Duration
 	OnEveryCornerScoremerLeagueIDs          []string
@@ -380,6 +381,7 @@ func Load() (*Config, error) {
 		OnEveryCornerTotalCornerAPIToken:        os.Getenv("ONEVERYCORNER_TOTALCORNER_API_TOKEN"),
 		OnEveryCornerTotalCornerAPIURL:          firstNonEmpty(os.Getenv("ONEVERYCORNER_TOTALCORNER_API_URL"), "https://api.totalcorner.com/v1"),
 		OnEveryCornerTotalCornerLeagueIDs:       csvEnv("ONEVERYCORNER_TOTALCORNER_LEAGUE_IDS", []string{"29754"}),
+		OnEveryCornerTotalCornerTimezone:        firstNonEmpty(os.Getenv("ONEVERYCORNER_TOTALCORNER_TIMEZONE"), "Europe/London"),
 		OnEveryCornerScoremerURL:                firstNonEmpty(os.Getenv("ONEVERYCORNER_SCOREMER_URL"), "https://lv.scoremer.com/"),
 		OnEveryCornerScoremerPollInterval:       scoremerPollInterval,
 		OnEveryCornerScoremerLeagueIDs:          csvEnv("ONEVERYCORNER_SCOREMER_LEAGUE_IDS", []string{"3559"}),

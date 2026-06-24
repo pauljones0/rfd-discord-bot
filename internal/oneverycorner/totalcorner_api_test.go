@@ -66,8 +66,41 @@ func TestTotalCornerAPIScheduleUsesLeaguePagesAndLookaheadFilter(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("matches = %d, want only match in lookahead window", len(got))
 	}
-	if got[0].ID != "target-1" || got[0].Start.Location() != time.UTC {
+	wantStart := time.Date(2026, 6, 20, 17, 0, 0, 0, time.UTC)
+	if got[0].ID != "target-1" || !got[0].Start.Equal(wantStart) {
 		t.Fatalf("match = %+v", got[0])
+	}
+}
+
+func TestTotalCornerAPIDefaultTimezoneParsesNaiveLondonTime(t *testing.T) {
+	client := NewTotalCornerAPIClient(TotalCornerAPIConfig{})
+	got := totalCornerAPIMatch{
+		ID:       "m1",
+		Home:     "Switzerland",
+		Away:     "Canada",
+		League:   "World Cup",
+		Start:    "2026-06-24 20:00:00",
+		LeagueID: "29754",
+	}.toSnapshot(client.timezone)
+	want := time.Date(2026, 6, 24, 19, 0, 0, 0, time.UTC)
+	if !got.Start.Equal(want) {
+		t.Fatalf("start = %s, want %s", got.Start, want)
+	}
+}
+
+func TestTotalCornerAPICustomTimezoneParsesNaiveStart(t *testing.T) {
+	client := NewTotalCornerAPIClient(TotalCornerAPIConfig{Timezone: "UTC"})
+	got := totalCornerAPIMatch{
+		ID:       "m1",
+		Home:     "Switzerland",
+		Away:     "Canada",
+		League:   "World Cup",
+		Start:    "2026-06-24 20:00:00",
+		LeagueID: "29754",
+	}.toSnapshot(client.timezone)
+	want := time.Date(2026, 6, 24, 20, 0, 0, 0, time.UTC)
+	if !got.Start.Equal(want) {
+		t.Fatalf("start = %s, want %s", got.Start, want)
 	}
 }
 

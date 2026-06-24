@@ -10,17 +10,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	_ "time/tzdata"
 )
 
 const (
-	DefaultTotalCornerAPIBaseURL = "https://api.totalcorner.com/v1"
-	totalCornerAPIMaxPages       = 100
+	DefaultTotalCornerAPIBaseURL  = "https://api.totalcorner.com/v1"
+	DefaultTotalCornerAPITimezone = "Europe/London"
+	totalCornerAPIMaxPages        = 100
 )
 
 type TotalCornerAPIConfig struct {
 	BaseURL    string
 	Token      string
 	LeagueIDs  []string
+	Timezone   string
 	HTTPClient *http.Client
 }
 
@@ -52,6 +56,7 @@ type TotalCornerAPIClient struct {
 	token        string
 	leagueIDs    map[string]struct{}
 	leagueIDList []string
+	timezone     *time.Location
 	http         *http.Client
 }
 
@@ -94,6 +99,7 @@ func NewTotalCornerAPIClient(cfg TotalCornerAPIConfig) *TotalCornerAPIClient {
 		token:        strings.TrimSpace(cfg.Token),
 		leagueIDs:    leagueIDs,
 		leagueIDList: append([]string(nil), cfg.LeagueIDs...),
+		timezone:     loadTotalCornerLocation(cfg.Timezone),
 		http:         cfg.HTTPClient,
 	}
 }
@@ -101,6 +107,9 @@ func NewTotalCornerAPIClient(cfg TotalCornerAPIConfig) *TotalCornerAPIClient {
 func normalizeTotalCornerAPIConfig(cfg TotalCornerAPIConfig) TotalCornerAPIConfig {
 	if strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = DefaultTotalCornerAPIBaseURL
+	}
+	if strings.TrimSpace(cfg.Timezone) == "" {
+		cfg.Timezone = DefaultTotalCornerAPITimezone
 	}
 	cfg.LeagueIDs = normalizeTotalCornerLeagueIDs(cfg.LeagueIDs)
 	if cfg.HTTPClient == nil {
@@ -130,7 +139,7 @@ func (c *TotalCornerAPIClient) Schedule(ctx context.Context, from, through time.
 				return nil, err
 			}
 			for _, match := range matches {
-				snapshot := match.toSnapshot()
+				snapshot := match.toSnapshot(c.timezone)
 				if !c.leagueAllowed(snapshot.LeagueID) || snapshot.Start.IsZero() {
 					continue
 				}
@@ -151,7 +160,7 @@ func (c *TotalCornerAPIClient) Schedule(ctx context.Context, from, through time.
 				return nil, err
 			}
 			for _, match := range matches {
-				snapshot := match.toSnapshot()
+				snapshot := match.toSnapshot(c.timezone)
 				if !c.leagueAllowed(snapshot.LeagueID) || snapshot.Start.IsZero() {
 					continue
 				}
@@ -186,7 +195,7 @@ func (c *TotalCornerAPIClient) InPlay(ctx context.Context) ([]MatchSnapshot, err
 	}
 	snapshots := make([]MatchSnapshot, 0, len(matches))
 	for _, match := range matches {
-		snapshot := match.toSnapshot()
+		snapshot := match.toSnapshot(c.timezone)
 		if !c.leagueAllowed(snapshot.LeagueID) {
 			continue
 		}
@@ -345,8 +354,16 @@ func (c *TotalCornerAPIClient) leagueAllowed(id string) bool {
 	return ok
 }
 
-func (m totalCornerAPIMatch) toSnapshot() MatchSnapshot {
-	start, _ := parseTotalCornerStart(fieldString(m.Start))
+func loadTotalCornerLocation(name string) *time.Location {
+	location, err := time.LoadLocation(strings.TrimSpace(name))
+	if err != nil {
+		return time.UTC
+	}
+	return location
+}
+
+func (m totalCornerAPIMatch) toSnapshot(location *time.Location) MatchSnapshot {
+	start, _ := parseTotalCornerStart(fieldString(m.Start), location)
 	return MatchSnapshot{
 		MatchWindow: MatchWindow{
 			ID:         fieldString(m.ID),
@@ -364,24 +381,27 @@ func (m totalCornerAPIMatch) toSnapshot() MatchSnapshot {
 	}
 }
 
-func parseTotalCornerStart(value string) (time.Time, error) {
+func parseTotalCornerStart(value string, location *time.Location) (time.Time, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return time.Time{}, fmt.Errorf("empty totalcorner start")
 	}
+	if location == nil {
+		location = time.UTC
+	}
 	for _, layout := range []string{
 		time.RFC3339,
 		"2006-01-02T15:04:05Z07:00",
+	} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	for _, layout := range []string{
 		"2006-01-02 15:04:05",
 		"2006-01-02 15:04",
 	} {
-		if strings.Contains(layout, "Z07:00") {
-			if parsed, err := time.Parse(layout, value); err == nil {
-				return parsed.UTC(), nil
-			}
-			continue
-		}
-		if parsed, err := time.ParseInLocation(layout, value, time.UTC); err == nil {
+		if parsed, err := time.ParseInLocation(layout, value, location); err == nil {
 			return parsed.UTC(), nil
 		}
 	}
