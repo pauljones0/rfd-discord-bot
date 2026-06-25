@@ -20,7 +20,7 @@ const (
 	DefaultOnEveryCornerScheduleRefreshInterval    = 15 * time.Minute
 	DefaultOnEveryCornerPendingKickoffPollInterval = 30 * time.Second
 	DefaultOnEveryCornerPendingKickoffTimeout      = time.Hour
-	DefaultOnEveryCornerLivePollInterval           = 3500 * time.Millisecond
+	DefaultOnEveryCornerLivePollInterval           = 6 * time.Second
 	DefaultOnEveryCornerPostLiveGracePeriod        = 10 * time.Minute
 	DefaultOnEveryCornerScoremerBackupPollInterval = 10 * time.Second
 

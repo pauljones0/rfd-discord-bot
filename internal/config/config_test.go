@@ -107,7 +107,7 @@ func TestLoad(t *testing.T) {
 		cfg.OnEveryCornerScheduleRefreshInterval != 15*time.Minute ||
 		cfg.OnEveryCornerPendingKickoffPollInterval != 30*time.Second ||
 		cfg.OnEveryCornerPendingKickoffTimeout != time.Hour ||
-		cfg.OnEveryCornerLivePollInterval != 3500*time.Millisecond ||
+		cfg.OnEveryCornerLivePollInterval != 6*time.Second ||
 		cfg.OnEveryCornerPostLiveGracePeriod != 10*time.Minute {
 		t.Errorf("Unexpected OnEveryCorner timing defaults: lookahead=%s refresh=%s pending_poll=%s pending_timeout=%s live=%s grace=%s",
 			cfg.OnEveryCornerScheduleLookahead,

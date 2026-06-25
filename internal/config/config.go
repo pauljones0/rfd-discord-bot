@@ -242,7 +242,7 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	oneverycornerLivePollInterval, err := durationEnv("ONEVERYCORNER_LIVE_POLL_INTERVAL", 3500*time.Millisecond)
+	oneverycornerLivePollInterval, err := durationEnv("ONEVERYCORNER_LIVE_POLL_INTERVAL", 6*time.Second)
 	if err != nil {
 		return nil, err
 	}
