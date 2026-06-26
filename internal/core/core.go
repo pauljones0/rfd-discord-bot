@@ -519,6 +519,37 @@ func (p *Processor) ProcessRawNotification(ctx context.Context, notif models.Cor
 		})
 	}
 
+	category := ParseCategoryFromTitle(notif.Title)
+	seen := make(map[string]struct{}, len(notif.Lines))
+	var errs []error
+	replayed := 0
+	for i, line := range notif.Lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		if _, ok := ParseNotification(p.rates, line); !ok {
+			continue
+		}
+
+		subEventID := ""
+		if notif.EventID != "" {
+			subEventID = fmt.Sprintf("%s-%d", notif.EventID, i)
+		}
+		replayed++
+		if err := p.ProcessNotification(ctx, notif.Title, line, nil, subEventID, notif.SourcePackage, "", category, ""); err != nil {
+			slog.Error("Failed to replay legacy raw line", "event_id", notif.EventID, "line_index", i, "error", err)
+			errs = append(errs, fmt.Errorf("line %d: %w", i, err))
+		}
+	}
+	if replayed > 0 {
+		return errors.Join(errs...)
+	}
+
 	return p.ProcessNotification(ctx, notif.Title, notif.Message, notif.Lines, notif.EventID, notif.SourcePackage, "", "", "")
 }
 

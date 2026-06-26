@@ -554,6 +554,52 @@ func TestProcessRawNotificationReplaysGroupedMessages(t *testing.T) {
 	}
 }
 
+func TestProcessRawNotificationReplaysLegacyLinesIndividually(t *testing.T) {
+	ctx := context.Background()
+	store := &mockStore{
+		history:  make(map[string]*models.CorePriceHistory),
+		catStats: make(map[string]*models.CoreCategoryStats),
+	}
+	notifier := &mockNotifier{}
+	p := NewProcessor(store, notifier, NewRateManager())
+
+	err := p.ProcessRawNotification(ctx, models.CoreRawNotification{
+		EventID:       "legacy-event",
+		SourcePackage: "com.discord",
+		Title:         "CoreFinder #test: CoreFinder",
+		Message:       "$1.00 | Store | Primary Product @USA",
+		Lines: []string{
+			"$10.00 | Store | First Legacy Product @USA",
+			"CoreFinder #test: CoreFinder",
+			"$20.00 | Store | Second Legacy Product @USA",
+			"$10.00 | Store | First Legacy Product @USA",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	first, ok := store.history["first legacy product"]
+	if !ok {
+		t.Fatalf("expected first legacy line to be replayed, history keys: %#v", store.history)
+	}
+	if got, want := first.EventIDs, []string{"legacy-event-0"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("first legacy event IDs = %#v, want %#v", got, want)
+	}
+
+	second, ok := store.history["second legacy product"]
+	if !ok {
+		t.Fatalf("expected second legacy line to be replayed, history keys: %#v", store.history)
+	}
+	if got, want := second.EventIDs, []string{"legacy-event-2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("second legacy event IDs = %#v, want %#v", got, want)
+	}
+
+	if _, ok := store.history["primary product"]; ok {
+		t.Fatalf("legacy line replay processed primary fallback even though deal lines were present")
+	}
+}
+
 func TestCorePriceErrorOnlySubscriptionRequiresMeaningfulATL(t *testing.T) {
 	ctx := context.Background()
 	store := &mockStore{
