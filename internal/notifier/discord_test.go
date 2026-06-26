@@ -14,6 +14,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/bestbuy"
+	"github.com/pauljones0/rfd-discord-bot/internal/crux"
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
@@ -224,6 +225,43 @@ func TestCreateOnEveryCornerSystemAlertPayload(t *testing.T) {
 		t.Fatalf("fields = %#v, want severity plus status fields", embed.Fields)
 	}
 	if embed.Footer.Text != "OnEveryCorner system" {
+		t.Fatalf("footer = %q", embed.Footer.Text)
+	}
+}
+
+func TestCreateCruxSystemAlertPayload(t *testing.T) {
+	payload := createCruxSystemAlertPayload(crux.SystemAlert{
+		Title:      "Crux Investor monitor failure",
+		Severity:   "error",
+		Component:  "crux-monitor",
+		Details:    "failed to fetch crux page 1: http=parse:crux company list not found",
+		OccurredAt: time.Date(2026, 6, 26, 20, 40, 0, 0, time.UTC),
+		Fields: []crux.SystemAlertField{
+			{Name: "Automatic handling", Value: "The scheduler will retry on the next poll."},
+			{Name: "Alert suppression", Value: "Matching failures are suppressed for 1h0m0s."},
+		},
+	})
+
+	if payload.Content != "" {
+		t.Fatalf("content = %q, want empty system alert content", payload.Content)
+	}
+	if payload.AllowedMentions == nil || len(payload.AllowedMentions.Parse) != 0 {
+		t.Fatalf("allowed mentions = %#v, want no parsed mentions", payload.AllowedMentions)
+	}
+	if len(payload.Embeds) != 1 {
+		t.Fatalf("embeds = %d, want 1", len(payload.Embeds))
+	}
+	embed := payload.Embeds[0]
+	if embed.Title != "Crux Investor monitor failure" {
+		t.Fatalf("title = %q", embed.Title)
+	}
+	if !strings.Contains(embed.Description, "Severity: **ERROR**") || !strings.Contains(embed.Description, "crux company list not found") {
+		t.Fatalf("description = %q", embed.Description)
+	}
+	if len(embed.Fields) < 3 {
+		t.Fatalf("fields = %#v, want occurred plus status fields", embed.Fields)
+	}
+	if embed.Footer.Text != "Crux Investor system" {
 		t.Fatalf("footer = %q", embed.Footer.Text)
 	}
 }

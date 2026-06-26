@@ -44,3 +44,48 @@ func TestDiffCompaniesBaselineDoesNotEmitAdditions(t *testing.T) {
 		t.Fatalf("baseline changes = %#v, want none", changes)
 	}
 }
+
+func TestSystemAlertStateDedupesFailuresBySignatureAndTTL(t *testing.T) {
+	p := &Processor{systemAlertTTL: time.Hour}
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+
+	firstFailedAt, shouldSend := p.recordFailure(now, "parse failed")
+	if !shouldSend || !firstFailedAt.Equal(now) {
+		t.Fatalf("first failure = (%v, %v), want send at %v", firstFailedAt, shouldSend, now)
+	}
+	p.markFailureAlertSent(now, "parse failed")
+
+	_, shouldSend = p.recordFailure(now.Add(10*time.Minute), "parse failed")
+	if shouldSend {
+		t.Fatal("matching failure inside TTL should be suppressed")
+	}
+
+	_, shouldSend = p.recordFailure(now.Add(20*time.Minute), "different parse failed")
+	if !shouldSend {
+		t.Fatal("changed failure signature should send immediately")
+	}
+	p.markFailureAlertSent(now.Add(20*time.Minute), "different parse failed")
+
+	_, shouldSend = p.recordFailure(now.Add(2*time.Hour), "different parse failed")
+	if !shouldSend {
+		t.Fatal("matching failure after TTL should send again")
+	}
+}
+
+func TestSystemAlertStateClearsForRecovery(t *testing.T) {
+	p := &Processor{systemAlertTTL: time.Hour}
+	first := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	last := first.Add(10 * time.Minute)
+
+	_, _ = p.recordFailure(first, "parse failed")
+	_, _ = p.recordFailure(last, "parse failed")
+
+	gotFirst, gotLast, hadFailure := p.clearFailure()
+	if !hadFailure || !gotFirst.Equal(first) || !gotLast.Equal(last) {
+		t.Fatalf("clearFailure() = (%v, %v, %v), want (%v, %v, true)", gotFirst, gotLast, hadFailure, first, last)
+	}
+	_, _, hadFailure = p.clearFailure()
+	if hadFailure {
+		t.Fatal("clearFailure() after reset had failure, want false")
+	}
+}

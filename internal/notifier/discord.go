@@ -1890,6 +1890,23 @@ func (c *Client) SendCruxChange(ctx context.Context, change crux.Change, subs []
 	return c.sendEmbedToSubscriptions(ctx, "crux", title, embed, subs)
 }
 
+// SendCruxSystemAlert sends operational Crux monitor failures/recoveries.
+func (c *Client) SendCruxSystemAlert(ctx context.Context, alert crux.SystemAlert, subs []models.Subscription) error {
+	title := strings.TrimSpace(alert.Title)
+	if title == "" {
+		title = "Crux Investor monitor alert"
+	}
+	return c.sendPayloadToSubscriptions(ctx, "crux", title, createCruxSystemAlertPayload(alert), subs)
+}
+
+func createCruxSystemAlertPayload(alert crux.SystemAlert) discordWebhookPayload {
+	return discordWebhookPayload{
+		Content:         "",
+		Embeds:          []discordEmbed{formatCruxSystemAlertEmbed(alert)},
+		AllowedMentions: &discordAllowedMentions{Parse: []string{}},
+	}
+}
+
 func formatCruxChangeEmbed(change crux.Change) discordEmbed {
 	titlePrefix := "Crux change"
 	color := colorWarmDeal
@@ -1946,6 +1963,67 @@ func formatCruxChangeEmbed(change crux.Change) discordEmbed {
 		Color:       color,
 		Footer: discordEmbedFooter{
 			Text: "Crux Investor • Canadian listings",
+		},
+	}
+}
+
+func formatCruxSystemAlertEmbed(alert crux.SystemAlert) discordEmbed {
+	title := strings.TrimSpace(alert.Title)
+	if title == "" {
+		title = "Crux Investor monitor alert"
+	}
+	severity := strings.ToLower(strings.TrimSpace(alert.Severity))
+	if severity == "" {
+		severity = "warning"
+	}
+	component := strings.TrimSpace(alert.Component)
+	if component == "" {
+		component = "crux-monitor"
+	}
+	occurredAt := alert.OccurredAt
+	if occurredAt.IsZero() {
+		occurredAt = time.Now()
+	}
+
+	var desc strings.Builder
+	desc.WriteString("Severity: **")
+	desc.WriteString(strings.ToUpper(severity))
+	desc.WriteString("**\n")
+	desc.WriteString("Component: `")
+	desc.WriteString(discordLimit(component, 256))
+	desc.WriteString("`")
+	if alert.Details != "" {
+		desc.WriteString("\n\n")
+		desc.WriteString(discordLimit(alert.Details, 3500))
+	}
+
+	fields := []discordEmbedField{
+		{Name: "Occurred", Value: occurredAt.UTC().Format(time.RFC3339), Inline: true},
+	}
+	for _, field := range alert.Fields {
+		if len(fields) >= 25 {
+			break
+		}
+		name := strings.TrimSpace(field.Name)
+		value := strings.TrimSpace(field.Value)
+		if name == "" || value == "" {
+			continue
+		}
+		fields = append(fields, discordEmbedField{
+			Name:   discordLimit(name, 256),
+			Value:  discordLimit(value, 1024),
+			Inline: false,
+		})
+	}
+
+	return discordEmbed{
+		Title:       discordLimit(title, 256),
+		Description: desc.String(),
+		Timestamp:   occurredAt.UTC().Format(time.RFC3339),
+		Color:       coreSystemSeverityColor(severity),
+		Fields:      fields,
+		Footer: discordEmbedFooter{
+			Text: "Crux Investor system",
 		},
 	}
 }

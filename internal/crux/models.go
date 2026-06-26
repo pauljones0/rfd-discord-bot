@@ -56,6 +56,22 @@ type Change struct {
 	DetectedAt       time.Time `docstore:"detectedAt"`
 }
 
+// SystemAlert is an operational Crux monitor alert, such as a scrape/parser
+// failure or recovery. These go to Crux subscription channels.
+type SystemAlert struct {
+	Title      string
+	Severity   string
+	Component  string
+	Details    string
+	Fields     []SystemAlertField
+	OccurredAt time.Time
+}
+
+type SystemAlertField struct {
+	Name  string
+	Value string
+}
+
 func CompanyKey(exchange, symbol string) string {
 	exchange = strings.ToUpper(strings.TrimSpace(exchange))
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
