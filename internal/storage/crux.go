@@ -33,32 +33,88 @@ func (c *Client) GetCruxCompanies(ctx context.Context) (map[string]crux.Company,
 	return companies, nil
 }
 
+func (c *Client) SaveCruxSnapshot(ctx context.Context, companies []crux.Company, changes []crux.Change) error {
+	companyDocs, err := cruxCompanyDocuments(companies)
+	if err != nil {
+		return err
+	}
+	changeDocs, err := cruxChangeDocuments(changes)
+	if err != nil {
+		return err
+	}
+	return c.saveCruxDocuments(ctx, companyDocs, changeDocs)
+}
+
 func (c *Client) SaveCruxCompanies(ctx context.Context, companies []crux.Company) error {
-	if len(companies) == 0 {
+	docs, err := cruxCompanyDocuments(companies)
+	if err != nil {
+		return err
+	}
+	return c.SetRawDocuments(ctx, cruxCompaniesCollection, docs)
+}
+
+func (c *Client) SaveCruxChanges(ctx context.Context, changes []crux.Change) error {
+	docs, err := cruxChangeDocuments(changes)
+	if err != nil {
+		return err
+	}
+	return c.SetRawDocuments(ctx, cruxChangesCollection, docs)
+}
+
+func (c *Client) saveCruxDocuments(ctx context.Context, companyDocs, changeDocs map[string]map[string]any) error {
+	if len(companyDocs) == 0 && len(changeDocs) == 0 {
 		return nil
 	}
-	docs := make(map[string]any, len(companies))
+	tx, err := c.pg.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin crux snapshot transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if len(companyDocs) > 0 {
+		if err := setRawDocuments(ctx, tx, cruxCompaniesCollection, companyDocs); err != nil {
+			return fmt.Errorf("save crux companies: %w", err)
+		}
+	}
+	if len(changeDocs) > 0 {
+		if err := setRawDocuments(ctx, tx, cruxChangesCollection, changeDocs); err != nil {
+			return fmt.Errorf("save crux changes: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit crux snapshot transaction: %w", err)
+	}
+	return nil
+}
+
+func cruxCompanyDocuments(companies []crux.Company) (map[string]map[string]any, error) {
+	docs := make(map[string]map[string]any, len(companies))
 	for _, company := range companies {
 		if company.Key == "" {
 			continue
 		}
-		docs[company.Key] = company
+		data, err := encodeDocument(company)
+		if err != nil {
+			return nil, fmt.Errorf("encode crux company %s: %w", company.Key, err)
+		}
+		docs[company.Key] = data
 	}
-	return c.SetDocuments(ctx, cruxCompaniesCollection, docs)
+	return docs, nil
 }
 
-func (c *Client) SaveCruxChanges(ctx context.Context, changes []crux.Change) error {
-	if len(changes) == 0 {
-		return nil
-	}
-	docs := make(map[string]any, len(changes))
+func cruxChangeDocuments(changes []crux.Change) (map[string]map[string]any, error) {
+	docs := make(map[string]map[string]any, len(changes))
 	for _, change := range changes {
 		docID := crux.ChangeDocID(change)
 		if docID == "" {
-			return fmt.Errorf("crux change for %q has empty document id", change.Key)
+			return nil, fmt.Errorf("crux change for %q has empty document id", change.Key)
 		}
 		change.ID = docID
-		docs[docID] = change
+		data, err := encodeDocument(change)
+		if err != nil {
+			return nil, fmt.Errorf("encode crux change %s: %w", docID, err)
+		}
+		docs[docID] = data
 	}
-	return c.SetDocuments(ctx, cruxChangesCollection, docs)
+	return docs, nil
 }

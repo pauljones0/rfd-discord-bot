@@ -91,7 +91,15 @@ func (c *Client) SetDocuments(ctx context.Context, collection string, values map
 	return c.SetRawDocuments(ctx, collection, raw)
 }
 
+type documentBatchSender interface {
+	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
+}
+
 func (c *Client) SetRawDocuments(ctx context.Context, collection string, docs map[string]map[string]any) error {
+	return setRawDocuments(ctx, c.pg, collection, docs)
+}
+
+func setRawDocuments(ctx context.Context, sender documentBatchSender, collection string, docs map[string]map[string]any) error {
 	if len(docs) == 0 {
 		return nil
 	}
@@ -115,7 +123,7 @@ VALUES ($1, $2, $3::jsonb)
 ON CONFLICT (collection, doc_id)
 DO UPDATE SET data = EXCLUDED.data, updated_at = now()`, collection, docID, payload)
 	}
-	results := c.pg.SendBatch(ctx, batch)
+	results := sender.SendBatch(ctx, batch)
 	defer results.Close()
 	for _, docID := range ids {
 		if _, err := results.Exec(); err != nil {

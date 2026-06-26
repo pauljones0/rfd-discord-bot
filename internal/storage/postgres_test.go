@@ -3,11 +3,13 @@ package storage
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/bestbuy"
+	"github.com/pauljones0/rfd-discord-bot/internal/crux"
 )
 
 func TestEncodeDecodeDocumentPrefersDocstoreTags(t *testing.T) {
@@ -126,6 +128,106 @@ func TestPostgresDocumentHelpersIntegration(t *testing.T) {
 	}
 	if len(remaining) != 1 || remaining[0].ID != "new-g2" {
 		t.Fatalf("remaining docs = %#v, want only new-g2", remaining)
+	}
+}
+
+func TestPostgresCruxSnapshotIntegration(t *testing.T) {
+	dsn := os.Getenv("POSTGRES_TEST_DSN")
+	if dsn == "" {
+		t.Skip("POSTGRES_TEST_DSN not set")
+	}
+
+	ctx := context.Background()
+	client, err := NewPostgres(ctx, dsn)
+	if err != nil {
+		t.Fatalf("NewPostgres() error = %v", err)
+	}
+	defer client.Close()
+
+	now := time.Now().UTC()
+	symbol := fmt.Sprintf("TX%d", now.UnixNano())
+	key := "TSXV:" + symbol
+	change := crux.Change{
+		Type:        crux.ChangeUpgraded,
+		Key:         key,
+		Exchange:    "TSXV",
+		Symbol:      symbol,
+		Ticker:      key,
+		Name:        "Crux Transaction Test",
+		OldScore:    3,
+		HasOldScore: true,
+		NewScore:    4,
+		HasNewScore: true,
+		DetectedAt:  now,
+	}
+	changeID := crux.ChangeDocID(change)
+	defer func() {
+		_, _ = client.DeleteDocuments(ctx, cruxCompaniesCollection, []string{key})
+		_, _ = client.DeleteDocuments(ctx, cruxChangesCollection, []string{changeID})
+	}()
+
+	company := crux.Company{
+		Key:          key,
+		Exchange:     "TSXV",
+		Symbol:       symbol,
+		Ticker:       key,
+		Name:         "Crux Transaction Test",
+		CruxScore:    4,
+		HasCruxScore: true,
+		Active:       true,
+		FirstSeenAt:  now,
+		LastSeenAt:   now,
+	}
+	if err := client.SaveCruxSnapshot(ctx, []crux.Company{company}, []crux.Change{change}); err != nil {
+		t.Fatalf("SaveCruxSnapshot() error = %v", err)
+	}
+
+	companyDocs, err := client.GetRawDocuments(ctx, cruxCompaniesCollection, []string{key})
+	if err != nil {
+		t.Fatalf("GetRawDocuments(companies) error = %v", err)
+	}
+	if len(companyDocs) != 1 || companyDocs[key].Data["name"] != company.Name {
+		t.Fatalf("company docs = %#v, want saved company", companyDocs)
+	}
+	changeDocs, err := client.GetRawDocuments(ctx, cruxChangesCollection, []string{changeID})
+	if err != nil {
+		t.Fatalf("GetRawDocuments(changes) error = %v", err)
+	}
+	if len(changeDocs) != 1 || changeDocs[changeID].Data["type"] != crux.ChangeUpgraded {
+		t.Fatalf("change docs = %#v, want saved change", changeDocs)
+	}
+}
+
+func TestPostgresCruxSnapshotRollsBackCompanyWritesWhenChangeWriteFails(t *testing.T) {
+	dsn := os.Getenv("POSTGRES_TEST_DSN")
+	if dsn == "" {
+		t.Skip("POSTGRES_TEST_DSN not set")
+	}
+
+	ctx := context.Background()
+	client, err := NewPostgres(ctx, dsn)
+	if err != nil {
+		t.Fatalf("NewPostgres() error = %v", err)
+	}
+	defer client.Close()
+
+	key := fmt.Sprintf("TSXV:ROLLBACK%d", time.Now().UnixNano())
+	defer func() { _, _ = client.DeleteDocuments(ctx, cruxCompaniesCollection, []string{key}) }()
+
+	err = client.saveCruxDocuments(ctx, map[string]map[string]any{
+		key: {"key": key, "active": true},
+	}, map[string]map[string]any{
+		"bad-change": {"bad": math.Inf(1)},
+	})
+	if err == nil {
+		t.Fatal("saveCruxDocuments() returned nil error, want marshal failure")
+	}
+	companyDocs, err := client.GetRawDocuments(ctx, cruxCompaniesCollection, []string{key})
+	if err != nil {
+		t.Fatalf("GetRawDocuments(companies) error = %v", err)
+	}
+	if len(companyDocs) != 0 {
+		t.Fatalf("company docs after rollback = %#v, want none", companyDocs)
 	}
 }
 

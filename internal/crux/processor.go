@@ -14,8 +14,7 @@ import (
 
 type Store interface {
 	GetCruxCompanies(ctx context.Context) (map[string]Company, error)
-	SaveCruxCompanies(ctx context.Context, companies []Company) error
-	SaveCruxChanges(ctx context.Context, changes []Change) error
+	SaveCruxSnapshot(ctx context.Context, companies []Company, changes []Change) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
 }
 
@@ -67,14 +66,9 @@ func (p *Processor) ProcessCruxChanges(ctx context.Context) error {
 	baseline := len(existing) == 0
 	writes, changes := diffCompanies(existing, current, now, baseline)
 
-	if len(writes) > 0 {
-		if err := p.store.SaveCruxCompanies(ctx, writes); err != nil {
-			return fmt.Errorf("save crux companies: %w", err)
-		}
-	}
-	if len(changes) > 0 {
-		if err := p.store.SaveCruxChanges(ctx, changes); err != nil {
-			return fmt.Errorf("save crux changes: %w", err)
+	if len(writes) > 0 || len(changes) > 0 {
+		if err := p.store.SaveCruxSnapshot(ctx, writes, changes); err != nil {
+			return fmt.Errorf("save crux snapshot: %w", err)
 		}
 	}
 
