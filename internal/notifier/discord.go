@@ -24,6 +24,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/bestbuy"
+	"github.com/pauljones0/rfd-discord-bot/internal/crux"
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -1877,4 +1878,95 @@ func bestBuyEffectivePrice(product bestbuy.Product) float64 {
 		return product.SalePrice
 	}
 	return product.RegularPrice
+}
+
+// SendCruxChange sends a Crux Investor company score/listing change alert.
+func (c *Client) SendCruxChange(ctx context.Context, change crux.Change, subs []models.Subscription) error {
+	embed := formatCruxChangeEmbed(change)
+	title := change.Ticker
+	if title == "" {
+		title = change.Key
+	}
+	return c.sendEmbedToSubscriptions(ctx, "crux", title, embed, subs)
+}
+
+func formatCruxChangeEmbed(change crux.Change) discordEmbed {
+	titlePrefix := "Crux change"
+	color := colorWarmDeal
+	switch change.Type {
+	case crux.ChangeUpgraded:
+		titlePrefix = "Crux upgrade"
+		color = colorHotDeal
+	case crux.ChangeDowngraded:
+		titlePrefix = "Crux downgrade"
+		color = colorColdDeal
+	case crux.ChangeAdded:
+		titlePrefix = "Crux addition"
+	case crux.ChangeDeleted:
+		titlePrefix = "Crux deletion"
+		color = colorColdDeal
+	case crux.ChangeScoreAdded:
+		titlePrefix = "Crux score added"
+	case crux.ChangeScoreRemoved:
+		titlePrefix = "Crux score removed"
+		color = colorColdDeal
+	}
+
+	ticker := change.Ticker
+	if ticker == "" {
+		ticker = change.Key
+	}
+	title := strings.TrimSpace(fmt.Sprintf("%s: %s", titlePrefix, ticker))
+
+	var desc strings.Builder
+	if change.Name != "" {
+		desc.WriteString("**" + change.Name + "**\n")
+	}
+	if scoreLine := cruxScoreLine(change); scoreLine != "" {
+		desc.WriteString(scoreLine + "\n")
+	}
+	var details []string
+	if change.DevelopmentStage != "" {
+		details = append(details, change.DevelopmentStage)
+	}
+	if change.Commodity != "" {
+		details = append(details, change.Commodity)
+	}
+	if len(details) > 0 {
+		desc.WriteString(strings.Join(details, " • ") + "\n")
+	}
+	if !change.DetectedAt.IsZero() {
+		desc.WriteString(fmt.Sprintf("Detected <t:%d:f>", change.DetectedAt.Unix()))
+	}
+
+	return discordEmbed{
+		Title:       title,
+		URL:         change.URL,
+		Description: strings.TrimSpace(desc.String()),
+		Color:       color,
+		Footer: discordEmbedFooter{
+			Text: "Crux Investor • Canadian listings",
+		},
+	}
+}
+
+func cruxScoreLine(change crux.Change) string {
+	oldScore := "–"
+	newScore := "–"
+	if change.HasOldScore {
+		oldScore = strconv.Itoa(change.OldScore)
+	}
+	if change.HasNewScore {
+		newScore = strconv.Itoa(change.NewScore)
+	}
+	switch change.Type {
+	case crux.ChangeUpgraded, crux.ChangeDowngraded, crux.ChangeScoreAdded, crux.ChangeScoreRemoved:
+		return fmt.Sprintf("Crux score: **%s → %s**", oldScore, newScore)
+	case crux.ChangeAdded:
+		return fmt.Sprintf("Added with Crux score: **%s**", newScore)
+	case crux.ChangeDeleted:
+		return fmt.Sprintf("Removed from listing. Last Crux score: **%s**", oldScore)
+	default:
+		return ""
+	}
 }

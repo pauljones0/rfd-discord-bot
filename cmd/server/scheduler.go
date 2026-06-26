@@ -31,6 +31,13 @@ func (s *Server) StartLocalScheduler(ctx context.Context, cfg *config.Config) {
 	if cfg.BestBuyComputeEnabled && s.bestbuyCompute != nil {
 		s.startScheduledLoop(ctx, "bestbuy_compute", cfg.BestBuyComputePollInterval, 20*time.Minute, s.bestbuyComputeSem, s.bestbuyCompute.ProcessComputeOutliers)
 	}
+	if cfg.CruxEnabled && s.cruxProcessor != nil {
+		timeout := cfg.CruxPollTimeout
+		if timeout <= 0 {
+			timeout = 28 * time.Minute
+		}
+		s.startScheduledLoop(ctx, "crux", cfg.CruxPollInterval, timeout, s.cruxSem, s.cruxProcessor.ProcessCruxChanges)
+	}
 	if cfg.OnEveryCornerEnabled && s.onEveryCornerController != nil {
 		s.wg.Add(1)
 		go func() {

@@ -77,6 +77,19 @@ type Config struct {
 	MemoryExpressPaidMaxPerRun      int
 	MemoryExpressPaidMaxPerDay      int
 
+	// Crux Investor company score monitor configuration.
+	CruxEnabled      bool
+	CruxBaseURL      string
+	CruxBackends     []string
+	CruxExchanges    []string
+	CruxPollInterval time.Duration
+	CruxPollTimeout  time.Duration
+	CruxFetchTimeout time.Duration
+	CruxPageDelay    time.Duration
+	CruxPageJitter   time.Duration
+	CruxMaxPages     int
+	CruxPaidEnabled  bool
+
 	// Best Buy scraping backend configuration.
 	BestBuyBackends                 []string
 	BestBuyPollInterval             time.Duration
@@ -192,6 +205,27 @@ func Load() (*Config, error) {
 	}
 
 	bestBuyPollInterval, err := durationEnv("BESTBUY_POLL_INTERVAL", 30*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	cruxPollInterval, err := durationEnv("CRUX_POLL_INTERVAL", 30*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	cruxPollTimeout, err := durationEnv("CRUX_POLL_TIMEOUT", 28*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	cruxFetchTimeout, err := durationEnv("CRUX_FETCH_TIMEOUT", 35*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	cruxPageDelay, err := durationEnv("CRUX_PAGE_DELAY", 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	cruxPageJitter, err := durationEnv("CRUX_PAGE_JITTER", 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -334,6 +368,17 @@ func Load() (*Config, error) {
 		MemoryExpressPaidBrowserEnabled:         boolEnv("MEMEXPRESS_PAID_BROWSER_ENABLED", false),
 		MemoryExpressPaidMaxPerRun:              intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_RUN", 0),
 		MemoryExpressPaidMaxPerDay:              intEnv("MEMEXPRESS_PAID_BROWSER_MAX_CALLS_PER_DAY", 0),
+		CruxEnabled:                             boolEnv("CRUX_ENABLED", true),
+		CruxBaseURL:                             firstNonEmpty(os.Getenv("CRUX_BASE_URL"), "https://www.cruxinvestor.com/companies"),
+		CruxBackends:                            csvEnv("CRUX_BACKENDS", []string{"http", "external-stealth", "camoufox", "ai-crawler"}),
+		CruxExchanges:                           csvEnv("CRUX_EXCHANGES", []string{"TSXV", "TSX", "CSE"}),
+		CruxPollInterval:                        cruxPollInterval,
+		CruxPollTimeout:                         cruxPollTimeout,
+		CruxFetchTimeout:                        cruxFetchTimeout,
+		CruxPageDelay:                           cruxPageDelay,
+		CruxPageJitter:                          cruxPageJitter,
+		CruxMaxPages:                            intEnv("CRUX_MAX_PAGES", 100),
+		CruxPaidEnabled:                         boolEnv("CRUX_PAID_BROWSER_ENABLED", false),
 		BestBuyBackends:                         csvEnv("BESTBUY_BACKENDS", []string{"bestbuy-algolia", "http"}),
 		BestBuyPollInterval:                     bestBuyPollInterval,
 		BestBuyComputeEnabled:                   boolEnv("BESTBUY_COMPUTE_ENABLED", false),

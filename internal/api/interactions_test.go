@@ -383,6 +383,42 @@ func TestHandleSetupEbay_RejectsUSFilter(t *testing.T) {
 	}
 }
 
+func TestHandleSetupCrux_SavesSubscription(t *testing.T) {
+	store := &mockStore{}
+	handler := &Handler{store: store}
+
+	reqPayload := interactionRequest{
+		GuildID: "guild1",
+		Data: &interactionData{
+			Resolved: &interactionResolved{
+				Channels: map[string]struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+					Type int    `json:"type"`
+				}{
+					"chan1": {ID: "chan1", Name: "crux-alerts"},
+				},
+			},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	handler.handleSetupCrux(w, reqPayload, []interactionOption{
+		{Name: "channel", Value: "chan1"},
+		{Name: "filter", Value: "crux_changes"},
+	})
+	if !strings.Contains(w.Body.String(), "Crux Investor alerts") {
+		t.Fatalf("expected Crux setup response, got %q", w.Body.String())
+	}
+	if len(store.subscriptions) != 1 {
+		t.Fatalf("subscriptions = %d, want 1", len(store.subscriptions))
+	}
+	sub := store.subscriptions[0]
+	if sub.SubscriptionType != "crux" || sub.DealType != "crux_changes" || sub.ChannelID != "chan1" {
+		t.Fatalf("subscription = %#v", sub)
+	}
+}
+
 func TestHandleCommand_RejectsLegacyRfdBotSetup(t *testing.T) {
 	handler := &Handler{store: &mockStore{}}
 	reqPayload := interactionRequest{

@@ -222,6 +222,29 @@ func main() {
 						},
 					},
 				},
+
+				// setup-crux subcommand
+				{
+					"name":        "setup-crux",
+					"description": "Subscribe this channel to Crux Investor score/listing changes.",
+					"type":        1, // SUB_COMMAND
+					"options": []map[string]interface{}{
+						{
+							"name":          "channel",
+							"description":   "The channel to publish Crux Investor changes to.",
+							"type":          7,           // CHANNEL
+							"channel_types": []int{0, 5}, // GUILD_TEXT, GUILD_ANNOUNCEMENT
+							"required":      true,
+						},
+						{
+							"name":        "filter",
+							"description": "Which Crux Investor alerts to publish.",
+							"type":        3, // STRING
+							"required":    true,
+							"choices":     stringChoices(dealtypes.CruxChoices),
+						},
+					},
+				},
 				// suggest-rules subcommand
 				{
 					"name":        "suggest-rules",

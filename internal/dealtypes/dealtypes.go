@@ -14,6 +14,7 @@ const (
 	SubscriptionHardwareSwap  = "hardwareswap"
 	SubscriptionCore          = "core"
 	SubscriptionOnEveryCorner = "oneverycorner"
+	SubscriptionCrux          = "crux"
 
 	RFDAll         = "rfd_all"
 	RFDTech        = "rfd_tech"
@@ -39,6 +40,8 @@ const (
 
 	OnEveryCornerAlerts         = "oneverycorner_alerts"
 	OnEveryCornerPotentialGoals = "oneverycorner_potential_goals"
+
+	CruxChanges = "crux_changes"
 )
 
 const CorePriceErrorATLRatio = 0.90
@@ -78,6 +81,10 @@ var OnEveryCornerChoices = []Choice{
 	{Name: "Awareness: corner goals, X failures, Scoremer issues", Value: OnEveryCornerPotentialGoals},
 }
 
+var CruxChoices = []Choice{
+	{Name: "Crux score and listing changes", Value: CruxChanges},
+}
+
 var RemoveChoices = []Choice{
 	{Name: "RFD", Value: SubscriptionRFD},
 	{Name: "eBay", Value: SubscriptionEbay},
@@ -86,6 +93,7 @@ var RemoveChoices = []Choice{
 	{Name: "Best Buy", Value: SubscriptionBestBuy},
 	{Name: "Core", Value: SubscriptionCore},
 	{Name: "OnEveryCorner", Value: SubscriptionOnEveryCorner},
+	{Name: "Crux Investor", Value: SubscriptionCrux},
 }
 
 func ActiveRemoveChoices(facebookEnabled, hardwareSwapEnabled bool) []Choice {
@@ -101,7 +109,7 @@ func ActiveRemoveChoices(facebookEnabled, hardwareSwapEnabled bool) []Choice {
 
 func ValidSubscriptionType(value string, facebookEnabled, hardwareSwapEnabled bool) bool {
 	switch value {
-	case SubscriptionRFD, SubscriptionEbay, SubscriptionMemoryExpress, SubscriptionBestBuy, SubscriptionCore, SubscriptionOnEveryCorner:
+	case SubscriptionRFD, SubscriptionEbay, SubscriptionMemoryExpress, SubscriptionBestBuy, SubscriptionCore, SubscriptionOnEveryCorner, SubscriptionCrux:
 		return true
 	case SubscriptionFacebook:
 		return facebookEnabled
@@ -137,6 +145,10 @@ func IsOnEveryCorner(value string) bool {
 		return true
 	}
 	return containsValue(OnEveryCornerChoices, value)
+}
+
+func IsCrux(value string) bool {
+	return containsValue(CruxChoices, value)
 }
 
 func Label(value string) string {
@@ -179,6 +191,8 @@ func Label(value string) string {
 		return "Core steals only"
 	case OnEveryCornerAlerts, OnEveryCornerPotentialGoals:
 		return "OnEveryCorner awareness alerts"
+	case CruxChanges:
+		return "Crux score and listing changes"
 	default:
 		return value
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/bestbuy"
 	"github.com/pauljones0/rfd-discord-bot/internal/config"
 	"github.com/pauljones0/rfd-discord-bot/internal/core"
+	"github.com/pauljones0/rfd-discord-bot/internal/crux"
 	"github.com/pauljones0/rfd-discord-bot/internal/ebay"
 	"github.com/pauljones0/rfd-discord-bot/internal/facebook"
 	"github.com/pauljones0/rfd-discord-bot/internal/hardwareswap"
@@ -44,6 +45,7 @@ type Server struct {
 	bestbuyCompute          *bestbuy.ComputeProcessor
 	hwProcessor             *hardwareswap.Processor
 	coreProcessor           *core.Processor
+	cruxProcessor           *crux.Processor
 	onEveryCorner           *oneverycorner.Processor
 	onEveryCornerController *oneverycorner.Controller
 	aiClient                *ai.Client
@@ -57,6 +59,7 @@ type Server struct {
 	memexpressSem           chan struct{} // Semaphore to limit concurrent Memory Express processing requests
 	bestbuySem              chan struct{} // Semaphore to limit concurrent Best Buy processing requests
 	bestbuyComputeSem       chan struct{} // Semaphore to limit concurrent Best Buy compute sweeps
+	cruxSem                 chan struct{} // Semaphore to limit concurrent Crux Investor sweeps
 	hwSem                   chan struct{} // Semaphore to limit concurrent HardwareSwap processing requests
 	coreIssueMu             sync.Mutex
 	coreIssueLast           map[string]time.Time
@@ -192,6 +195,27 @@ func main() {
 		"ebay_sold_paid_enabled", cfg.BestBuyComputeSoldPaidEnabled,
 	)
 
+	cruxBackends := scrapebackend.FilterBackendsForPaidEnabled(cfg.CruxBackends, cfg.CruxPaidEnabled)
+	cruxClient := crux.NewClient(crux.ClientConfig{
+		BaseURL:     cfg.CruxBaseURL,
+		Backends:    cruxBackends,
+		Exchanges:   cfg.CruxExchanges,
+		Timeout:     cfg.CruxFetchTimeout,
+		PageDelay:   cfg.CruxPageDelay,
+		PageJitter:  cfg.CruxPageJitter,
+		MaxPages:    cfg.CruxMaxPages,
+		PaidEnabled: cfg.CruxPaidEnabled,
+	})
+	cruxProc := crux.NewProcessor(store, cruxClient, n, cfg.CruxExchanges)
+	slog.Info("Crux Investor processor initialized",
+		"enabled", cfg.CruxEnabled,
+		"interval", cfg.CruxPollInterval.String(),
+		"backends", cruxBackends,
+		"page_delay", cfg.CruxPageDelay.String(),
+		"page_jitter", cfg.CruxPageJitter.String(),
+		"max_pages", cfg.CruxMaxPages,
+	)
+
 	// Initialize HardwareSwap processor only when explicitly enabled.
 	var hwProc *hardwareswap.Processor
 	if cfg.HardwareSwapEnabled && aiClient != nil {
@@ -247,6 +271,7 @@ func main() {
 		bestbuyCompute:          bbComputeProc,
 		hwProcessor:             hwProc,
 		coreProcessor:           coreProc,
+		cruxProcessor:           cruxProc,
 		onEveryCorner:           onEveryCornerProc,
 		onEveryCornerController: onEveryCornerController,
 		aiClient:                aiClient,
@@ -258,6 +283,7 @@ func main() {
 		memexpressSem:           make(chan struct{}, 1), // Allow 1 concurrent Memory Express processing attempt
 		bestbuySem:              make(chan struct{}, 1), // Allow 1 concurrent Best Buy processing attempt
 		bestbuyComputeSem:       make(chan struct{}, 1), // Allow 1 concurrent Best Buy compute sweep
+		cruxSem:                 make(chan struct{}, 1), // Allow 1 concurrent Crux Investor sweep
 		hwSem:                   make(chan struct{}, 1), // Allow 1 concurrent HardwareSwap processing attempt
 		coreIssueLast:           make(map[string]time.Time),
 	}
@@ -286,6 +312,7 @@ func main() {
 	adminHandle("GET /process-memoryexpress", srv.ProcessMemoryExpressHandler)
 	adminHandle("GET /process-bestbuy", srv.ProcessBestBuyHandler)
 	adminHandle("GET /process-bestbuy-compute", srv.ProcessBestBuyComputeHandler)
+	adminHandle("GET /process-crux", srv.ProcessCruxHandler)
 	adminHandle("POST /prime-bestbuy-baseline", srv.PrimeBestBuyBaselineHandler)
 	mux.Handle("POST /ingest/discord-notification", swordswallowerOnly(cfg.RFDAdminToken, cfg.SwordswallowerSecret, http.HandlerFunc(srv.DiscordNotificationIngestHandler)))
 	adminHandle("POST /core/rebin", srv.CoreRebinHandler)
@@ -593,6 +620,26 @@ func (s *Server) ProcessBestBuyComputeHandler(w http.ResponseWriter, r *http.Req
 		sem:           s.bestbuyComputeSem,
 		timeout:       20 * time.Minute,
 		fn:            s.bestbuyCompute.ProcessComputeOutliers,
+		logAIState:    false,
+	})
+}
+
+func (s *Server) ProcessCruxHandler(w http.ResponseWriter, r *http.Request) {
+	if s.cruxProcessor == nil {
+		writeSkipped(w, "crux", "Crux processor not configured")
+		return
+	}
+	s.runManualProcess(w, r, manualProcessOptions{
+		processorName: "crux",
+		startMessage:  "Starting Crux Investor processing",
+		finishMessage: "Crux Investor processing finished",
+		errorMessage:  "Crux Investor processing",
+		panicMessage:  "Panic in ProcessCruxChanges",
+		successText:   "Crux Investor processing finished.",
+		busyDetails:   "previous run still active",
+		sem:           s.cruxSem,
+		timeout:       30 * time.Minute,
+		fn:            s.cruxProcessor.ProcessCruxChanges,
 		logAIState:    false,
 	})
 }
