@@ -209,7 +209,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	cruxPollInterval, err := durationEnv("CRUX_POLL_INTERVAL", 30*time.Minute)
+	cruxPollInterval, err := durationEnv("CRUX_POLL_INTERVAL", 5*time.Minute)
 	if err != nil {
 		return nil, err
 	}
