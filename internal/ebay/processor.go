@@ -240,6 +240,11 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			existing.DropCount = 1
 			backfilledDropCount = true
 		}
+		backfilledQualifiedDropPrice := false
+		if existing.LastQualifiedDropPrice <= 0 && existing.LastNotifiedPrice > 0 {
+			existing.LastQualifiedDropPrice = existing.LastNotifiedPrice
+			backfilledQualifiedDropPrice = true
+		}
 
 		_, _, _, browseDropCandidate := shouldNotifyPriceDrop(existing, newPrice)
 		if browseDropCandidate && shouldFetchPageCoupon(existing, basePrice, apiItem.CouponDiscount) {
@@ -250,19 +255,20 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			}
 		}
 
-		// Existing item — notify on the first qualifying drop from original price,
-		// then only on materially deeper drops than the last alerted price.
-		baselinePrice, dollarDrop, percentDrop, shouldNotify := shouldNotifyPriceDrop(existing, newPrice)
+		// Existing item — record every qualifying drop, but only alert for
+		// secondary drops or first drops that include a coupon.
+		baselinePrice, dollarDrop, percentDrop, qualifiesForDrop := shouldNotifyPriceDrop(existing, newPrice)
+		shouldAlert := shouldAlertEbayPriceDrop(existing, qualifiesForDrop, apiItem.CouponDiscount)
 
-		if shouldNotify {
-			stats.priceDrops++
-			existing.DropCount = priorDropCount(existing) + 1
+		if qualifiesForDrop {
+			previousDropCount := priorDropCount(existing)
+			existing.DropCount = previousDropCount + 1
+			existing.LastQualifiedDropPrice = newPrice
 			if apiItem.CouponSignature != "" {
 				existing.LastCouponAlertSignature = apiItem.CouponSignature
 				existing.LastCouponAlertAt = now
 			}
-			notifiedIDs[itemID] = true
-			logger.Info("Price drop detected",
+			logger.Info("eBay qualifying price drop detected",
 				"itemID", itemID,
 				"title", apiItem.Title,
 				"baseline_price", baselinePrice,
@@ -273,44 +279,50 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 				"drop_pct", fmt.Sprintf("%.1f%%", percentDrop),
 				"drop_dollars", fmt.Sprintf("$%.2f", dollarDrop),
 				"drop_count", existing.DropCount,
+				"alert", shouldAlert,
 			)
-			item := EbayItem{
-				ItemID:                   itemID,
-				Title:                    apiItem.Title,
-				CurrentPrice:             newPrice,
-				PreviousPrice:            baselinePrice,
-				BasePrice:                basePrice,
-				OriginalPrice:            existing.OriginalPrice,
-				CouponDiscount:           apiItem.CouponDiscount,
-				CouponCode:               apiItem.CouponCode,
-				CouponMessage:            apiItem.CouponMessage,
-				CouponSource:             apiItem.CouponSource,
-				PriceDrop:                dollarDrop,
-				PercentDrop:              percentDrop,
-				DropCount:                existing.DropCount,
-				Currency:                 currencyOrDefault(apiItem.Price),
-				ItemURL:                  apiItem.ItemWebURL,
-				ImageURL:                 imageURL(apiItem.Image),
-				Seller:                   sellerUsername(apiItem.Seller),
-				SellerFeedbackScore:      sellerFeedbackScore(apiItem.Seller),
-				SellerFeedbackPercentage: sellerFeedbackPercentage(apiItem.Seller),
-				Condition:                apiItem.Condition,
-				Marketplace:              apiItem.Marketplace,
-				ListedAt:                 parseItemCreationDate(apiItem.ItemCreationDate),
-			}
 
-			// Market Verification: Check sold listings to see if it's a good deal
-			if p.client != nil {
-				verification := p.verifyMarketDeal(ctx, item.Title, item.CurrentPrice)
-				item.SoldMedian = verification.MedianPrice
-				item.IsGoodDeal = verification.IsGoodDeal
-				if item.IsGoodDeal {
-					logger.Info("Market verification: Good deal detected", "title", item.Title, "median", item.SoldMedian, "current", item.CurrentPrice)
+			if shouldAlert {
+				stats.priceDrops++
+				notifiedIDs[itemID] = true
+				item := EbayItem{
+					ItemID:                   itemID,
+					Title:                    apiItem.Title,
+					CurrentPrice:             newPrice,
+					PreviousPrice:            baselinePrice,
+					BasePrice:                basePrice,
+					OriginalPrice:            existing.OriginalPrice,
+					CouponDiscount:           apiItem.CouponDiscount,
+					CouponCode:               apiItem.CouponCode,
+					CouponMessage:            apiItem.CouponMessage,
+					CouponSource:             apiItem.CouponSource,
+					PriceDrop:                dollarDrop,
+					PercentDrop:              percentDrop,
+					DropCount:                existing.DropCount,
+					Currency:                 currencyOrDefault(apiItem.Price),
+					ItemURL:                  apiItem.ItemWebURL,
+					ImageURL:                 imageURL(apiItem.Image),
+					Seller:                   sellerUsername(apiItem.Seller),
+					SellerFeedbackScore:      sellerFeedbackScore(apiItem.Seller),
+					SellerFeedbackPercentage: sellerFeedbackPercentage(apiItem.Seller),
+					Condition:                apiItem.Condition,
+					Marketplace:              apiItem.Marketplace,
+					ListedAt:                 parseItemCreationDate(apiItem.ItemCreationDate),
 				}
-			}
 
-			priceDropItems = append(priceDropItems, item)
-			existing.LastNotifiedPrice = newPrice
+				// Market Verification: Check sold listings to see if it's a good deal
+				if p.client != nil {
+					verification := p.verifyMarketDeal(ctx, item.Title, item.CurrentPrice)
+					item.SoldMedian = verification.MedianPrice
+					item.IsGoodDeal = verification.IsGoodDeal
+					if item.IsGoodDeal {
+						logger.Info("Market verification: Good deal detected", "title", item.Title, "median", item.SoldMedian, "current", item.CurrentPrice)
+					}
+				}
+
+				priceDropItems = append(priceDropItems, item)
+				existing.LastNotifiedPrice = newPrice
+			}
 		}
 
 		// Only write back if something actually changed
@@ -330,7 +342,7 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 			existing.CouponDiscount != newCouponDiscount || existing.CouponCode != newCouponCode ||
 			existing.CouponMessage != newCouponMessage || existing.CouponSource != newCouponSource ||
 			existing.CouponSignature != newCouponSignature ||
-			backfilledOriginalPrice || backfilledDropCount || shouldNotify {
+			backfilledOriginalPrice || backfilledDropCount || backfilledQualifiedDropPrice || qualifiesForDrop {
 			stats.updated++
 			existing.Price = newPrice
 			existing.BasePrice = newBasePrice
@@ -543,7 +555,9 @@ func shouldNotifyPriceDrop(existing TrackedItem, newPrice float64) (baselinePric
 	}
 
 	baselinePrice = existing.OriginalPrice
-	if existing.LastNotifiedPrice > 0 {
+	if existing.LastQualifiedDropPrice > 0 {
+		baselinePrice = existing.LastQualifiedDropPrice
+	} else if existing.LastNotifiedPrice > 0 {
 		baselinePrice = existing.LastNotifiedPrice
 	} else if baselinePrice <= 0 {
 		baselinePrice = existing.Price
@@ -553,9 +567,9 @@ func shouldNotifyPriceDrop(existing TrackedItem, newPrice float64) (baselinePric
 		return 0, 0, 0, false
 	}
 
-	// Once a price has already been alerted, suppress duplicate or worse prices
-	// until the listing reaches a new lower notification level.
-	if existing.LastNotifiedPrice > 0 && newPrice >= existing.LastNotifiedPrice {
+	// Once a qualifying drop has been observed, suppress duplicate or worse
+	// prices until the listing reaches a new lower notification level.
+	if baselinePrice > 0 && (existing.LastQualifiedDropPrice > 0 || existing.LastNotifiedPrice > 0) && newPrice >= baselinePrice {
 		return baselinePrice, 0, 0, false
 	}
 
@@ -570,6 +584,16 @@ func shouldNotifyPriceDrop(existing TrackedItem, newPrice float64) (baselinePric
 	}
 
 	return baselinePrice, dollarDrop, percentDrop, true
+}
+
+func shouldAlertEbayPriceDrop(existing TrackedItem, qualifies bool, couponDiscount float64) bool {
+	if !qualifies {
+		return false
+	}
+	if priorDropCount(existing) > 0 {
+		return true
+	}
+	return couponDiscount > 0
 }
 
 func priorDropCount(existing TrackedItem) int {
@@ -976,12 +1000,13 @@ func (p *Processor) retroactiveCouponAlerts(ctx context.Context, apiItems []Brow
 			Signature:      coupon.Signature,
 		}
 		effectivePrice := effectiveItemPrice(basePrice, discount)
-		baselinePrice, dollarDrop, percentDrop, shouldNotify := shouldNotifyPriceDrop(existing, effectivePrice)
-		if !shouldNotify {
+		baselinePrice, dollarDrop, percentDrop, qualifiesForDrop := shouldNotifyPriceDrop(existing, effectivePrice)
+		if !qualifiesForDrop || !shouldAlertEbayPriceDrop(existing, qualifiesForDrop, discount) {
 			continue
 		}
 
 		existing.DropCount = priorDropCount(existing) + 1
+		existing.LastQualifiedDropPrice = effectivePrice
 		if existing.OriginalPrice < discountCoupon.OriginalPrice {
 			existing.OriginalPrice = discountCoupon.OriginalPrice
 		}

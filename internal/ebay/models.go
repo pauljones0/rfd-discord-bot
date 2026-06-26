@@ -59,6 +59,7 @@ type TrackedItem struct {
 	CouponSignature          string    `docstore:"couponSignature,omitempty"`
 	OriginalPrice            float64   `docstore:"originalPrice,omitempty"`
 	LastNotifiedPrice        float64   `docstore:"lastNotifiedPrice,omitempty"`
+	LastQualifiedDropPrice   float64   `docstore:"lastQualifiedDropPrice,omitempty"`
 	LastCouponAlertSignature string    `docstore:"lastCouponAlertSignature,omitempty"`
 	LastCouponAlertAt        time.Time `docstore:"lastCouponAlertAt,omitempty"`
 	DropCount                int       `docstore:"dropCount,omitempty"`

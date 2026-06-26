@@ -153,6 +153,34 @@ func TestShouldNotifyPriceDrop(t *testing.T) {
 			wantPercent:  20.0 / 350.0 * 100.0,
 			wantNotify:   false,
 		},
+		{
+			name: "deeper drop after suppressed first drop uses last qualified baseline",
+			existing: TrackedItem{
+				Price:                  380,
+				OriginalPrice:          500,
+				LastQualifiedDropPrice: 380,
+				DropCount:              1,
+			},
+			newPrice:     300,
+			wantBaseline: 380,
+			wantDrop:     80,
+			wantPercent:  21.052631578947366,
+			wantNotify:   true,
+		},
+		{
+			name: "minor drop after suppressed first drop waits for threshold",
+			existing: TrackedItem{
+				Price:                  380,
+				OriginalPrice:          500,
+				LastQualifiedDropPrice: 380,
+				DropCount:              1,
+			},
+			newPrice:     360,
+			wantBaseline: 380,
+			wantDrop:     20,
+			wantPercent:  5.263157894736842,
+			wantNotify:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -169,6 +197,49 @@ func TestShouldNotifyPriceDrop(t *testing.T) {
 			}
 			if gotNotify != tt.wantNotify {
 				t.Fatalf("notify = %v, want %v", gotNotify, tt.wantNotify)
+			}
+		})
+	}
+}
+
+func TestShouldAlertEbayPriceDropPolicy(t *testing.T) {
+	tests := []struct {
+		name           string
+		existing       TrackedItem
+		qualifies      bool
+		couponDiscount float64
+		want           bool
+	}{
+		{
+			name:      "first qualifying drop without coupon is noise",
+			qualifies: true,
+			want:      false,
+		},
+		{
+			name:           "first qualifying drop with coupon alerts",
+			qualifies:      true,
+			couponDiscount: 50,
+			want:           true,
+		},
+		{
+			name: "secondary qualifying drop alerts without coupon",
+			existing: TrackedItem{
+				DropCount: 1,
+			},
+			qualifies: true,
+			want:      true,
+		},
+		{
+			name:      "non qualifying drop never alerts",
+			qualifies: false,
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldAlertEbayPriceDrop(tt.existing, tt.qualifies, tt.couponDiscount); got != tt.want {
+				t.Fatalf("shouldAlertEbayPriceDrop() = %v, want %v", got, tt.want)
 			}
 		})
 	}
