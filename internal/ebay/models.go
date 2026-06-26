@@ -162,22 +162,22 @@ type CouponObservation struct {
 
 // BrowseAPIItem represents a single item from the eBay Browse API response.
 type BrowseAPIItem struct {
-	ItemID           string      `json:"itemId"`
-	Title            string      `json:"title"`
-	Price            *Price      `json:"price"`
-	ItemHref         string      `json:"itemHref"`
-	ItemWebURL       string      `json:"itemWebUrl"`
-	Image            *Image      `json:"image"`
-	Seller           *SellerInfo `json:"seller"`
-	Condition        string      `json:"condition"`
-	CategoryID       string      `json:"categoryId"`
-	BuyingOptions    []string    `json:"buyingOptions"`
-	AvailableCoupons bool        `json:"availableCoupons"`
-	CouponDiscount   float64     `json:"-"`
-	CouponCode       string      `json:"-"`
-	CouponMessage    string      `json:"-"`
-	CouponSource     string      `json:"-"`
-	CouponSignature  string      `json:"-"`
+	ItemID                     string      `json:"itemId"`
+	Title                      string      `json:"title"`
+	Price                      *Price      `json:"price"`
+	ItemHref                   string      `json:"itemHref"`
+	ItemWebURL                 string      `json:"itemWebUrl"`
+	Image                      *Image      `json:"image"`
+	Seller                     *SellerInfo `json:"seller"`
+	Condition                  string      `json:"condition"`
+	CategoryID                 string      `json:"categoryId"`
+	BuyingOptions              []string    `json:"buyingOptions"`
+	AvailableCoupons           bool        `json:"availableCoupons"`
+	CouponDiscount             float64     `json:"-"`
+	CouponCode                 string      `json:"-"`
+	CouponMessage              string      `json:"-"`
+	CouponSource               string      `json:"-"`
+	CouponSignature            string      `json:"-"`
 	ItemCreationDate           string      `json:"itemCreationDate"` // ISO8601
 	Marketplace                string      `json:"-"`
 	EstimatedAvailableQuantity *int        `json:"estimatedAvailableQuantity"`
@@ -241,9 +241,6 @@ func DefaultSellers() []EbaySeller {
 		{username: "surplusbydesign", categoryIDs: []string{"58058", "293", "15032", "1249"}},
 		{username: "ssdwholesale", categoryIDs: []string{"58058"}},
 		{username: "montrealcomputers", categoryIDs: []string{"58058", "293", "15032"}},
-
-		// American sellers (ebay.com)
-		{username: "vipoutlet", marketplace: "EBAY_US", categoryIDs: []string{"58058", "293", "15032", "1249"}},
 	}
 
 	sellers := make([]EbaySeller, len(entries))

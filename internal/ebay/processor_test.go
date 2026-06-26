@@ -701,16 +701,16 @@ func TestIsEbayEligible_MarketplaceFilters(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "us filter accepts us item",
+			name: "us filter is disabled",
 			item: usItem,
 			sub:  models.Subscription{DealType: "ebay_us_price_drop"},
-			want: true,
+			want: false,
 		},
 		{
-			name: "marketplace falls back to item url",
+			name: "us item URL is disabled",
 			item: EbayItem{ItemURL: "https://www.ebay.com/itm/123"},
 			sub:  models.Subscription{DealType: "ebay_us_price_drop"},
-			want: true,
+			want: false,
 		},
 	}
 
@@ -720,5 +720,26 @@ func TestIsEbayEligible_MarketplaceFilters(t *testing.T) {
 				t.Fatalf("isEbayEligible() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFilterAllowedEbaySellers_RemovesUSMarketplaces(t *testing.T) {
+	sellers := []EbaySeller{
+		{Username: "vipoutletcanada"},
+		{Username: "neweggcanada", Marketplace: "EBAY_CA"},
+		{Username: "vipoutlet", Marketplace: "EBAY_US"},
+	}
+
+	filtered, skipped := filterAllowedEbaySellers(sellers)
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", skipped)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("len(filtered) = %d, want 2", len(filtered))
+	}
+	for _, seller := range filtered {
+		if seller.MarketplaceID() != "EBAY_CA" {
+			t.Fatalf("filtered seller %q has marketplace %q, want EBAY_CA", seller.Username, seller.MarketplaceID())
+		}
 	}
 }

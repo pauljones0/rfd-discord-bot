@@ -54,7 +54,6 @@ var RFDChoices = []Choice{
 
 var EbayChoices = []Choice{
 	{Name: "Canada price drops", Value: EbayCAPriceDrop},
-	{Name: "US price drops", Value: EbayUSPriceDrop},
 }
 
 var MemoryExpressChoices = []Choice{
@@ -208,8 +207,6 @@ func EbayEligible(dealType, marketplace string) bool {
 	switch dealType {
 	case EbayCAPriceDrop:
 		return marketplace == "EBAY_CA"
-	case EbayUSPriceDrop:
-		return marketplace == "EBAY_US"
 	default:
 		return false
 	}

@@ -341,7 +341,7 @@ func TestBuildRemoveButtons_AllowsSameChannelDifferentFeeds(t *testing.T) {
 	}
 }
 
-func TestHandleSetupEbay_AllowsCanadaAndUSSameChannel(t *testing.T) {
+func TestHandleSetupEbay_RejectsUSFilter(t *testing.T) {
 	store := &mockStore{}
 	handler := &Handler{store: store}
 
@@ -374,12 +374,12 @@ func TestHandleSetupEbay_AllowsCanadaAndUSSameChannel(t *testing.T) {
 		{Name: "channel", Value: "chan1"},
 		{Name: "filter", Value: "ebay_us_price_drop"},
 	})
-	if !strings.Contains(w.Body.String(), "eBay US price drops") {
-		t.Fatalf("expected US setup response, got %q", w.Body.String())
+	if !strings.Contains(w.Body.String(), "Invalid eBay filter type.") {
+		t.Fatalf("expected US setup rejection, got %q", w.Body.String())
 	}
 
-	if len(store.subscriptions) != 2 {
-		t.Fatalf("expected 2 eBay subscriptions in the same channel, got %d", len(store.subscriptions))
+	if len(store.subscriptions) != 1 {
+		t.Fatalf("expected 1 eBay subscription in the same channel, got %d", len(store.subscriptions))
 	}
 }
 

@@ -223,3 +223,11 @@ func TestBuildMarketplaceCategoryGroups_UsesSellerCategoryScopes(t *testing.T) {
 		t.Fatalf("EBAY_US 1249 sellers = %v, want %v", got, []string{"seller-us"})
 	}
 }
+
+func TestDefaultSellersExcludeUSMarketplaces(t *testing.T) {
+	for _, seller := range DefaultSellers() {
+		if seller.MarketplaceID() != "EBAY_CA" {
+			t.Fatalf("default seller %q marketplace = %q, want EBAY_CA", seller.Username, seller.MarketplaceID())
+		}
+	}
+}

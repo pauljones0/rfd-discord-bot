@@ -144,6 +144,10 @@ func (p *Processor) ProcessEbayDeals(ctx context.Context) error {
 		stats.exitReason = "seller_load_error"
 		return fmt.Errorf("failed to get active eBay sellers: %w", err)
 	}
+	sellers, skippedSellers := filterAllowedEbaySellers(sellers)
+	if skippedSellers > 0 {
+		logger.Info("Skipping disabled eBay marketplace sellers", "skipped_sellers", skippedSellers)
+	}
 	if len(sellers) == 0 {
 		stats.exitReason = "no_active_sellers"
 		logger.Info("No active eBay sellers configured")
@@ -430,6 +434,19 @@ func isEbayEligible(item EbayItem, sub models.Subscription) bool {
 
 func isEbayDealType(dealType string) bool {
 	return dealtypes.IsEbay(dealType)
+}
+
+func filterAllowedEbaySellers(sellers []EbaySeller) ([]EbaySeller, int) {
+	filtered := make([]EbaySeller, 0, len(sellers))
+	skipped := 0
+	for _, seller := range sellers {
+		if seller.MarketplaceID() != "EBAY_CA" {
+			skipped++
+			continue
+		}
+		filtered = append(filtered, seller)
+	}
+	return filtered, skipped
 }
 
 func eligibleEbaySubscriptions(item EbayItem, subs []models.Subscription) []models.Subscription {
