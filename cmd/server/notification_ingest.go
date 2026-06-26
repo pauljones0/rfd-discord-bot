@@ -190,6 +190,7 @@ func (s *Server) handleDiscordNotification(w http.ResponseWriter, r *http.Reques
 		Title:         normalized.ConversationTitle,
 		Message:       primaryRawMessage(normalized),
 		Lines:         normalized.Lines,
+		Messages:      coreRawNotificationMessages(normalized.Messages),
 		ReceivedAt:    time.Now(),
 	}
 	if normalized.ReceivedAt > 0 {
@@ -211,6 +212,22 @@ func (s *Server) saveCoreRawNotificationAsync(rawNotif models.CoreRawNotificatio
 		return
 	}
 	go s.saveCoreRawNotification(context.Background(), rawNotif)
+}
+
+func coreRawNotificationMessages(messages []core.DiscordNotificationMsg) []models.CoreRawNotificationMessage {
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]models.CoreRawNotificationMessage, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, models.CoreRawNotificationMessage{
+			Sender: msg.Sender,
+			Text:   msg.Text,
+			Time:   msg.Time,
+			URI:    msg.URI,
+		})
+	}
+	return out
 }
 
 func (s *Server) saveCoreRawNotification(ctx context.Context, rawNotif models.CoreRawNotification) {

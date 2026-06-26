@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -187,6 +188,20 @@ func TestParseNotificationText(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEvaluatePriceDoesNotMutatePriorPrices(t *testing.T) {
+	prices := []float64{100, 80, 120, 90, 110, 105, 115, 95, 130, 125}
+	want := append([]float64(nil), prices...)
+
+	evaluation := evaluatePrice(50, prices)
+
+	if !reflect.DeepEqual(prices, want) {
+		t.Fatalf("evaluatePrice mutated prior prices: got %v, want %v", prices, want)
+	}
+	if !evaluation.ShouldSignal {
+		t.Fatalf("expected downside anomaly, got reason %q", evaluation.Reason)
 	}
 }
 
@@ -498,6 +513,44 @@ func TestProcessNotificationBatchDoesNotDuplicateStructuredMessage(t *testing.T)
 	}
 	if notifier.sent[0].EventID != "batch-event-0" {
 		t.Fatalf("alert event ID = %q, want batch-event-0", notifier.sent[0].EventID)
+	}
+}
+
+func TestProcessRawNotificationReplaysGroupedMessages(t *testing.T) {
+	ctx := context.Background()
+	store := &mockStore{
+		history:  make(map[string]*models.CorePriceHistory),
+		catStats: make(map[string]*models.CoreCategoryStats),
+	}
+	notifier := &mockNotifier{}
+	p := NewProcessor(store, notifier, NewRateManager())
+
+	err := p.ProcessRawNotification(ctx, models.CoreRawNotification{
+		EventID:       "raw-event",
+		SourcePackage: "com.discord",
+		Title:         "CoreFinder #test: CoreFinder",
+		Message:       "$1.00 | Store | Primary Product @USA",
+		Lines: []string{
+			"$1.00 | Store | Primary Product @USA",
+			"$2.00 | Store | Line Product @USA",
+		},
+		Messages: []models.CoreRawNotificationMessage{
+			{Text: "$10.00 | Store | First Grouped Product @USA"},
+			{Text: "$20.00 | Store | Second Grouped Product @USA"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := store.history["first grouped product"]; !ok {
+		t.Fatalf("expected first grouped message to be replayed, history keys: %#v", store.history)
+	}
+	if _, ok := store.history["second grouped product"]; !ok {
+		t.Fatalf("expected second grouped message to be replayed, history keys: %#v", store.history)
+	}
+	if _, ok := store.history["primary product"]; ok {
+		t.Fatalf("raw replay processed primary fallback even though grouped messages were present")
 	}
 }
 

@@ -101,7 +101,7 @@ func (p *Processor) Rebin(ctx context.Context) error {
 	})
 
 	for _, notif := range notifs {
-		if err := p.ProcessNotification(ctx, notif.Title, notif.Message, notif.Lines, notif.EventID, notif.SourcePackage, "", "", ""); err != nil {
+		if err := p.ProcessRawNotification(ctx, notif); err != nil {
 			slog.Error("Core bot: Re-binning failed for notification", "event_id", notif.EventID, "error", err)
 		}
 	}
@@ -495,6 +495,33 @@ func primaryNotificationCandidate(tickerText string, lines []string) (string, []
 	return candidates[0], candidates[1:]
 }
 
+// ProcessRawNotification replays stored raw notification content through the
+// same path live ingest used. This keeps manual re-binning from collapsing a
+// grouped Discord notification down to only its cheapest/primary candidate.
+func (p *Processor) ProcessRawNotification(ctx context.Context, notif models.CoreRawNotification) error {
+	if len(notif.Messages) > 0 {
+		messages := make([]DiscordNotificationMsg, 0, len(notif.Messages))
+		for _, msg := range notif.Messages {
+			messages = append(messages, DiscordNotificationMsg{
+				Sender: msg.Sender,
+				Text:   msg.Text,
+				Time:   msg.Time,
+				URI:    msg.URI,
+			})
+		}
+		return p.ProcessNotificationBatch(ctx, DiscordNotificationBatch{
+			ConversationTitle: notif.Title,
+			TickerText:        notif.Message,
+			Lines:             notif.Lines,
+			Messages:          messages,
+			EventID:           notif.EventID,
+			SourcePackage:     notif.SourcePackage,
+		})
+	}
+
+	return p.ProcessNotification(ctx, notif.Title, notif.Message, notif.Lines, notif.EventID, notif.SourcePackage, "", "", "")
+}
+
 func appendUniqueNonEmpty(values []string, candidates ...string) []string {
 	seen := make(map[string]struct{}, len(values)+len(candidates))
 	for _, value := range values {
@@ -865,25 +892,27 @@ func evaluatePrice(priceCAD float64, priorPrices []float64) priceEvaluation {
 		return ev
 	}
 
-	sort.Float64s(priorPrices)
-	ev.PriorMin = priorPrices[0]
-	ev.PriorMax = priorPrices[len(priorPrices)-1]
-	ev.PriorP25 = percentile(priorPrices, 25)
-	ev.PriorP50 = percentile(priorPrices, 50)
-	ev.PriorP75 = percentile(priorPrices, 75)
+	sortedPrices := make([]float64, len(priorPrices))
+	copy(sortedPrices, priorPrices)
+	sort.Float64s(sortedPrices)
+	ev.PriorMin = sortedPrices[0]
+	ev.PriorMax = sortedPrices[len(sortedPrices)-1]
+	ev.PriorP25 = percentile(sortedPrices, 25)
+	ev.PriorP50 = percentile(sortedPrices, 50)
+	ev.PriorP75 = percentile(sortedPrices, 75)
 
 	iqr := ev.PriorP75 - ev.PriorP25
 	// Using standard 1.5 * IQR for mild outliers
 	ev.LowerBound = math.Max(0, ev.PriorP25-(1.5*iqr))
 	ev.IsAnomaly = priceCAD < ev.LowerBound && priceCAD > 0
 
-	if len(priorPrices) < minPriceObservationsForAlert {
+	if len(sortedPrices) < minPriceObservationsForAlert {
 		ev.Reason = "insufficient_history"
 		return ev
 	}
 
 	// Cluster-based analysis
-	clusters := clusterPrices(priorPrices)
+	clusters := clusterPrices(sortedPrices)
 	mainCluster := findMainCluster(clusters)
 	refPrice := mainCluster.Median
 
@@ -905,7 +934,7 @@ func evaluatePrice(priceCAD float64, priorPrices []float64) priceEvaluation {
 		// Prevent duplicates: Check if we already have a very similar price in history
 		// (e.g., within 3% of an existing price). Handles currency swings and rounding.
 		isDupe := false
-		for _, prev := range priorPrices {
+		for _, prev := range sortedPrices {
 			diff := math.Abs(prev - priceCAD)
 			if diff/priceCAD < 0.03 {
 				isDupe = true

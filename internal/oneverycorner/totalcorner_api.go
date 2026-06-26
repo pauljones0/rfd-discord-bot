@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "time/tzdata"
@@ -18,6 +19,7 @@ const (
 	DefaultTotalCornerAPIBaseURL  = "https://api.totalcorner.com/v1"
 	DefaultTotalCornerAPITimezone = "Europe/London"
 	totalCornerAPIMaxPages        = 100
+	totalCornerAPIMinRequestGap   = 2500 * time.Millisecond
 )
 
 type TotalCornerAPIConfig struct {
@@ -58,6 +60,9 @@ type TotalCornerAPIClient struct {
 	leagueIDList []string
 	timezone     *time.Location
 	http         *http.Client
+
+	rateMu      sync.Mutex
+	lastRequest time.Time
 }
 
 type totalCornerAPIResponse struct {
@@ -215,6 +220,10 @@ func (c *TotalCornerAPIClient) fetchMatches(ctx context.Context, path string, va
 		requestValues.Set("page", strconv.Itoa(page))
 		requestURL := c.endpoint(path, requestValues)
 
+		if err := c.waitForRequestSlot(ctx); err != nil {
+			return nil, err
+		}
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("build totalcorner request: %w", err)
@@ -256,6 +265,26 @@ func (c *TotalCornerAPIClient) fetchMatches(ctx context.Context, path string, va
 		}
 	}
 	return out, nil
+}
+
+func (c *TotalCornerAPIClient) waitForRequestSlot(ctx context.Context) error {
+	c.rateMu.Lock()
+	defer c.rateMu.Unlock()
+
+	if !c.lastRequest.IsZero() {
+		wait := totalCornerAPIMinRequestGap - time.Since(c.lastRequest)
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	c.lastRequest = time.Now()
+	return nil
 }
 
 func (r totalCornerAPIResponse) matches() ([]totalCornerAPIMatch, error) {

@@ -70,9 +70,17 @@ func (c *Client) GetRecentCoreRawNotifications(ctx context.Context, duration tim
 	since := time.Now().Add(-duration)
 	rows, err := c.pg.Query(ctx, `
 		SELECT data
-		FROM documents
-		WHERE collection = $1 AND updated_at >= $2
-		ORDER BY updated_at DESC`, coreRawNotificationsCollection, since)
+		FROM (
+			SELECT data,
+				CASE
+					WHEN data ? 'receivedAt' AND data->>'receivedAt' <> '' THEN (data->>'receivedAt')::timestamptz
+					ELSE updated_at
+				END AS received_at
+			FROM documents
+			WHERE collection = $1
+		) raw
+		WHERE received_at >= $2
+		ORDER BY received_at DESC`, coreRawNotificationsCollection, since)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +110,11 @@ func (c *Client) PruneCoreRawNotifications(ctx context.Context, maxAge time.Dura
 	cutoff := time.Now().Add(-maxAge)
 	tag, err := c.pg.Exec(ctx, `
 		DELETE FROM documents
-		WHERE collection = $1 AND updated_at < $2`, coreRawNotificationsCollection, cutoff)
+		WHERE collection = $1
+			AND CASE
+				WHEN data ? 'receivedAt' AND data->>'receivedAt' <> '' THEN (data->>'receivedAt')::timestamptz
+				ELSE updated_at
+			END < $2`, coreRawNotificationsCollection, cutoff)
 	if err != nil {
 		return 0, err
 	}
