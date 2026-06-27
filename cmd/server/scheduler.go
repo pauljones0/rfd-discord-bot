@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -140,31 +141,38 @@ func (s *Server) runScheduledJob(parent context.Context, processorName string, s
 		return false
 	}
 	defer func() { <-sem }()
+	start := time.Now()
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			duration := time.Since(start).Round(time.Millisecond)
 			slog.Error("Panic in scheduled processor",
 				"processor", processorName,
+				"duration", duration.String(),
 				"panic", recovered,
 			)
+			s.reportScheduledProcessorFailure(processorName, timeout, duration, fmt.Errorf("panic: %v", recovered))
 		}
 	}()
 
 	jobCtx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	start := time.Now()
 	slog.Info("Scheduled processor started", "processor", processorName)
 	if err := fn(jobCtx); err != nil {
+		duration := time.Since(start).Round(time.Millisecond)
 		slog.Error("Scheduled processor failed",
 			"processor", processorName,
-			"duration", time.Since(start).Round(time.Millisecond).String(),
+			"duration", duration.String(),
 			"error", err,
 		)
+		s.reportScheduledProcessorFailure(processorName, timeout, duration, err)
 		return true
 	}
+	duration := time.Since(start).Round(time.Millisecond)
 	slog.Info("Scheduled processor finished",
 		"processor", processorName,
-		"duration", time.Since(start).Round(time.Millisecond).String(),
+		"duration", duration.String(),
 	)
+	s.reportScheduledProcessorRecovery(processorName, duration)
 	return true
 }

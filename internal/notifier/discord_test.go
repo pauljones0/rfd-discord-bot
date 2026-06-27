@@ -192,6 +192,23 @@ func TestFormatCoreAlertEmbedShowsTotalAndSampleObservationCounts(t *testing.T) 
 	}
 }
 
+func TestCreateCoreSystemAlertPayloadDisablesParsedMentions(t *testing.T) {
+	payload := createCoreSystemAlertPayload(models.CoreSystemAlert{
+		Title:      "RFD monitor failure",
+		Severity:   "error",
+		Component:  "rfd-scheduler",
+		Details:    "upstream returned @everyone in an error body",
+		OccurredAt: time.Date(2026, 6, 27, 7, 41, 30, 0, time.UTC),
+	})
+
+	if payload.Content != "" {
+		t.Fatalf("content = %q, want empty system alert content", payload.Content)
+	}
+	if payload.AllowedMentions == nil || len(payload.AllowedMentions.Parse) != 0 {
+		t.Fatalf("allowed mentions = %#v, want no parsed mentions", payload.AllowedMentions)
+	}
+}
+
 func TestCreateOnEveryCornerSystemAlertPayload(t *testing.T) {
 	payload := createOnEveryCornerAlertPayload(models.OnEveryCornerAlert{
 		Kind:           models.OnEveryCornerAlertSystem,

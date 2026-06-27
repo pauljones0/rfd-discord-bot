@@ -712,8 +712,9 @@ func createCoreAlertPayload(alert models.CoreAlert) discordWebhookPayload {
 
 func createCoreSystemAlertPayload(alert models.CoreSystemAlert) discordWebhookPayload {
 	return discordWebhookPayload{
-		Content: "",
-		Embeds:  []discordEmbed{formatCoreSystemAlertEmbed(alert)},
+		Content:         "",
+		Embeds:          []discordEmbed{formatCoreSystemAlertEmbed(alert)},
+		AllowedMentions: &discordAllowedMentions{Parse: []string{}},
 	}
 }
 

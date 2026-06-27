@@ -25,6 +25,7 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/hardwareswap"
 	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 	"github.com/pauljones0/rfd-discord-bot/internal/memoryexpress"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
 	"github.com/pauljones0/rfd-discord-bot/internal/oneverycorner"
 	"github.com/pauljones0/rfd-discord-bot/internal/paidbrowser"
@@ -50,6 +51,7 @@ type Server struct {
 	onEveryCornerController *oneverycorner.Controller
 	aiClient                *ai.Client
 	store                   processor.DealStore
+	systemNotifier          scheduledSystemNotifier
 	db                      *storage.Client
 	wg                      sync.WaitGroup
 	sem                     chan struct{} // Semaphore to limit concurrent RFD processing requests
@@ -63,6 +65,12 @@ type Server struct {
 	hwSem                   chan struct{} // Semaphore to limit concurrent HardwareSwap processing requests
 	coreIssueMu             sync.Mutex
 	coreIssueLast           map[string]time.Time
+	schedulerIssueMu        sync.Mutex
+	schedulerFailures       map[string]scheduledProcessorFailure
+}
+
+type scheduledSystemNotifier interface {
+	SendCoreSystemAlert(ctx context.Context, alert models.CoreSystemAlert, subs []models.Subscription) error
 }
 
 func main() {
@@ -276,6 +284,7 @@ func main() {
 		onEveryCornerController: onEveryCornerController,
 		aiClient:                aiClient,
 		store:                   store,
+		systemNotifier:          n,
 		db:                      store,
 		sem:                     make(chan struct{}, 2), // Allow up to 2 concurrent RFD processing attempts
 		ebaySem:                 make(chan struct{}, 1), // Allow 1 concurrent eBay processing attempt
@@ -286,6 +295,7 @@ func main() {
 		cruxSem:                 make(chan struct{}, 1), // Allow 1 concurrent Crux Investor sweep
 		hwSem:                   make(chan struct{}, 1), // Allow 1 concurrent HardwareSwap processing attempt
 		coreIssueLast:           make(map[string]time.Time),
+		schedulerFailures:       make(map[string]scheduledProcessorFailure),
 	}
 
 	// Build HardwareSwap store for the API handler (may be nil if AI is unavailable)

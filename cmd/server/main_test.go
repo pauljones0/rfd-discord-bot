@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
 type testProcessor struct {
@@ -21,6 +25,57 @@ func (p *testProcessor) ProcessDeals(ctx context.Context) error {
 	case p.called <- struct{}{}:
 	default:
 	}
+	return nil
+}
+
+type scheduledAlertTestStore struct {
+	subs []models.Subscription
+}
+
+func (s *scheduledAlertTestStore) GetDealByID(context.Context, string) (*models.DealInfo, error) {
+	return nil, nil
+}
+
+func (s *scheduledAlertTestStore) GetDealsByIDs(context.Context, []string) (map[string]*models.DealInfo, error) {
+	return map[string]*models.DealInfo{}, nil
+}
+
+func (s *scheduledAlertTestStore) GetRecentDeals(context.Context, time.Duration) ([]models.DealInfo, error) {
+	return nil, nil
+}
+
+func (s *scheduledAlertTestStore) TryCreateDeal(context.Context, models.DealInfo) error {
+	return nil
+}
+
+func (s *scheduledAlertTestStore) UpdateDeal(context.Context, models.DealInfo) error {
+	return nil
+}
+
+func (s *scheduledAlertTestStore) TrimOldDeals(context.Context, int) error {
+	return nil
+}
+
+func (s *scheduledAlertTestStore) BatchWrite(context.Context, []models.DealInfo, []models.DealInfo) error {
+	return nil
+}
+
+func (s *scheduledAlertTestStore) Ping(context.Context) error {
+	return nil
+}
+
+func (s *scheduledAlertTestStore) GetAllSubscriptions(context.Context) ([]models.Subscription, error) {
+	return s.subs, nil
+}
+
+type scheduledAlertTestNotifier struct {
+	alerts []models.CoreSystemAlert
+	subs   [][]models.Subscription
+}
+
+func (n *scheduledAlertTestNotifier) SendCoreSystemAlert(_ context.Context, alert models.CoreSystemAlert, subs []models.Subscription) error {
+	n.alerts = append(n.alerts, alert)
+	n.subs = append(n.subs, append([]models.Subscription{}, subs...))
 	return nil
 }
 
@@ -113,6 +168,67 @@ func TestRunScheduledJobSkipsWhenSemaphoreBusy(t *testing.T) {
 	}
 	if len(sem) != 1 {
 		t.Fatalf("semaphore length = %d, want busy token preserved", len(sem))
+	}
+}
+
+func TestRunScheduledJobSendsFailureAndRecoveryAlerts(t *testing.T) {
+	notifier := &scheduledAlertTestNotifier{}
+	srv := &Server{
+		store: &scheduledAlertTestStore{subs: []models.Subscription{
+			{GuildID: "guild", ChannelID: "rfd-channel", SubscriptionType: dealtypes.SubscriptionRFD, DealType: dealtypes.RFDAll},
+		}},
+		systemNotifier:    notifier,
+		schedulerFailures: make(map[string]scheduledProcessorFailure),
+	}
+	sem := make(chan struct{}, 1)
+
+	ran := srv.runScheduledJob(context.Background(), "rfd", sem, time.Second, func(context.Context) error {
+		return errors.New("context deadline exceeded")
+	})
+
+	if !ran {
+		t.Fatal("runScheduledJob() = false, want true")
+	}
+	if len(notifier.alerts) != 1 {
+		t.Fatalf("alerts = %d, want failure alert", len(notifier.alerts))
+	}
+	if notifier.alerts[0].Title != "RFD monitor failure" {
+		t.Fatalf("failure title = %q", notifier.alerts[0].Title)
+	}
+	if len(notifier.subs) != 1 || len(notifier.subs[0]) != 1 || notifier.subs[0][0].ChannelID != "rfd-channel" {
+		t.Fatalf("failure subs = %#v", notifier.subs)
+	}
+
+	ran = srv.runScheduledJob(context.Background(), "rfd", sem, time.Second, func(context.Context) error {
+		return nil
+	})
+
+	if !ran {
+		t.Fatal("second runScheduledJob() = false, want true")
+	}
+	if len(notifier.alerts) != 2 {
+		t.Fatalf("alerts = %d, want failure and recovery", len(notifier.alerts))
+	}
+	if notifier.alerts[1].Title != "RFD monitor recovered" {
+		t.Fatalf("recovery title = %q", notifier.alerts[1].Title)
+	}
+}
+
+func TestScheduledProcessorSubscriptionsRoutesBestBuyComputeSeparately(t *testing.T) {
+	subs := []models.Subscription{
+		{ChannelID: "bestbuy-deals", SubscriptionType: dealtypes.SubscriptionBestBuy, DealType: dealtypes.BestBuyWarmHot},
+		{ChannelID: "bestbuy-compute", SubscriptionType: dealtypes.SubscriptionBestBuy, DealType: dealtypes.BestBuyCompute},
+		{ChannelID: "bestbuy-compute", SubscriptionType: dealtypes.SubscriptionBestBuy, DealType: dealtypes.BestBuyCompute},
+	}
+
+	dealSubs := scheduledProcessorSubscriptions("bestbuy", subs)
+	if len(dealSubs) != 1 || dealSubs[0].ChannelID != "bestbuy-deals" {
+		t.Fatalf("bestbuy subs = %#v, want only non-compute Best Buy channel", dealSubs)
+	}
+
+	computeSubs := scheduledProcessorSubscriptions("bestbuy_compute", subs)
+	if len(computeSubs) != 1 || computeSubs[0].ChannelID != "bestbuy-compute" {
+		t.Fatalf("bestbuy_compute subs = %#v, want deduped compute channel only", computeSubs)
 	}
 }
 

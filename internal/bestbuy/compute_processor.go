@@ -113,10 +113,16 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 	}
 	computeSubs := computeSubscriptions(subs)
 	stats.Subscriptions = len(computeSubs)
+	if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+		return err
+	}
 
 	products, err := p.client.FetchComputeProducts(ctx)
 	if err != nil {
 		logger.Warn("Best Buy compute sweep had partial failures", "error", err)
+	}
+	if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+		return err
 	}
 	stats.Fetched = len(products)
 	if len(products) == 0 {
@@ -128,6 +134,9 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 	if err != nil {
 		stats.ExitReason = "observation_load_error"
 		return fmt.Errorf("load compute observations: %w", err)
+	}
+	if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+		return err
 	}
 	existingByKey := make(map[string]ComputeObservation, len(existing))
 	for _, observation := range existing {
@@ -165,15 +174,24 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 		observations = append(observations, observation)
 	}
 	p.embedObservations(ctx, observations, logger)
+	if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+		return err
+	}
 
 	compPool := append([]ComputeObservation{}, existing...)
 	compPool = append(compPool, observations...)
 	extremeSoldFallbacks := 0
 	for i := range observations {
+		if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+			return err
+		}
 		observation := observations[i]
 		if !observation.Spec.IsCompute {
 			if err := p.store.SaveBestBuyComputeObservation(ctx, observation); err != nil {
 				logger.Warn("Failed to save rejected compute observation", "sku", observation.SKU, "source", observation.Source, "error", err)
+				if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+					return err
+				}
 			}
 			continue
 		}
@@ -203,9 +221,15 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 					"sellerID", observation.SellerID,
 					"error", err,
 				)
+				if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+					return err
+				}
 			} else if validation.Valid {
 				observation.Product = validation.Product
 				verification := p.soldVerifier.Verify(ctx, observation, prior, now, logger)
+				if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+					return err
+				}
 				applyEbaySoldVerification(&observation, verification)
 				extremeSoldFallbacks++
 				stats.SoldFallbacks++
@@ -262,6 +286,9 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 					"sellerID", observation.SellerID,
 					"error", err,
 				)
+				if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+					return err
+				}
 			} else if validation.Valid {
 				observation.Product = validation.Product
 				if p.affiliatePrefix != "" && observation.URL != "" {
@@ -279,6 +306,9 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 						Error:     "Best Buy compute eBay sold verification is not configured",
 					}
 					p.reportComputeIssue(ctx, &observation, prior, score, verification, now, computeSubs, logger, &stats)
+					if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+						return err
+					}
 				} else {
 					if observation.EbaySoldVerdict == ebaySoldVerdictPass && observation.EbaySoldAlertKey == computeAlertKey(observation) {
 						alreadyVerified = true
@@ -301,6 +331,9 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 						}
 					} else {
 						verification = p.soldVerifier.Verify(ctx, observation, prior, now, logger)
+						if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+							return err
+						}
 						applyEbaySoldVerification(&observation, verification)
 						verified = ebaySoldVerificationConfirmsMarket(verification)
 					}
@@ -330,6 +363,9 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 							"sold_comps", verification.ComparableCount,
 						)
 						p.reportComputeIssue(ctx, &observation, prior, score, verification, now, computeSubs, logger, &stats)
+						if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+							return err
+						}
 					}
 				}
 				if verified {
@@ -337,6 +373,9 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 					if err := p.notifier.SendBestBuyDeal(ctx, computeAnalyzedProduct(observation), computeSubs); err != nil {
 						stats.NotifyErrors++
 						logger.Warn("Failed to send Best Buy compute outlier", "sku", observation.SKU, "error", err)
+						if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+							return err
+						}
 					} else {
 						stats.Notified++
 						observation.LastAlertAt = now
@@ -356,13 +395,29 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 
 		if err := p.store.SaveBestBuyComputeObservation(ctx, observation); err != nil {
 			logger.Warn("Failed to save compute observation", "sku", observation.SKU, "source", observation.Source, "error", err)
+			if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+				return err
+			}
 		}
 	}
 
 	if err := p.store.PruneBestBuyComputeObservations(ctx, 45, bestBuyComputeMaxRecords); err != nil {
 		logger.Warn("Failed to prune Best Buy compute observations", "error", err)
+		if err := stopComputeIfContextDone(ctx, &stats); err != nil {
+			return err
+		}
 	}
 	stats.ExitReason = "success"
+	return nil
+}
+
+func stopComputeIfContextDone(ctx context.Context, stats *ComputeStats) error {
+	if err := ctx.Err(); err != nil {
+		if stats != nil {
+			stats.ExitReason = "context_canceled"
+		}
+		return err
+	}
 	return nil
 }
 

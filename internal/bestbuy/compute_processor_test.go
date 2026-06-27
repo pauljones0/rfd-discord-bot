@@ -2,6 +2,7 @@ package bestbuy
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -95,6 +96,27 @@ func (v *computeTestSoldVerifier) Verify(_ context.Context, observation ComputeO
 		}
 	}
 	return verification
+}
+
+func TestComputeProcessorStopsWhenContextCanceled(t *testing.T) {
+	store := &computeTestStore{
+		observations: make(map[string]ComputeObservation),
+		subs:         []models.Subscription{{SubscriptionType: "bestbuy", DealType: "bb_compute", ChannelID: "chan"}},
+	}
+	processor := NewComputeProcessor(store, computeTestClient{
+		products: []Product{computeCandidate("candidate", "seller-a", 650)},
+	}, &computeTestNotifier{}, "", false, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := processor.ProcessComputeOutliers(ctx)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProcessComputeOutliers() error = %v, want context.Canceled", err)
+	}
+	if len(store.saved) != 0 {
+		t.Fatalf("saved observations = %d, want 0 after context cancellation", len(store.saved))
+	}
 }
 
 func TestComputeProcessorBaselinesFirstSeenWithoutAlert(t *testing.T) {
