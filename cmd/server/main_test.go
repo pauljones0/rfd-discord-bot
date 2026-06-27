@@ -71,12 +71,13 @@ func (s *scheduledAlertTestStore) GetAllSubscriptions(context.Context) ([]models
 type scheduledAlertTestNotifier struct {
 	alerts []models.CoreSystemAlert
 	subs   [][]models.Subscription
+	err    error
 }
 
 func (n *scheduledAlertTestNotifier) SendCoreSystemAlert(_ context.Context, alert models.CoreSystemAlert, subs []models.Subscription) error {
 	n.alerts = append(n.alerts, alert)
 	n.subs = append(n.subs, append([]models.Subscription{}, subs...))
-	return nil
+	return n.err
 }
 
 func TestProcessDealsHandler_RunsInlineAndReturnsOK(t *testing.T) {
@@ -211,6 +212,36 @@ func TestRunScheduledJobSendsFailureAndRecoveryAlerts(t *testing.T) {
 	}
 	if notifier.alerts[1].Title != "RFD monitor recovered" {
 		t.Fatalf("recovery title = %q", notifier.alerts[1].Title)
+	}
+}
+
+func TestScheduledFailureRetriesAlertWhenDiscordSendFails(t *testing.T) {
+	notifier := &scheduledAlertTestNotifier{err: errors.New("discord unavailable")}
+	srv := &Server{
+		store: &scheduledAlertTestStore{subs: []models.Subscription{
+			{GuildID: "guild", ChannelID: "rfd-channel", SubscriptionType: dealtypes.SubscriptionRFD, DealType: dealtypes.RFDAll},
+		}},
+		systemNotifier:    notifier,
+		schedulerFailures: make(map[string]scheduledProcessorFailure),
+	}
+
+	srv.reportScheduledProcessorFailure("rfd", time.Second, time.Second, errors.New("context deadline exceeded"))
+	srv.reportScheduledProcessorFailure("rfd", time.Second, time.Second, errors.New("context deadline exceeded"))
+
+	if len(notifier.alerts) != 2 {
+		t.Fatalf("alert attempts = %d, want retry when Discord send fails", len(notifier.alerts))
+	}
+	if state := srv.schedulerFailures["rfd"]; state.AlertSent {
+		t.Fatalf("AlertSent = true after failed Discord send")
+	}
+
+	notifier.err = nil
+	srv.reportScheduledProcessorFailure("rfd", time.Second, time.Second, errors.New("context deadline exceeded"))
+	if len(notifier.alerts) != 3 {
+		t.Fatalf("alert attempts after recovery of notifier = %d, want 3", len(notifier.alerts))
+	}
+	if state := srv.schedulerFailures["rfd"]; !state.AlertSent {
+		t.Fatalf("AlertSent = false after successful Discord send")
 	}
 }
 

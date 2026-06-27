@@ -52,7 +52,7 @@ func (s *Server) reportScheduledProcessorFailure(processorName string, timeout, 
 		})
 	}
 
-	s.sendScheduledProcessorAlert(processorName, models.CoreSystemAlert{
+	sent := s.sendScheduledProcessorAlert(processorName, models.CoreSystemAlert{
 		Title:      label + " monitor failure",
 		Severity:   "error",
 		Component:  processorName + "-scheduler",
@@ -60,6 +60,9 @@ func (s *Server) reportScheduledProcessorFailure(processorName string, timeout, 
 		OccurredAt: now,
 		Fields:     fields,
 	})
+	if sent {
+		s.markScheduledProcessorFailureAlertSent(processorName, signature, now)
+	}
 }
 
 func (s *Server) reportScheduledProcessorRecovery(processorName string, duration time.Duration) {
@@ -104,12 +107,24 @@ func (s *Server) recordScheduledProcessorFailure(processorName string, now time.
 	state.LastFailedAt = now
 
 	shouldSend := !state.AlertSent || now.Sub(state.LastAlertAt) >= scheduledProcessorIssueRepeatInterval
-	if shouldSend {
-		state.LastAlertAt = now
-		state.AlertSent = true
-	}
 	s.schedulerFailures[processorName] = state
 	return state, shouldSend
+}
+
+func (s *Server) markScheduledProcessorFailureAlertSent(processorName, signature string, sentAt time.Time) {
+	s.schedulerIssueMu.Lock()
+	defer s.schedulerIssueMu.Unlock()
+
+	if s.schedulerFailures == nil {
+		return
+	}
+	state, ok := s.schedulerFailures[processorName]
+	if !ok || state.Signature != signature {
+		return
+	}
+	state.LastAlertAt = sentAt
+	state.AlertSent = true
+	s.schedulerFailures[processorName] = state
 }
 
 func (s *Server) clearScheduledProcessorFailure(processorName string) (scheduledProcessorFailure, bool) {
@@ -127,9 +142,9 @@ func (s *Server) clearScheduledProcessorFailure(processorName string) (scheduled
 	return state, state.AlertSent
 }
 
-func (s *Server) sendScheduledProcessorAlert(processorName string, alert models.CoreSystemAlert) {
+func (s *Server) sendScheduledProcessorAlert(processorName string, alert models.CoreSystemAlert) bool {
 	if s == nil || s.store == nil || s.systemNotifier == nil {
-		return
+		return false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -138,16 +153,18 @@ func (s *Server) sendScheduledProcessorAlert(processorName string, alert models.
 	subs, err := s.store.GetAllSubscriptions(ctx)
 	if err != nil {
 		slog.Error("Failed to load subscriptions for scheduled processor alert", "processor", processorName, "title", alert.Title, "error", err)
-		return
+		return false
 	}
 	filtered := scheduledProcessorSubscriptions(processorName, subs)
 	if len(filtered) == 0 {
 		slog.Info("No subscriptions for scheduled processor alert", "processor", processorName, "title", alert.Title)
-		return
+		return false
 	}
 	if err := s.systemNotifier.SendCoreSystemAlert(ctx, alert, filtered); err != nil {
 		slog.Error("Failed to send scheduled processor alert", "processor", processorName, "title", alert.Title, "error", err)
+		return false
 	}
+	return true
 }
 
 func scheduledProcessorSubscriptions(processorName string, subs []models.Subscription) []models.Subscription {
