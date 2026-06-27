@@ -35,6 +35,10 @@ services:
   bot:
     container_name: rfd-discord-bot
     init: true
+    dns:
+      - ${RFD_BOT_DNS_PRIMARY:-1.1.1.1}
+      - ${RFD_BOT_DNS_SECONDARY:-1.0.0.1}
+      - ${RFD_BOT_DNS_TERTIARY:-8.8.8.8}
     build:
       context: ../..
       dockerfile: Dockerfile

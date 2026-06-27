@@ -3,6 +3,7 @@ package scraper
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -321,6 +322,32 @@ func TestDefaultSelectors(t *testing.T) {
 	}
 	if sel.DealDetails.PrimaryLink != ".deal_link a" {
 		t.Errorf("Default PrimaryLink = %q, want %q", sel.DealDetails.PrimaryLink, ".deal_link a")
+	}
+}
+
+func TestRFDListRetryExtendsTransientDNSFailures(t *testing.T) {
+	dnsErr := fmt.Errorf("failed to fetch URL: %w", &net.DNSError{
+		Err:    "server misbehaving",
+		Name:   "forums.redflagdeals.com",
+		Server: "127.0.0.11:53",
+	})
+
+	if !isTransientDNSFailure(dnsErr) {
+		t.Fatalf("isTransientDNSFailure() = false, want true")
+	}
+	if shouldStopRFDListRetry(rfdListStandardMaxRetries, dnsErr) {
+		t.Fatalf("shouldStopRFDListRetry() stopped transient DNS failure at standard retry budget")
+	}
+}
+
+func TestRFDListRetryStopsNonDNSFailuresAtStandardBudget(t *testing.T) {
+	err := fmt.Errorf("failed to fetch URL: status code 403")
+
+	if isTransientDNSFailure(err) {
+		t.Fatalf("isTransientDNSFailure() = true for non-DNS scrape error")
+	}
+	if !shouldStopRFDListRetry(rfdListStandardMaxRetries, err) {
+		t.Fatalf("shouldStopRFDListRetry() = false, want standard stop for non-DNS error")
 	}
 }
 

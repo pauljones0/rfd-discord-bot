@@ -3,8 +3,10 @@ package scraper
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +20,11 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
+)
+
+const (
+	rfdListStandardMaxRetries = 3
+	rfdListDNSMaxRetries      = 6
 )
 
 type Client struct {
@@ -54,12 +61,23 @@ func (c *Client) ScrapeDealList(ctx context.Context) ([]models.DealInfo, error) 
 	var scrapedDeals []models.DealInfo
 	start := time.Now()
 
-	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
+	err := util.RetryWithBackoff(ctx, rfdListDNSMaxRetries, func(attempt int) error {
 		if attempt > 0 {
 			slog.Warn("Scraping list attempt failed, retrying", "processor", "rfd", "attempt", attempt)
 		}
 		var scrapeErr error
 		scrapedDeals, scrapeErr = c.attemptScrapeList(ctx, targetURL)
+		if shouldStopRFDListRetry(attempt, scrapeErr) {
+			return util.PermanentError(scrapeErr)
+		}
+		if attempt == rfdListStandardMaxRetries && isTransientDNSFailure(scrapeErr) {
+			slog.Warn("RFD scrape hit transient DNS failure; extending retry budget",
+				"processor", "rfd",
+				"attempt", attempt,
+				"max_attempt", rfdListDNSMaxRetries,
+				"error", scrapeErr,
+			)
+		}
 		return scrapeErr
 	})
 
@@ -70,6 +88,31 @@ func (c *Client) ScrapeDealList(ctx context.Context) ([]models.DealInfo, error) 
 
 	logger.Notice("Scrape completed", "duration", time.Since(start), "deals", len(scrapedDeals))
 	return scrapedDeals, nil
+}
+
+func shouldStopRFDListRetry(attempt int, err error) bool {
+	return err != nil && attempt >= rfdListStandardMaxRetries && !isTransientDNSFailure(err)
+}
+
+func isTransientDNSFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		if dnsErr.IsTemporary || dnsErr.IsTimeout {
+			return true
+		}
+		dnsText := strings.ToLower(dnsErr.Err + " " + dnsErr.Server)
+		return strings.Contains(dnsText, "server misbehaving") ||
+			strings.Contains(dnsText, "temporary failure") ||
+			strings.Contains(dnsText, "try again")
+	}
+
+	errText := strings.ToLower(err.Error())
+	return strings.Contains(errText, "lookup ") && (strings.Contains(errText, "server misbehaving") ||
+		strings.Contains(errText, "temporary failure") ||
+		strings.Contains(errText, "try again"))
 }
 
 // resolveLink finds an <a> element within the selection (or the selection itself),
