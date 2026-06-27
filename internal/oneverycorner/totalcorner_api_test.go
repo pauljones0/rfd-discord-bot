@@ -144,6 +144,49 @@ func TestTotalCornerAPIInPlayParsesCounters(t *testing.T) {
 	}
 }
 
+func TestTotalCornerAPIInPlayRecordsStatsForFilteredRows(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":    1,
+			"pagination": map[string]any{"current": 1, "pages": 1, "next": false},
+			"data": []map[string]any{
+				{
+					"id": "other",
+					"h":  "Other Home", "a": "Other Away",
+					"l": "Other League", "l_id": "999",
+					"status": "35",
+					"hc":     "2", "ac": "1", "hg": "0", "ag": "1",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewTotalCornerAPIClient(TotalCornerAPIConfig{
+		BaseURL:    server.URL,
+		Token:      "test-token",
+		LeagueIDs:  []string{"29754"},
+		HTTPClient: server.Client(),
+	})
+	got, err := client.InPlay(context.Background())
+	if err != nil {
+		t.Fatalf("InPlay returned error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("snapshots = %d, want no tracked rows", len(got))
+	}
+	stats := client.LastInPlayStats()
+	if stats.Rows != 1 || stats.Matched != 0 {
+		t.Fatalf("stats rows/matched = %d/%d, want 1/0", stats.Rows, stats.Matched)
+	}
+	if stats.LeagueCounts["999"] != 1 {
+		t.Fatalf("league counts = %#v, want 999:1", stats.LeagueCounts)
+	}
+	if len(stats.LeagueIDs) != 1 || stats.LeagueIDs[0] != "29754" {
+		t.Fatalf("league IDs = %#v, want [29754]", stats.LeagueIDs)
+	}
+}
+
 func TestTotalCornerAPIErrorObjectReturnsReadableError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/match/today" || r.URL.Query().Get("type") != "inplay" {

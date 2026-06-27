@@ -131,6 +131,7 @@ func (m *ScoremerMonitor) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			slog.Error("OnEveryCorner Scoremer monitor process failed", "error", err)
+			m.reportRunIssue(ctx, err)
 		}
 
 		select {
@@ -139,6 +140,28 @@ func (m *ScoremerMonitor) Run(ctx context.Context) error {
 		case <-time.After(m.config.RestartDelay):
 			slog.Info("Restarting OnEveryCorner Scoremer monitor")
 		}
+	}
+}
+
+func (m *ScoremerMonitor) reportRunIssue(ctx context.Context, err error) {
+	if m == nil || m.processor == nil || err == nil {
+		return
+	}
+	event := ScoremerEvent{
+		Type:        scoremerSystemIssue,
+		Severity:    "error",
+		Stage:       "backup_process",
+		Status:      "process_failed",
+		Message:     "Scoremer backup monitor process failed before it could report healthy polling. The wrapper will retry automatically.",
+		Attempt:     "restart scoremer monitor process",
+		Detail:      err.Error(),
+		AtUnixMilli: time.Now().UnixMilli(),
+	}
+	if m.now != nil {
+		event.AtUnixMilli = m.now().UnixMilli()
+	}
+	if alertErr := m.processor.ProcessScoremerSystemEvent(ctx, event); alertErr != nil {
+		slog.Error("Failed to report Scoremer monitor process issue", "error", alertErr)
 	}
 }
 

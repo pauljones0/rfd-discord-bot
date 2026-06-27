@@ -3,6 +3,7 @@ package oneverycorner
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,6 +163,44 @@ func TestControllerScheduleFailureAlertsAndRecovers(t *testing.T) {
 	}
 }
 
+func TestControllerFailoverAlertIncludesTotalCornerDiagnostics(t *testing.T) {
+	store := &testStore{subs: []models.Subscription{
+		{GuildID: "g1", ChannelID: "c1", SubscriptionType: dealtypes.SubscriptionOnEveryCorner, DealType: dealtypes.OnEveryCornerPotentialGoals},
+	}}
+	notifier := &testNotifier{}
+	processor := NewProcessor(store, notifier)
+	source := &diagnosticTotalCornerSource{stats: TotalCornerInPlayStats{
+		CheckedAt: time.Date(2026, 6, 27, 23, 0, 0, 0, time.UTC),
+		Duration:  275 * time.Millisecond,
+		Rows:      35,
+		Matched:   0,
+		LeagueIDs: []string{"29754"},
+		LeagueCounts: map[string]int{
+			"11818": 5,
+			"29997": 4,
+		},
+	}}
+	controller := NewController(processor, ControllerConfig{TotalCornerSource: source})
+	controller.scoremerFactory = func(processor *Processor, cfg ScoremerConfig) *ScoremerMonitor {
+		cfg.Enabled = false
+		return NewScoremerMonitor(processor, cfg)
+	}
+	base := time.Date(2026, 6, 27, 23, 1, 0, 0, time.UTC)
+	controller.now = func() time.Time { return base }
+
+	controller.notePrimaryNoLiveSnapshot(context.Background(), "live_poll", base.Add(-50*time.Second))
+
+	if len(notifier.alerts) != 1 {
+		t.Fatalf("alerts = %d, want 1", len(notifier.alerts))
+	}
+	detail := systemAlertField(notifier.alerts[0], "Detail")
+	for _, want := range []string{"api_rows=35", "tracked_rows=0", "tracked_league_ids=29754", "observed_leagues=11818:5,29997:4"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail %q missing %q", detail, want)
+		}
+	}
+}
+
 type fakeTotalCornerSource struct {
 	schedule []MatchWindow
 	inplay   []MatchSnapshot
@@ -180,4 +219,13 @@ func (f *fakeTotalCornerSource) InPlay(context.Context) ([]MatchSnapshot, error)
 		return nil, f.err
 	}
 	return append([]MatchSnapshot(nil), f.inplay...), nil
+}
+
+type diagnosticTotalCornerSource struct {
+	fakeTotalCornerSource
+	stats TotalCornerInPlayStats
+}
+
+func (f *diagnosticTotalCornerSource) LastInPlayStats() TotalCornerInPlayStats {
+	return f.stats
 }

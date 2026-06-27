@@ -48,6 +48,16 @@ type MatchSnapshot struct {
 	AwayScore   int `json:"away_score"`
 }
 
+type TotalCornerInPlayStats struct {
+	CheckedAt    time.Time
+	Duration     time.Duration
+	Rows         int
+	Matched      int
+	LeagueIDs    []string
+	LeagueCounts map[string]int
+	Error        string
+}
+
 type TotalCornerSource interface {
 	Schedule(ctx context.Context, from, through time.Time) ([]MatchWindow, error)
 	InPlay(ctx context.Context) ([]MatchSnapshot, error)
@@ -63,6 +73,9 @@ type TotalCornerAPIClient struct {
 
 	rateMu      sync.Mutex
 	lastRequest time.Time
+
+	statsMu         sync.Mutex
+	lastInPlayStats TotalCornerInPlayStats
 }
 
 type totalCornerAPIResponse struct {
@@ -192,15 +205,24 @@ func (c *TotalCornerAPIClient) InPlay(ctx context.Context) ([]MatchSnapshot, err
 	if strings.TrimSpace(c.token) == "" {
 		return nil, fmt.Errorf("totalcorner api token is missing")
 	}
+	started := time.Now()
 	values := url.Values{}
 	values.Set("type", "inplay")
 	matches, err := c.fetchMatches(ctx, "/match/today", values)
 	if err != nil {
+		c.setLastInPlayStats(TotalCornerInPlayStats{
+			CheckedAt: time.Now(),
+			Duration:  time.Since(started),
+			LeagueIDs: append([]string(nil), c.leagueIDList...),
+			Error:     err.Error(),
+		})
 		return nil, err
 	}
 	snapshots := make([]MatchSnapshot, 0, len(matches))
+	leagueCounts := make(map[string]int)
 	for _, match := range matches {
 		snapshot := match.toSnapshot(c.timezone)
+		leagueCounts[snapshot.LeagueID]++
 		if !c.leagueAllowed(snapshot.LeagueID) {
 			continue
 		}
@@ -209,7 +231,42 @@ func (c *TotalCornerAPIClient) InPlay(ctx context.Context) ([]MatchSnapshot, err
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].ID < snapshots[j].ID
 	})
+	c.setLastInPlayStats(TotalCornerInPlayStats{
+		CheckedAt:    time.Now(),
+		Duration:     time.Since(started),
+		Rows:         len(matches),
+		Matched:      len(snapshots),
+		LeagueIDs:    append([]string(nil), c.leagueIDList...),
+		LeagueCounts: leagueCounts,
+	})
 	return snapshots, nil
+}
+
+func (c *TotalCornerAPIClient) LastInPlayStats() TotalCornerInPlayStats {
+	if c == nil {
+		return TotalCornerInPlayStats{}
+	}
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
+	return cloneTotalCornerInPlayStats(c.lastInPlayStats)
+}
+
+func (c *TotalCornerAPIClient) setLastInPlayStats(stats TotalCornerInPlayStats) {
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
+	c.lastInPlayStats = cloneTotalCornerInPlayStats(stats)
+}
+
+func cloneTotalCornerInPlayStats(stats TotalCornerInPlayStats) TotalCornerInPlayStats {
+	stats.LeagueIDs = append([]string(nil), stats.LeagueIDs...)
+	if stats.LeagueCounts != nil {
+		counts := make(map[string]int, len(stats.LeagueCounts))
+		for key, value := range stats.LeagueCounts {
+			counts[key] = value
+		}
+		stats.LeagueCounts = counts
+	}
+	return stats
 }
 
 func (c *TotalCornerAPIClient) fetchMatches(ctx context.Context, path string, values url.Values) ([]totalCornerAPIMatch, error) {

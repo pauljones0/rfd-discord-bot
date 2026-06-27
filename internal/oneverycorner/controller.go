@@ -33,6 +33,10 @@ const (
 	estimatedMatchDuration           = 4 * time.Hour
 )
 
+type totalCornerInPlayDiagnostics interface {
+	LastInPlayStats() TotalCornerInPlayStats
+}
+
 type ControllerConfig struct {
 	Enabled                    bool
 	PrimarySource              string
@@ -424,7 +428,7 @@ func (c *Controller) notePrimaryFailure(ctx context.Context, stage string, err e
 		staleFor = now.Sub(staleSince)
 	}
 	if c.consecutivePrimaryFailures >= livePrimaryFailureThreshold || staleFor >= livePrimaryStaleThreshold {
-		c.activateFailover(ctx, stage, "totalcorner_api_failure", err, int(staleFor.Round(time.Second).Seconds()))
+		c.activateFailover(ctx, stage, "totalcorner_api_failure", err, int(staleFor.Round(time.Second).Seconds()), c.totalCornerInPlayDetail())
 	}
 }
 
@@ -436,7 +440,7 @@ func (c *Controller) notePrimaryNoLiveSnapshot(ctx context.Context, stage string
 		staleFor = now.Sub(staleSince)
 	}
 	if staleFor >= livePrimaryStaleThreshold {
-		c.activateFailover(ctx, stage, "no_totalcorner_live_snapshot", nil, int(staleFor.Round(time.Second).Seconds()))
+		c.activateFailover(ctx, stage, "no_totalcorner_live_snapshot", nil, int(staleFor.Round(time.Second).Seconds()), c.totalCornerInPlayDetail())
 	}
 }
 
@@ -452,7 +456,7 @@ func (c *Controller) notePrimaryLiveSuccess(now time.Time) {
 	c.primaryHealthySince = now
 }
 
-func (c *Controller) activateFailover(ctx context.Context, stage, reason string, cause error, staleSeconds int) {
+func (c *Controller) activateFailover(ctx context.Context, stage, reason string, cause error, staleSeconds int, extraDetails ...string) {
 	if c.backupActive() {
 		return
 	}
@@ -465,6 +469,13 @@ func (c *Controller) activateFailover(ctx context.Context, stage, reason string,
 	detail := ""
 	if cause != nil {
 		detail = cause.Error()
+	}
+	for _, extra := range extraDetails {
+		extra = strings.TrimSpace(extra)
+		if extra == "" {
+			continue
+		}
+		detail = strings.TrimSpace(strings.Join([]string{detail, extra}, "\n"))
 	}
 	if !started {
 		eventType = totalCornerSystemIssue
@@ -484,8 +495,39 @@ func (c *Controller) activateFailover(ctx context.Context, stage, reason string,
 		"reason", reason,
 		"started", started,
 		"stale_seconds", staleSeconds,
+		"detail", detail,
 	)
 	_ = c.emitTotalCornerSystem(ctx, eventType, severity, stage, status, attempt, message, detail, withStaleSeconds(staleSeconds))
+}
+
+func (c *Controller) totalCornerInPlayDetail() string {
+	if c == nil || c.primary == nil {
+		return ""
+	}
+	diag, ok := c.primary.(totalCornerInPlayDiagnostics)
+	if !ok {
+		return ""
+	}
+	stats := diag.LastInPlayStats()
+	if stats.CheckedAt.IsZero() {
+		return ""
+	}
+	parts := []string{
+		"last_inplay_check=" + stats.CheckedAt.UTC().Format(time.RFC3339),
+		fmt.Sprintf("duration=%s", stats.Duration.Round(time.Millisecond)),
+		fmt.Sprintf("api_rows=%d", stats.Rows),
+		fmt.Sprintf("tracked_rows=%d", stats.Matched),
+	}
+	if len(stats.LeagueIDs) > 0 {
+		parts = append(parts, "tracked_league_ids="+strings.Join(stats.LeagueIDs, ","))
+	}
+	if observed := formatLeagueCounts(stats.LeagueCounts, 8); observed != "" {
+		parts = append(parts, "observed_leagues="+observed)
+	}
+	if stats.Error != "" {
+		parts = append(parts, "last_error="+stats.Error)
+	}
+	return strings.Join(parts, " ")
 }
 
 func (c *Controller) recoverFailover(ctx context.Context) {
@@ -898,6 +940,41 @@ func snapshotNames(snapshots []MatchSnapshot) []string {
 		names = append(names, matchDisplayName(snapshot.MatchWindow))
 	}
 	return names
+}
+
+func formatLeagueCounts(counts map[string]int, limit int) string {
+	if len(counts) == 0 || limit <= 0 {
+		return ""
+	}
+	type leagueCount struct {
+		id    string
+		count int
+	}
+	values := make([]leagueCount, 0, len(counts))
+	for id, count := range counts {
+		id = strings.TrimSpace(id)
+		if id == "" || count <= 0 {
+			continue
+		}
+		values = append(values, leagueCount{id: id, count: count})
+	}
+	if len(values) == 0 {
+		return ""
+	}
+	sort.Slice(values, func(i, j int) bool {
+		if values[i].count == values[j].count {
+			return values[i].id < values[j].id
+		}
+		return values[i].count > values[j].count
+	})
+	if len(values) > limit {
+		values = values[:limit]
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, fmt.Sprintf("%s:%d", value.id, value.count))
+	}
+	return strings.Join(parts, ",")
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

@@ -2,6 +2,8 @@ package oneverycorner
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +92,30 @@ func TestProcessScoremerEventCorrelatesGoalAfterCorner(t *testing.T) {
 	}
 	if notifier.alerts[0].Score != "1-0" {
 		t.Fatalf("score = %q, want 1-0", notifier.alerts[0].Score)
+	}
+}
+
+func TestScoremerMonitorReportsWrapperProcessFailure(t *testing.T) {
+	store := &testStore{subs: []models.Subscription{
+		{GuildID: "g1", ChannelID: "c1", SubscriptionType: dealtypes.SubscriptionOnEveryCorner, DealType: dealtypes.OnEveryCornerPotentialGoals},
+	}}
+	notifier := &testNotifier{}
+	p := NewProcessor(store, notifier)
+	monitor := NewScoremerMonitor(p, ScoremerConfig{Enabled: true})
+	now := time.Date(2026, 6, 27, 23, 10, 0, 0, time.UTC)
+	monitor.now = func() time.Time { return now }
+
+	monitor.reportRunIssue(context.Background(), errors.New("start scoremer monitor: executable file not found"))
+
+	if len(notifier.alerts) != 1 {
+		t.Fatalf("alerts = %d, want 1", len(notifier.alerts))
+	}
+	alert := notifier.alerts[0]
+	if alert.RawTitle != "OnEveryCorner Scoremer issue" || alert.SystemSeverity != "error" {
+		t.Fatalf("alert title/severity = %q/%q", alert.RawTitle, alert.SystemSeverity)
+	}
+	if !strings.Contains(systemAlertField(alert, "Detail"), "executable file not found") {
+		t.Fatalf("detail = %q, want process error", systemAlertField(alert, "Detail"))
 	}
 }
 
