@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,9 +15,14 @@ type computeTestStore struct {
 	observations map[string]ComputeObservation
 	subs         []models.Subscription
 	saved        []ComputeObservation
+	saveErr      error
+	pruneErr     error
 }
 
 func (s *computeTestStore) SaveBestBuyComputeObservation(_ context.Context, observation ComputeObservation) error {
+	if s.saveErr != nil {
+		return s.saveErr
+	}
 	if s.observations == nil {
 		s.observations = make(map[string]ComputeObservation)
 	}
@@ -34,7 +40,7 @@ func (s *computeTestStore) ListBestBuyComputeObservations(context.Context) ([]Co
 }
 
 func (s *computeTestStore) PruneBestBuyComputeObservations(context.Context, int, int) error {
-	return nil
+	return s.pruneErr
 }
 
 func (s *computeTestStore) GetAllSubscriptions(context.Context) ([]models.Subscription, error) {
@@ -116,6 +122,23 @@ func TestComputeProcessorStopsWhenContextCanceled(t *testing.T) {
 	}
 	if len(store.saved) != 0 {
 		t.Fatalf("saved observations = %d, want 0 after context cancellation", len(store.saved))
+	}
+}
+
+func TestComputeProcessorReturnsPersistenceError(t *testing.T) {
+	products := []Product{
+		computeCandidate("candidate", "seller-a", 650),
+	}
+	store := &computeTestStore{
+		observations: make(map[string]ComputeObservation),
+		saveErr:      errors.New("db timeout"),
+	}
+	processor := NewComputeProcessor(store, computeTestClient{products: products}, &computeTestNotifier{}, "", false, nil)
+
+	err := processor.ProcessComputeOutliers(context.Background())
+
+	if err == nil || !strings.Contains(err.Error(), "best buy compute persistence had") {
+		t.Fatalf("ProcessComputeOutliers() error = %v, want persistence failure", err)
 	}
 }
 

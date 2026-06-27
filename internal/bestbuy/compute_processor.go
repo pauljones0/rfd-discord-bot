@@ -46,19 +46,20 @@ type ComputeProcessor struct {
 }
 
 type ComputeStats struct {
-	Fetched       int    `json:"fetched"`
-	Parsed        int    `json:"parsed"`
-	Rejected      int    `json:"rejected"`
-	Scored        int    `json:"scored"`
-	WarmHot       int    `json:"warmHot"`
-	SoldVerified  int    `json:"soldVerified"`
-	SoldRejected  int    `json:"soldRejected"`
-	SoldFallbacks int    `json:"soldFallbacks"`
-	Notified      int    `json:"notified"`
-	IssueAlerts   int    `json:"issueAlerts"`
-	NotifyErrors  int    `json:"notifyErrors"`
-	Subscriptions int    `json:"subscriptions"`
-	ExitReason    string `json:"exitReason"`
+	Fetched           int    `json:"fetched"`
+	Parsed            int    `json:"parsed"`
+	Rejected          int    `json:"rejected"`
+	Scored            int    `json:"scored"`
+	WarmHot           int    `json:"warmHot"`
+	SoldVerified      int    `json:"soldVerified"`
+	SoldRejected      int    `json:"soldRejected"`
+	SoldFallbacks     int    `json:"soldFallbacks"`
+	Notified          int    `json:"notified"`
+	IssueAlerts       int    `json:"issueAlerts"`
+	NotifyErrors      int    `json:"notifyErrors"`
+	PersistenceErrors int    `json:"persistenceErrors"`
+	Subscriptions     int    `json:"subscriptions"`
+	ExitReason        string `json:"exitReason"`
 }
 
 func NewComputeProcessor(store ComputeStore, client ComputeClient, notifier ComputeNotifier, affiliatePrefix string, alertFirstSeen bool, embedder ComputeEmbedder) *ComputeProcessor {
@@ -101,6 +102,7 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 			"notified", stats.Notified,
 			"issue_alerts", stats.IssueAlerts,
 			"notify_errors", stats.NotifyErrors,
+			"persistence_errors", stats.PersistenceErrors,
 			"subscriptions", stats.Subscriptions,
 			"exit_reason", stats.ExitReason,
 		)
@@ -181,6 +183,16 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 	compPool := append([]ComputeObservation{}, existing...)
 	compPool = append(compPool, observations...)
 	extremeSoldFallbacks := 0
+	var firstPersistenceErr error
+	recordPersistenceErr := func(err error) {
+		if err == nil {
+			return
+		}
+		stats.PersistenceErrors++
+		if firstPersistenceErr == nil {
+			firstPersistenceErr = err
+		}
+	}
 	for i := range observations {
 		if err := stopComputeIfContextDone(ctx, &stats); err != nil {
 			return err
@@ -188,6 +200,7 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 		observation := observations[i]
 		if !observation.Spec.IsCompute {
 			if err := p.store.SaveBestBuyComputeObservation(ctx, observation); err != nil {
+				recordPersistenceErr(err)
 				logger.Warn("Failed to save rejected compute observation", "sku", observation.SKU, "source", observation.Source, "error", err)
 				if err := stopComputeIfContextDone(ctx, &stats); err != nil {
 					return err
@@ -394,6 +407,7 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 		}
 
 		if err := p.store.SaveBestBuyComputeObservation(ctx, observation); err != nil {
+			recordPersistenceErr(err)
 			logger.Warn("Failed to save compute observation", "sku", observation.SKU, "source", observation.Source, "error", err)
 			if err := stopComputeIfContextDone(ctx, &stats); err != nil {
 				return err
@@ -402,10 +416,15 @@ func (p *ComputeProcessor) ProcessComputeOutliers(ctx context.Context) error {
 	}
 
 	if err := p.store.PruneBestBuyComputeObservations(ctx, 45, bestBuyComputeMaxRecords); err != nil {
+		recordPersistenceErr(err)
 		logger.Warn("Failed to prune Best Buy compute observations", "error", err)
 		if err := stopComputeIfContextDone(ctx, &stats); err != nil {
 			return err
 		}
+	}
+	if stats.PersistenceErrors > 0 {
+		stats.ExitReason = "persistence_errors"
+		return fmt.Errorf("best buy compute persistence had %d error(s), first: %w", stats.PersistenceErrors, firstPersistenceErr)
 	}
 	stats.ExitReason = "success"
 	return nil

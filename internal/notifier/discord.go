@@ -686,6 +686,8 @@ func (c *Client) SendCoreSystemAlert(ctx context.Context, alert models.CoreSyste
 		if _, err := c.doRequest(ctx, "POST", urlStr, payload); err != nil {
 			slog.Error("Failed to send Core system alert", "processor", "core", "channel", sub.ChannelID, "title", alert.Title, "error", err)
 			errs = append(errs, fmt.Errorf("channel %s: %w", sub.ChannelID, err))
+		} else {
+			slog.Info("Core system alert sent", "processor", "core", "channel", sub.ChannelID, "title", alert.Title)
 		}
 	}
 

@@ -144,6 +144,13 @@ func (s *Server) clearScheduledProcessorFailure(processorName string) (scheduled
 
 func (s *Server) sendScheduledProcessorAlert(processorName string, alert models.CoreSystemAlert) bool {
 	if s == nil || s.store == nil || s.systemNotifier == nil {
+		slog.Error("Scheduled processor alert dependencies missing",
+			"processor", processorName,
+			"title", alert.Title,
+			"server_nil", s == nil,
+			"store_nil", s == nil || s.store == nil,
+			"notifier_nil", s == nil || s.systemNotifier == nil,
+		)
 		return false
 	}
 
