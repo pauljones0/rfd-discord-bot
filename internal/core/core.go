@@ -128,6 +128,7 @@ type ParsedNotification struct {
 	StoreName   string
 	Price       float64
 	Currency    string
+	CountryTag  string
 	Link        string
 }
 
@@ -252,7 +253,12 @@ func ParseNotification(rates *RateManager, text string) (ParsedNotification, boo
 		return ParsedNotification{}, false
 	}
 
+	countryTag, countryCurrency := resolveCoreCountryTag(text)
+
 	currency := parseCurrencyFromPricePart(pricePart)
+	if currency == "" && countryCurrency != "" {
+		currency = countryCurrency
+	}
 	if currency == "" && rates != nil {
 		currency = rates.ResolveCurrencyFromCountry(text)
 	}
@@ -276,8 +282,38 @@ func ParseNotification(rates *RateManager, text string) (ParsedNotification, boo
 		StoreName:   storeName,
 		Price:       price,
 		Currency:    currency,
+		CountryTag:  countryTag,
 		Link:        link,
 	}, true
+}
+
+func resolveCoreCountryTag(text string) (tag, currency string) {
+	matches := tagExtractRegex.FindAllStringSubmatch(text, -1)
+	for _, match := range matches {
+		if len(match) <= 1 {
+			continue
+		}
+		tagUpper := strings.ToUpper(match[1])
+		if currencyCode, ok := CountryTagToCurrency[tagUpper]; ok {
+			return tagUpper, currencyCode
+		}
+	}
+	return "", ""
+}
+
+func isAllowedCoreMarket(parsed ParsedNotification) bool {
+	currency := strings.ToUpper(strings.TrimSpace(parsed.Currency))
+	if currency != "" && currency != "CAD" && currency != "USD" {
+		return false
+	}
+	if parsed.CountryTag == "" {
+		return currency == "CAD" || currency == "USD"
+	}
+	tagCurrency, ok := CountryTagToCurrency[strings.ToUpper(parsed.CountryTag)]
+	if !ok {
+		return currency == "CAD" || currency == "USD"
+	}
+	return tagCurrency == "CAD" || tagCurrency == "USD"
 }
 
 func splitNotificationFields(text string) []string {
@@ -612,6 +648,12 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 	if parsed.Link == "" && rawLink != "" {
 		parsed.Link = rawLink
 	}
+	if !isAllowedCoreMarket(parsed) {
+		slog.Info("Core bot: Notification market is outside Canada/USA, skipping", "event_id", eventID, "store", parsed.StoreName, "currency", parsed.Currency, "country_tag", parsed.CountryTag)
+		return nil
+	}
+
+	priceCAD := p.rates.ConvertToCAD(parsed.Price, parsed.Currency)
 
 	rules, err := p.store.GetCoreRules(ctx)
 	if err != nil {
@@ -626,9 +668,9 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 	if category == "" {
 		category = ParseCategoryFromTitle(title)
 	}
-	normName := NormalizeProductName(parsed.ProductName, rules, category)
+	normName := NormalizeProductNameWithPrice(parsed.ProductName, rules, category, parsed.Price)
 	if normName == "" {
-		normName = NormalizeProductName(parsed.ProductName, nil, category)
+		normName = NormalizeProductNameWithPrice(parsed.ProductName, nil, category, parsed.Price)
 	}
 
 	// Check for ambiguity especially with truncated names
@@ -637,8 +679,6 @@ func (p *Processor) ProcessNotification(ctx context.Context, title, message stri
 		slog.Info("Core bot: Normalized product name is too ambiguous, skipping", "name", normName, "truncated", truncated)
 		return nil
 	}
-
-	priceCAD := p.rates.ConvertToCAD(parsed.Price, parsed.Currency)
 
 	lock := p.productLock(normName)
 	lock.Lock()
@@ -800,6 +840,8 @@ func (p *Processor) parseNotificationCandidates(message string, lines []string, 
 	seen := make(map[string]struct{}, len(candidates))
 	var best ParsedNotification
 	var found bool
+	var firstDisallowed ParsedNotification
+	var foundDisallowed bool
 
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
@@ -812,6 +854,13 @@ func (p *Processor) parseNotificationCandidates(message string, lines []string, 
 		seen[candidate] = struct{}{}
 
 		if parsed, ok := ParseNotification(p.rates, candidate); ok {
+			if !isAllowedCoreMarket(parsed) {
+				if !foundDisallowed {
+					firstDisallowed = parsed
+					foundDisallowed = true
+				}
+				continue
+			}
 			if !found {
 				best = parsed
 				found = true
@@ -826,7 +875,13 @@ func (p *Processor) parseNotificationCandidates(message string, lines []string, 
 			}
 		}
 	}
-	return best, found
+	if found {
+		return best, true
+	}
+	if foundDisallowed {
+		return firstDisallowed, true
+	}
+	return ParsedNotification{}, false
 }
 
 func (p *Processor) loadPriceHistory(ctx context.Context, normName, category string) (*models.CorePriceHistory, bool, error) {
@@ -1152,12 +1207,18 @@ func ValidateRules(rules []models.CoreRule) error {
 
 // NormalizeProductName normalizes characters and symbols to group similar product names reliably.
 func NormalizeProductName(name string, rules []models.CoreRule, category string) string {
+	return NormalizeProductNameWithPrice(name, rules, category, 0)
+}
+
+// NormalizeProductNameWithPrice normalizes product names with optional price
+// context for categories whose truncated titles do not carry enough shape.
+func NormalizeProductNameWithPrice(name string, rules []models.CoreRule, category string, price float64) string {
 	compiled, _ := compileRules(rules)
 	norm := normalizeProductNameWithRules(name, compiled)
 
 	// Special handling for GPUs must run before RAM. GPU titles often include
 	// phrases like "8GB GDDR7 RAM", which should not be treated as system RAM.
-	if isGPUCategory(category) || (isGPUProduct(norm) && !isRAMCategory(category)) {
+	if isGPUCategory(category) || (isGPUProduct(norm) && (!isRAMCategory(category) || isStandaloneGPUProduct(norm))) {
 		if gpuSpec := extractGPUSpecs(norm, category); gpuSpec != "" {
 			return gpuSpec
 		}
@@ -1177,6 +1238,9 @@ func NormalizeProductName(name string, rules []models.CoreRule, category string)
 
 	// Special handling for TCG (Pokemon/Magic)
 	if isTCGCategory(category) || isTCGProduct(norm) {
+		if isMagicCategory(category) || isMagicProduct(norm) {
+			return normalizeMagicTCG(norm, price)
+		}
 		return normalizeTCG(norm)
 	}
 
@@ -1212,12 +1276,31 @@ func isGPUProduct(name string) bool {
 	return extractGPUModelOK(name)
 }
 
+func isStandaloneGPUProduct(name string) bool {
+	name = strings.ToLower(name)
+	if strings.Contains(name, "gaming pc") ||
+		strings.Contains(name, "desktop pc") ||
+		strings.Contains(name, "laptop") ||
+		strings.Contains(name, "notebook") ||
+		strings.Contains(name, "workstation") {
+		return false
+	}
+	return strings.Contains(name, "graphics card") ||
+		strings.Contains(name, "grafikkarte") ||
+		strings.Contains(name, "carte graphique") ||
+		strings.Contains(name, "geforce") ||
+		strings.Contains(name, "radeon") ||
+		gpuRTXModelRegex.MatchString(name) ||
+		gpuRXModelRegex.MatchString(name)
+}
+
 var (
-	gpuRTXModelRegex     = regexp.MustCompile(`\brtx\s*(?:™\s*)?(\d{4})\s*(ti)?\b|\brtx(\d{4})(ti)?\b`)
+	gpuRTXModelRegex     = regexp.MustCompile(`\b(?:rtx|gf)\s*(?:™\s*)?(\d{4})(?:\s*([a-z0-9-]+))?\b|\b(?:rtx|gf)(\d{4})([a-z0-9-]+)?\b`)
 	gpuRXModelRegex      = regexp.MustCompile(`\bradeon\s*rx\s*(\d{4})\s*(xt)?\b|\brx\s*(\d{4})\s*(xt)?\b|\brx(\d{4})(xt)?\b`)
 	gpuGDDRVRAMRegex     = regexp.MustCompile(`\b(4|6|8|10|12|16|20|24|32|48)\s*g(?:b|o|d)?\s+gddr\d?\b|\bgddr\d?\s*(4|6|8|10|12|16|20|24|32|48)\s*g(?:b|o|d)?\b`)
 	gpuVRAMRegex         = regexp.MustCompile(`\b(4|6|8|10|12|16|20|24|32|48)\s*g(?:b|o|d)?\b`)
 	gpuMBVRAMRegex       = regexp.MustCompile(`\b(8192|16384|24576|32768|49152)\s*mb\b|\b(8|16|24|32|48)[.,](?:192|384|576|768)\s*mb\b`)
+	gpuBoardVRAMRegex    = regexp.MustCompile(`\b0?(8|16|24|32|48)d[67][a-z0-9-]*\b|\b(8|16|24|32|48)gd[67][a-z0-9-]*\b`)
 	gpuPartVRAMRegex     = regexp.MustCompile(`\bo(4|6|8|10|12|16|20|24|32|48)g\b`)
 	gpuTrailingVRAMRegex = regexp.MustCompile(`\b(4|6|8|10|12|16|20|24|32|48)\b\s*$`)
 )
@@ -1275,15 +1358,15 @@ func extractRTXModel(value string) (string, bool) {
 	}
 
 	model := match[1]
-	ti := match[2]
+	suffix := match[2]
 	if model == "" {
 		model = match[3]
-		ti = match[4]
+		suffix = match[4]
 	}
 	if model == "" {
 		return "", false
 	}
-	if ti != "" {
+	if strings.HasPrefix(suffix, "ti") {
 		return model + " ti", true
 	}
 	return model, true
@@ -1334,6 +1417,12 @@ func extractGPUVRAM(name string) string {
 			case "49152":
 				return "48gb"
 			}
+		}
+		return match[2] + "gb"
+	}
+	if match := gpuBoardVRAMRegex.FindStringSubmatch(name); len(match) > 0 {
+		if match[1] != "" {
+			return match[1] + "gb"
 		}
 		return match[2] + "gb"
 	}
@@ -1555,6 +1644,16 @@ func isTCGProduct(name string) bool {
 	return strings.Contains(name, "pokemon") || strings.Contains(name, "magic the gathering") || strings.Contains(name, "tcg") || strings.Contains(name, "booster box") || strings.Contains(name, "etb")
 }
 
+func isMagicCategory(category string) bool {
+	cat := strings.ToLower(category)
+	return strings.Contains(cat, "magic") || strings.Contains(cat, "mtg")
+}
+
+func isMagicProduct(name string) bool {
+	name = strings.ToLower(name)
+	return strings.Contains(name, "magic the gathering") || strings.Contains(name, "mtg")
+}
+
 var tcgTypes = []string{
 	"collector booster", "booster box", "booster pack", "elite trainer box", "elite trainer", "etb",
 	"sleeved booster", "sleeved", "blister", "case", "triple pack", "premium collection", "ultra premium", "upc",
@@ -1589,6 +1688,59 @@ func normalizeTCG(name string) string {
 	}
 
 	return "tcg " + set
+}
+
+func normalizeMagicTCG(name string, price float64) string {
+	foundType := magicTCGType(name)
+	set := cleanTCGSetName(name)
+
+	if price > 0 && magicTypeNeedsPriceShape(foundType) {
+		foundType = magicPriceShape(price)
+	}
+	if foundType == "" {
+		foundType = "sealed"
+	}
+
+	return strings.Join(strings.Fields("tcg "+set+" "+foundType), " ")
+}
+
+func magicTCGType(name string) string {
+	for _, t := range tcgTypes {
+		if strings.Contains(name, t) {
+			return t
+		}
+	}
+	return ""
+}
+
+func magicTypeNeedsPriceShape(foundType string) bool {
+	switch foundType {
+	case "", "booster", "collector booster", "sleeved booster", "sleeved":
+		return true
+	default:
+		return false
+	}
+}
+
+func magicPriceShape(price float64) string {
+	if price < 100 {
+		return "booster pack"
+	}
+	return "booster box"
+}
+
+func cleanTCGSetName(name string) string {
+	set := name
+	set = strings.ReplaceAll(set, "pokemon tcg", "")
+	set = strings.ReplaceAll(set, "pokemon", "")
+	set = strings.ReplaceAll(set, "magic the gathering", "")
+	set = strings.ReplaceAll(set, "magic", "")
+	set = strings.ReplaceAll(set, "mtg", "")
+	set = strings.ReplaceAll(set, "card game", "")
+	for _, t := range tcgTypes {
+		set = strings.ReplaceAll(set, t, "")
+	}
+	return strings.TrimSpace(set)
 }
 
 func isStorageProduct(name string) bool {

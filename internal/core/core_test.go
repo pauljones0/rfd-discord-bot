@@ -205,6 +205,30 @@ func TestEvaluatePriceDoesNotMutatePriorPrices(t *testing.T) {
 	}
 }
 
+func TestParseNotificationCapturesCountryTag(t *testing.T) {
+	parsed, ok := ParseNotification(NewRateManager(), "$83.01 | Amazon COM | Pokemon TCG Scarlet & Violet ⁨@USA⁩")
+	if !ok {
+		t.Fatal("ParseNotification() ok = false")
+	}
+	if parsed.CountryTag != "USA" {
+		t.Fatalf("CountryTag = %q, want USA", parsed.CountryTag)
+	}
+	if !isAllowedCoreMarket(parsed) {
+		t.Fatal("USA notification was not allowed")
+	}
+
+	parsed, ok = ParseNotification(NewRateManager(), "362,36 € | Proshop | PNY GeForce RTX 5060 Dual Fan OC ⁨@Germany⁩")
+	if !ok {
+		t.Fatal("ParseNotification() Germany ok = false")
+	}
+	if parsed.CountryTag != "GERMANY" {
+		t.Fatalf("CountryTag = %q, want GERMANY", parsed.CountryTag)
+	}
+	if isAllowedCoreMarket(parsed) {
+		t.Fatal("Germany notification was allowed")
+	}
+}
+
 func TestPercentile(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -259,6 +283,7 @@ func TestNormalizeProductName(t *testing.T) {
 		{"ASUS GeForce RTX 5060 Ti Dual 8GB OC Gaming Graphics Card", "rtx5060ti", "gpu rtx 5060 ti 8gb"},
 		{"Gigabyte Geforce Rtx 5060 Ti Aero Oc 8Gd Gddr7", "rtx5060ti", "gpu rtx 5060 ti 8gb"},
 		{"ASUS PRIME GeForce RTX5060TI O8G OC", "rtx5060ti", "gpu rtx 5060 ti 8gb"},
+		{"IN3D GF5060Ti TwiX2 N506T2-08D7X-193075N", "unknown-ddr5", "gpu rtx 5060 ti 8gb"},
 		{"ASUS The SFF-Ready Prime GeForce RTX™ 5060 Ti 16GB", "rtx5060ti", "gpu rtx 5060 ti 16gb"},
 		{"ASUS Dual NVIDIA GeForce RTX 5060 Ti OC Edition", "rtx5060ti", "gpu rtx 5060 ti unknown-vram"},
 		{"MSI GeForce RTX 5070 Ti 16G Shadow 3X OC", "rtx5070ti", "gpu rtx 5070 ti 16gb"},
@@ -304,6 +329,47 @@ func TestNormalizeProductName(t *testing.T) {
 		got := NormalizeProductName(tt.name, rules, tt.category)
 		if got != tt.want {
 			t.Errorf("NormalizeProductName(%q, %q) = %q, want %q", tt.name, tt.category, got, tt.want)
+		}
+	}
+}
+
+func TestNormalizeMagicUsesPriceShapeForTruncatedTitles(t *testing.T) {
+	tests := []struct {
+		name  string
+		price float64
+		want  string
+	}{
+		{
+			name:  "Magic: The Gathering | Avatar: The Last",
+			price: 49.47,
+			want:  "tcg avatar the last booster pack",
+		},
+		{
+			name:  "Magic: The Gathering | Avatar: The Last",
+			price: 171.77,
+			want:  "tcg avatar the last booster box",
+		},
+		{
+			name:  "Magic: The Gathering Avatar: The Last Airbender Booster Box",
+			price: 49.47,
+			want:  "tcg avatar the last airbender booster box",
+		},
+		{
+			name:  "Magic: The Gathering Avatar Collector Booster",
+			price: 67.91,
+			want:  "tcg avatar booster pack",
+		},
+		{
+			name:  "Magic: The Gathering Avatar Collector Booster",
+			price: 167.91,
+			want:  "tcg avatar booster box",
+		},
+	}
+
+	for _, tt := range tests {
+		got := NormalizeProductNameWithPrice(tt.name, nil, "magic-the-gathering", tt.price)
+		if got != tt.want {
+			t.Fatalf("NormalizeProductNameWithPrice(%q, %.2f) = %q, want %q", tt.name, tt.price, got, tt.want)
 		}
 	}
 }
@@ -375,6 +441,61 @@ func TestProcessNotification(t *testing.T) {
 
 	if len(notifier.sent) != 1 {
 		t.Errorf("expected 1 notification sent on price drop, got %d", len(notifier.sent))
+	}
+}
+
+func TestProcessNotificationSkipsNonCanadaUSMarkets(t *testing.T) {
+	ctx := context.Background()
+	store := &mockStore{
+		history:  make(map[string]*models.CorePriceHistory),
+		catStats: make(map[string]*models.CoreCategoryStats),
+	}
+	p := NewProcessor(store, &mockNotifier{}, NewRateManager())
+
+	err := p.ProcessNotification(ctx, "CoreFinder #rtx5060: CoreFinder", "362,36 € | Proshop | PNY GeForce RTX 5060 Dual Fan OC - 8GB GDDR7 RAM ⁨@Germany⁩", nil, "germany-gpu", "com.discord", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(store.history) != 0 {
+		t.Fatalf("expected no history for Germany notification, got %#v", store.history)
+	}
+
+	err = p.ProcessNotification(ctx, "CoreFinder #test: CoreFinder", "€1.00 | Amazon DE | Cheap Foreign Widget ⁨@Germany⁩", []string{
+		"$100.00 | Amazon US | Allowed Widget ⁨@USA⁩",
+	}, "mixed-candidates", "com.discord", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := store.history["allowed widget"]; !ok {
+		t.Fatalf("expected allowed candidate to be processed, history keys: %#v", store.history)
+	}
+	if _, ok := store.history["cheap foreign widget"]; ok {
+		t.Fatalf("foreign candidate was recorded")
+	}
+}
+
+func TestProcessNotificationSplitsTruncatedMagicByPriceShape(t *testing.T) {
+	ctx := context.Background()
+	store := &mockStore{
+		history:  make(map[string]*models.CorePriceHistory),
+		catStats: make(map[string]*models.CoreCategoryStats),
+	}
+	p := NewProcessor(store, &mockNotifier{}, NewRateManager())
+
+	err := p.ProcessNotification(ctx, "CoreFinder #magic-the-gathering: CoreFinder", "$49.47 | Amazon COM | Magic: The Gathering | Avatar: The Last... ⁨@USA⁩", nil, "magic-pack", "com.discord", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected pack error: %v", err)
+	}
+	err = p.ProcessNotification(ctx, "CoreFinder #magic-the-gathering: CoreFinder", "$171.77 | Amazon COM | Magic: The Gathering | Avatar: The Last... ⁨@USA⁩", nil, "magic-box", "com.discord", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected box error: %v", err)
+	}
+
+	if _, ok := store.history["tcg avatar the last booster pack"]; !ok {
+		t.Fatalf("pack bin missing, history keys: %#v", store.history)
+	}
+	if _, ok := store.history["tcg avatar the last booster box"]; !ok {
+		t.Fatalf("box bin missing, history keys: %#v", store.history)
 	}
 }
 
