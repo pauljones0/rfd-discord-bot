@@ -297,30 +297,36 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 	return deal
 }
 
-func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo) {
+func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo) models.DealDetailFetchStats {
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(5) // Limit concurrency
 
+	var attempted atomic.Int32
+	var succeeded atomic.Int32
 	var failed atomic.Int32
+	var notFound atomic.Int32
 
 	for i := range deals {
 		deal := deals[i] // explicit local copy for clarity in the closure
 		if deal.PrimaryPostURL() == "" {
 			continue
 		}
+		attempted.Add(1)
 
 		g.Go(func() error {
 			detail, err := c.scrapeDealDetailPage(ctx, deal.PrimaryPostURL())
 			if err != nil {
-				failed.Add(1)
 				if strings.Contains(err.Error(), "status code 404") {
+					notFound.Add(1)
 					markPrimaryThreadNotFound(deal)
 					slog.Info("Failed to fetch detail page (404)", "processor", "rfd", "url", deal.PrimaryPostURL())
 				} else {
+					failed.Add(1)
 					slog.Warn("Failed to fetch detail page", "processor", "rfd", "url", deal.PrimaryPostURL(), "error", err)
 				}
 				return nil
 			}
+			succeeded.Add(1)
 
 			deal.ActualDealURL = detail.DealLink
 			deal.Description = detail.Description
@@ -353,9 +359,24 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 
 	g.Wait()
 
-	if f := failed.Load(); f > 0 {
-		slog.Warn("FetchDealDetails summary", "processor", "rfd", "total", len(deals), "failed", f)
+	stats := models.DealDetailFetchStats{
+		Requested: len(deals),
+		Attempted: int(attempted.Load()),
+		Succeeded: int(succeeded.Load()),
+		Failed:    int(failed.Load()),
+		NotFound:  int(notFound.Load()),
 	}
+	if stats.Failed > 0 || stats.NotFound > 0 {
+		slog.Warn("FetchDealDetails summary",
+			"processor", "rfd",
+			"requested", stats.Requested,
+			"attempted", stats.Attempted,
+			"succeeded", stats.Succeeded,
+			"failed", stats.Failed,
+			"not_found", stats.NotFound,
+		)
+	}
+	return stats
 }
 
 func markPrimaryThreadNotFound(deal *models.DealInfo) {

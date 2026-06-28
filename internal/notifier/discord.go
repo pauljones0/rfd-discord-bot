@@ -488,6 +488,7 @@ func (c *Client) sendPayloadToSubscriptions(ctx context.Context, processor, titl
 		return nil
 	}
 
+	var errs []error
 	for i, sub := range subs {
 		if i > 0 {
 			select {
@@ -505,6 +506,7 @@ func (c *Client) sendPayloadToSubscriptions(ctx context.Context, processor, titl
 				"title", title,
 				"error", err,
 			)
+			errs = append(errs, fmt.Errorf("channel %s: %w", sub.ChannelID, err))
 		} else {
 			slog.Info("Deal sent",
 				"processor", processor,
@@ -514,7 +516,7 @@ func (c *Client) sendPayloadToSubscriptions(ctx context.Context, processor, titl
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // --- Facebook Deal Notifications ---

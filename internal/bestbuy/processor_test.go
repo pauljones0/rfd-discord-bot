@@ -271,6 +271,34 @@ func TestProcessBestBuyDeals_PollsWithoutSubscriptions(t *testing.T) {
 	}
 }
 
+func TestProcessBestBuyDeals_ReturnsErrorWhenAllSellerFetchesFail(t *testing.T) {
+	store := &bestBuyTestStore{
+		sellers: []Seller{
+			{ID: "591375", Name: "Tech Outlet Center", SearchPath: "sellerName:Tech Outlet Center", IsActive: true},
+			{ID: "418240", Name: "OpenBox", SearchPath: "sellerName:OpenBox", IsActive: true},
+		},
+		products: make(map[string]AnalyzedProduct),
+	}
+	client := NewClient()
+	client.httpClient = &http.Client{Transport: bestBuyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("blocked")),
+			Request:    req,
+		}, nil
+	})}
+
+	processor := NewProcessor(store, client, nil, &bestBuyTestNotifier{}, "")
+	err := processor.ProcessBestBuyDeals(context.Background())
+	if err == nil {
+		t.Fatal("ProcessBestBuyDeals() error = nil, want all-seller fetch failure")
+	}
+	if !strings.Contains(err.Error(), "failed to fetch Best Buy products from 2/2 seller") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestProcessBestBuyDeals_SkipsExpiredSellerOfferBeforeAI(t *testing.T) {
 	store := &bestBuyTestStore{
 		sellers:  []Seller{{ID: "1247543", Name: "Parts Search", SearchPath: "sellerName:Parts Search", IsActive: true}},

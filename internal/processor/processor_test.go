@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,13 +155,14 @@ type mockScraper struct {
 	err            error
 	fetchedDetails []*models.DealInfo
 	mutateDetails  func([]*models.DealInfo)
+	detailStats    models.DealDetailFetchStats
 }
 
 func (m *mockScraper) ScrapeDealList(_ context.Context) ([]models.DealInfo, error) {
 	return m.deals, m.err
 }
 
-func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealInfo) {
+func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealInfo) models.DealDetailFetchStats {
 	// Track which deals were requested for detail fetching
 	// Need to copy because deals are pointers
 	for _, d := range deals {
@@ -169,6 +171,14 @@ func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealIn
 	}
 	if m.mutateDetails != nil {
 		m.mutateDetails(deals)
+	}
+	if m.detailStats.Attempted > 0 || m.detailStats.Requested > 0 {
+		return m.detailStats
+	}
+	return models.DealDetailFetchStats{
+		Requested: len(deals),
+		Attempted: len(deals),
+		Succeeded: len(deals),
 	}
 }
 
@@ -488,6 +498,31 @@ func TestProcessDeals_ScrapeError(t *testing.T) {
 	err := p.ProcessDeals(context.Background())
 	if err == nil {
 		t.Fatal("Expected error from ProcessDeals when scraper fails")
+	}
+}
+
+func TestProcessDeals_ReturnsErrorWhenDetailFetchesAreUnhealthy(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Deal 1", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-1"}}},
+			{Title: "Deal 2", PostURL: "https://forums.redflagdeals.com/deal-2", PublishedTimestamp: testTime1.Add(time.Minute), Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-2"}}},
+			{Title: "Deal 3", PostURL: "https://forums.redflagdeals.com/deal-3", PublishedTimestamp: testTime1.Add(2 * time.Minute), Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-3"}}},
+		},
+		detailStats: models.DealDetailFetchStats{Requested: 3, Attempted: 3, Failed: 3},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+	err := p.ProcessDeals(context.Background())
+	if err == nil {
+		t.Fatal("ProcessDeals() error = nil, want unhealthy detail fetch error")
+	}
+	if !strings.Contains(err.Error(), "rfd detail fetch unhealthy") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(notif.sentDeals) != 0 {
+		t.Fatalf("sent deals = %d, want 0 when detail fetch is unhealthy", len(notif.sentDeals))
 	}
 }
 

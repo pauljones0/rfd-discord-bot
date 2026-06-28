@@ -46,6 +46,15 @@ type DealInfo struct {
 	Summary     string `docstore:"summary,omitempty"`  // RFD editor summary if available
 }
 
+// DealDetailFetchStats summarizes RFD detail-page fetch health for a run.
+type DealDetailFetchStats struct {
+	Requested int
+	Attempted int
+	Succeeded int
+	Failed    int
+	NotFound  int
+}
+
 // ThreadContext represents an individual RedFlagDeals thread that is part of a DealIdea.
 type ThreadContext struct {
 	DocumentID         string `docstore:"documentID"`

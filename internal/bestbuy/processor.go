@@ -260,6 +260,7 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 		priceDropCandidates int
 		priceDropAnalyzed   int
 		priceDropNotified   int
+		fetchErrors         int
 		filteredOutOfStock  int
 		filteredNotVisible  int
 		filteredExpired     int
@@ -276,6 +277,7 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 			"sellers", stats.sellers,
 			"fetched", stats.fetched,
 			"new_items", stats.newItems,
+			"fetch_errors", stats.fetchErrors,
 			"price_drop_candidates", stats.priceDropCandidates,
 			"price_drop_analyzed", stats.priceDropAnalyzed,
 			"price_drop_notified", stats.priceDropNotified,
@@ -331,6 +333,7 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 	// 2. Fetch products from all configured sellers.
 	var allProducts []Product
 	stats.sellers = len(sellers)
+	var firstFetchErr error
 
 	for i, seller := range sellers {
 		if ctx.Err() != nil {
@@ -340,6 +343,10 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 
 		products, err := p.client.FetchSellerProducts(ctx, seller)
 		if err != nil {
+			stats.fetchErrors++
+			if firstFetchErr == nil {
+				firstFetchErr = err
+			}
 			logger.Error("Failed to fetch seller products",
 				"seller", seller.Name,
 				"sellerID", seller.ID,
@@ -365,6 +372,18 @@ func (p *Processor) ProcessBestBuyDeals(ctx context.Context) error {
 	}
 
 	stats.fetched = len(allProducts)
+
+	if len(allProducts) == 0 && stats.fetchErrors > 0 {
+		stats.exitReason = "seller_fetch_error"
+		return fmt.Errorf("failed to fetch Best Buy products from %d/%d seller(s): %w", stats.fetchErrors, len(sellers), firstFetchErr)
+	}
+	if stats.fetchErrors > 0 {
+		logger.Warn("Best Buy seller fetch had partial failures",
+			"fetch_errors", stats.fetchErrors,
+			"sellers", len(sellers),
+			"products", len(allProducts),
+		)
+	}
 
 	if len(allProducts) == 0 {
 		stats.exitReason = "no_products"

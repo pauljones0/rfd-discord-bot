@@ -99,7 +99,15 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	validDeals := p.deduplicateDeals(ctx, scrapedDeals, existingDeals, recentDeals, logger)
 
 	// 4. Fetch Details for New/Changed Deals
-	p.enrichDealsWithDetails(ctx, validDeals, existingDeals, logger)
+	detailStats := p.enrichDealsWithDetails(ctx, validDeals, existingDeals, logger)
+	if rfdDetailFetchUnhealthy(detailStats) {
+		return fmt.Errorf("rfd detail fetch unhealthy: attempted=%d succeeded=%d failed=%d not_found=%d",
+			detailStats.Attempted,
+			detailStats.Succeeded,
+			detailStats.Failed,
+			detailStats.NotFound,
+		)
+	}
 	validDeals = p.deduplicateDealsByDetailedURL(ctx, validDeals, existingDeals, recentDeals, logger)
 
 	// 5. AI Analysis for New Deals
@@ -197,7 +205,7 @@ func (p *DealProcessor) loadExistingDeals(ctx context.Context, validDeals []mode
 }
 
 // enrichDealsWithDetails determines which deals need detail scraping (new or changed) and fetches them.
-func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, logger *slog.Logger) {
+func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, logger *slog.Logger) models.DealDetailFetchStats {
 	var dealsToDetail []*models.DealInfo
 	for i := range validDeals {
 		deal := &validDeals[i]
@@ -239,10 +247,14 @@ func (p *DealProcessor) enrichDealsWithDetails(ctx context.Context, validDeals [
 
 	if len(dealsToDetail) > 0 {
 		logger.Info("Fetching details for deals", "count", len(dealsToDetail))
-		p.scraper.FetchDealDetails(ctx, dealsToDetail)
-	} else {
-		logger.Info("No deals needed detail scraping")
+		return p.scraper.FetchDealDetails(ctx, dealsToDetail)
 	}
+	logger.Info("No deals needed detail scraping")
+	return models.DealDetailFetchStats{}
+}
+
+func rfdDetailFetchUnhealthy(stats models.DealDetailFetchStats) bool {
+	return stats.Attempted >= 3 && stats.Succeeded == 0 && stats.Failed > 0
 }
 
 const (

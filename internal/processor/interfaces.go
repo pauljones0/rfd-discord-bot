@@ -31,7 +31,7 @@ type DealNotifier interface {
 // DealScraper abstracts the web scraping layer.
 type DealScraper interface {
 	ScrapeDealList(ctx context.Context) ([]models.DealInfo, error)
-	FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
+	FetchDealDetails(ctx context.Context, deals []*models.DealInfo) models.DealDetailFetchStats
 }
 
 // DealValidator abstracts the validation layer.
