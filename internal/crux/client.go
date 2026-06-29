@@ -34,8 +34,9 @@ type ClientConfig struct {
 }
 
 type Client struct {
-	cfg ClientConfig
-	rng *rand.Rand
+	cfg       ClientConfig
+	rng       *rand.Rand
+	fetchHTML func(context.Context, scrapebackend.FetchOptions) scrapebackend.FetchResult
 }
 
 type CrawlResult struct {
@@ -68,7 +69,7 @@ func NewClient(cfg ClientConfig) *Client {
 	if cfg.MaxPages <= 0 {
 		cfg.MaxPages = 100
 	}
-	return &Client{cfg: cfg, rng: rand.New(rand.NewSource(time.Now().UnixNano()))}
+	return &Client{cfg: cfg, rng: rand.New(rand.NewSource(time.Now().UnixNano())), fetchHTML: scrapebackend.FetchHTML}
 }
 
 func (c *Client) FetchAll(ctx context.Context) (CrawlResult, error) {
@@ -108,7 +109,14 @@ func (c *Client) FetchPage(ctx context.Context, page int) ([]Company, int, strin
 		if backend == "" {
 			continue
 		}
-		fetch := scrapebackend.FetchHTML(ctx, scrapebackend.FetchOptions{
+		if err := ctx.Err(); err != nil {
+			return nil, 0, "", fmt.Errorf("crux page %d canceled before %s fetch: %w", page, backend, err)
+		}
+		fetchHTML := c.fetchHTML
+		if fetchHTML == nil {
+			fetchHTML = scrapebackend.FetchHTML
+		}
+		fetch := fetchHTML(ctx, scrapebackend.FetchOptions{
 			Backend:             backend,
 			URL:                 pageURL,
 			Timeout:             c.cfg.Timeout,
@@ -124,26 +132,57 @@ func (c *Client) FetchPage(ctx context.Context, page int) ([]Company, int, strin
 			PaidEnabled:         c.cfg.PaidEnabled,
 			PaidAttempt:         c.cfg.PaidAttempt,
 		})
-		companies, totalPages, parseErr := ParseCompaniesPage(fetch.HTML, pageURL)
+		if err := ctx.Err(); err != nil && strings.TrimSpace(fetch.HTML) == "" {
+			return nil, 0, "", fmt.Errorf("crux page %d canceled while fetching with %s: %w", page, backend, err)
+		}
+
+		var companies []Company
+		var totalPages int
+		var parseErr error
+		if strings.TrimSpace(fetch.HTML) == "" {
+			parseErr = fmt.Errorf("empty response")
+		} else {
+			companies, totalPages, parseErr = ParseCompaniesPage(fetch.HTML, pageURL)
+		}
 		if parseErr == nil && len(companies) > 0 {
 			if fetch.BlockSignal != "" {
 				slog.Warn("Crux page parsed despite block signal", "backend", backend, "page", page, "block_signal", fetch.BlockSignal)
 			}
 			return companies, totalPages, backend, nil
 		}
-		issue := strings.TrimSpace(fetch.Error)
-		if fetch.BlockSignal != "" {
-			issue = strings.TrimSpace(issue + " blocked:" + fetch.BlockSignal)
-		}
-		if parseErr != nil {
-			issue = strings.TrimSpace(issue + " parse:" + parseErr.Error())
-		}
-		if issue == "" {
-			issue = "unknown fetch/parse failure"
-		}
+		issue := cruxFetchIssue(fetch, parseErr)
+		slog.Warn("Crux page backend failed",
+			"page", page,
+			"backend", backend,
+			"duration", fetch.Duration.Round(time.Millisecond).String(),
+			"status", fetch.StatusCode,
+			"html_bytes", len(fetch.HTML),
+			"block_signal", fetch.BlockSignal,
+			"issue", issue,
+		)
 		issues = append(issues, backend+"="+issue)
 	}
 	return nil, 0, "", fmt.Errorf("failed to fetch crux page %d: %s", page, strings.Join(issues, "; "))
+}
+
+func cruxFetchIssue(fetch scrapebackend.FetchResult, parseErr error) string {
+	var parts []string
+	if fetch.StatusCode > 0 {
+		parts = append(parts, fmt.Sprintf("HTTP %d", fetch.StatusCode))
+	}
+	if strings.TrimSpace(fetch.Error) != "" {
+		parts = append(parts, strings.TrimSpace(fetch.Error))
+	}
+	if fetch.BlockSignal != "" {
+		parts = append(parts, "blocked:"+fetch.BlockSignal)
+	}
+	if parseErr != nil {
+		parts = append(parts, "parse:"+parseErr.Error())
+	}
+	if len(parts) == 0 {
+		return "unknown fetch/parse failure"
+	}
+	return strings.Join(parts, " ")
 }
 
 func (c *Client) pageURL(page int) string {
