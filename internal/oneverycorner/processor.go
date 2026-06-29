@@ -22,7 +22,7 @@ const (
 	TweetText    = TweetMention + " " + TweetTag + " #Sweepstakes"
 	TweetURL     = "https://x.com/intent/tweet?text=%40Enterprise+%23OnEveryCorner+%23Sweepstakes"
 
-	DefaultGoalCorrelationWindow = 75 * time.Second
+	DefaultGoalCorrelationWindow = 2 * time.Minute
 	DefaultSystemAlertCooldown   = 15 * time.Minute
 )
 

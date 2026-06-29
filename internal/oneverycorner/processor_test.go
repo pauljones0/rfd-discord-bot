@@ -387,7 +387,7 @@ func TestProcessNotificationIgnoresOldGoalAfterCorner(t *testing.T) {
 	}
 }
 
-func TestProcessNotificationGoalCorrelationWindowIsSeventyFiveSeconds(t *testing.T) {
+func TestProcessNotificationGoalCorrelationWindowIsTwoMinutes(t *testing.T) {
 	store := &testStore{subs: []models.Subscription{
 		{GuildID: "g1", ChannelID: "c1", SubscriptionType: dealtypes.SubscriptionOnEveryCorner, DealType: dealtypes.OnEveryCornerAlerts},
 	}}
@@ -398,8 +398,9 @@ func TestProcessNotificationGoalCorrelationWindowIsSeventyFiveSeconds(t *testing
 		goalAfter  time.Duration
 		wantAlerts int
 	}{
-		{name: "at window", goalAfter: 75 * time.Second, wantAlerts: 1},
-		{name: "past window", goalAfter: 76 * time.Second, wantAlerts: 0},
+		{name: "paraguay source lag case", goalAfter: 81 * time.Second, wantAlerts: 1},
+		{name: "at window", goalAfter: 2 * time.Minute, wantAlerts: 1},
+		{name: "past window", goalAfter: 121 * time.Second, wantAlerts: 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			notifier := &testNotifier{}
