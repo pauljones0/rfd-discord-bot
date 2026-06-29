@@ -211,6 +211,51 @@ func TestSoldCompEnricherCachesNoComps(t *testing.T) {
 	}
 }
 
+func TestSoldCompEnricherCachesNoCompsWhenFallbackSucceedsAfterBackendFailure(t *testing.T) {
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	store := &soldCompMemoryStore{snapshots: map[string]SoldCompSnapshot{}}
+	fetches := 0
+	enricher := NewSoldCompEnricher(SoldCompEnricherOptions{
+		Enabled:    true,
+		Store:      store,
+		Backends:   []string{scrapebackend.BackendHTTP, scrapebackend.BackendCamoufox},
+		MaxPerRun:  5,
+		QueryDelay: time.Second,
+		Sleep:      func(context.Context, time.Duration) error { return nil },
+		FetchHTML: func(context.Context, scrapebackend.FetchOptions) scrapebackend.FetchResult {
+			fetches++
+			if fetches == 1 {
+				return scrapebackend.FetchResult{StatusCode: 403, BlockSignal: "http-403", Error: "HTTP 403"}
+			}
+			return scrapebackend.FetchResult{HTML: "<html></html>"}
+		},
+	})
+	products := []Product{{Name: "Sony WH-1000XM5 Noise Cancelling Headphones", BrandName: "Sony", ModelNumber: "WH-1000XM5", SalePrice: 300}}
+
+	enriched, err := enricher.EnrichProducts(context.Background(), products, now, nil)
+
+	if err != nil {
+		t.Fatalf("EnrichProducts() error = %v", err)
+	}
+	if enriched[0].SoldCompCount != 0 {
+		t.Fatalf("SoldCompCount = %d, want 0 for no comps", enriched[0].SoldCompCount)
+	}
+	if store.saves != 1 {
+		t.Fatalf("cache saves = %d, want 1 fallback no-comps snapshot", store.saves)
+	}
+	for _, snapshot := range store.snapshots {
+		if snapshot.Verdict != ebaySoldVerdictNoComps {
+			t.Fatalf("cached verdict = %q, want no_comps", snapshot.Verdict)
+		}
+		if strings.Contains(snapshot.Error, "HTTP 403") {
+			t.Fatalf("cached error = %q, want no fetch failure after fallback success", snapshot.Error)
+		}
+		if snapshot.Backend != scrapebackend.BackendCamoufox {
+			t.Fatalf("backend = %q, want fallback backend", snapshot.Backend)
+		}
+	}
+}
+
 func TestNewSoldCompEnricherDefaultCapIsTopTen(t *testing.T) {
 	enricher := NewSoldCompEnricher(SoldCompEnricherOptions{})
 	if enricher.maxPerRun != 10 {

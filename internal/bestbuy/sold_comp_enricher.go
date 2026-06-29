@@ -509,7 +509,7 @@ func (e *EbaySoldCompsEnricher) fetchSnapshot(ctx context.Context, product Produ
 			best = snapshot
 		}
 	}
-	if best.Count > 0 {
+	if best.Backend != "" {
 		logBestBuySoldCompBackendSummary(logger, product, best, attempts)
 		return best
 	}

@@ -56,7 +56,7 @@ func (s *Server) reportScheduledProcessorFailure(processorName string, timeout, 
 		Title:      label + " monitor failure",
 		Severity:   "error",
 		Component:  processorName + "-scheduler",
-		Details:    fmt.Sprintf("Scheduled processor %q failed: %s", processorName, err.Error()),
+		Details:    fmt.Sprintf("Processor %q failed: %s", processorName, err.Error()),
 		OccurredAt: now,
 		Fields:     fields,
 	})
@@ -80,7 +80,7 @@ func (s *Server) reportScheduledProcessorRecovery(processorName string, duration
 		Title:      label + " monitor recovered",
 		Severity:   "info",
 		Component:  processorName + "-scheduler",
-		Details:    fmt.Sprintf("Scheduled processor %q completed successfully after a previous failure.", processorName),
+		Details:    fmt.Sprintf("Processor %q completed successfully after a previous failure.", processorName),
 		OccurredAt: now,
 		Fields: []models.CoreSystemAlertField{
 			{Name: "First failed", Value: state.FirstFailedAt.UTC().Format(time.RFC3339)},

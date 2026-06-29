@@ -245,6 +245,63 @@ func TestScheduledFailureRetriesAlertWhenDiscordSendFails(t *testing.T) {
 	}
 }
 
+func TestManualProcessorFailureAndRecoverySendsMonitorAlerts(t *testing.T) {
+	notifier := &scheduledAlertTestNotifier{}
+	srv := &Server{
+		store: &scheduledAlertTestStore{subs: []models.Subscription{
+			{GuildID: "guild", ChannelID: "rfd-channel", SubscriptionType: dealtypes.SubscriptionRFD, DealType: dealtypes.RFDAll},
+		}},
+		systemNotifier:    notifier,
+		schedulerFailures: make(map[string]scheduledProcessorFailure),
+	}
+	sem := make(chan struct{}, 1)
+
+	req := httptest.NewRequest(http.MethodGet, "/manual", nil)
+	rec := httptest.NewRecorder()
+	srv.runManualProcess(rec, req, manualProcessOptions{
+		processorName: "rfd",
+		errorMessage:  "RFD",
+		panicMessage:  "panic",
+		successText:   "ok",
+		busyDetails:   "busy",
+		sem:           sem,
+		timeout:       time.Second,
+		fn: func(context.Context) error {
+			return errors.New("upstream failed")
+		},
+	})
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failure status = %d, want 500", rec.Code)
+	}
+	if len(notifier.alerts) != 1 || notifier.alerts[0].Title != "RFD monitor failure" {
+		t.Fatalf("failure alerts = %#v", notifier.alerts)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/manual", nil)
+	rec = httptest.NewRecorder()
+	srv.runManualProcess(rec, req, manualProcessOptions{
+		processorName: "rfd",
+		finishMessage: "RFD finished",
+		errorMessage:  "RFD",
+		panicMessage:  "panic",
+		successText:   "ok",
+		busyDetails:   "busy",
+		sem:           sem,
+		timeout:       time.Second,
+		fn: func(context.Context) error {
+			return nil
+		},
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recovery status = %d, want 200", rec.Code)
+	}
+	if len(notifier.alerts) != 2 || notifier.alerts[1].Title != "RFD monitor recovered" {
+		t.Fatalf("recovery alerts = %#v", notifier.alerts)
+	}
+}
+
 func TestScheduledProcessorSubscriptionsRoutesBestBuyComputeSeparately(t *testing.T) {
 	subs := []models.Subscription{
 		{ChannelID: "bestbuy-deals", SubscriptionType: dealtypes.SubscriptionBestBuy, DealType: dealtypes.BestBuyWarmHot},

@@ -500,13 +500,6 @@ func (s *Server) runManualProcess(w http.ResponseWriter, r *http.Request, opts m
 		}
 		<-opts.sem
 	}()
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			slog.Error(opts.panicMessage, "processor", opts.processorName, "panic", recovered)
-			http.Error(w, opts.errorMessage+" panicked", http.StatusInternalServerError)
-		}
-	}()
-
 	slog.Info(opts.startMessage, "processor", opts.processorName)
 	if opts.logAIState && s.aiClient != nil {
 		s.aiClient.LogCurrentState()
@@ -514,12 +507,24 @@ func (s *Server) runManualProcess(w http.ResponseWriter, r *http.Request, opts m
 	ctx, cancel := context.WithTimeout(r.Context(), opts.timeout)
 	defer cancel()
 	start := time.Now()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			duration := time.Since(start).Round(time.Millisecond)
+			slog.Error(opts.panicMessage, "processor", opts.processorName, "duration", duration.String(), "panic", recovered)
+			s.reportScheduledProcessorFailure(opts.processorName, opts.timeout, duration, fmt.Errorf("panic: %v", recovered))
+			http.Error(w, opts.errorMessage+" panicked", http.StatusInternalServerError)
+		}
+	}()
 	if err := opts.fn(ctx); err != nil {
-		slog.Error("Manual processor failed", "processor", opts.processorName, "error", err)
+		duration := time.Since(start).Round(time.Millisecond)
+		slog.Error("Manual processor failed", "processor", opts.processorName, "duration", duration.String(), "error", err)
+		s.reportScheduledProcessorFailure(opts.processorName, opts.timeout, duration, err)
 		http.Error(w, opts.errorMessage+" failed", http.StatusInternalServerError)
 		return
 	}
-	slog.Info(opts.finishMessage, "processor", opts.processorName, "duration", time.Since(start))
+	duration := time.Since(start).Round(time.Millisecond)
+	slog.Info(opts.finishMessage, "processor", opts.processorName, "duration", duration.String())
+	s.reportScheduledProcessorRecovery(opts.processorName, duration)
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, opts.successText)
