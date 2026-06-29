@@ -132,7 +132,7 @@ func (c *Client) FetchPage(ctx context.Context, page int) ([]Company, int, strin
 			PaidEnabled:         c.cfg.PaidEnabled,
 			PaidAttempt:         c.cfg.PaidAttempt,
 		})
-		if err := ctx.Err(); err != nil && strings.TrimSpace(fetch.HTML) == "" {
+		if err := ctx.Err(); err != nil {
 			return nil, 0, "", fmt.Errorf("crux page %d canceled while fetching with %s: %w", page, backend, err)
 		}
 
