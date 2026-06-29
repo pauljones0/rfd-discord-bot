@@ -25,6 +25,8 @@ import (
 const (
 	rfdListStandardMaxRetries = 3
 	rfdListDNSMaxRetries      = 6
+	rfdDetailConcurrency      = 2
+	rfdDetailMaxRetries       = 2
 )
 
 type Client struct {
@@ -299,7 +301,7 @@ func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements
 
 func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo) models.DealDetailFetchStats {
 	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(5) // Limit concurrency
+	g.SetLimit(rfdDetailConcurrency)
 
 	var attempted atomic.Int32
 	var succeeded atomic.Int32
@@ -314,7 +316,7 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 		attempted.Add(1)
 
 		g.Go(func() error {
-			detail, err := c.scrapeDealDetailPage(ctx, deal.PrimaryPostURL())
+			detail, err := c.scrapeDealDetailPageWithRetry(ctx, deal.PrimaryPostURL())
 			if err != nil {
 				if strings.Contains(err.Error(), "status code 404") {
 					notFound.Add(1)
@@ -377,6 +379,49 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 		)
 	}
 	return stats
+}
+
+func (c *Client) scrapeDealDetailPageWithRetry(ctx context.Context, dealURL string) (dealDetailResult, error) {
+	var detail dealDetailResult
+	err := util.RetryWithBackoff(ctx, rfdDetailMaxRetries, func(attempt int) error {
+		if attempt > 0 {
+			slog.Warn("Retrying RFD detail page fetch", "processor", "rfd", "url", dealURL, "attempt", attempt)
+		}
+		var scrapeErr error
+		detail, scrapeErr = c.scrapeDealDetailPage(ctx, dealURL)
+		if scrapeErr == nil {
+			return nil
+		}
+		if !shouldRetryRFDDetailFetch(scrapeErr) {
+			return util.PermanentError(scrapeErr)
+		}
+		return scrapeErr
+	})
+	return detail, err
+}
+
+func shouldRetryRFDDetailFetch(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	for _, status := range []string{
+		"status code 429",
+		"status code 500",
+		"status code 502",
+		"status code 503",
+		"status code 504",
+	} {
+		if strings.Contains(text, status) {
+			return true
+		}
+	}
+	return strings.Contains(text, "client.timeout") ||
+		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "connection refused") ||
+		strings.Contains(text, "server misbehaving") ||
+		strings.Contains(text, "temporary failure") ||
+		strings.Contains(text, "try again")
 }
 
 func markPrimaryThreadNotFound(deal *models.DealInfo) {

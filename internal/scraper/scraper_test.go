@@ -760,7 +760,9 @@ func TestScrapeDealListAndFetchDealDetails_InvalidPrimaryLinkStaysEmpty(t *testi
 }
 
 func TestFetchDealDetails_MarksPrimaryThreadNotFoundOn404(t *testing.T) {
+	attempts := 0
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
@@ -783,9 +785,58 @@ func TestFetchDealDetails_MarksPrimaryThreadNotFoundOn404(t *testing.T) {
 			{PostURL: srv.URL + "/dead-deal-111111"},
 		},
 	}
-	c.FetchDealDetails(context.Background(), []*models.DealInfo{&deal})
+	stats := c.FetchDealDetails(context.Background(), []*models.DealInfo{&deal})
 
 	if !deal.Threads[0].NotFound {
 		t.Fatal("expected primary thread to be marked NotFound after detail 404")
+	}
+	if attempts != 1 {
+		t.Fatalf("404 detail fetch attempts = %d, want 1", attempts)
+	}
+	if stats.NotFound != 1 || stats.Failed != 0 || stats.Succeeded != 0 {
+		t.Fatalf("stats = %#v, want one not_found and no retry failure", stats)
+	}
+}
+
+func TestFetchDealDetails_RetriesTransientStatus(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, `<!DOCTYPE html><html><body><a class="retailer_badge">Retry Store</a></body></html>`)
+	}))
+	defer srv.Close()
+
+	parsedURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to parse server URL: %v", err)
+	}
+
+	cfg := &config.Config{
+		AllowedDomains: []string{parsedURL.Hostname()},
+		RFDBaseURL:     srv.URL,
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+	c.httpClient = srv.Client()
+
+	deal := models.DealInfo{
+		PostURL: srv.URL + "/deal-1",
+		Threads: []models.ThreadContext{
+			{PostURL: srv.URL + "/deal-1"},
+		},
+	}
+	stats := c.FetchDealDetails(context.Background(), []*models.DealInfo{&deal})
+
+	if attempts != 2 {
+		t.Fatalf("detail fetch attempts = %d, want 2", attempts)
+	}
+	if stats.Succeeded != 1 || stats.Failed != 0 || stats.NotFound != 0 {
+		t.Fatalf("stats = %#v, want one success after retry", stats)
+	}
+	if deal.Retailer != "Retry Store" {
+		t.Fatalf("Retailer = %q, want Retry Store", deal.Retailer)
 	}
 }
