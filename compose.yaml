@@ -1,0 +1,28 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 60s
+    env_file: .env
+    environment:
+      SQLITE_PATH: /data/rfd.sqlite
+      LISTEN_ADDR: 127.0.0.1:8080
+    volumes:
+      - rfd-data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, /rfd-bot, healthcheck]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  rfd-data:

@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+data/*
+!data/.keep
+*.sqlite*
+*.db*
+*.log
+*.out
+coverage*
+dist/
+/rfd-bot
+.DS_Store

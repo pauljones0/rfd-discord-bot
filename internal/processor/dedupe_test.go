@@ -1,0 +1,595 @@
+package processor
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/pauljones0/rfd-discord-standalone/internal/models"
+)
+
+func TestExtractWords(t *testing.T) {
+	words := extractWords("250GB 5G+ $40/mo. w/ Digital Discount and $40 ongoing credit")
+	expected := []string{"250gb", "5g", "40", "mo", "w", "digital", "discount", "and", "40", "ongoing", "credit"}
+
+	if len(words) != len(expected) {
+		t.Fatalf("Expected %d words, got %d. Words: %v", len(expected), len(words), words)
+	}
+
+	for i, w := range expected {
+		if words[i] != w {
+			t.Errorf("Word at index %d mismatch. Expected %s, got %s", i, w, words[i])
+		}
+	}
+}
+
+func TestGenerateSearchTokens(t *testing.T) {
+	// A typical Freedom mobile deal
+	deal := &models.DealInfo{
+		Title:         "Freedom Mobile 250GB 5G+ $40/mo.",
+		CleanTitle:    "250GB 5G+ $40/mo. w/ Digital Discount",
+		ActualDealURL: "https://shop.freedommobile.ca/en-CA/plans?planSku=Freedom%2050GB",
+	}
+
+	tokens := GenerateSearchTokens(deal)
+
+	// Valuables expected from clean title: "250gb", "5g", "40", "digital"
+	// Valuables expected from actual url: "plans", "planSku" -> "plansku", "Freedom", "50gb"
+	// Wait, the url tokenizer gives ["plans", "planSku", "Freedom", "50GB"]
+	// Lowercase: plans, plansku, freedom, 50gb
+	// Let's just check for specific important tokens being present.
+
+	expectedImportant := []string{"250gb", "5g", "40", "digital", "plans", "plansku", "freedom", "50gb"}
+
+	for _, req := range expectedImportant {
+		if !slices.Contains(tokens, req) {
+			t.Errorf("Expected token %q to be in search tokens: %v", req, tokens)
+		}
+	}
+
+	// Ensure common words are filtered out (including newly-expanded stopwords)
+	notExpected := []string{"w", "and", "mo", "the", "with", "discount"}
+	for _, ne := range notExpected {
+		if slices.Contains(tokens, ne) {
+			t.Errorf("Did not expect token %q to be in search tokens: %v", ne, tokens)
+		}
+	}
+
+	// Ensure no duplicate tokens exist
+	seen := make(map[string]bool)
+	for _, tok := range tokens {
+		if seen[tok] {
+			t.Errorf("Duplicate token %q found in search tokens: %v", tok, tokens)
+		}
+		seen[tok] = true
+	}
+}
+
+func TestCalculateSimilarity(t *testing.T) {
+	// Perfect match
+	sim := calculateSimilarity([]string{"a", "b", "c"}, []string{"c", "b", "a"})
+	if sim != 1.0 {
+		t.Errorf("Expected similarity 1.0, got %f", sim)
+	}
+
+	// Subset match (should be 1.0 because intersection / min_len is 2 / 2 = 1.0)
+	sim = calculateSimilarity([]string{"freedom", "50gb", "40", "bonus", "roam"}, []string{"freedom", "50gb", "40"})
+	if sim != 1.0 {
+		t.Errorf("Expected similarity 1.0 for subset, got %f", sim)
+	}
+
+	// Partial match (2 out of 3 = 0.66)
+	sim = calculateSimilarity([]string{"telus", "50gb", "40"}, []string{"freedom", "50gb", "40"})
+	if sim < 0.66 || sim > 0.67 {
+		t.Errorf("Expected similarity ~0.66, got %f", sim)
+	}
+
+	// No match
+	sim = calculateSimilarity([]string{"a", "b"}, []string{"x", "y", "z"})
+	if sim != 0.0 {
+		t.Errorf("Expected similarity 0.0, got %f", sim)
+	}
+}
+
+func TestFuzzyDealMatchRequiresMeaningfulOverlap(t *testing.T) {
+	if isFuzzyDealMatch([]string{"10"}, []string{"10", "coupon", "burger"}) {
+		t.Fatal("one shared token should not be enough for fuzzy deal dedupe")
+	}
+	if isFuzzyDealMatch([]string{"iniu", "power", "bank", "10000mah"}, []string{"burger", "mother", "markham", "50"}) {
+		t.Fatal("unrelated product titles should not fuzzy match")
+	}
+	if !isFuzzyDealMatch([]string{"samsung", "galaxy", "s24", "512gb"}, []string{"galaxy", "s24", "512gb", "sale"}) {
+		t.Fatal("strong multi-token product overlap should still fuzzy match")
+	}
+}
+
+func TestDeduplicateDeals_DoesNotFuzzyMatchUnrelatedDeals(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+	existingDeals := make(map[string]*models.DealInfo)
+	recentDeals := []models.DealInfo{
+		{
+			DocumentID:    "burger-post",
+			Title:         "All burgers 50% off for Mother's Day (Markham, ON)",
+			ActualDealURL: "http://www.6ixburgers.com",
+			Retailer:      "6ix Burgers",
+		},
+	}
+	scrapedDeals := []models.DealInfo{
+		{
+			DocumentID: "iniu-post",
+			Title:      "INIU Power Bank Ultra Slim 10000mah - Green - $10",
+			Retailer:   "Amazon.caAmazon.ca",
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, recentDeals, logger)
+	if len(deduped) != 1 {
+		t.Fatalf("expected one deal, got %d", len(deduped))
+	}
+	if deduped[0].DocumentID != "iniu-post" {
+		t.Fatalf("unrelated burger deal should not capture INIU post, got %q", deduped[0].DocumentID)
+	}
+}
+
+func TestDeduplicateDeals_ScrapedWithExisting(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	p := &DealProcessor{} // minimal struct for testing this func
+
+	existingDeals := make(map[string]*models.DealInfo)
+
+	recentDeals := []models.DealInfo{
+		{
+			DocumentID:    "existing-1",
+			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Retailer:      "Samsung",
+			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
+		},
+	}
+
+	scrapedDeals := []models.DealInfo{
+		{
+			DocumentID:    "scraped-new-id-1",
+			Title:         "[Samsung] Galaxy S24 Ultra 512gb (Price Drop)",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Retailer:      "Samsung",
+			Threads:       []models.ThreadContext{{PostURL: "url1"}},
+		},
+		{
+			DocumentID:    "scraped-new-id-2", // different URL, but very similar title
+			Title:         "Galaxy S24 Ultra 512GB - $1099 (SPC/Perkopolis)",
+			ActualDealURL: "",
+			Retailer:      "Samsung",
+			Threads:       []models.ThreadContext{{PostURL: "url2"}},
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, recentDeals, logger)
+
+	// Since both scraped deals match the recent deal (first by exact URL, second by fuzzy title),
+	// they should both be mapped to the existing deal ID.
+	if len(deduped) != 2 {
+		t.Fatalf("Expected 2 deduplicated deals (mapped), got %d", len(deduped))
+	}
+
+	if deduped[0].DocumentID != "existing-1" {
+		t.Errorf("Expected first scraped deal to map to existing-1, got %s", deduped[0].DocumentID)
+	}
+
+	if deduped[1].DocumentID != "existing-1" {
+		t.Errorf("Expected second scraped deal to map to existing-1, got %s", deduped[1].DocumentID)
+	}
+}
+
+func TestDeduplicateDeals_ScrapedWithScraped(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+	existingDeals := make(map[string]*models.DealInfo)
+
+	scrapedDeals := []models.DealInfo{
+		{
+			DocumentID:    "id-1",
+			Title:         "250GB 5G+ $40/mo. w/ Digital Discount and $40 ongoing credit",
+			ActualDealURL: "https://shop.freedommobile.ca/en-CA/plans",
+			Threads:       []models.ThreadContext{{PostURL: "thread-1"}},
+		},
+		{
+			DocumentID:    "id-2",
+			Title:         "Freedom Mobile $40/mo 250GB 5G+ Canada/US/Mexico With Roam Beyond",
+			ActualDealURL: "https://shop.freedommobile.ca/en-CA/plans",
+			Threads:       []models.ThreadContext{{PostURL: "thread-2"}},
+		},
+		{
+			DocumentID:    "id-3", // completely different deal
+			Title:         "Apple AirPods Pro 2 - $249",
+			ActualDealURL: "https://amazon.ca/airpods",
+			Threads:       []models.ThreadContext{{PostURL: "thread-3"}},
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, nil, logger)
+
+	// Expect 3 deals total, but first two should share the same DocumentID!
+	if len(deduped) != 3 {
+		t.Fatalf("Expected 3 valid deduplicated items, got %d", len(deduped))
+	}
+
+	if deduped[0].DocumentID != deduped[1].DocumentID {
+		t.Errorf("Expected deal 1 and deal 2 to merge and share ID. IDs: %s, %s", deduped[0].DocumentID, deduped[1].DocumentID)
+	}
+
+	if deduped[1].DocumentID == deduped[2].DocumentID {
+		t.Errorf("Expected deal 3 to have different ID.")
+	}
+}
+
+func TestGenerateSearchTokens_NoDuplicates(t *testing.T) {
+	deal := &models.DealInfo{
+		Title: "$40/mo Plan + $40 Ongoing Credit - Best Deal",
+	}
+
+	tokens := GenerateSearchTokens(deal)
+
+	// Count occurrences of "40" — should be exactly 1
+	count := 0
+	for _, tok := range tokens {
+		if tok == "40" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("Expected token '40' to appear exactly once, appeared %d times in %v", count, tokens)
+	}
+
+	// "best" should be filtered as a stopword
+	if slices.Contains(tokens, "best") {
+		t.Errorf("Expected 'best' to be filtered as a stopword, got %v", tokens)
+	}
+}
+
+func TestGenerateSearchTokens_URLDomainNoise(t *testing.T) {
+	deal := &models.DealInfo{
+		Title:         "AirPods Pro",
+		ActualDealURL: "https://www.amazon.ca/dp/B0D1XD1ZV3/ref=cm_sw_r_cp_api",
+	}
+
+	tokens := GenerateSearchTokens(deal)
+
+	// "www", "ca", "ref", "cm" should be stripped as URL/TLD noise
+	noiseTokens := []string{"www", "com", "ca", "html", "htm"}
+	for _, noise := range noiseTokens {
+		if slices.Contains(tokens, noise) {
+			t.Errorf("URL noise token %q should be filtered, got tokens: %v", noise, tokens)
+		}
+	}
+
+	// "amazon" should be KEPT (it's a valuable retailer discriminator)
+	if !slices.Contains(tokens, "amazon") {
+		t.Errorf("Expected retailer name 'amazon' to be kept, got tokens: %v", tokens)
+	}
+}
+
+func TestCanonicalDealURL_AmazonStripsAffiliateAndVariantNoise(t *testing.T) {
+	left := "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20"
+	right := "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&tag=oldtag-20&th=1"
+
+	if !sameCanonicalDealURL(left, right) {
+		t.Fatalf("expected Amazon ASIN URLs to match; left=%q right=%q", canonicalDealURL(left), canonicalDealURL(right))
+	}
+}
+
+func TestCanonicalDealURL_UnwrapsBestBuyAffiliate(t *testing.T) {
+	direct := "https://www.bestbuy.ca/en-ca/product/example-product/12345678?icmp=tracking"
+	wrapped := "https://bestbuyca.o93x.net/c/123456/999999/10209?u=https%3A%2F%2Fwww.bestbuy.ca%2Fen-ca%2Fproduct%2Fexample-product%2F12345678%3Fref%3Daffiliate"
+
+	if !sameCanonicalDealURL(direct, wrapped) {
+		t.Fatalf("expected wrapped Best Buy URL to match direct URL; direct=%q wrapped=%q", canonicalDealURL(direct), canonicalDealURL(wrapped))
+	}
+}
+
+func TestDeduplicateDeals_Layer1_ExactIDSkipsSilently(t *testing.T) {
+	// Layer 1: When a scraped deal's DocumentID already exists in existingDeals,
+	// it should be passed through without fuzzy matching or logging "deduplicated".
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+
+	// Simulate deals already in the document store (loaded by loadExistingDeals)
+	existingDeals := map[string]*models.DealInfo{
+		"known-id-1": {
+			DocumentID:    "known-id-1",
+			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
+		},
+		"known-id-2": {
+			DocumentID:    "known-id-2",
+			Title:         "Apple AirPods Pro 2 - $249",
+			ActualDealURL: "https://amazon.ca/airpods",
+			SearchTokens:  []string{"apple", "airpods", "pro", "249"},
+		},
+	}
+
+	// Scraped deals have the same DocumentIDs (same PublishedTimestamp = same posts)
+	scrapedDeals := []models.DealInfo{
+		{
+			DocumentID:    "known-id-1",
+			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Threads:       []models.ThreadContext{{PostURL: "thread-1"}},
+		},
+		{
+			DocumentID:    "known-id-2",
+			Title:         "Apple AirPods Pro 2 - $249",
+			ActualDealURL: "https://amazon.ca/airpods",
+			Threads:       []models.ThreadContext{{PostURL: "thread-2"}},
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, nil, logger)
+
+	// Both should pass through, keeping their original DocumentIDs
+	if len(deduped) != 2 {
+		t.Fatalf("Expected 2 deals, got %d", len(deduped))
+	}
+	if deduped[0].DocumentID != "known-id-1" {
+		t.Errorf("Expected known-id-1, got %s", deduped[0].DocumentID)
+	}
+	if deduped[1].DocumentID != "known-id-2" {
+		t.Errorf("Expected known-id-2, got %s", deduped[1].DocumentID)
+	}
+
+	// SearchTokens should NOT be generated (Layer 1 skips before token generation)
+	if len(deduped[0].SearchTokens) > 0 {
+		t.Errorf("Layer 1 should skip token generation, but tokens were set: %v", deduped[0].SearchTokens)
+	}
+}
+
+func TestDeduplicateDeals_PostDetailCanonicalURLMatchesRecent(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+	existingDeals := make(map[string]*models.DealInfo)
+	recentDeals := []models.DealInfo{
+		{
+			DocumentID:    "existing-iniu",
+			Title:         "INIU power bank old post",
+			ActualDealURL: "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20",
+		},
+	}
+	validDeals := []models.DealInfo{
+		{
+			DocumentID:    "new-rfd-thread",
+			Title:         "Different title for the same INIU charger",
+			ActualDealURL: "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1",
+		},
+	}
+
+	deduped := p.deduplicateDealsByDetailedURL(context.Background(), validDeals, existingDeals, recentDeals, logger)
+	if len(deduped) != 1 {
+		t.Fatalf("expected one deal, got %d", len(deduped))
+	}
+	if deduped[0].DocumentID != "existing-iniu" {
+		t.Fatalf("DocumentID = %q, want existing-iniu", deduped[0].DocumentID)
+	}
+	if _, ok := existingDeals["existing-iniu"]; !ok {
+		t.Fatalf("expected matched recent deal to be added to existingDeals")
+	}
+}
+
+func TestDeduplicateDeals_PostDetailCanonicalURLRemapsKnownDuplicate(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+	productURL := "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20"
+	variantURL := "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1"
+	originalTime := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	duplicateTime := originalTime.Add(2 * time.Hour)
+
+	recentDeals := []models.DealInfo{
+		{
+			DocumentID:         "canonical-original",
+			Title:              "Original INIU power bank post",
+			ActualDealURL:      productURL,
+			PublishedTimestamp: originalTime,
+			DiscordMessageIDs:  map[string]string{"channel": "message"},
+		},
+		{
+			DocumentID:         "known-duplicate",
+			Title:              "Known duplicate INIU post",
+			ActualDealURL:      variantURL,
+			PublishedTimestamp: duplicateTime,
+		},
+	}
+	existingDeals := map[string]*models.DealInfo{
+		"known-duplicate": &recentDeals[1],
+	}
+	validDeals := []models.DealInfo{
+		{
+			DocumentID:    "known-duplicate",
+			Title:         "Known duplicate INIU post",
+			ActualDealURL: variantURL,
+		},
+	}
+
+	deduped := p.deduplicateDealsByDetailedURL(context.Background(), validDeals, existingDeals, recentDeals, logger)
+	if len(deduped) != 1 {
+		t.Fatalf("expected one deal, got %d", len(deduped))
+	}
+	if deduped[0].DocumentID != "canonical-original" {
+		t.Fatalf("known duplicate should remap to canonical original, got %q", deduped[0].DocumentID)
+	}
+	if _, ok := existingDeals["canonical-original"]; !ok {
+		t.Fatal("expected canonical original to be loaded into existingDeals")
+	}
+}
+
+func TestDeduplicateDeals_PostDetailCanonicalURLMatchesSameBatch(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+	validDeals := []models.DealInfo{
+		{
+			DocumentID:    "thread-a",
+			Title:         "INIU power bank",
+			ActualDealURL: "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20",
+		},
+		{
+			DocumentID:    "thread-b",
+			Title:         "Different same-ASIN title",
+			ActualDealURL: "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1",
+		},
+	}
+
+	deduped := p.deduplicateDealsByDetailedURL(context.Background(), validDeals, map[string]*models.DealInfo{}, nil, logger)
+	if deduped[0].DocumentID != deduped[1].DocumentID {
+		t.Fatalf("expected same-batch URL variants to share DocumentID, got %q and %q", deduped[0].DocumentID, deduped[1].DocumentID)
+	}
+}
+
+func TestDeduplicateDeals_Layer2_FuzzyMatchForDifferentPosts(t *testing.T) {
+	// Layer 2: When a scraped deal has a NEW DocumentID (not in existingDeals),
+	// but fuzzy-matches a recent deal, it should be remapped to the existing ID.
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+
+	existingDeals := make(map[string]*models.DealInfo)
+
+	recentDeals := []models.DealInfo{
+		{
+			DocumentID:    "original-post-id",
+			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
+		},
+	}
+
+	// Different user posted a very similar deal (different timestamp = different DocumentID)
+	scrapedDeals := []models.DealInfo{
+		{
+			DocumentID:    "new-post-different-timestamp",
+			Title:         "[Samsung] Galaxy S24 Ultra 512GB Price Drop $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Threads:       []models.ThreadContext{{PostURL: "thread-new"}},
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, recentDeals, logger)
+
+	if len(deduped) != 1 {
+		t.Fatalf("Expected 1 deal, got %d", len(deduped))
+	}
+	// Should be remapped to the original post's ID
+	if deduped[0].DocumentID != "original-post-id" {
+		t.Errorf("Expected DocumentID to be remapped to original-post-id, got %s", deduped[0].DocumentID)
+	}
+}
+
+func TestDeduplicateDeals_MixedLayers(t *testing.T) {
+	// Mix of Layer 1 (exact ID match) and Layer 2 (fuzzy match) in same batch
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+
+	existingDeals := map[string]*models.DealInfo{
+		"known-id": {
+			DocumentID:   "known-id",
+			Title:        "AirPods Pro 2 - $249",
+			SearchTokens: []string{"airpods", "pro", "249"},
+		},
+	}
+
+	recentDeals := []models.DealInfo{
+		{
+			DocumentID:    "recent-samsung",
+			Title:         "Samsung Galaxy S24 Ultra 512GB - $1099",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			SearchTokens:  []string{"samsung", "galaxy", "s24", "ultra", "512gb", "1099"},
+		},
+	}
+
+	scrapedDeals := []models.DealInfo{
+		{
+			// Layer 1: exact ID match, should skip fuzzy matching
+			DocumentID:    "known-id",
+			Title:         "AirPods Pro 2 - $249",
+			ActualDealURL: "https://amazon.ca/airpods",
+			Threads:       []models.ThreadContext{{PostURL: "thread-1"}},
+		},
+		{
+			// Layer 2: new post, should fuzzy match against recentDeals
+			DocumentID:    "brand-new-id",
+			Title:         "Samsung Galaxy S24 Ultra 512GB on sale",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Threads:       []models.ThreadContext{{PostURL: "thread-2"}},
+		},
+		{
+			// Brand new deal, no match anywhere
+			DocumentID:    "totally-new",
+			Title:         "Costco Kirkland Batteries 48pk $15",
+			ActualDealURL: "https://costco.ca/batteries",
+			Threads:       []models.ThreadContext{{PostURL: "thread-3"}},
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, recentDeals, logger)
+
+	if len(deduped) != 3 {
+		t.Fatalf("Expected 3 deals, got %d", len(deduped))
+	}
+
+	// Deal 1: Layer 1 pass-through, keeps original ID
+	if deduped[0].DocumentID != "known-id" {
+		t.Errorf("Deal 1 should keep known-id, got %s", deduped[0].DocumentID)
+	}
+	// Deal 2: Layer 2 remapped to recent deal
+	if deduped[1].DocumentID != "recent-samsung" {
+		t.Errorf("Deal 2 should be remapped to recent-samsung, got %s", deduped[1].DocumentID)
+	}
+	// Deal 3: No match, keeps its own ID
+	if deduped[2].DocumentID != "totally-new" {
+		t.Errorf("Deal 3 should keep totally-new, got %s", deduped[2].DocumentID)
+	}
+}
+
+func TestDeduplicateDeals_ThreeWayMerge(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	p := &DealProcessor{}
+	existingDeals := make(map[string]*models.DealInfo)
+
+	// Three deals that are all duplicates of each other (same URL)
+	scrapedDeals := []models.DealInfo{
+		{
+			DocumentID:    "id-a",
+			Title:         "Samsung Galaxy S24 Ultra 512GB",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Threads:       []models.ThreadContext{{PostURL: "thread-a"}},
+		},
+		{
+			DocumentID:    "id-b",
+			Title:         "[Samsung] Galaxy S24 Ultra 512gb - Price Drop",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Threads:       []models.ThreadContext{{PostURL: "thread-b"}},
+		},
+		{
+			DocumentID:    "id-c",
+			Title:         "Galaxy S24 Ultra 512GB SPC Offer",
+			ActualDealURL: "https://samsung.com/ca/s24",
+			Threads:       []models.ThreadContext{{PostURL: "thread-c"}},
+		},
+	}
+
+	deduped := p.deduplicateDeals(context.Background(), scrapedDeals, existingDeals, nil, logger)
+
+	// All 3 should appear in output but share the same DocumentID
+	if len(deduped) != 3 {
+		t.Fatalf("Expected 3 deduplicated items, got %d", len(deduped))
+	}
+
+	sharedID := deduped[0].DocumentID
+	for i, d := range deduped {
+		if d.DocumentID != sharedID {
+			t.Errorf("Deal %d has DocumentID %q, expected all to share %q", i, d.DocumentID, sharedID)
+		}
+	}
+}

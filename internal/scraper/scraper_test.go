@@ -1,0 +1,968 @@
+package scraper
+
+import (
+	"context"
+	"crypto/sha256"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/PuerkitoBio/goquery"
+
+	"github.com/pauljones0/rfd-discord-standalone/internal/config"
+	"github.com/pauljones0/rfd-discord-standalone/internal/models"
+)
+
+func getMockSnippet(t *testing.T, id string) *goquery.Selection {
+	t.Helper()
+	f, err := os.Open("../../testdata/mock_snippets.html")
+	if err != nil {
+		t.Fatalf("Failed to open mock_snippets.html: %v", err)
+	}
+	defer f.Close()
+
+	doc, err := goquery.NewDocumentFromReader(f)
+	if err != nil {
+		t.Fatalf("Failed to parse mock_snippets.html: %v", err)
+	}
+
+	sel := doc.Find("#" + id)
+	if sel.Length() == 0 {
+		t.Fatalf("Could not find #%s in mock_snippets.html", id)
+	}
+	return sel
+}
+
+func getMockSnippetHTML(t *testing.T, id string) string {
+	t.Helper()
+	html, err := getMockSnippet(t, id).Html()
+	if err != nil {
+		t.Fatalf("Failed to get HTML for #%s: %v", id, err)
+	}
+	return html
+}
+
+func TestParseDealFromSelection_FullDeal(t *testing.T) {
+	defaults := DefaultSelectors()
+	defaults.HotDealsList.Elements.ViewCount = ".views"
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
+	sel := getMockSnippet(t, "full-deal").Find("li.topic").First()
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
+
+	if deal.Title != "Great Deal Title" {
+		t.Errorf("Title = %q, want %q", deal.Title, "Great Deal Title")
+	}
+	if !strings.HasSuffix(deal.PostURL, "/great-deal-12345") {
+		t.Errorf("PostURL = %q, want suffix /great-deal-12345", deal.PostURL)
+	}
+	if deal.ThreadImageURL != "https://example.com/image.jpg" {
+		t.Errorf("ThreadImageURL = %q, want %q", deal.ThreadImageURL, "https://example.com/image.jpg")
+	}
+	if deal.Threads[0].LikeCount != 42 {
+		t.Errorf("LikeCount = %d, want 42", deal.Threads[0].LikeCount)
+	}
+	if deal.Threads[0].CommentCount != 15 {
+		t.Errorf("CommentCount = %d, want 15", deal.Threads[0].CommentCount)
+	}
+	if deal.Threads[0].ViewCount != 1234 {
+		t.Errorf("ViewCount = %d, want 1234", deal.Threads[0].ViewCount)
+	}
+	if !deal.Threads[0].ViewCountAvailable {
+		t.Error("ViewCountAvailable should be true when a view count is present")
+	}
+	if deal.PublishedTimestamp.IsZero() {
+		t.Error("PublishedTimestamp should be parsed, but was zero")
+	}
+}
+
+func TestParseDealFromSelection_MinimalDeal(t *testing.T) {
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
+	sel := getMockSnippet(t, "minimal-deal").Find("li.topic").First()
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
+
+	if deal.Title != "Minimal Deal" {
+		t.Errorf("Title = %q, want %q", deal.Title, "Minimal Deal")
+	}
+	if deal.Threads[0].LikeCount != 0 {
+		t.Errorf("LikeCount = %d, want 0", deal.Threads[0].LikeCount)
+	}
+	if deal.Threads[0].CommentCount != 0 {
+		t.Errorf("CommentCount = %d, want 0", deal.Threads[0].CommentCount)
+	}
+	if deal.Threads[0].ViewCount != 0 {
+		t.Errorf("ViewCount = %d, want 0", deal.Threads[0].ViewCount)
+	}
+	if deal.Threads[0].ViewCountAvailable {
+		t.Error("ViewCountAvailable should be false when the card has no view count")
+	}
+}
+
+func TestParseDealFromSelection_CurrentCardWithoutViewsStillParsesLikesAndComments(t *testing.T) {
+	html := `<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal-123">
+			<h3 class="thread_title">Current Layout Deal</h3>
+			<time class="topic_time" datetime="2026-04-16T18:00:00Z">Apr 16</time>
+		</a>
+		<div class="thread_extra_info">
+			<span class="votes thread_stat">
+				<svg></svg>
+				13
+			</span>
+			<span class="posts thread_stat">
+				<svg></svg>
+				10
+			</span>
+		</div>
+	</li>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("failed to parse HTML: %v", err)
+	}
+
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
+	deal := c.parseDealFromSelection(doc.Find("li.topic-card.topic").First(), defaults.HotDealsList.Elements)
+
+	if deal.Threads[0].LikeCount != 13 {
+		t.Errorf("LikeCount = %d, want 13", deal.Threads[0].LikeCount)
+	}
+	if deal.Threads[0].CommentCount != 10 {
+		t.Errorf("CommentCount = %d, want 10", deal.Threads[0].CommentCount)
+	}
+	if deal.Threads[0].ViewCount != 0 {
+		t.Errorf("ViewCount = %d, want 0", deal.Threads[0].ViewCount)
+	}
+	if deal.Threads[0].ViewCountAvailable {
+		t.Error("ViewCountAvailable should be false when no view node exists")
+	}
+}
+
+func TestParseDealFromSelection_CurrentCardRetailerFromDataDealerName(t *testing.T) {
+	html := `<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal-123" data-dealer-name="home depot">
+			<h3 class="thread_title">Current Layout Deal</h3>
+			<time class="topic_time" datetime="2026-04-16T18:00:00Z">Apr 16</time>
+		</a>
+	</li>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("failed to parse HTML: %v", err)
+	}
+
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
+	deal := c.parseDealFromSelection(doc.Find("li.topic-card.topic").First(), defaults.HotDealsList.Elements)
+
+	if deal.Retailer != "home depot" {
+		t.Errorf("Retailer = %q, want %q", deal.Retailer, "home depot")
+	}
+}
+
+func TestParseDealFromSelection_NegativeLikes(t *testing.T) {
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
+	sel := getMockSnippet(t, "negative-likes").Find("li.topic").First()
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
+
+	if deal.Threads[0].LikeCount != -5 {
+		t.Errorf("LikeCount = %d, want -5", deal.Threads[0].LikeCount)
+	}
+}
+
+func TestParseDealFromSelection_DataURIImageFiltered(t *testing.T) {
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
+	sel := getMockSnippet(t, "data-uri-image").Find("li.topic").First()
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
+
+	if deal.ThreadImageURL != "" {
+		t.Errorf("ThreadImageURL should be empty for data: URI, got %q", deal.ThreadImageURL)
+	}
+}
+
+func TestParseDealFromSelection_RelativeImageFiltered(t *testing.T) {
+	defaults := DefaultSelectors()
+	c := &Client{selectors: defaults, config: &config.Config{
+		AllowedDomains: []string{"forums.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}}
+	sel := getMockSnippet(t, "relative-image").Find("li.topic").First()
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
+
+	if deal.ThreadImageURL != "" {
+		t.Errorf("ThreadImageURL should be empty for relative URL, got %q", deal.ThreadImageURL)
+	}
+}
+
+func TestResolveLink(t *testing.T) {
+	tests := []struct {
+		name     string
+		html     string
+		selector string
+		wantHref string
+		wantText string
+	}{
+		{
+			name:     "Direct link",
+			html:     `<div><a class="link" href="/page">Click</a></div>`,
+			selector: ".link",
+			wantHref: "https://forums.redflagdeals.com/page",
+			wantText: "Click",
+		},
+		{
+			name:     "Nested link",
+			html:     `<div><span class="wrapper"><a href="https://example.com">External</a></span></div>`,
+			selector: ".wrapper",
+			wantHref: "https://example.com",
+			wantText: "External",
+		},
+		{
+			name:     "Missing selector",
+			html:     `<div><a href="/page">Link</a></div>`,
+			selector: ".nonexistent",
+			wantHref: "",
+			wantText: "",
+		},
+	}
+
+	cfg := &config.Config{
+		RFDBaseURL: "https://forums.redflagdeals.com",
+	}
+	c := &Client{config: cfg}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc, err := goquery.NewDocumentFromReader(strings.NewReader(tt.html))
+			if err != nil {
+				t.Fatal(err)
+			}
+			href, text := c.resolveLink(doc.Selection, tt.selector)
+			if href != tt.wantHref {
+				t.Errorf("href = %q, want %q", href, tt.wantHref)
+			}
+			if text != tt.wantText {
+				t.Errorf("text = %q, want %q", text, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestLoadSelectorsFromBytes(t *testing.T) {
+	jsonData := []byte(`{
+		"hot_deals_list": {
+			"container": {"item": "li.deal", "ignore_modifier": ".ad"},
+			"elements": {
+				"title_link": ".title",
+				"posted_time": ".time",
+				"thread_image": ".img",
+				"like_count": ".likes",
+				"comment_count": ".comments",
+				"comment_count_fallback": ".comments_alt",
+				"view_count": ".views"
+			}
+		},
+		"deal_details": {
+			"primary_link": ".button",
+			"fallback_link": ".link"
+		}
+	}`)
+
+	cfg, err := LoadSelectorsFromBytes(jsonData)
+	if err != nil {
+		t.Fatalf("LoadSelectorsFromBytes() error = %v", err)
+	}
+
+	if cfg.HotDealsList.Container.Item != "li.deal" {
+		t.Errorf("Container.Item = %q, want %q", cfg.HotDealsList.Container.Item, "li.deal")
+	}
+	if cfg.DealDetails.PrimaryLink != ".button" {
+		t.Errorf("PrimaryLink = %q, want %q", cfg.DealDetails.PrimaryLink, ".button")
+	}
+}
+
+func TestLoadSelectorsFromBytes_InvalidJSON(t *testing.T) {
+	_, err := LoadSelectorsFromBytes([]byte(`{invalid`))
+	if err == nil {
+		t.Error("Expected error from invalid JSON")
+	}
+}
+
+func TestDefaultSelectors(t *testing.T) {
+	sel := DefaultSelectors()
+	if sel.HotDealsList.Container.Item != "li.topic-card.topic" {
+		t.Errorf("Default Container.Item = %q, want %q", sel.HotDealsList.Container.Item, "li.topic-card.topic")
+	}
+	if sel.HotDealsList.Elements.ViewCount != "" {
+		t.Errorf("Default ViewCount = %q, want empty string", sel.HotDealsList.Elements.ViewCount)
+	}
+	if sel.DealDetails.PrimaryLink != ".deal_link a" {
+		t.Errorf("Default PrimaryLink = %q, want %q", sel.DealDetails.PrimaryLink, ".deal_link a")
+	}
+}
+
+func TestRFDListRetryExtendsTransientDNSFailures(t *testing.T) {
+	dnsErr := fmt.Errorf("failed to fetch URL: %w", &net.DNSError{
+		Err:    "server misbehaving",
+		Name:   "forums.redflagdeals.com",
+		Server: "127.0.0.11:53",
+	})
+
+	if !isTransientDNSFailure(dnsErr) {
+		t.Fatalf("isTransientDNSFailure() = false, want true")
+	}
+	if shouldStopRFDListRetry(rfdListStandardMaxRetries, dnsErr) {
+		t.Fatalf("shouldStopRFDListRetry() stopped transient DNS failure at standard retry budget")
+	}
+}
+
+func TestRFDListRetryStopsNonDNSFailuresAtStandardBudget(t *testing.T) {
+	err := fmt.Errorf("failed to fetch URL: status code 403")
+
+	if isTransientDNSFailure(err) {
+		t.Fatalf("isTransientDNSFailure() = true for non-DNS scrape error")
+	}
+	if !shouldStopRFDListRetry(rfdListStandardMaxRetries, err) {
+		t.Fatalf("shouldStopRFDListRetry() = false, want standard stop for non-DNS error")
+	}
+}
+
+func TestScrapeDealDetailPage_PrimaryLink(t *testing.T) {
+	html := getMockSnippetHTML(t, "primary-link")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if detail.DealLink != "https://amazon.ca/dp/B001" {
+		t.Errorf("DealLink = %q, want %q", detail.DealLink, "https://amazon.ca/dp/B001")
+	}
+}
+
+func TestScrapeDealDetailPage_FallbackLink(t *testing.T) {
+	html := getMockSnippetHTML(t, "fallback-link")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if detail.DealLink != "https://bestbuy.ca/product" {
+		t.Errorf("DealLink = %q, want %q", detail.DealLink, "https://bestbuy.ca/product")
+	}
+}
+
+func TestScrapeDealDetailPage_NoLink(t *testing.T) {
+	html := getMockSnippetHTML(t, "no-link")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if detail.DealLink != "" {
+		t.Errorf("Expected empty deal link, got %q", detail.DealLink)
+	}
+}
+
+func TestScrapeDealDetailPage_InvalidPrimaryLinkIgnored(t *testing.T) {
+	html := `<div class="deal_link"><a href="javascript:void(0)">Get Deal</a></div>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if detail.DealLink != "" {
+		t.Errorf("Expected empty deal link for invalid primary href, got %q", detail.DealLink)
+	}
+}
+
+func TestScrapeDealDetailPage_PriceExtraction(t *testing.T) {
+	html := getMockSnippetHTML(t, "price-extraction")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if detail.Price != "$79.99" {
+		t.Errorf("Price = %q, want %q", detail.Price, "$79.99")
+	}
+	if detail.OriginalPrice != "$129.99" {
+		t.Errorf("OriginalPrice = %q, want %q", detail.OriginalPrice, "$129.99")
+	}
+	if detail.Savings != "$50.00" {
+		t.Errorf("Savings = %q, want %q", detail.Savings, "$50.00")
+	}
+}
+
+func TestScrapeDealDetailPage_OriginalPriceAndSavings_Soundcore(t *testing.T) {
+	// A new test checking if we can parse the testdata/soundcore.html file correctly
+	// Read testdata/soundcore.html
+	htmlBytes, err := os.ReadFile("../../testdata/soundcore.html")
+	if err != nil {
+		t.Skipf("Skipping test because testdata/soundcore.html is missing: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(htmlBytes)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if detail.Price != "$79.99" {
+		t.Errorf("Price = %q, want %q", detail.Price, "$79.99")
+	}
+	if detail.OriginalPrice != "$129.99" {
+		t.Errorf("OriginalPrice = %q, want %q", detail.OriginalPrice, "$129.99")
+	}
+	if detail.Savings != "Save 38%" {
+		t.Errorf("Savings = %q, want %q", detail.Savings, "Save 38%")
+	}
+	if detail.Retailer != "Amazon.ca" {
+		t.Errorf("Retailer = %q, want %q", detail.Retailer, "Amazon.ca")
+	}
+	if !strings.Contains(detail.DealLink, "amazon.ca") {
+		t.Errorf("DealLink = %q, want something containing amazon.ca", detail.DealLink)
+	}
+}
+
+func TestScrapeDealDetailPage_RetailerAndCategory(t *testing.T) {
+	htmlBytes, err := os.ReadFile("./../../testdata/page.html")
+	if err != nil {
+		t.Fatalf("Failed to read testdata/page.html: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(htmlBytes)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if detail.Retailer != "KLM" {
+		t.Errorf("Retailer = %q, want %q", detail.Retailer, "KLM")
+	}
+	if detail.Category != "Travel" {
+		t.Errorf("Category = %q, want %q", detail.Category, "Travel")
+	}
+}
+
+func TestParseDealFromSelection_RetailerCleanup(t *testing.T) {
+	html := `
+	<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal">
+			<div class="pill thread_dealer">at Costco Business Centre</div>
+			<h3 class="thread_title">Title</h3>
+		</a>
+	</li>`
+	doc, _ := goquery.NewDocumentFromReader(strings.NewReader(html))
+	sel := doc.Find("li.topic").First()
+
+	defaults := DefaultSelectors()
+	c := &Client{
+		selectors: defaults,
+		config: &config.Config{
+			RFDBaseURL: "https://forums.redflagdeals.com",
+		},
+	}
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
+
+	if deal.Retailer != "Costco Business Centre" {
+		t.Errorf("Retailer = %q, want %q", deal.Retailer, "Costco Business Centre")
+	}
+}
+
+func TestParseDealFromSelection_CollapsesRepeatedRetailerText(t *testing.T) {
+	html := `
+	<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal">
+			<div class="pill thread_dealer">Amazon.caAmazon.ca</div>
+			<h3 class="thread_title">Title</h3>
+		</a>
+	</li>`
+	doc, _ := goquery.NewDocumentFromReader(strings.NewReader(html))
+
+	defaults := DefaultSelectors()
+	c := &Client{
+		selectors: defaults,
+		config: &config.Config{
+			RFDBaseURL: "https://forums.redflagdeals.com",
+		},
+	}
+	deal := c.parseDealFromSelection(doc.Find("li.topic").First(), defaults.HotDealsList.Elements)
+
+	if deal.Retailer != "Amazon.ca" {
+		t.Errorf("Retailer = %q, want %q", deal.Retailer, "Amazon.ca")
+	}
+}
+
+func TestScrapeDealDetailPage_CollapsesRepeatedRetailerText(t *testing.T) {
+	html := `<!DOCTYPE html><html><body>
+		<a class="retailer_badge">Amazon.caAmazon.ca</a>
+		<h1 class="thread_title">Deal</h1>
+	</body></html>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+	if detail.Retailer != "Amazon.ca" {
+		t.Errorf("Retailer = %q, want %q", detail.Retailer, "Amazon.ca")
+	}
+}
+
+func TestScrapeDealDetailPage_JSONLDFallback(t *testing.T) {
+	html := getMockSnippetHTML(t, "json-ld-fallback")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"127.0.0.1"},
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	detail, err := c.scrapeDealDetailPage(context.Background(), srv.URL+"/deal-page")
+	if err != nil {
+		t.Fatalf("scrapeDealDetailPage() error = %v", err)
+	}
+
+	if detail.Price != "$99.99" {
+		t.Errorf("Price = %q, want %q", detail.Price, "$99.99")
+	}
+	if detail.Retailer != "JSON-LD Store" {
+		t.Errorf("Retailer = %q, want %q", detail.Retailer, "JSON-LD Store")
+	}
+}
+
+func TestParseDealFromSelection_ListPrice(t *testing.T) {
+	html := `
+	<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal">
+			<div class="thread_inner_header">
+				<div class="savings"> $119.99 <span> $149.99</span></div>
+				<div class="pill thread_dealer">at Costco Business Centre</div>
+			</div>
+			<h3 class="thread_title">Title</h3>
+		</a>
+		<div class="thread_extra_info">
+			<span class="votes">+3</span>
+		</div>
+	</li>`
+	doc, _ := goquery.NewDocumentFromReader(strings.NewReader(html))
+	sel := doc.Find("li.topic").First()
+
+	defaults := DefaultSelectors()
+	c := &Client{
+		selectors: defaults,
+		config: &config.Config{
+			RFDBaseURL: "https://forums.redflagdeals.com",
+		},
+	}
+	deal := c.parseDealFromSelection(sel, defaults.HotDealsList.Elements)
+
+	if deal.Price != "$119.99" {
+		t.Errorf("Price = %q, want %q", deal.Price, "$119.99")
+	}
+	if deal.OriginalPrice != "$149.99" {
+		t.Errorf("OriginalPrice = %q, want %q", deal.OriginalPrice, "$149.99")
+	}
+}
+
+func TestFetchHTMLContent_DomainAllowlist(t *testing.T) {
+	cfg := &config.Config{
+		AllowedDomains: []string{"redflagdeals.com"},
+	}
+	c := New(cfg, DefaultSelectors())
+
+	// Disallowed domain should be rejected
+	_, err := c.fetchHTMLContent(context.Background(), "https://evil.com/page")
+	if err == nil {
+		t.Fatal("Expected error for disallowed domain")
+	}
+	if !strings.Contains(err.Error(), "not in allowlist") {
+		t.Errorf("Expected allowlist error, got: %v", err)
+	}
+}
+
+func TestScrapeDealListSolvesRFDProofOfWorkChallenge(t *testing.T) {
+	const (
+		nonce    = "testnonce"
+		issuedAt = "1783992974"
+		hmac     = "testhmac"
+	)
+
+	requests := 0
+	var userAgents []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		userAgents = append(userAgents, r.UserAgent())
+		bypass, bypassErr := r.Cookie("pow_bypass")
+		trace, traceErr := r.Cookie("pow_trace")
+		if bypassErr != nil || traceErr != nil {
+			http.SetCookie(w, &http.Cookie{Name: "pow_trace", Value: "trace", Path: "/"})
+			w.WriteHeader(http.StatusAccepted)
+			fmt.Fprintf(w, `<!doctype html><script>window.POW_CHALLENGE_DATA={challenge_nonce:'%s',challenge_hmac:'%s',difficulty:'1',difficulty_char:'0',issued_at:'%s',cookie_duration:'3600'};</script>`, nonce, hmac, issuedAt)
+			return
+		}
+
+		parts := strings.Split(bypass.Value, "|")
+		if len(parts) != 5 || parts[0] != nonce || parts[1] != issuedAt || parts[4] != hmac || trace.Value != "trace" {
+			http.Error(w, "invalid proof-of-work cookie", http.StatusForbidden)
+			return
+		}
+		counter, err := strconv.Atoi(parts[2])
+		if err != nil || counter < 1 {
+			http.Error(w, "invalid proof-of-work counter", http.StatusForbidden)
+			return
+		}
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(nonce+issuedAt+parts[2])))
+		if parts[3] != hash || !strings.HasPrefix(hash, "0") {
+			http.Error(w, "invalid proof-of-work hash", http.StatusForbidden)
+			return
+		}
+
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<li class="topic-card topic">
+				<a class="topic-card-info thread_info" href="/deal-1">
+					<div class="thread_main"><div class="thread_info"><div class="thread_info_block">
+						<h3 class="thread_title">Challenge Deal</h3>
+						<div class="thread_footer"><time class="topic_time" datetime="2026-07-14T01:00:00Z">now</time></div>
+					</div></div></div>
+				</a>
+				<div class="thread_extra_info"><span class="votes">+1</span><span class="posts">2</span><span class="views">3</span></div>
+			</li>
+		</body></html>`)
+	}))
+	defer srv.Close()
+
+	parsedURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowedDomains: []string{parsedURL.Hostname()},
+		RFDBaseURL:     srv.URL,
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+
+	deals, err := c.ScrapeDealList(context.Background())
+	if err != nil {
+		t.Fatalf("ScrapeDealList() error = %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want challenge and retry", requests)
+	}
+	if len(deals) != 1 || deals[0].Title != "Challenge Deal" {
+		t.Fatalf("deals = %#v, want one parsed challenge deal", deals)
+	}
+
+	deals, err = c.ScrapeDealList(context.Background())
+	if err != nil {
+		t.Fatalf("second ScrapeDealList() error = %v", err)
+	}
+	if requests != 3 {
+		t.Fatalf("requests = %d, want the second scrape to reuse the bypass cookie", requests)
+	}
+	for i, userAgent := range userAgents {
+		if userAgent != c.profile.UserAgent {
+			t.Fatalf("request %d user-agent = %q, want stable profile %q", i+1, userAgent, c.profile.UserAgent)
+		}
+	}
+}
+
+func TestFetchHTMLContentRejectsUnrecognizedAcceptedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, "still processing")
+	}))
+	defer srv.Close()
+
+	parsedURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := New(&config.Config{AllowedDomains: []string{parsedURL.Hostname()}}, DefaultSelectors())
+	_, err = c.fetchHTMLContent(context.Background(), srv.URL)
+	if err == nil || !strings.Contains(err.Error(), "not a recognized RFD proof-of-work challenge") {
+		t.Fatalf("fetchHTMLContent() error = %v", err)
+	}
+}
+
+func TestScrapeDealListLive(t *testing.T) {
+	if os.Getenv("RFD_LIVE_TEST") != "1" {
+		t.Skip("set RFD_LIVE_TEST=1 to exercise the live RFD challenge flow")
+	}
+
+	cfg := &config.Config{
+		AllowedDomains: []string{"redflagdeals.com", "forums.redflagdeals.com", "www.redflagdeals.com"},
+		RFDBaseURL:     "https://forums.redflagdeals.com",
+	}
+	c := New(cfg, DefaultSelectors())
+	deals, err := c.ScrapeDealList(context.Background())
+	if err != nil {
+		t.Fatalf("live ScrapeDealList() error = %v", err)
+	}
+	if len(deals) == 0 {
+		t.Fatal("live ScrapeDealList() returned no deals")
+	}
+	t.Logf("parsed %d live RFD deals", len(deals))
+}
+
+func TestScrapeDealListAndFetchDealDetails_InvalidPrimaryLinkStaysEmpty(t *testing.T) {
+	hotDealsHTML := `<!DOCTYPE html>
+<html><body>
+	<li class="topic-card topic">
+		<a class="topic-card-info thread_info" href="/deal-1">
+			<div class="thread_main">
+				<div class="thread_info">
+					<div class="thread_info_block">
+						<h3 class="thread_title">Integration Deal</h3>
+						<div class="thread_footer">
+							<time class="topic_time" datetime="2026-04-16T18:00:00Z">Apr 16</time>
+						</div>
+					</div>
+				</div>
+			</div>
+		</a>
+		<div class="thread_extra_info">
+			<span class="votes">+5</span>
+			<span class="posts">2</span>
+			<span class="views">100</span>
+		</div>
+	</li>
+</body></html>`
+
+	detailHTML := `<!DOCTYPE html><html><body>
+		<div class="deal_link"><a href="javascript:void(0)">Get Deal</a></div>
+		<div class="thread_category">Computers & Electronics</div>
+	</body></html>`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hot-deals":
+			fmt.Fprint(w, hotDealsHTML)
+		case "/deal-1":
+			fmt.Fprint(w, detailHTML)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	parsedURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to parse server URL: %v", err)
+	}
+
+	cfg := &config.Config{
+		AllowedDomains: []string{parsedURL.Hostname()},
+		RFDBaseURL:     srv.URL,
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+	c.httpClient = srv.Client()
+
+	deals, err := c.ScrapeDealList(context.Background())
+	if err != nil {
+		t.Fatalf("ScrapeDealList() error = %v", err)
+	}
+	if len(deals) != 1 {
+		t.Fatalf("expected 1 deal, got %d", len(deals))
+	}
+	if deals[0].PostURL != srv.URL+"/deal-1" {
+		t.Fatalf("PostURL = %q, want %q", deals[0].PostURL, srv.URL+"/deal-1")
+	}
+
+	ptrs := []*models.DealInfo{&deals[0]}
+	c.FetchDealDetails(context.Background(), ptrs)
+
+	if deals[0].ActualDealURL != "" {
+		t.Fatalf("ActualDealURL = %q, want empty string", deals[0].ActualDealURL)
+	}
+	if deals[0].Category != "Computers & Electronics" {
+		t.Fatalf("Category = %q, want %q", deals[0].Category, "Computers & Electronics")
+	}
+}
+
+func TestFetchDealDetails_MarksPrimaryThreadNotFoundOn404(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	parsedURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to parse server URL: %v", err)
+	}
+
+	cfg := &config.Config{
+		AllowedDomains: []string{parsedURL.Hostname()},
+		RFDBaseURL:     srv.URL,
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+	c.httpClient = srv.Client()
+
+	deal := models.DealInfo{
+		PostURL: srv.URL + "/dead-deal-111111",
+		Threads: []models.ThreadContext{
+			{PostURL: srv.URL + "/dead-deal-111111"},
+		},
+	}
+	stats := c.FetchDealDetails(context.Background(), []*models.DealInfo{&deal})
+
+	if !deal.Threads[0].NotFound {
+		t.Fatal("expected primary thread to be marked NotFound after detail 404")
+	}
+	if attempts != 1 {
+		t.Fatalf("404 detail fetch attempts = %d, want 1", attempts)
+	}
+	if stats.NotFound != 1 || stats.Failed != 0 || stats.Succeeded != 0 {
+		t.Fatalf("stats = %#v, want one not_found and no retry failure", stats)
+	}
+}
+
+func TestFetchDealDetails_RetriesTransientStatus(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, `<!DOCTYPE html><html><body><a class="retailer_badge">Retry Store</a></body></html>`)
+	}))
+	defer srv.Close()
+
+	parsedURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to parse server URL: %v", err)
+	}
+
+	cfg := &config.Config{
+		AllowedDomains: []string{parsedURL.Hostname()},
+		RFDBaseURL:     srv.URL,
+	}
+	c := NewWithBaseURL(cfg, DefaultSelectors(), srv.URL)
+	c.httpClient = srv.Client()
+
+	deal := models.DealInfo{
+		PostURL: srv.URL + "/deal-1",
+		Threads: []models.ThreadContext{
+			{PostURL: srv.URL + "/deal-1"},
+		},
+	}
+	stats := c.FetchDealDetails(context.Background(), []*models.DealInfo{&deal})
+
+	if attempts != 2 {
+		t.Fatalf("detail fetch attempts = %d, want 2", attempts)
+	}
+	if stats.Succeeded != 1 || stats.Failed != 0 || stats.NotFound != 0 {
+		t.Fatalf("stats = %#v, want one success after retry", stats)
+	}
+	if deal.Retailer != "Retry Store" {
+		t.Fatalf("Retailer = %q, want Retry Store", deal.Retailer)
+	}
+}

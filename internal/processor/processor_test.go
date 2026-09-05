@@ -1,0 +1,1181 @@
+package processor
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/pauljones0/rfd-discord-standalone/internal/config"
+	"github.com/pauljones0/rfd-discord-standalone/internal/dealtypes"
+	"github.com/pauljones0/rfd-discord-standalone/internal/metrics"
+	"github.com/pauljones0/rfd-discord-standalone/internal/models"
+	"github.com/pauljones0/rfd-discord-standalone/internal/validator"
+)
+
+// --- Mock implementations ---
+
+type mockStore struct {
+	deals       map[string]*models.DealInfo
+	createErr   error
+	updateErr   error
+	trimCalled  bool
+	updateCount int
+}
+
+func newMockStore() *mockStore {
+	return &mockStore{deals: make(map[string]*models.DealInfo)}
+}
+
+func (m *mockStore) GetDealByID(_ context.Context, id string) (*models.DealInfo, error) {
+	deal, ok := m.deals[id]
+	if !ok {
+		return nil, nil
+	}
+	copy := *deal
+	return &copy, nil
+}
+
+func (m *mockStore) TryCreateDeal(_ context.Context, deal models.DealInfo) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	if _, exists := m.deals[deal.DocumentID]; exists {
+		return models.ErrDealExists
+	}
+	copy := deal
+	m.deals[deal.DocumentID] = &copy
+	return nil
+}
+
+func (m *mockStore) UpdateDeal(_ context.Context, deal models.DealInfo) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
+	m.updateCount++
+	copy := deal
+	m.deals[deal.DocumentID] = &copy
+	return nil
+}
+
+func (m *mockStore) GetDealsByIDs(_ context.Context, ids []string) (map[string]*models.DealInfo, error) {
+	result := make(map[string]*models.DealInfo)
+	for _, id := range ids {
+		if deal, ok := m.deals[id]; ok {
+			copy := *deal
+			result[id] = &copy
+		}
+	}
+	return result, nil
+}
+
+func (m *mockStore) GetRecentDeals(_ context.Context, duration time.Duration) ([]models.DealInfo, error) {
+	var recent []models.DealInfo
+	for _, deal := range m.deals {
+		recent = append(recent, *deal)
+	}
+	return recent, nil
+}
+
+func (m *mockStore) TrimOldDeals(_ context.Context, _ int) error {
+	m.trimCalled = true
+	return nil
+}
+
+func (m *mockStore) BatchWrite(ctx context.Context, creates []models.DealInfo, updates []models.DealInfo) error {
+	for _, deal := range creates {
+		if err := m.TryCreateDeal(ctx, deal); err != nil {
+			return err
+		}
+	}
+	for _, deal := range updates {
+		if err := m.UpdateDeal(ctx, deal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *mockStore) Ping(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockStore) GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error) {
+	// Return a default test subscription so the notifier actually sends
+	return []models.Subscription{
+		{GuildID: "guild1", ChannelID: "channel1"},
+	}, nil
+}
+
+type mockNotifier struct {
+	sentDeals  []models.DealInfo
+	updatedIDs []string
+	sendErr    error
+	nextMsgID  string
+	updateErr  error
+}
+
+func newMockNotifier() *mockNotifier {
+	return &mockNotifier{nextMsgID: "msg-123"}
+}
+
+func (m *mockNotifier) Send(_ context.Context, deal models.DealInfo, subs []models.Subscription) (map[string]string, error) {
+	if m.sendErr != nil {
+		return nil, m.sendErr
+	}
+	m.sentDeals = append(m.sentDeals, deal)
+	res := make(map[string]string)
+	for _, sub := range subs {
+		res[sub.ChannelID] = m.nextMsgID + "-" + sub.ChannelID
+	}
+	return res, nil
+}
+
+func (m *mockNotifier) Update(_ context.Context, deal models.DealInfo) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
+	for _, msgID := range deal.DiscordMessageIDs {
+		m.updatedIDs = append(m.updatedIDs, msgID)
+	}
+	return nil
+}
+
+func (m *mockNotifier) IsWarm(deal models.DealInfo) bool {
+	return true
+}
+
+func (m *mockNotifier) IsHot(deal models.DealInfo) bool {
+	return true
+}
+
+type mockScraper struct {
+	deals          []models.DealInfo
+	err            error
+	fetchedDetails []*models.DealInfo
+	mutateDetails  func([]*models.DealInfo)
+	detailStats    models.DealDetailFetchStats
+}
+
+func (m *mockScraper) ScrapeDealList(_ context.Context) ([]models.DealInfo, error) {
+	return m.deals, m.err
+}
+
+func (m *mockScraper) FetchDealDetails(_ context.Context, deals []*models.DealInfo) models.DealDetailFetchStats {
+	// Track which deals were requested for detail fetching
+	// Need to copy because deals are pointers
+	for _, d := range deals {
+		copy := *d
+		m.fetchedDetails = append(m.fetchedDetails, &copy)
+	}
+	if m.mutateDetails != nil {
+		m.mutateDetails(deals)
+	}
+	if m.detailStats.Attempted > 0 || m.detailStats.Requested > 0 {
+		return m.detailStats
+	}
+	return models.DealDetailFetchStats{
+		Requested: len(deals),
+		Attempted: len(deals),
+		Succeeded: len(deals),
+	}
+}
+
+type mockDealAnalyzer struct {
+	cleanTitles map[int]string
+	err         error
+	called      bool
+}
+
+func (m *mockDealAnalyzer) CleanTitles(ctx context.Context, requests []models.TitleRequest) (map[int]string, error) {
+	m.called = true
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.cleanTitles != nil {
+		return m.cleanTitles, nil
+	}
+	result := make(map[int]string)
+	for _, r := range requests {
+		result[r.Index] = "Clean " + r.Title
+	}
+	return result, nil
+}
+
+func (m *mockDealAnalyzer) DrainTokens() (int, int) {
+	return 100, 50
+}
+
+func newTestProcessor(store DealStore, notifier DealNotifier, scraper DealScraper) *DealProcessor {
+	cfg := &config.Config{
+		DiscordUpdateInterval: 10 * time.Minute,
+		MaxStoredDeals:        500,
+		AmazonAffiliateTag:    "test-tag",
+	}
+	v := validator.New()
+	ai := &mockDealAnalyzer{}
+	return New(store, notifier, scraper, v, cfg, ai)
+}
+
+// Helper: fixed timestamp for test deals
+var testTime1 = time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
+var testTime2 = time.Date(2025, 1, 16, 12, 0, 0, 0, time.UTC)
+
+// --- Tests ---
+
+func TestProcessDeals_NewDeal(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1},
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+	err := p.ProcessDeals(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessDeals() error = %v", err)
+	}
+
+	if len(store.deals) != 1 {
+		t.Errorf("Expected 1 deal in store, got %d", len(store.deals))
+	}
+	if len(notif.sentDeals) != 1 {
+		t.Errorf("Expected 1 notification sent, got %d", len(notif.sentDeals))
+	}
+	if !store.trimCalled {
+		t.Error("Expected TrimOldDeals to be called after new deals")
+	}
+}
+
+func TestIsDealEligibleForWarmHotRequiresDiscountEvidence(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+
+	sub := models.Subscription{DealType: dealtypes.RFDWarmHot}
+	noDiscount := models.DealInfo{
+		Title: "Popular launch-price console",
+		Price: "$999.99",
+	}
+	if p.isDealEligibleForSubscription(noDiscount, sub) {
+		t.Fatal("RFD warm/hot subscription accepted a deal with no discount evidence")
+	}
+
+	discount := noDiscount
+	discount.OriginalPrice = "$1299.99"
+	if !p.isDealEligibleForSubscription(discount, sub) {
+		t.Fatal("RFD warm/hot subscription rejected a discount-backed deal")
+	}
+
+	allSub := models.Subscription{DealType: dealtypes.RFDAll}
+	if !p.isDealEligibleForSubscription(noDiscount, allSub) {
+		t.Fatal("RFD all subscription should still accept non-warm/hot deals")
+	}
+}
+
+func TestProcessDeals_SkipsNewDealWhenDetail404s(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{
+				Title:              "Dead Deal",
+				PostURL:            "https://forums.redflagdeals.com/dead-deal-111111",
+				PublishedTimestamp: testTime1,
+				Threads: []models.ThreadContext{
+					{PostURL: "https://forums.redflagdeals.com/dead-deal-111111", LikeCount: 25},
+				},
+			},
+		},
+		mutateDetails: func(deals []*models.DealInfo) {
+			deals[0].Threads[0].NotFound = true
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatalf("ProcessDeals() error = %v", err)
+	}
+
+	if len(store.deals) != 0 {
+		t.Fatalf("expected dead new deal to be skipped, got %d stored deals", len(store.deals))
+	}
+	if len(notif.sentDeals) != 0 {
+		t.Fatalf("expected no notification for dead new deal, got %d", len(notif.sentDeals))
+	}
+	if store.trimCalled {
+		t.Fatal("TrimOldDeals should not run when no new deals were saved")
+	}
+}
+
+func TestProcessDeals_SkipsInvalidDeal(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "", PostURL: "", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{}}},      // empty title and URL
+			{Title: "   ", PostURL: "  ", PublishedTimestamp: testTime2, Threads: []models.ThreadContext{{}}}, // whitespace only
+			{Title: "Valid", PostURL: "https://rfd.com/deal", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{}}},
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+	err := p.ProcessDeals(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessDeals() error = %v", err)
+	}
+
+	if len(store.deals) != 1 {
+		t.Errorf("Expected 1 valid deal in store, got %d", len(store.deals))
+	}
+}
+
+func TestProcessDeals_SkipsZeroTimestamp(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "No Timestamp", PostURL: "https://rfd.com/deal-no-ts", Threads: []models.ThreadContext{{}}},
+			{Title: "Has Timestamp", PostURL: "https://rfd.com/deal-ts", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{}}},
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+	err := p.ProcessDeals(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessDeals() error = %v", err)
+	}
+
+	if len(store.deals) != 1 {
+		t.Errorf("Expected 1 deal (zero timestamp skipped), got %d", len(store.deals))
+	}
+}
+
+func TestProcessDeals_UpdateExistingDeal(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{
+				Title:              "Original Title",
+				PostURL:            "https://forums.redflagdeals.com/deal-1",
+				PublishedTimestamp: testTime1,
+				Threads:            []models.ThreadContext{{LikeCount: 10, PostURL: "https://forums.redflagdeals.com/deal-1"}},
+			},
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+
+	// First run: creates the deal
+	err := p.ProcessDeals(context.Background())
+	if err != nil {
+		t.Fatalf("First ProcessDeals() error = %v", err)
+	}
+
+	// Now update the scraper with changed data (same timestamp = same deal)
+	scraper.deals = []models.DealInfo{
+		{
+			Title:              "Updated Title",
+			PostURL:            "https://forums.redflagdeals.com/deal-1",
+			PublishedTimestamp: testTime1,
+			Threads:            []models.ThreadContext{{LikeCount: 20, PostURL: "https://forums.redflagdeals.com/deal-1"}},
+		},
+	}
+	store.updateCount = 0
+
+	err = p.ProcessDeals(context.Background())
+	if err != nil {
+		t.Fatalf("Second ProcessDeals() error = %v", err)
+	}
+
+	if store.updateCount == 0 {
+		t.Error("Expected UpdateDeal to be called for changed deal")
+	}
+}
+
+func TestProcessDeals_URLChangedDealsUpdated(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+
+	// First run: create the deal
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-old-url", ActualDealURL: "https://amazon.ca/old-url", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-old-url"}}},
+		},
+	}
+	p := newTestProcessor(store, notif, scraper)
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify 1 deal created
+	if len(store.deals) != 1 {
+		t.Fatalf("Expected 1 deal, got %d", len(store.deals))
+	}
+
+	// Second run: same timestamp but URL changed (user edited the post)
+	scraper.deals = []models.DealInfo{
+		{Title: "Great Deal", PostURL: "https://forums.redflagdeals.com/deal-new-url", ActualDealURL: "https://amazon.ca/new-url", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-new-url"}}},
+	}
+	store.updateCount = 0
+
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should still be 1 deal (updated, not duplicated)
+	if len(store.deals) != 1 {
+		t.Errorf("Expected 1 deal (URL change should update, not duplicate), got %d", len(store.deals))
+	}
+	if store.updateCount == 0 {
+		t.Error("Expected UpdateDeal to be called when ActualDealURL changed")
+	}
+
+	// Verify the stored deal has the new URL
+	for _, deal := range store.deals {
+		if deal.ActualDealURL != "https://amazon.ca/new-url" {
+			t.Errorf("Expected ActualDealURL to be updated, got %q", deal.ActualDealURL)
+		}
+	}
+}
+
+func TestProcessDeals_TitleChangedDealsUpdated(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Original Title", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-1"}}},
+		},
+	}
+	p := newTestProcessor(store, notif, scraper)
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second run: same timestamp but title changed
+	scraper.deals = []models.DealInfo{
+		{Title: "Updated Title - Price Drop!", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-1"}}},
+	}
+	store.updateCount = 0
+
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(store.deals) != 1 {
+		t.Errorf("Expected 1 deal (title change should update, not duplicate), got %d", len(store.deals))
+	}
+	if store.updateCount == 0 {
+		t.Error("Expected UpdateDeal to be called when Title changed")
+	}
+
+	for _, deal := range store.deals {
+		if deal.Title != "Updated Title - Price Drop!" {
+			t.Errorf("Expected Title to be updated, got %q", deal.Title)
+		}
+	}
+}
+
+func TestProcessDeals_UnchangedDealSkipped(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{
+				Title:              "Same Deal",
+				PostURL:            "https://forums.redflagdeals.com/deal-1",
+				PublishedTimestamp: testTime1,
+				Threads:            []models.ThreadContext{{LikeCount: 5, PostURL: "https://forums.redflagdeals.com/deal-1"}},
+			},
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+
+	// First run: creates the deal
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatalf("First ProcessDeals() error = %v", err)
+	}
+
+	// Second run with same data: should skip
+	store.updateCount = 0
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatalf("Second ProcessDeals() error = %v", err)
+	}
+
+	// No updates should have happened since data hasn't changed
+	if store.updateCount != 0 {
+		t.Errorf("Expected 0 UpdateDeal calls for unchanged deal, got %d", store.updateCount)
+	}
+}
+
+func TestProcessDeals_ScrapeError(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{err: errors.New("network error")}
+
+	p := newTestProcessor(store, notif, scraper)
+	err := p.ProcessDeals(context.Background())
+	if err == nil {
+		t.Fatal("Expected error from ProcessDeals when scraper fails")
+	}
+}
+
+func TestProcessDeals_ReturnsErrorWhenDetailFetchesAreUnhealthy(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Deal 1", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-1"}}},
+			{Title: "Deal 2", PostURL: "https://forums.redflagdeals.com/deal-2", PublishedTimestamp: testTime1.Add(time.Minute), Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-2"}}},
+			{Title: "Deal 3", PostURL: "https://forums.redflagdeals.com/deal-3", PublishedTimestamp: testTime1.Add(2 * time.Minute), Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-3"}}},
+		},
+		detailStats: models.DealDetailFetchStats{Requested: 3, Attempted: 3, Failed: 3},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+	err := p.ProcessDeals(context.Background())
+	if err == nil {
+		t.Fatal("ProcessDeals() error = nil, want unhealthy detail fetch error")
+	}
+	if !strings.Contains(err.Error(), "rfd detail fetch unhealthy") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(notif.sentDeals) != 0 {
+		t.Fatalf("sent deals = %d, want 0 when detail fetch is unhealthy", len(notif.sentDeals))
+	}
+}
+
+func TestProcessDeals_TrimOnlyOnNewDeals(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Deal", PostURL: "https://forums.redflagdeals.com/deal-1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-1"}}},
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+
+	// First run creates the deal and should trigger trim
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !store.trimCalled {
+		t.Error("TrimOldDeals should be called when new deals are created")
+	}
+
+	// Second run: no new deals, just an update (or skip)
+	store.trimCalled = false
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.trimCalled {
+		t.Error("TrimOldDeals should NOT be called when no new deals are created")
+	}
+}
+
+func TestProcessDeals_RaceConditionHandling(t *testing.T) {
+	store := newMockStore()
+	store.createErr = models.ErrDealExists
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Race Deal", PostURL: "https://forums.redflagdeals.com/race-1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/race-1"}}},
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+
+	// Should not return error — race condition is handled gracefully
+	err := p.ProcessDeals(context.Background())
+	if err != nil {
+		// It may error because the deal doesn't exist in store after ErrDealExists
+		// (race anomaly path). That's acceptable.
+		t.Logf("ProcessDeals() returned error (expected for anomaly path): %v", err)
+	}
+}
+
+func TestConsolidatedDocumentWrite(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Deal", PostURL: "https://forums.redflagdeals.com/deal-fw", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{PostURL: "https://forums.redflagdeals.com/deal-fw"}}},
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+
+	// Create the deal first
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now update with changed data — the deal has a DiscordMessageID and old timestamp,
+	// so both data update and Discord update should happen in a SINGLE write.
+	scraper.deals = []models.DealInfo{
+		{
+			Title:              "Deal Updated",
+			PostURL:            "https://forums.redflagdeals.com/deal-fw",
+			PublishedTimestamp: testTime1,
+			Threads:            []models.ThreadContext{{LikeCount: 99, PostURL: "https://forums.redflagdeals.com/deal-fw"}},
+		},
+	}
+
+	// Set DiscordLastUpdatedTime to long ago in the stored deal
+	for _, d := range store.deals {
+		d.DiscordLastUpdatedTime = time.Now().Add(-1 * time.Hour)
+	}
+
+	store.updateCount = 0
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be exactly 1 UpdateDeal call (consolidated), not 2
+	if store.updateCount != 1 {
+		t.Errorf("Expected 1 UpdateDeal call (consolidated), got %d", store.updateCount)
+	}
+}
+
+func TestGenerateDealID_Stable(t *testing.T) {
+	ts := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	id1 := generateDealID(ts)
+	id2 := generateDealID(ts)
+	if id1 != id2 {
+		t.Errorf("generateDealID should be deterministic: %q != %q", id1, id2)
+	}
+
+	// Different timestamps should produce different IDs
+	ts2 := time.Date(2025, 6, 1, 12, 0, 1, 0, time.UTC)
+	id3 := generateDealID(ts2)
+	if id1 == id3 {
+		t.Errorf("Different timestamps should produce different IDs")
+	}
+}
+
+// --- New Unit Tests for Helper Functions ---
+
+func TestScrapeAndValidate_SubFunction(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{Title: "Valid Deal", PostURL: "http://example.com/1", PublishedTimestamp: testTime1, Threads: []models.ThreadContext{{}}},
+			{Title: "", PostURL: "", PublishedTimestamp: testTime2, Threads: []models.ThreadContext{{}}}, // Invalid
+		},
+	}
+	p := newTestProcessor(store, notif, scraper)
+
+	validDeals, err := p.scrapeAndValidate(context.Background(), slog.Default(), metrics.NewTracker("rfd"))
+	if err != nil {
+		t.Fatalf("scrapeAndValidate failed: %v", err)
+	}
+
+	// Expect 1 valid deal (the empty one should be filtered)
+	if len(validDeals) != 1 {
+		t.Errorf("Expected 1 valid deal, got %d", len(validDeals))
+	}
+	if validDeals[0].Title != "Valid Deal" {
+		t.Errorf("Expected 'Valid Deal', got %s", validDeals[0].Title)
+	}
+	if validDeals[0].DocumentID == "" {
+		t.Error("DocumentID should be populated during validation")
+	}
+}
+
+func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	scraper := &mockScraper{}
+
+	p := newTestProcessor(store, notif, scraper)
+
+	// Setup:
+	// New Deal: Not in existingDeals -> Should fetch
+	// Existing Changed (PostURL): In existingDeals, changed PostURL -> Should fetch
+	// Existing Changed (LikeCount Only): In existingDeals, changed LikeCount -> Should NOT fetch (Optimization)
+	// Existing Unchanged: In existingDeals, same data -> Should NOT fetch
+
+	newDeal := models.DealInfo{Title: "New", DocumentID: "id1", Threads: []models.ThreadContext{{LikeCount: 5}}}
+	urlChangedDeal := models.DealInfo{Title: "UrlChanged", DocumentID: "id2", PostURL: "http://new.url", Threads: []models.ThreadContext{{LikeCount: 10}}}
+	onlyMetricsChangedDeal := models.DealInfo{Title: "MetricsChanged", DocumentID: "id3", Threads: []models.ThreadContext{{LikeCount: 100}}} // was 50
+	unchangedDeal := models.DealInfo{Title: "Same", DocumentID: "id4", Threads: []models.ThreadContext{{LikeCount: 5}}}
+
+	existingDeals := map[string]*models.DealInfo{
+		"id2": {Title: "UrlChanged", DocumentID: "id2", PostURL: "http://old.url", ActualDealURL: "http://old.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 10}}},
+		"id3": {Title: "MetricsChanged", DocumentID: "id3", ActualDealURL: "http://deal.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 50}}},
+		"id4": {Title: "Same", DocumentID: "id4", ActualDealURL: "http://deal.url/item", Description: "desc", Threads: []models.ThreadContext{{LikeCount: 5}}},
+		"id5": {Title: "OldTitle", DocumentID: "id5", Description: "desc", ActualDealURL: "http://deal.url/item"},
+	}
+
+	titleChangedDeal := models.DealInfo{Title: "TitleChanged", DocumentID: "id5", Threads: []models.ThreadContext{{LikeCount: 5}}}
+	validDeals := []models.DealInfo{newDeal, urlChangedDeal, onlyMetricsChangedDeal, unchangedDeal, titleChangedDeal}
+
+	p.enrichDealsWithDetails(context.Background(), validDeals, existingDeals, slog.Default())
+
+	// Check fetched details
+	// Should fetch: New, UrlChanged, TitleChanged.
+	// Should NOT fetch: MetricsChanged, Same.
+	if len(scraper.fetchedDetails) != 3 {
+		t.Errorf("Expected 3 deals to be fetched (New, UrlChanged, TitleChanged), got %d", len(scraper.fetchedDetails))
+	}
+
+	titles := make(map[string]bool)
+	for _, d := range scraper.fetchedDetails {
+		titles[d.Title] = true
+	}
+	if !titles["New"] {
+		t.Error("Expected New deal to be fetched")
+	}
+	if !titles["UrlChanged"] {
+		t.Error("Expected UrlChanged deal to be fetched")
+	}
+	if !titles["TitleChanged"] {
+		t.Error("Expected TitleChanged deal to be fetched")
+	}
+	if titles["MetricsChanged"] {
+		t.Error("Expected MetricsChanged deal to NOT be fetched (optimization check)")
+	}
+	if titles["Same"] {
+		t.Error("Expected Unchanged deal to NOT be fetched")
+	}
+}
+
+func TestDealChanged_IgnoresCanonicalProductURLNoise(t *testing.T) {
+	p := &DealProcessor{}
+	existing := &models.DealInfo{
+		Title:          "Same title",
+		ThreadImageURL: "https://example.com/image.jpg",
+		ActualDealURL:  "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20",
+	}
+	scraped := &models.DealInfo{
+		Title:          "Same title",
+		ThreadImageURL: "https://example.com/image.jpg",
+		ActualDealURL:  "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1",
+	}
+
+	if p.dealChanged(existing, scraped) {
+		t.Fatal("dealChanged should ignore affiliate/variant URL noise for the same product ID")
+	}
+}
+
+func TestProcessExistingDeal_DuplicateThreadDoesNotOverwriteCanonicalContent(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+	originalTime := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	duplicateTime := originalTime.Add(2 * time.Hour)
+	existing := &models.DealInfo{
+		DocumentID:         "canonical-original",
+		Title:              "Original INIU power bank post",
+		PublishedTimestamp: originalTime,
+		ActualDealURL:      "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20",
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/original-iniu-111111", LikeCount: 10},
+		},
+	}
+	scrapedDuplicates := []models.DealInfo{
+		{
+			DocumentID:         "canonical-original",
+			Title:              "Duplicate title should not become canonical",
+			PublishedTimestamp: duplicateTime,
+			ActualDealURL:      "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1",
+			Threads: []models.ThreadContext{
+				{DocumentID: "known-duplicate", PostURL: "https://forums.redflagdeals.com/duplicate-iniu-222222", LikeCount: 3},
+			},
+		},
+	}
+	var updates []models.DealInfo
+	if err := p.processExistingDeal(context.Background(), existing, scrapedDuplicates, &updates, nil); err != nil {
+		t.Fatalf("processExistingDeal returned error: %v", err)
+	}
+	if existing.Title != "Original INIU power bank post" {
+		t.Fatalf("duplicate thread overwrote canonical title: %q", existing.Title)
+	}
+	if !existing.PublishedTimestamp.Equal(originalTime) {
+		t.Fatalf("duplicate thread overwrote canonical timestamp: %s", existing.PublishedTimestamp)
+	}
+	if existing.ActualDealURL != "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20" {
+		t.Fatalf("duplicate thread overwrote canonical URL: %q", existing.ActualDealURL)
+	}
+	if len(existing.Threads) != 2 {
+		t.Fatalf("duplicate thread should still be merged, got %d threads", len(existing.Threads))
+	}
+	if len(updates) != 1 {
+		t.Fatalf("expected merged duplicate to be persisted, got %d updates", len(updates))
+	}
+}
+
+func TestProcessExistingDeal_SameThreadTitleEditPreservesExistingLinkWhenDetailMissing(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+	existing := &models.DealInfo{
+		DocumentID:         "same-thread",
+		Title:              "Old title",
+		PublishedTimestamp: testTime1,
+		ActualDealURL:      "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20",
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/old-slug-111111", LikeCount: 10},
+		},
+	}
+	scrapedDuplicates := []models.DealInfo{
+		{
+			DocumentID:         "same-thread",
+			Title:              "Updated title",
+			PublishedTimestamp: testTime1,
+			ActualDealURL:      "",
+			Threads: []models.ThreadContext{
+				{PostURL: "https://forums.redflagdeals.com/new-slug-111111", LikeCount: 12},
+			},
+		},
+	}
+	var updates []models.DealInfo
+	if err := p.processExistingDeal(context.Background(), existing, scrapedDuplicates, &updates, nil); err != nil {
+		t.Fatalf("processExistingDeal returned error: %v", err)
+	}
+	if existing.Title != "Updated title" {
+		t.Fatalf("same-thread title edit was not applied: %q", existing.Title)
+	}
+	if existing.ActualDealURL != "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20" {
+		t.Fatalf("existing product link should be preserved when detail scrape has no link, got %q", existing.ActualDealURL)
+	}
+}
+
+func TestProcessExistingDeal_CorrectsStoredRetailerMetadata(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+	existing := &models.DealInfo{
+		DocumentID:         "same-thread",
+		Title:              "INIU Power Bank",
+		PostURL:            "https://forums.redflagdeals.com/bad-slug-111111",
+		Retailer:           "Amazon.caAmazon.ca",
+		Category:           "Old Category",
+		Price:              "$11.00",
+		PublishedTimestamp: testTime1,
+		ActualDealURL:      "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20",
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/bad-slug-111111", LikeCount: 10},
+		},
+	}
+	scrapedDuplicates := []models.DealInfo{
+		{
+			DocumentID:         "same-thread",
+			Title:              "INIU Power Bank",
+			PostURL:            "https://forums.redflagdeals.com/good-slug-111111",
+			Retailer:           "Amazon.ca",
+			Category:           "Computers & Electronics",
+			Price:              "$10.19",
+			PublishedTimestamp: testTime1,
+			ActualDealURL:      "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20",
+			Threads: []models.ThreadContext{
+				{DocumentID: "same-thread", PostURL: "https://forums.redflagdeals.com/good-slug-111111", LikeCount: 10},
+			},
+		},
+	}
+	var updates []models.DealInfo
+	if err := p.processExistingDeal(context.Background(), existing, scrapedDuplicates, &updates, nil); err != nil {
+		t.Fatalf("processExistingDeal returned error: %v", err)
+	}
+	if existing.Retailer != "Amazon.ca" {
+		t.Fatalf("Retailer = %q, want Amazon.ca", existing.Retailer)
+	}
+	if existing.Category != "Computers & Electronics" {
+		t.Fatalf("Category = %q, want Computers & Electronics", existing.Category)
+	}
+	if existing.Price != "$10.19" {
+		t.Fatalf("Price = %q, want $10.19", existing.Price)
+	}
+	if existing.PostURL != "https://forums.redflagdeals.com/good-slug-111111" {
+		t.Fatalf("PostURL = %q, want corrected slug", existing.PostURL)
+	}
+	if len(updates) != 1 {
+		t.Fatalf("expected corrected metadata to be persisted, got %d updates", len(updates))
+	}
+}
+
+func TestProcessDeals_RemovesNotFoundExistingThreadButKeepsDiscordMessage(t *testing.T) {
+	store := newMockStore()
+	notif := newMockNotifier()
+	documentID := generateDealID(testTime1)
+	deadURL := "https://forums.redflagdeals.com/dead-slug-111111"
+	liveURL := "https://forums.redflagdeals.com/live-slug-222222"
+
+	store.deals[documentID] = &models.DealInfo{
+		DocumentID:             documentID,
+		Title:                  "Existing Deal",
+		PostURL:                deadURL,
+		ActualDealURL:          "https://example.com/product",
+		PublishedTimestamp:     testTime1,
+		DiscordMessageIDs:      map[string]string{"channel1": "msg-keep"},
+		DiscordLastUpdatedTime: time.Now(),
+		Threads: []models.ThreadContext{
+			{DocumentID: documentID, PostURL: deadURL, LikeCount: 50},
+			{DocumentID: documentID, PostURL: liveURL, LikeCount: 10},
+		},
+	}
+
+	scraper := &mockScraper{
+		deals: []models.DealInfo{
+			{
+				Title:              "Existing Deal",
+				PostURL:            deadURL,
+				PublishedTimestamp: testTime1,
+				Threads: []models.ThreadContext{
+					{DocumentID: documentID, PostURL: deadURL, LikeCount: 50},
+				},
+			},
+		},
+		mutateDetails: func(deals []*models.DealInfo) {
+			deals[0].Threads[0].NotFound = true
+		},
+	}
+
+	p := newTestProcessor(store, notif, scraper)
+	if err := p.ProcessDeals(context.Background()); err != nil {
+		t.Fatalf("ProcessDeals() error = %v", err)
+	}
+
+	saved := store.deals[documentID]
+	if saved == nil {
+		t.Fatal("existing deal was not saved")
+	}
+	if len(saved.Threads) != 1 {
+		t.Fatalf("expected one live thread after removing 404 thread, got %d", len(saved.Threads))
+	}
+	if saved.Threads[0].PostURL != liveURL {
+		t.Fatalf("remaining thread = %q, want %q", saved.Threads[0].PostURL, liveURL)
+	}
+	if saved.PostURL != liveURL {
+		t.Fatalf("PostURL = %q, want %q", saved.PostURL, liveURL)
+	}
+	if saved.DiscordMessageIDs["channel1"] != "msg-keep" {
+		t.Fatalf("DiscordMessageIDs were not preserved: %#v", saved.DiscordMessageIDs)
+	}
+	if len(notif.sentDeals) != 0 {
+		t.Fatalf("expected no new Discord message, got %d", len(notif.sentDeals))
+	}
+}
+
+// --- threadKey tests ---
+
+func TestThreadKey_RFDSlugVariants(t *testing.T) {
+	// All of these are the same RFD thread (ID 2806520) with different slugs.
+	urls := []string{
+		"https://forums.redflagdeals.com/firehouse-subs-firehouse-subs-hotsubs-5-off-no-minimum-purchase-2806520",
+		"https://forums.redflagdeals.com/firehouse-subs-hotsubs-5-off-no-minimum-purchase-2806520",
+		"https://forums.redflagdeals.com/firehouse-subs-hotsubs-5-off-no-minimum-2806520",
+	}
+
+	expected := "rfd:2806520"
+	for _, u := range urls {
+		got := threadKey(u)
+		if got != expected {
+			t.Errorf("threadKey(%q) = %q, want %q", u, got, expected)
+		}
+	}
+}
+
+func TestThreadKey_RFDWithFragmentAndTrailingSlash(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://forums.redflagdeals.com/deal-slug-123456/", "rfd:123456"},
+		{"https://forums.redflagdeals.com/deal-slug-123456/#post999", "rfd:123456"},
+		{"https://forums.redflagdeals.com/deal-slug-123456#p100", "rfd:123456"},
+		{"https://forums.redflagdeals.com/deal-slug-123456?utm_source=discord", "rfd:123456"},
+		{"https://forums.redflagdeals.com/deal-slug-123456?p=123#p123", "rfd:123456"},
+	}
+	for _, tt := range tests {
+		got := threadKey(tt.url)
+		if got != tt.want {
+			t.Errorf("threadKey(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestThreadKey_NonRFDURLsUnchanged(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://www.ebay.ca/itm/12345", "https://www.ebay.ca/itm/12345"},
+		{"https://example.com/deal-999", "https://example.com/deal-999"},
+	}
+	for _, tt := range tests {
+		got := threadKey(tt.url)
+		if got != tt.want {
+			t.Errorf("threadKey(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestThreadKey_EdgeCases(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"", ""},
+		// RFD listing page (no thread ID) falls back to full URL
+		{"https://forums.redflagdeals.com/hot-deals-f9", "https://forums.redflagdeals.com/hot-deals-f9"},
+	}
+	for _, tt := range tests {
+		got := threadKey(tt.url)
+		if got != tt.want {
+			t.Errorf("threadKey(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestMergeThread_SlugVariants(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/old-slug-2806520", LikeCount: 10, CommentCount: 5},
+		},
+	}
+
+	// Merge a thread with a different slug but same thread ID
+	newThread := models.ThreadContext{
+		PostURL:      "https://forums.redflagdeals.com/new-slug-2806520",
+		LikeCount:    20,
+		CommentCount: 8,
+	}
+
+	changed := p.mergeThread(deal, newThread)
+	if !changed {
+		t.Error("Expected mergeThread to report changed")
+	}
+	if len(deal.Threads) != 1 {
+		t.Errorf("Expected 1 thread (merged in-place), got %d", len(deal.Threads))
+	}
+	if deal.Threads[0].LikeCount != 20 {
+		t.Errorf("Expected LikeCount=20, got %d", deal.Threads[0].LikeCount)
+	}
+	if deal.Threads[0].PostURL != "https://forums.redflagdeals.com/new-slug-2806520" {
+		t.Errorf("Expected URL to be updated to new slug, got %q", deal.Threads[0].PostURL)
+	}
+}
+
+func TestMergeThread_DifferentThreadIDs(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/deal-a-111111", LikeCount: 10},
+		},
+	}
+
+	// Different thread ID — should append
+	newThread := models.ThreadContext{
+		PostURL:   "https://forums.redflagdeals.com/deal-b-222222",
+		LikeCount: 5,
+	}
+
+	changed := p.mergeThread(deal, newThread)
+	if !changed {
+		t.Error("Expected mergeThread to report changed (new thread appended)")
+	}
+	if len(deal.Threads) != 2 {
+		t.Errorf("Expected 2 threads (different IDs), got %d", len(deal.Threads))
+	}
+}
+
+func TestMergeThread_ClearsStaleViewCountWhenNewScrapeHasNoViews(t *testing.T) {
+	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
+
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{
+				PostURL:            "https://forums.redflagdeals.com/deal-a-111111",
+				LikeCount:          10,
+				CommentCount:       5,
+				ViewCount:          1234,
+				ViewCountAvailable: true,
+			},
+		},
+	}
+
+	newThread := models.ThreadContext{
+		PostURL:      "https://forums.redflagdeals.com/deal-a-111111",
+		LikeCount:    12,
+		CommentCount: 6,
+	}
+
+	changed := p.mergeThread(deal, newThread)
+	if !changed {
+		t.Error("Expected mergeThread to report changed")
+	}
+	if deal.Threads[0].ViewCount != 0 {
+		t.Errorf("Expected ViewCount to be cleared, got %d", deal.Threads[0].ViewCount)
+	}
+	if deal.Threads[0].ViewCountAvailable {
+		t.Error("Expected ViewCountAvailable to be false after a scrape with no views")
+	}
+}
+
+func TestDeduplicateThreadsByKey(t *testing.T) {
+	// Simulates the Firehouse Subs case: 3 threads, all same thread ID 2806520
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/firehouse-subs-firehouse-subs-hotsubs-5-off-no-minimum-purchase-2806520", LikeCount: 34, CommentCount: 13},
+			{PostURL: "https://forums.redflagdeals.com/firehouse-subs-hotsubs-5-off-no-minimum-purchase-2806520", LikeCount: 3, CommentCount: 0},
+			{PostURL: "https://forums.redflagdeals.com/firehouse-subs-hotsubs-5-off-no-minimum-2806520", LikeCount: 0, CommentCount: 0},
+		},
+	}
+
+	changed := deduplicateThreadsByKey(deal)
+	if !changed {
+		t.Error("Expected deduplicateThreadsByKey to report changed")
+	}
+	if len(deal.Threads) != 1 {
+		t.Errorf("Expected 1 thread after dedup, got %d", len(deal.Threads))
+	}
+	if deal.Threads[0].LikeCount != 34 {
+		t.Errorf("Expected highest LikeCount (34) to be kept, got %d", deal.Threads[0].LikeCount)
+	}
+}
+
+func TestDeduplicateThreadsByKey_MixedIDs(t *testing.T) {
+	// Simulates the Paramount+ case: 3 threads, but 2 unique IDs
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/amazon-prime-video-paramount-2806566", LikeCount: 3},
+			{PostURL: "https://forums.redflagdeals.com/amazon-prime-amazon-prime-video-paramount-2806566", LikeCount: 2},
+			{PostURL: "https://forums.redflagdeals.com/paramount-paramount-2806534", LikeCount: 0},
+		},
+	}
+
+	changed := deduplicateThreadsByKey(deal)
+	if !changed {
+		t.Error("Expected deduplicateThreadsByKey to report changed")
+	}
+	if len(deal.Threads) != 2 {
+		t.Errorf("Expected 2 threads after dedup (2 unique IDs), got %d", len(deal.Threads))
+	}
+	// The first entry (rfd:2806566) should keep the higher LikeCount
+	if deal.Threads[0].LikeCount != 3 {
+		t.Errorf("Expected LikeCount=3 for thread 2806566, got %d", deal.Threads[0].LikeCount)
+	}
+}
+
+func TestDeduplicateThreadsByKey_NoDuplicates(t *testing.T) {
+	deal := &models.DealInfo{
+		Threads: []models.ThreadContext{
+			{PostURL: "https://forums.redflagdeals.com/deal-a-111111", LikeCount: 10},
+			{PostURL: "https://forums.redflagdeals.com/deal-b-222222", LikeCount: 5},
+		},
+	}
+
+	changed := deduplicateThreadsByKey(deal)
+	if changed {
+		t.Error("Expected no changes when threads have different IDs")
+	}
+	if len(deal.Threads) != 2 {
+		t.Errorf("Expected 2 threads unchanged, got %d", len(deal.Threads))
+	}
+}

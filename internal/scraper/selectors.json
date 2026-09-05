@@ -1,0 +1,26 @@
+{
+    "hot_deals_list": {
+        "container": {
+            "item": "li.topic-card.topic",
+            "ignore_modifier": ".sticky, :has(.sponsored-offer)"
+        },
+        "elements": {
+            "title_link": "a.topic-card-info.thread_info",
+            "title_text": ".thread_title",
+            "retailer": ".thread_dealer",
+            "posted_time": "time.topic_time",
+            "author_link": "",
+            "author_name": "",
+            "thread_image": ".thread_image img",
+            "like_count": ".thread_extra_info .votes",
+            "comment_count": ".thread_extra_info .posts",
+            "comment_count_fallback": ".posts_count",
+            "view_count": ""
+        }
+    },
+    "deal_details": {
+        "primary_link": ".deal_link a",
+        "fallback_link": ".postlink",
+        "category": ".thread_category"
+    }
+}
