@@ -18,7 +18,7 @@ const cleanTitleFixture = `{"candidates":[{"content":{"parts":[{"text":"[{\"inde
 func newCooldownTestClient(t *testing.T, store QuotaStore, handler http.HandlerFunc) *Client {
 	t.Helper()
 	ctx := context.Background()
-	client, err := NewClient(ctx, "", nil, []string{"fixture-key"}, []string{"fixture-model"}, store)
+	client, err := NewClient(ctx, []string{"fixture-key"}, []string{"fixture-model"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func newCooldownTestClient(t *testing.T, store QuotaStore, handler http.HandlerF
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.clients["key0"] = fixtureClient
+	client.clients[0] = fixtureClient
 	return client
 }
 
@@ -56,10 +56,8 @@ func TestGenerationHonorsPersistedCooldownAfterRestart(t *testing.T) {
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_, titleErr := client.CleanTitles(ctx, []models.TitleRequest{{Index: 0, Title: "Monitor"}})
-		_, _, _, rawErr := client.GenerateContentRaw(ctx, "fixture", nil)
-		_, _, _, overrideErr := client.GenerateContentWithModel(ctx, "fixture-model", "fixture", nil)
 		cancel()
-		for operation, err := range map[string]error{"titles": titleErr, "raw": rawErr, "override": overrideErr} {
+		for operation, err := range map[string]error{"titles": titleErr} {
 			if !errors.Is(err, ErrQuotaCooldown) {
 				t.Errorf("restart %d %s error = %v, want quota cooldown", restart, operation, err)
 			}
@@ -112,15 +110,15 @@ func TestTitleCleanupHonorsInMemoryCooldownWithoutStore(t *testing.T) {
 		_, _ = w.Write([]byte(cleanTitleFixture))
 	})
 	client.mu.Lock()
-	client.allExhausted = true
-	client.exhaustedAt = time.Now()
+	client.state.AllExhausted = true
+	client.state.ExhaustedAt = time.Now()
 	client.mu.Unlock()
 	_, err := client.CleanTitles(context.Background(), []models.TitleRequest{{Index: 0, Title: "Monitor"}})
 	if !errors.Is(err, ErrQuotaCooldown) || calls.Load() != 0 {
 		t.Fatalf("active cooldown: error=%v API calls=%d", err, calls.Load())
 	}
 	client.mu.Lock()
-	client.exhaustedAt = time.Now().Add(-31 * time.Minute)
+	client.state.ExhaustedAt = time.Now().Add(-31 * time.Minute)
 	client.mu.Unlock()
 	results, err := client.CleanTitles(context.Background(), []models.TitleRequest{{Index: 0, Title: "Monitor"}})
 	if err != nil || results[0] != "Monitor for $100" || calls.Load() != 1 {
@@ -147,7 +145,7 @@ func TestTitleCleanupStopsImmediatelyAfterTerminalExhaustion(t *testing.T) {
 				_, _ = w.Write([]byte(test.body))
 			})
 			// The next quota response exhausts the final available key/model.
-			client.consecutive429s = 2
+			client.rateLimits = 2
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			_, err := client.CleanTitles(ctx, []models.TitleRequest{{Index: 0, Title: "Monitor"}})
@@ -168,8 +166,8 @@ func TestTitleCleanupRechecksCooldownBeforeRetry(t *testing.T) {
 		calls.Add(1)
 		// Another caller exhausted the shared quota while this request was in flight.
 		client.mu.Lock()
-		client.allExhausted = true
-		client.exhaustedAt = time.Now()
+		client.state.AllExhausted = true
+		client.state.ExhaustedAt = time.Now()
 		client.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -224,8 +222,8 @@ func TestTitleRepairKeepsSuccessfulTitlesWhenQuotaBecomesExhausted(t *testing.T)
 	client = newCooldownTestClient(t, &mockQuotaStore{}, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		client.mu.Lock()
-		client.allExhausted = true
-		client.exhaustedAt = time.Now()
+		client.state.AllExhausted = true
+		client.state.ExhaustedAt = time.Now()
 		client.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(cleanTitleFixture))

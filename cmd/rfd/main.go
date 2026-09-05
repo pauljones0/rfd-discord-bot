@@ -122,7 +122,7 @@ func run() error {
 	if err = store.BindApplication(ctx, cfg.DiscordAppID); err != nil {
 		return err
 	}
-	aiClient, err := ai.NewClient(ctx, "", nil, cfg.GeminiAPIKeys, cfg.GeminiModels, store)
+	aiClient, err := ai.NewClient(ctx, cfg.GeminiAPIKeys, cfg.GeminiModels, store)
 	if err != nil {
 		return err
 	}
@@ -177,6 +177,7 @@ func run() error {
 					slog.Error("RFD poll failed", "error", err)
 				}
 			} else if err != nil {
+				lastFailed.Store(true)
 				slog.Error("Could not read RFD subscriptions", "error", err)
 			}
 			timer.Reset(cfg.RFDPollInterval)

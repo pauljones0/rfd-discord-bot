@@ -1,47 +1,28 @@
 package scraper
 
 import (
-	"embed"
-	"log/slog"
+	_ "embed"
 	"os"
-
-	"github.com/pauljones0/rfd-discord-bot/internal/logger"
+	"strings"
 )
 
 //go:embed selectors.json
-var embeddedSelectors embed.FS
+var embeddedSelectors []byte
 
-// LoadConfig tries to load selectors in the following order:
-// 1. Embedded selectors.json
-// 2. External file defined by SELECTORS_CONFIG_PATH (or default "config/selectors.json")
-// 3. Hardcoded defaults (if all else fails, though this function returns error in that case, caller handles fallback)
+// LoadConfig uses an explicit override when supplied. An invalid override is an
+// error, rather than silently scraping with a different configuration.
 func LoadConfig() (SelectorConfig, error) {
-	// 1. Try embedded
-	data, err := embeddedSelectors.ReadFile("selectors.json")
-	if err == nil {
-		sel, parseErr := LoadSelectorsFromBytes(data)
-		if parseErr == nil {
-			slog.Debug("Loaded selectors from embedded config.")
-			return sel, nil
-		}
-		slog.Warn("Embedded selectors failed to parse. Trying file fallback.", "error", parseErr)
+	if path := strings.TrimSpace(os.Getenv("SELECTORS_CONFIG_PATH")); path != "" {
+		return LoadSelectors(path)
 	}
+	return LoadSelectorsFromBytes(embeddedSelectors)
+}
 
-	// 2. Fallback to external file
-	configPath := os.Getenv("SELECTORS_CONFIG_PATH")
-	if configPath == "" {
-		configPath = "config/selectors.json"
+// DefaultSelectors is the compiled configuration, also used by local fixtures.
+func DefaultSelectors() SelectorConfig {
+	selectors, err := LoadSelectorsFromBytes(embeddedSelectors)
+	if err != nil {
+		panic("invalid embedded RFD selectors: " + err.Error())
 	}
-
-	// Try loading from file
-	if fileSel, err := LoadSelectors(configPath); err == nil {
-		slog.Info("Loaded selectors from external file", "path", configPath)
-		return fileSel, nil
-	} else {
-		slog.Warn("Failed to load external selectors, falling back to defaults", "path", configPath, "error", err)
-	}
-
-	// 3. Fallback to hardcoded defaults
-	logger.Notice("Using hardcoded default selectors")
-	return DefaultSelectors(), nil
+	return selectors
 }

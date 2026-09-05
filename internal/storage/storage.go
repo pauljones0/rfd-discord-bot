@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
@@ -67,19 +68,31 @@ func (s *Store) GetDealByID(ctx context.Context, id string) (*models.DealInfo, e
 }
 func (s *Store) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*models.DealInfo, error) {
 	out := make(map[string]*models.DealInfo, len(ids))
-	for _, id := range ids {
-		d, err := s.GetDealByID(ctx, id)
+	// Bound bind parameters for large imports, without issuing one query per
+	// scraped item. Values are parameters, never interpolated into SQL.
+	for start := 0; start < len(ids); start += 900 {
+		batch := ids[start:min(start+900, len(ids))]
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		query := "SELECT payload FROM deals WHERE id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",") + ")"
+		deals, err := s.deals(ctx, query, args...)
 		if err != nil {
 			return nil, err
 		}
-		if d != nil {
-			out[id] = d
+		for _, d := range deals {
+			out[d.DocumentID] = &d
 		}
 	}
 	return out, nil
 }
 func (s *Store) GetRecentDeals(ctx context.Context, age time.Duration) ([]models.DealInfo, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT payload FROM deals WHERE published_at>=? ORDER BY published_at", time.Now().Add(-age).UnixNano())
+	return s.deals(ctx, "SELECT payload FROM deals WHERE published_at>=? ORDER BY published_at,id", time.Now().Add(-age).UnixNano())
+}
+
+func (s *Store) deals(ctx context.Context, query string, args ...any) ([]models.DealInfo, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -6,7 +6,7 @@ import (
 )
 
 // Tracker tracks API usage metrics across a processor run.
-// Thread-safe via atomic operations for counters and mutex for string fields.
+// Counters are safe for concurrent adapters.
 type Tracker struct {
 	processor string
 
@@ -19,12 +19,6 @@ type Tracker struct {
 	aiMissing          atomic.Int64
 	aiParseFailures    atomic.Int64
 	aiRetries          atomic.Int64
-	aiPosted           atomic.Int64
-	aiNotPosted        atomic.Int64
-
-	// Carfax metrics
-	carfaxValuations atomic.Int64
-	carfaxFailures   atomic.Int64
 
 	// Discord metrics
 	discordMessagesSent atomic.Int64
@@ -42,7 +36,12 @@ func NewTracker(processor string) *Tracker {
 
 // TrackGeminiCall records a Gemini API call with token counts.
 func (t *Tracker) TrackGeminiCall(inputTokens, outputTokens int) {
-	t.geminiCalls.Add(1)
+	t.TrackGeminiUsage(1, inputTokens, outputTokens)
+}
+
+// TrackGeminiUsage records actual upstream requests, including retries and repairs.
+func (t *Tracker) TrackGeminiUsage(requests, inputTokens, outputTokens int) {
+	t.geminiCalls.Add(int64(requests))
 	t.geminiInputTokens.Add(int64(inputTokens))
 	t.geminiOutputTokens.Add(int64(outputTokens))
 }
@@ -63,29 +62,6 @@ func (t *Tracker) TrackAIOutcome(context string, requested, returned, missing, p
 		"parse_failures", parseFailures,
 		"retries", retries,
 	)
-}
-
-// TrackAIDecision records whether an AI-reviewed candidate led to a notification.
-func (t *Tracker) TrackAIDecision(context string, posted bool) {
-	if posted {
-		t.aiPosted.Add(1)
-	} else {
-		t.aiNotPosted.Add(1)
-	}
-	slog.Info("ai_decision",
-		"processor", t.processor,
-		"context", context,
-		"posted", posted,
-	)
-}
-
-// TrackCarfaxValuation records a Carfax valuation attempt.
-func (t *Tracker) TrackCarfaxValuation(success bool) {
-	if success {
-		t.carfaxValuations.Add(1)
-	} else {
-		t.carfaxFailures.Add(1)
-	}
 }
 
 // TrackDiscordMessage records a Discord message sent.
@@ -121,10 +97,6 @@ func (t *Tracker) LogSummary() {
 		"ai_missing", t.aiMissing.Load(),
 		"ai_parse_failures", t.aiParseFailures.Load(),
 		"ai_retries", t.aiRetries.Load(),
-		"ai_posted", t.aiPosted.Load(),
-		"ai_not_posted", t.aiNotPosted.Load(),
-		"carfax_valuations", t.carfaxValuations.Load(),
-		"carfax_failures", t.carfaxFailures.Load(),
 		"discord_messages_sent", t.discordMessagesSent.Load(),
 		"ads_scraped", t.adsScraped.Load(),
 		"ads_processed", t.adsProcessed.Load(),

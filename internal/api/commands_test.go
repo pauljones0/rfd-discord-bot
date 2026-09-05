@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/pauljones0/rfd-discord-bot/internal/storage"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,13 +19,12 @@ func TestCommandsEnforceGuildPermissionsAndPersistSubscriptions(t *testing.T) {
 	h := NewHandler(store)
 	invoke := func(permissions, subcommand, options string) string {
 		t.Helper()
-		w := httptest.NewRecorder()
 		body := fmt.Sprintf(`{"type":2,"guild_id":"guild","member":{"permissions":%q,"user":{"id":"user"}},"data":{"name":"rfd","options":[{"name":%q,"options":%s}],"resolved":{"channels":{"123":{"name":"deals","type":0}}}}}`, permissions, subcommand, options)
-		h.handleInteraction(w, []byte(body))
-		var result interactionResponse
-		if err = json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		var req interactionRequest
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
 			t.Fatal(err)
 		}
+		result := privateReply(h.handleInteraction(context.Background(), req))
 		if result.Data.Flags != 64 {
 			t.Fatal("management response was not private")
 		}

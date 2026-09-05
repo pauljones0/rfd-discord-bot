@@ -82,32 +82,3 @@ func (c SelectorConfig) Validate() error {
 	}
 	return nil
 }
-
-// DefaultSelectors returns the fallback configuration if no JSON file is loaded.
-// This is the single source of truth — the embedded selectors.json should be preferred.
-func DefaultSelectors() SelectorConfig {
-	return SelectorConfig{
-		HotDealsList: ListSelectors{
-			Container: ListContainer{
-				Item:           "li.topic-card.topic",
-				IgnoreModifier: ".sticky, :has(.sponsored-offer)",
-			},
-			Elements: ListElements{
-				TitleLink:            "a.topic-card-info.thread_info",
-				TitleText:            ".thread_title",
-				Retailer:             ".thread_dealer",
-				PostedTime:           "time.topic_time",
-				ThreadImage:          ".thread_image img",
-				LikeCount:            ".thread_extra_info .votes",
-				CommentCount:         ".thread_extra_info .posts",
-				CommentCountFallback: ".posts_count",
-				ViewCount:            "",
-			},
-		},
-		DealDetails: DetailSelectors{
-			PrimaryLink:  ".deal_link a",
-			FallbackLink: ".postlink",
-			Category:     ".thread_category",
-		},
-	}
-}

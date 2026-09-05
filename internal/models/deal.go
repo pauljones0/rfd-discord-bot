@@ -12,42 +12,42 @@ const dealRetention = 30 * 24 * time.Hour
 
 // DealInfo represents the structured information for a deal.
 type DealInfo struct {
-	Title             string            `docstore:"title" validate:"required"`
-	PostURL           string            `docstore:"postURL" validate:"required,url"`
-	Category          string            `docstore:"category,omitempty"`
-	ThreadImageURL    string            `docstore:"threadImageURL,omitempty" validate:"omitempty,url"`
-	ActualDealURL     string            `docstore:"actualDealURL,omitempty" validate:"omitempty,url"`
-	DocumentID        string            `docstore:"-"`                           // Document ID; not stored in the document itself.
-	DiscordMessageIDs map[string]string `docstore:"discordMessageIDs,omitempty"` // Mapping of ChannelID -> MessageID
+	Title             string
+	PostURL           string
+	Category          string
+	ThreadImageURL    string
+	ActualDealURL     string
+	DocumentID        string            // Stable identity; retained across upgrades.
+	DiscordMessageIDs map[string]string // Mapping of ChannelID -> MessageID
 	// DiscordMessageApplicationIDs records the application that authored each
 	// receipt. Imported receipts still prevent reposting, but another application
 	// must never attempt to edit them.
-	DiscordMessageApplicationIDs map[string]string `docstore:"discordMessageApplicationIDs,omitempty"`
-	LastUpdated                  time.Time         `docstore:"lastUpdated"`
-	PublishedTimestamp           time.Time         `docstore:"publishedTimestamp" validate:"required"` // Parsed from PostedTime
-	DiscordLastUpdatedTime       time.Time         `docstore:"discordLastUpdatedTime,omitempty"`
-	ExpiresAt                    time.Time         `docstore:"expiresAt,omitempty"`
+	DiscordMessageApplicationIDs map[string]string
+	LastUpdated                  time.Time
+	PublishedTimestamp           time.Time // Parsed from PostedTime
+	DiscordLastUpdatedTime       time.Time
+	ExpiresAt                    time.Time
 
-	Threads      []ThreadContext `docstore:"threads"`
-	SearchTokens []string        `docstore:"searchTokens,omitempty"`
+	Threads      []ThreadContext
+	SearchTokens []string
 
-	Price         string `docstore:"price,omitempty"`
-	OriginalPrice string `docstore:"originalPrice,omitempty"`
-	Savings       string `docstore:"savings,omitempty"`
-	Retailer      string `docstore:"retailer,omitempty"`
+	Price         string
+	OriginalPrice string
+	Savings       string
+	Retailer      string
 
-	// AI Enriched Fields
-	CleanTitle  string `docstore:"cleanTitle,omitempty"`
-	AIProcessed bool   `docstore:"aiProcessed"`
+	// Optional title cleanup; never used for deal qualification.
+	CleanTitle  string
+	AIProcessed bool
 
 	// Rank Tracking — sticky flags set by engagement heat score
-	HasBeenWarm bool `docstore:"hasBeenWarm,omitempty"`
-	HasBeenHot  bool `docstore:"hasBeenHot,omitempty"`
+	HasBeenWarm bool
+	HasBeenHot  bool
 
 	// Detailed Content
-	Description string `docstore:"description,omitempty"`
-	Comments    string `docstore:"comments,omitempty"` // Flattened comments for AI context
-	Summary     string `docstore:"summary,omitempty"`  // RFD editor summary if available
+	Description string
+	Comments    string // Legacy imported detail, retained for data compatibility
+	Summary     string // RFD editor summary if available
 }
 
 // DealDetailFetchStats summarizes RFD detail-page fetch health for a run.
@@ -59,15 +59,15 @@ type DealDetailFetchStats struct {
 	NotFound  int
 }
 
-// ThreadContext represents an individual RedFlagDeals thread that is part of a DealIdea.
+// ThreadContext represents an individual RedFlagDeals thread that is part of one grouped deal.
 type ThreadContext struct {
-	DocumentID         string `docstore:"documentID"`
-	PostURL            string `docstore:"postURL" validate:"required,url"`
-	LikeCount          int    `docstore:"likeCount"`
-	CommentCount       int    `docstore:"commentCount" validate:"gte=0"`
-	ViewCount          int    `docstore:"viewCount" validate:"gte=0"`
-	ViewCountAvailable bool   `docstore:"viewCountAvailable,omitempty"`
-	NotFound           bool   `docstore:"notFound,omitempty"`
+	DocumentID         string
+	PostURL            string
+	LikeCount          int
+	CommentCount       int
+	ViewCount          int
+	ViewCountAvailable bool
+	NotFound           bool
 }
 
 // Stats returns the engagement metrics from the primary (most popular) thread.
