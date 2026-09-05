@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/pauljones0/rfd-discord-standalone/internal/storage"
+	"github.com/pauljones0/rfd-discord-bot/internal/storage"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"

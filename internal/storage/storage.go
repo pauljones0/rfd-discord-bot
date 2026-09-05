@@ -11,8 +11,8 @@ import (
 	"time"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
-	"github.com/pauljones0/rfd-discord-standalone/internal/dealtypes"
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
 // Store owns one SQLite database. It has no dependency on the combined bot,

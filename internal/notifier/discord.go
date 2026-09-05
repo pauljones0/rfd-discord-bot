@@ -21,11 +21,11 @@ import (
 
 	"time"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/dealquality"
+	"github.com/pauljones0/rfd-discord-bot/internal/dealquality"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/util"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
 const (

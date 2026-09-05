@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
-	"github.com/pauljones0/rfd-discord-standalone/internal/util"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 	"google.golang.org/genai"
 )
 

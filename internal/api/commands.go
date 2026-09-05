@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/pauljones0/rfd-discord-standalone/internal/dealtypes"
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
 type SubscriptionStore interface {

@@ -21,10 +21,10 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/config"
-	"github.com/pauljones0/rfd-discord-standalone/internal/logger"
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
-	"github.com/pauljones0/rfd-discord-standalone/internal/util"
+	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/logger"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
 const (

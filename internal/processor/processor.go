@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/config"
-	"github.com/pauljones0/rfd-discord-standalone/internal/dealquality"
-	"github.com/pauljones0/rfd-discord-standalone/internal/dealtypes"
-	"github.com/pauljones0/rfd-discord-standalone/internal/metrics"
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
-	"github.com/pauljones0/rfd-discord-standalone/internal/util"
+	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/dealquality"
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
+	"github.com/pauljones0/rfd-discord-bot/internal/metrics"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
 )
 
 type Processor interface {

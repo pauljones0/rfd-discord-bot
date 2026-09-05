@@ -5,6 +5,13 @@ This project was extracted on 2026-09-05 from
 `1363ea7`, plus the subsequently added, locally verified Discord Gateway transport.
 The original license and its source attribution are retained unchanged.
 
+The combined repository was subsequently renamed to `pauljones0/homelab-bots`
+and made private. This standalone project now owns the public
+`pauljones0/rfd-discord-bot` name and matching Go module path. Its fresh Git
+history contains only the extracted source; access to the private project is
+not required to build or run it. The source revision above belongs to the
+combined project's history.
+
 RFD scraping, processing, deduplication, engagement/discount filters, title cleanup,
 formatting, and their regression tests were selected from the original source.
 The notification client was trimmed to RFD declarations. This project supplies

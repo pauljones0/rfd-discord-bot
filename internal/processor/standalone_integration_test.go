@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/config"
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
-	"github.com/pauljones0/rfd-discord-standalone/internal/notifier"
-	"github.com/pauljones0/rfd-discord-standalone/internal/processor"
-	"github.com/pauljones0/rfd-discord-standalone/internal/scraper"
-	"github.com/pauljones0/rfd-discord-standalone/internal/storage"
-	"github.com/pauljones0/rfd-discord-standalone/internal/validator"
+	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/notifier"
+	"github.com/pauljones0/rfd-discord-bot/internal/processor"
+	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
+	"github.com/pauljones0/rfd-discord-bot/internal/storage"
+	"github.com/pauljones0/rfd-discord-bot/internal/validator"
 )
 
 type localOnlyTransport struct {

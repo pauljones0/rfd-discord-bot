@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/logger"
+	"github.com/pauljones0/rfd-discord-bot/internal/logger"
 )
 
 //go:embed selectors.json

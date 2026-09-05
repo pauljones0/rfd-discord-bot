@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
 type mockQuotaStore struct {

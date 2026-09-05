@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
 // DealStore abstracts the storage layer for deal data.

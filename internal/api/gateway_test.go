@@ -6,7 +6,7 @@ import (
 	"errors"
 	"github.com/bwmarrin/discordgo"
 	"github.com/gorilla/websocket"
-	"github.com/pauljones0/rfd-discord-standalone/internal/storage"
+	"github.com/pauljones0/rfd-discord-bot/internal/storage"
 	"net/http"
 	"net/http/httptest"
 	"strings"

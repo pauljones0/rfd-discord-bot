@@ -15,8 +15,8 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/config"
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
 )
 
 func getMockSnippet(t *testing.T, id string) *goquery.Selection {

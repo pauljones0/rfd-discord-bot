@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/config"
-	"github.com/pauljones0/rfd-discord-standalone/internal/dealtypes"
-	"github.com/pauljones0/rfd-discord-standalone/internal/metrics"
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
-	"github.com/pauljones0/rfd-discord-standalone/internal/validator"
+	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/dealtypes"
+	"github.com/pauljones0/rfd-discord-bot/internal/metrics"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/validator"
 )
 
 // --- Mock implementations ---

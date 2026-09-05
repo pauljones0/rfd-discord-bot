@@ -1,4 +1,4 @@
-module github.com/pauljones0/rfd-discord-standalone
+module github.com/pauljones0/rfd-discord-bot
 
 go 1.26.0
 

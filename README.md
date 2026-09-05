@@ -11,6 +11,13 @@ cleanup is available; ordinary alerts work without an AI account.
 
 You need Docker with Compose and a Discord application of your own.
 
+Clone the public project:
+
+```sh
+git clone https://github.com/pauljones0/rfd-discord-bot.git
+cd rfd-discord-bot
+```
+
 1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications).
    Copy its **Application ID** and **bot token**. Leave **Interactions Endpoint
    URL empty**; this bot receives commands through an outbound Gateway connection.
@@ -158,6 +165,12 @@ and optional title analyzer. Do not import another bot to reuse one formatter or
 storage method. See [the extraction record](ORIGIN.md) and [validation](VALIDATION.md).
 
 ## Sharing
+
+The canonical repository is
+[pauljones0/rfd-discord-bot](https://github.com/pauljones0/rfd-discord-bot).
+It contains only the standalone RFD service. Older clones of the combined bot
+belong to the separately maintained `homelab-bots` project; do not pull this
+repository into an existing combined deployment. See [migration differences](ORIGIN.md).
 
 Share this repository or its source archive. Recipients supply their own Discord
 application and `.env`; no credentials or existing subscriptions are included.

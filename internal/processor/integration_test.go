@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pauljones0/rfd-discord-standalone/internal/config"
-	"github.com/pauljones0/rfd-discord-standalone/internal/models"
-	"github.com/pauljones0/rfd-discord-standalone/internal/scraper"
-	"github.com/pauljones0/rfd-discord-standalone/internal/validator"
+	"github.com/pauljones0/rfd-discord-bot/internal/config"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/scraper"
+	"github.com/pauljones0/rfd-discord-bot/internal/validator"
 )
 
 // Integration test that wires up a real scraper with a mock HTTP server,
