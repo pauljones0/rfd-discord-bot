@@ -107,6 +107,25 @@ variables directly; it does not search other projects for configuration.
 | `AMAZON_AFFILIATE_TAG` | Optional; blank removes Amazon affiliate tags |
 | `BESTBUY_AFFILIATE_PREFIX` | Optional HTTPS redirect prefix; blank keeps direct links |
 
+Gemini is used only to shorten deal titles. Categories, popularity thresholds,
+and discount checks determine which deals qualify for a subscription. To enable
+cleanup with a lightweight model, set your own key and an explicit model ID:
+
+```dotenv
+GEMINI_API_KEY=your-own-key
+GEMINI_MODELS=gemini-3.5-flash-lite
+```
+
+This example was verified in September 2026. Check Google's
+[model catalog](https://ai.google.dev/gemini-api/docs/models) for availability in
+your account. Model names are configured explicitly; installing a newer SDK does
+not automatically switch them. Titles are cleaned in small batches during the
+same poll and saved even when the source listing is unchanged. Cleanup has a
+30-second budget per poll; failed or slow cleanup leaves original titles usable
+and missing cleanup can retry later. An exhausted
+model/key configuration pauses cleanup for its saved cooldown instead of sending
+requests on every poll. Existing Discord message ownership is preserved.
+
 There are no embedded personal affiliate IDs. eBay product links found inside
 RFD threads are normalized to direct item URLs. This does not run an eBay monitor.
 

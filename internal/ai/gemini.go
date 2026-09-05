@@ -3,8 +3,11 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +17,10 @@ import (
 	"github.com/pauljones0/rfd-discord-bot/internal/util"
 	"google.golang.org/genai"
 )
+
+// ErrQuotaCooldown means generation is paused until the shared quota cooldown
+// expires or the quota day rolls over. Callers can keep the original title.
+var ErrQuotaCooldown = errors.New("Gemini quota cooldown active")
 
 const (
 	// exhaustionCooldown is how long to wait before retrying after all regions/tiers
@@ -149,11 +156,6 @@ func (c *Client) activeClient() *genai.Client {
 }
 
 func (c *Client) initQuotaState(ctx context.Context) {
-	if c.store == nil {
-		c.currentModel = c.fallbackModels[0]
-		return
-	}
-
 	c.checkDayRollover(ctx)
 }
 
@@ -170,11 +172,11 @@ func (c *Client) checkDayRollover(ctx context.Context) string {
 	if len(c.fallbackModels) == 0 {
 		return ""
 	}
-	if c.store == nil {
-		return c.fallbackModels[0]
-	}
-
 	today := getPacificDate()
+	if c.store == nil && (c.currentDay != today || c.currentModel == "") {
+		c.resetToDefaults(ctx, today)
+		return c.currentModel
+	}
 
 	// Check cooldown recovery: if exhausted but cooldown has elapsed, reset everything
 	if c.allExhausted && !c.exhaustedAt.IsZero() && time.Since(c.exhaustedAt) >= exhaustionCooldown {
@@ -205,13 +207,8 @@ func (c *Client) checkDayRollover(ctx context.Context) string {
 	}
 
 	if quota.CurrentDay != today {
-		c.currentDay = today
-		c.currentModel = c.fallbackModels[0]
-		c.currentLocation = c.locations[0]
-		c.allExhausted = false
-		c.exhaustedAt = time.Time{}
+		c.resetToDefaults(ctx, today)
 		slog.Info("Day rolled over or restarted, resetting to lowest tier model", "model", c.currentModel, "location", c.currentLocation)
-		c.updateStoredQuota(ctx)
 	} else {
 		c.currentDay = quota.CurrentDay
 		c.currentModel = quota.CurrentModel
@@ -231,7 +228,29 @@ func (c *Client) checkDayRollover(ctx context.Context) string {
 		c.updateStoredQuota(ctx)
 	}
 
+	// Check the persisted timestamp on the first call after a restart too.
+	if c.allExhausted && !c.exhaustedAt.IsZero() && time.Since(c.exhaustedAt) >= exhaustionCooldown {
+		c.resetToDefaults(ctx, today)
+	}
+
 	return c.currentModel
+}
+
+// generationClient checks shared quota state immediately before each API call,
+// including retries and title-repair passes. The caller must hold c.mu.
+func (c *Client) generationClient(ctx context.Context) (*genai.Client, string, string, error) {
+	model := c.checkDayRollover(ctx)
+	if c.allExhausted {
+		return nil, model, c.currentLocation, util.PermanentError(c.quotaCooldownError())
+	}
+	return c.activeClient(), model, c.currentLocation, nil
+}
+
+func (c *Client) quotaCooldownError() error {
+	if c.exhaustedAt.IsZero() {
+		return ErrQuotaCooldown
+	}
+	return fmt.Errorf("%w until %s", ErrQuotaCooldown, c.exhaustedAt.Add(exhaustionCooldown).UTC().Format(time.RFC3339))
 }
 
 // resetToDefaults resets the client to the first region, cheapest model, and clears exhaustion.
@@ -346,7 +365,7 @@ func (c *Client) upgradeModelTier(ctx context.Context) error {
 	slog.Warn("All Gemini model tiers and regions exhausted, will retry after cooldown",
 		"cooldown", exhaustionCooldown,
 	)
-	return fmt.Errorf("all model tiers exhausted across all regions")
+	return c.quotaCooldownError()
 }
 
 // handleRateLimitError handles 429/RESOURCE_EXHAUSTED errors by retrying on the
@@ -416,7 +435,7 @@ func (c *Client) handleGenerationError(ctx context.Context, genErr error, active
 		)
 		shouldRetry, backoff, handleErr := c.handleRateLimitError(ctx)
 		if !shouldRetry {
-			return fmt.Errorf("all model tiers exhausted: %w", genErr), 0
+			return util.PermanentError(handleErr), 0
 		}
 		if handleErr != nil {
 			return handleErr, 0
@@ -426,7 +445,9 @@ func (c *Client) handleGenerationError(ctx context.Context, genErr error, active
 	}
 
 	// Transient network/service errors
-	if strings.Contains(errStr, "connection reset by peer") ||
+	var networkErr net.Error
+	if errors.As(genErr, &networkErr) || errors.Is(genErr, io.EOF) || errors.Is(genErr, io.ErrUnexpectedEOF) ||
+		strings.Contains(errStr, "connection reset by peer") ||
 		strings.Contains(errStr, "INTERNAL") ||
 		strings.Contains(errStr, "Service Unavailable") ||
 		strings.Contains(errStr, "503") ||
@@ -459,19 +480,14 @@ func (c *Client) handleGenerationError(ctx context.Context, genErr error, active
 			"error", genErr,
 		)
 		if err := c.upgradeModelTier(ctx); err != nil {
-			// All tiers exhausted in this region, try switching region
-			if c.switchRegion(ctx) {
-				*activeModel = c.currentModel
-				return genErr, 0
-			}
-			return fmt.Errorf("feature unsupported on all model tiers: %w", genErr), 0
+			return util.PermanentError(err), 0
 		}
 		*activeModel = c.currentModel
 		return genErr, 0
 	}
 
 	// Permanent errors
-	return fmt.Errorf("permanent gemini error: %w", genErr), 0
+	return util.PermanentError(fmt.Errorf("permanent gemini error: %w", genErr)), 0
 }
 
 // stripCodeBlock removes markdown code fences (```json ... ``` or ``` ... ```)
@@ -597,9 +613,12 @@ func (c *Client) GenerateContentRawWithMetadata(ctx context.Context, prompt stri
 
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		c.mu.Lock()
-		client := c.activeClient()
-		model := activeModel
+		client, model, loc, quotaErr := c.generationClient(ctx)
+		activeModel = model
 		c.mu.Unlock()
+		if quotaErr != nil {
+			return quotaErr
+		}
 
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -609,7 +628,7 @@ func (c *Client) GenerateContentRawWithMetadata(ctx context.Context, prompt stri
 			c.mu.Lock()
 			retErr, backoff := c.handleGenerationError(ctx, genErr, &activeModel, attempt, "generate_content_raw")
 			c.mu.Unlock()
-			if backoff > 0 {
+			if backoff > 0 && attempt < 3 {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -621,7 +640,6 @@ func (c *Client) GenerateContentRawWithMetadata(ctx context.Context, prompt stri
 
 		c.mu.Lock()
 		c.resetConsecutiveErrors()
-		loc := c.currentLocation
 		c.mu.Unlock()
 
 		if attempt > 0 {
@@ -728,6 +746,9 @@ func (c *Client) AllTiersExhausted() bool {
 	if !c.allExhausted {
 		return false
 	}
+	if c.currentDay != "" && c.currentDay != getPacificDate() {
+		return false
+	}
 	// Check cooldown: if enough time has passed, allow retry
 	if !c.exhaustedAt.IsZero() && time.Since(c.exhaustedAt) >= exhaustionCooldown {
 		return false
@@ -755,12 +776,13 @@ func (c *Client) CleanTitles(ctx context.Context, requests []models.TitleRequest
 
 	c.mu.Lock()
 	activeModel := c.checkDayRollover(ctx)
+	location := c.currentLocation
 	c.mu.Unlock()
 
 	slog.Info("Starting batch title cleaning",
 		"count", len(requests),
 		"model", activeModel,
-		"location", c.currentLocation,
+		"location", location,
 	)
 
 	config := &genai.GenerateContentConfig{
@@ -918,9 +940,12 @@ func buildCleanTitlesPrompt(requests []models.TitleRequest, repairPass bool) str
 
 func (c *Client) generateCleanTitleResults(ctx context.Context, prompt string, config *genai.GenerateContentConfig, activeModel *string, attempt int) ([]CleanTitleResult, string, string, string, error) {
 	c.mu.Lock()
-	client := c.activeClient()
-	model := *activeModel
+	client, model, loc, quotaErr := c.generationClient(ctx)
+	*activeModel = model
 	c.mu.Unlock()
+	if quotaErr != nil {
+		return nil, "", model, loc, quotaErr
+	}
 
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -929,7 +954,7 @@ func (c *Client) generateCleanTitleResults(ctx context.Context, prompt string, c
 		c.mu.Lock()
 		retErr, backoff := c.handleGenerationError(ctx, genErr, activeModel, attempt, "batch_title_cleaning")
 		c.mu.Unlock()
-		if backoff > 0 {
+		if backoff > 0 && attempt < 3 {
 			select {
 			case <-ctx.Done():
 				return nil, "", model, "", ctx.Err()
@@ -940,7 +965,6 @@ func (c *Client) generateCleanTitleResults(ctx context.Context, prompt string, c
 	}
 	c.mu.Lock()
 	c.resetConsecutiveErrors()
-	loc := c.currentLocation
 	c.mu.Unlock()
 
 	if attempt > 0 {
@@ -1057,8 +1081,11 @@ func (c *Client) GenerateContentWithModel(ctx context.Context, modelOverride, pr
 
 	err := util.RetryWithBackoff(ctx, 3, func(attempt int) error {
 		c.mu.Lock()
-		client := c.activeClient()
+		client, _, loc, quotaErr := c.generationClient(ctx)
 		c.mu.Unlock()
+		if quotaErr != nil {
+			return quotaErr
+		}
 
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -1071,7 +1098,6 @@ func (c *Client) GenerateContentWithModel(ctx context.Context, modelOverride, pr
 
 		c.mu.Lock()
 		c.resetConsecutiveErrors()
-		loc := c.currentLocation
 		c.mu.Unlock()
 
 		c.logTokenUsage(resp, "generate_content_override", modelOverride, loc)

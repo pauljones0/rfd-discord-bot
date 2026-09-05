@@ -34,10 +34,12 @@ type DealProcessor struct {
 	updateInterval time.Duration
 	mu             sync.Mutex // prevents overlapping ProcessDeals runs
 
-	// Title batch queue — accumulates across scrape cycles
-	titleQueue      []models.TitleRequest
-	titleQueueDeals []*models.DealInfo // parallel slice: deal pointers to write clean titles back
-	titleQueueStart time.Time          // time first item was queued
+	// Title batches belong to one poll, so their deal pointers remain valid until
+	// notification processing and persistence finish.
+	titleQueue          []models.TitleRequest
+	titleQueueDeals     []*models.DealInfo // parallel slice: deal pointers to write clean titles back
+	titleQueueStart     time.Time          // time first item was queued
+	titleCleanupTimeout time.Duration      // independent budget for optional work
 }
 
 type DealAnalyzer interface {
@@ -47,13 +49,14 @@ type DealAnalyzer interface {
 
 func New(store DealStore, n DealNotifier, s DealScraper, v DealValidator, cfg *config.Config, ai DealAnalyzer) *DealProcessor {
 	return &DealProcessor{
-		store:          store,
-		notifier:       n,
-		scraper:        s,
-		validator:      v,
-		config:         cfg,
-		aiClient:       ai,
-		updateInterval: cfg.DiscordUpdateInterval,
+		store:               store,
+		notifier:            n,
+		scraper:             s,
+		validator:           v,
+		config:              cfg,
+		aiClient:            ai,
+		updateInterval:      cfg.DiscordUpdateInterval,
+		titleCleanupTimeout: 30 * time.Second,
 	}
 }
 
@@ -258,18 +261,15 @@ func rfdDetailFetchUnhealthy(stats models.DealDetailFetchStats) bool {
 	return stats.Attempted >= 3 && stats.Succeeded == 0 && stats.Failed > 0
 }
 
-const (
-	titleBatchSize     = 10
-	titleBatchMaxDelay = 5 * time.Minute
-)
+const titleBatchSize = 10
 
 // queueTitleCleaning adds a deal to the title batch queue.
-func (p *DealProcessor) queueTitleCleaning(deal *models.DealInfo, index int) {
+func (p *DealProcessor) queueTitleCleaning(deal *models.DealInfo) {
 	if p.titleQueueStart.IsZero() {
 		p.titleQueueStart = time.Now()
 	}
 	p.titleQueue = append(p.titleQueue, models.TitleRequest{
-		Index:    index,
+		Index:    len(p.titleQueue),
 		Title:    deal.Title,
 		Retailer: deal.Retailer,
 		Price:    deal.Price,
@@ -283,12 +283,8 @@ func (p *DealProcessor) flushTitleQueue(ctx context.Context, logger *slog.Logger
 		return
 	}
 
-	shouldFlush := len(p.titleQueue) >= titleBatchSize ||
-		(!p.titleQueueStart.IsZero() && time.Since(p.titleQueueStart) >= titleBatchMaxDelay)
-
-	if !shouldFlush {
-		logger.Info("Title queue not ready to flush", "queued", len(p.titleQueue),
-			"age", time.Since(p.titleQueueStart).Round(time.Second))
+	defer p.resetTitleQueue()
+	if ctx.Err() != nil {
 		return
 	}
 
@@ -313,8 +309,9 @@ func (p *DealProcessor) flushTitleQueue(ctx context.Context, logger *slog.Logger
 		}
 		tracker.TrackAIOutcome("batch_title_cleaning", len(p.titleQueue), len(results), missing, 0, 0)
 	}
+}
 
-	// Clear the queue
+func (p *DealProcessor) resetTitleQueue() {
 	p.titleQueue = nil
 	p.titleQueueDeals = nil
 	p.titleQueueStart = time.Time{}
@@ -322,6 +319,13 @@ func (p *DealProcessor) flushTitleQueue(ctx context.Context, logger *slog.Logger
 
 // analyzeDeals queues deals for batch title cleaning. No longer performs warm/hot AI analysis.
 func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.DealInfo, existingDeals map[string]*models.DealInfo, logger *slog.Logger, tracker *metrics.Tracker) {
+	// Never retain pointers or request indexes from an earlier scrape cycle.
+	p.resetTitleQueue()
+	defer p.resetTitleQueue()
+	// Optional cleanup must leave the original poll context available for
+	// notifications and persistence even when Gemini hangs or keeps retrying.
+	cleanupCtx, cancelCleanup := context.WithTimeout(ctx, p.titleCleanupTimeout)
+	defer cancelCleanup()
 	for i := range validDeals {
 		if ctx.Err() != nil {
 			logger.Warn("Context cancelled, stopping title queueing", "remaining", len(validDeals)-i)
@@ -348,8 +352,11 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 			// AI is optional. Without an analyzer, process original titles
 			// immediately and leave them eligible for cleaning if AI is enabled
 			// on a future run.
-			if p.aiClient != nil {
-				p.queueTitleCleaning(deal, i)
+			if p.aiClient != nil && cleanupCtx.Err() == nil {
+				p.queueTitleCleaning(deal)
+				if len(p.titleQueue) >= titleBatchSize {
+					p.flushTitleQueue(cleanupCtx, logger, tracker)
+				}
 			}
 		} else if existing != nil {
 			// Carry over existing clean title
@@ -358,9 +365,9 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 		}
 	}
 
-	// Try to flush the title queue
+	// Persist cleanup even when this poll has fewer than a full batch of titles.
 	if p.aiClient != nil {
-		p.flushTitleQueue(ctx, logger, tracker)
+		p.flushTitleQueue(cleanupCtx, logger, tracker)
 	}
 }
 
@@ -479,9 +486,9 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		}
 	}
 
+	titleChanged := existing.Title != scrapedBase.Title
 	if p.dealChanged(existing, &scrapedBase) {
 		changed = true
-		titleChanged := existing.Title != scrapedBase.Title
 		// Merge changes into existing
 		existing.Title = scrapedBase.Title
 		existing.PostURL = scrapedBase.PostURL
@@ -497,17 +504,21 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		existing.Comments = scrapedBase.Comments
 		existing.Summary = scrapedBase.Summary
 		existing.SearchTokens = scrapedBase.SearchTokens
+	}
 
-		// AI fields
-		if scrapedBase.AIProcessed {
+	// An unchanged source title can be cleaned for the first time after optional
+	// AI is enabled. Persist that result even if no source content has changed.
+	if scrapedBase.AIProcessed && scrapedBase.CleanTitle != "" {
+		if !existing.AIProcessed || existing.CleanTitle != scrapedBase.CleanTitle {
 			existing.CleanTitle = scrapedBase.CleanTitle
-			existing.AIProcessed = scrapedBase.AIProcessed
-		} else if titleChanged {
-			// A cleaned title describes the previous source title. When AI is
-			// disabled or cleaning is pending, display the updated raw title.
-			existing.CleanTitle = ""
-			existing.AIProcessed = false
+			existing.AIProcessed = true
+			changed = true
 		}
+	} else if titleChanged {
+		// A cleaned title describes the previous source title. When AI is
+		// disabled or cleaning failed, display the updated raw title.
+		existing.CleanTitle = ""
+		existing.AIProcessed = false
 	}
 
 	if !changed {
