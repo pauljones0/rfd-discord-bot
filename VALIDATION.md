@@ -7,6 +7,10 @@ Docker build context. No original bot checkout is needed at runtime or build tim
   detector. `go vet ./...` passes.
 - RFD regression tests cover list/detail parsing, deduplication, URL handling,
   engagement filters, title cleanup, and notification formatting/retries.
+- With Gemini disabled, regression tests process more than a full title batch
+  without queueing AI work, send eligible alerts using original titles, and keep
+  receipts across repeated polls. Unchanged titles retain prior cleanup; changed
+  titles discard stale cleanup metadata while updating the existing receipt.
 - New tests cover SQLite receipt persistence across restart, atomic batch rollback,
   guild-scoped subscriptions, management permissions, and direct-link defaults.
 - Migration storage tests pass with the race detector. They verify receipt

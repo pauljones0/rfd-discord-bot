@@ -345,7 +345,12 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 		}
 
 		if needsTitle {
-			p.queueTitleCleaning(deal, i)
+			// AI is optional. Without an analyzer, process original titles
+			// immediately and leave them eligible for cleaning if AI is enabled
+			// on a future run.
+			if p.aiClient != nil {
+				p.queueTitleCleaning(deal, i)
+			}
 		} else if existing != nil {
 			// Carry over existing clean title
 			deal.CleanTitle = existing.CleanTitle
@@ -354,7 +359,9 @@ func (p *DealProcessor) analyzeDeals(ctx context.Context, validDeals []models.De
 	}
 
 	// Try to flush the title queue
-	p.flushTitleQueue(ctx, logger, tracker)
+	if p.aiClient != nil {
+		p.flushTitleQueue(ctx, logger, tracker)
+	}
 }
 
 // processNotificationsAndPrepareUpdates sends/updates Discord notifications and prepares lists for DB persistence.
@@ -474,6 +481,7 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 
 	if p.dealChanged(existing, &scrapedBase) {
 		changed = true
+		titleChanged := existing.Title != scrapedBase.Title
 		// Merge changes into existing
 		existing.Title = scrapedBase.Title
 		existing.PostURL = scrapedBase.PostURL
@@ -494,6 +502,11 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		if scrapedBase.AIProcessed {
 			existing.CleanTitle = scrapedBase.CleanTitle
 			existing.AIProcessed = scrapedBase.AIProcessed
+		} else if titleChanged {
+			// A cleaned title describes the previous source title. When AI is
+			// disabled or cleaning is pending, display the updated raw title.
+			existing.CleanTitle = ""
+			existing.AIProcessed = false
 		}
 	}
 
