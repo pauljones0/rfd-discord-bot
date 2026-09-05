@@ -89,6 +89,11 @@ func (c *Client) Update(ctx context.Context, deal models.DealInfo) error {
 	var errs []error
 
 	for channelID, messageID := range deal.DiscordMessageIDs {
+		// Imported receipts prevent duplicate alerts, but the new application
+		// cannot edit messages authored by the original bot.
+		if owner := deal.DiscordMessageApplicationIDs[channelID]; owner != "" && owner != c.applicationID {
+			continue
+		}
 		patchURL := fmt.Sprintf("%s/channels/%s/messages/%s", discordAPIBase, channelID, messageID)
 		_, err := c.doRequest(ctx, "PATCH", patchURL, payload)
 		if err != nil {

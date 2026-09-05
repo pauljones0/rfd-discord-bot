@@ -29,6 +29,12 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
+	// Check before changing journal mode or adding tables. Never initialize
+	// this schema inside another bot's database.
+	if err = validateStoreSchema(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	_, err = db.ExecContext(ctx, `PRAGMA journal_mode=WAL;
  PRAGMA busy_timeout=5000;
  CREATE TABLE IF NOT EXISTS deals(id TEXT PRIMARY KEY,payload TEXT NOT NULL,published_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);

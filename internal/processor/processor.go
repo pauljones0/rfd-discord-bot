@@ -428,12 +428,27 @@ func (p *DealProcessor) processNewDeal(ctx context.Context, dealToSave *models.D
 	if err != nil {
 		return err
 	}
-	dealToSave.DiscordMessageIDs = msgIDs
+	p.recordDiscordReceipts(dealToSave, msgIDs)
 	dealToSave.DiscordLastUpdatedTime = time.Now()
 	tracker.TrackDiscordMessage()
 	tracker.TrackDealFound()
 	*newDeals = append(*newDeals, *dealToSave)
 	return nil
+}
+
+func (p *DealProcessor) recordDiscordReceipts(deal *models.DealInfo, receipts map[string]string) {
+	if deal.DiscordMessageIDs == nil {
+		deal.DiscordMessageIDs = make(map[string]string)
+	}
+	if p.config.DiscordAppID != "" && deal.DiscordMessageApplicationIDs == nil {
+		deal.DiscordMessageApplicationIDs = make(map[string]string)
+	}
+	for channelID, messageID := range receipts {
+		deal.DiscordMessageIDs[channelID] = messageID
+		if p.config.DiscordAppID != "" {
+			deal.DiscordMessageApplicationIDs[channelID] = p.config.DiscordAppID
+		}
+	}
 }
 
 func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *models.DealInfo, scrapedDuplicates []models.DealInfo, updatedDeals *[]models.DealInfo, subs []models.Subscription) error {
@@ -516,9 +531,7 @@ func (p *DealProcessor) processExistingDeal(ctx context.Context, existing *model
 		if len(missingSubs) > 0 {
 			newMsgIDs, err := p.notifier.Send(ctx, *existing, missingSubs)
 			if err == nil {
-				for channelID, msgID := range newMsgIDs {
-					existing.DiscordMessageIDs[channelID] = msgID
-				}
+				p.recordDiscordReceipts(existing, newMsgIDs)
 				existing.DiscordLastUpdatedTime = time.Now()
 			} else {
 				slog.Warn("Failed to send missing discord notifications", "processor", "rfd", "id", existing.DocumentID, "error", err)

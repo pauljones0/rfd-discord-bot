@@ -12,17 +12,21 @@ const dealRetention = 30 * 24 * time.Hour
 
 // DealInfo represents the structured information for a deal.
 type DealInfo struct {
-	Title                  string            `docstore:"title" validate:"required"`
-	PostURL                string            `docstore:"postURL" validate:"required,url"`
-	Category               string            `docstore:"category,omitempty"`
-	ThreadImageURL         string            `docstore:"threadImageURL,omitempty" validate:"omitempty,url"`
-	ActualDealURL          string            `docstore:"actualDealURL,omitempty" validate:"omitempty,url"`
-	DocumentID             string            `docstore:"-"`                           // Document ID; not stored in the document itself.
-	DiscordMessageIDs      map[string]string `docstore:"discordMessageIDs,omitempty"` // Mapping of ChannelID -> MessageID
-	LastUpdated            time.Time         `docstore:"lastUpdated"`
-	PublishedTimestamp     time.Time         `docstore:"publishedTimestamp" validate:"required"` // Parsed from PostedTime
-	DiscordLastUpdatedTime time.Time         `docstore:"discordLastUpdatedTime,omitempty"`
-	ExpiresAt              time.Time         `docstore:"expiresAt,omitempty"`
+	Title             string            `docstore:"title" validate:"required"`
+	PostURL           string            `docstore:"postURL" validate:"required,url"`
+	Category          string            `docstore:"category,omitempty"`
+	ThreadImageURL    string            `docstore:"threadImageURL,omitempty" validate:"omitempty,url"`
+	ActualDealURL     string            `docstore:"actualDealURL,omitempty" validate:"omitempty,url"`
+	DocumentID        string            `docstore:"-"`                           // Document ID; not stored in the document itself.
+	DiscordMessageIDs map[string]string `docstore:"discordMessageIDs,omitempty"` // Mapping of ChannelID -> MessageID
+	// DiscordMessageApplicationIDs records the application that authored each
+	// receipt. Imported receipts still prevent reposting, but another application
+	// must never attempt to edit them.
+	DiscordMessageApplicationIDs map[string]string `docstore:"discordMessageApplicationIDs,omitempty"`
+	LastUpdated                  time.Time         `docstore:"lastUpdated"`
+	PublishedTimestamp           time.Time         `docstore:"publishedTimestamp" validate:"required"` // Parsed from PostedTime
+	DiscordLastUpdatedTime       time.Time         `docstore:"discordLastUpdatedTime,omitempty"`
+	ExpiresAt                    time.Time         `docstore:"expiresAt,omitempty"`
 
 	Threads      []ThreadContext `docstore:"threads"`
 	SearchTokens []string        `docstore:"searchTokens,omitempty"`

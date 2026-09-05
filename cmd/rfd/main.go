@@ -37,6 +37,9 @@ func run() error {
 	if len(os.Args) > 1 {
 		command = os.Args[1]
 	}
+	if command == "import" {
+		return runImport(os.Args[2:])
+	}
 	if command == "healthcheck" {
 		addr := os.Getenv("LISTEN_ADDR")
 		if addr == "" {
@@ -79,8 +82,8 @@ func run() error {
 		fmt.Println("RFD configuration is valid (credentials not contacted).")
 		return nil
 	}
-	if command != "run" && command != "register" {
-		return fmt.Errorf("usage: rfd-bot [run|register|check-config|check-storage|healthcheck]")
+	if command != "run" && command != "register" && command != "check-discord" {
+		return fmt.Errorf("usage: rfd-bot [run|register|import|check-config|check-storage|check-discord|healthcheck]")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -103,6 +106,22 @@ func run() error {
 		return err
 	}
 	defer store.Close()
+	if command == "check-discord" {
+		subs, err := store.GetAllSubscriptions(ctx)
+		if err != nil {
+			return err
+		}
+		checkCtx, stop := context.WithTimeout(ctx, time.Minute)
+		defer stop()
+		if err = api.CheckChannels(checkCtx, cfg.DiscordBotToken, cfg.DiscordAppID, subs); err != nil {
+			return err
+		}
+		fmt.Printf("Discord application and destinations for %d subscriptions are accessible (no messages sent).\n", len(subs))
+		return nil
+	}
+	if err = store.BindApplication(ctx, cfg.DiscordAppID); err != nil {
+		return err
+	}
 	aiClient, err := ai.NewClient(ctx, "", nil, cfg.GeminiAPIKeys, cfg.GeminiModels, store)
 	if err != nil {
 		return err
@@ -115,7 +134,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	p := processor.New(store, notifier.New(cfg.DiscordBotToken), scraper.New(cfg, selectors), validator.New(), cfg, analyzer)
+	p := processor.New(store, notifier.New(cfg.DiscordBotToken, cfg.DiscordAppID), scraper.New(cfg, selectors), validator.New(), cfg, analyzer)
 	gateway, err := api.NewGateway(cfg.DiscordBotToken, api.NewHandler(store))
 	if err != nil {
 		return err

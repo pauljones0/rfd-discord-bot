@@ -9,6 +9,19 @@ Docker build context. No original bot checkout is needed at runtime or build tim
   engagement filters, title cleanup, and notification formatting/retries.
 - New tests cover SQLite receipt persistence across restart, atomic batch rollback,
   guild-scoped subscriptions, management permissions, and direct-link defaults.
+- Migration storage tests pass with the race detector. They verify receipt
+  ownership, subscription/history persistence after reopening SQLite, duplicate
+  prevention, application binding, rejection of repeat/nonempty imports, and
+  malformed-record validation. A database trigger deliberately fails an insert
+  after earlier records were written; the transaction leaves no partial import.
+  Legacy username attribution is retained. Separate fixtures verify that a
+  foreign database or incompatible table schema is rejected without changing
+  database contents or journal mode, and that import rechecks for foreign tables.
+- The source JSON exporter and standalone import CLI were exercised together with
+  a synthetic fixture and networking disabled. The resulting deal payload retains
+  every exported field, including timestamp precision and message IDs, and adds
+  explicit source application ownership. The destination application binding is
+  verified in SQLite. No production database is used for this test.
 - A full local test wires the real RFD scraper, processor, SQLite store, and Discord
   notifier through synthetic HTTPS fixtures. Two matching subscriptions in one
   channel produce one alert, and a second process/store instance does not repost it.
@@ -23,7 +36,10 @@ Docker build context. No original bot checkout is needed at runtime or build tim
   environment files, logs, database files, backups, or deployment addresses in
   the extracted source. Existing license/source attribution remains included.
 
-This validates extraction and deployment behavior with local fixtures. It does
-not claim that a separate production Discord application was provisioned or that
-a live RFD scrape was performed for this extraction. The original combined bot
-and its working Gateway deployment continue running separately.
+This validates extraction and migration behavior with local fixtures. It does
+not claim that a separate production Discord application was provisioned, that a
+live RFD scrape was performed, or that a production migration is complete. The
+source service remains separate until its operator completes the
+[cutover procedure](MIGRATION.md). A read-only `check-discord` preflight can verify
+application configuration and subscribed-channel permissions; it does not send
+an alert or prove a live notification was delivered.

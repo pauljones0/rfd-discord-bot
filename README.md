@@ -37,6 +37,7 @@ cd rfd-discord-bot
    ```sh
    docker compose build
    docker compose run --rm bot check-config
+   docker compose run --rm bot check-discord
    docker compose run --rm bot register
    docker compose up -d
    ```
@@ -129,10 +130,30 @@ the next scheduled poll; it is not treated as proof that no deals exist.
 
 If commands do not arrive, check that the application's Interactions Endpoint
 URL is empty and the bot token belongs to the configured application ID. Startup
-checks both. If commands are missing, rerun `register`; global registration may
+checks both and binds its SQLite database to that application ID. An existing
+binding must match; a nonempty database without a binding is rejected instead of
+silently adopting another bot's history. `check-discord` checks the application
+and the bot's permissions in subscribed channels without posting messages. With
+no subscriptions yet, it cannot check a destination channel.
+
+If commands are missing, rerun `register`; global registration may
 take time to appear. If alerts cannot be sent, inspect the bot's channel permissions
 and logs. Remote HTML changes, rate limiting, or an unavailable optional Gemini
 model may require updated selectors or settings.
+
+## Migrate existing RFD alerts
+
+New installations can start directly with `/rfd subscribe`. Existing deployments
+can import subscriptions and deal/message history using the offline `import`
+command. The original combined database is a different schema and must not be
+mounted as this bot's database.
+
+Follow [the migration procedure](MIGRATION.md) to rehearse the import into a new
+database, preserve notification receipts, and stop the old RFD producer before
+activating the new one. Imported messages remain in Discord and retain their
+deduplication receipts; messages authored by the old application are not edited
+by the new application. Set `MAX_STORED_DEALS` high enough to retain the imported
+history, including room for new deals.
 
 ## Develop and verify
 
@@ -152,7 +173,7 @@ Gateway tests exercise command receipt, acknowledgement, disconnection, and resu
 
 | Package | Responsibility |
 | --- | --- |
-| `cmd/rfd` | Startup, scheduling, shutdown, registration, health checks |
+| `cmd/rfd` | Startup, scheduling, registration, preflight, offline import, health checks |
 | `internal/api` | RFD commands and outbound Discord Gateway transport |
 | `internal/scraper` | RFD HTML and detail parsing |
 | `internal/processor` | Deduplication, enrichment, filtering, message updates |
@@ -170,7 +191,8 @@ The canonical repository is
 [pauljones0/rfd-discord-bot](https://github.com/pauljones0/rfd-discord-bot).
 It contains only the standalone RFD service. Older clones of the combined bot
 belong to the separately maintained `homelab-bots` project; do not pull this
-repository into an existing combined deployment. See [migration differences](ORIGIN.md).
+repository into an existing combined deployment. See [migration differences](ORIGIN.md)
+and [the cutover procedure](MIGRATION.md).
 
 Share this repository or its source archive. Recipients supply their own Discord
 application and `.env`; no credentials or existing subscriptions are included.
