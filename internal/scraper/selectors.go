@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/andybalholm/cascadia"
 )
 
 type SelectorConfig struct {
@@ -65,7 +67,7 @@ func LoadSelectorsFromBytes(data []byte) (SelectorConfig, error) {
 	return config, nil
 }
 
-// Validate checks that critical selector fields are non-empty.
+// Validate checks required fields and compiles every configured CSS selector.
 func (c SelectorConfig) Validate() error {
 	var missing []string
 	if c.HotDealsList.Container.Item == "" {
@@ -79,6 +81,30 @@ func (c SelectorConfig) Validate() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required selectors: %s", strings.Join(missing, ", "))
+	}
+	selectors := []struct{ name, value string }{
+		{"hot_deals_list.container.item", c.HotDealsList.Container.Item},
+		{"hot_deals_list.container.ignore_modifier", c.HotDealsList.Container.IgnoreModifier},
+		{"hot_deals_list.elements.title_link", c.HotDealsList.Elements.TitleLink},
+		{"hot_deals_list.elements.title_text", c.HotDealsList.Elements.TitleText},
+		{"hot_deals_list.elements.retailer", c.HotDealsList.Elements.Retailer},
+		{"hot_deals_list.elements.posted_time", c.HotDealsList.Elements.PostedTime},
+		{"hot_deals_list.elements.thread_image", c.HotDealsList.Elements.ThreadImage},
+		{"hot_deals_list.elements.like_count", c.HotDealsList.Elements.LikeCount},
+		{"hot_deals_list.elements.comment_count", c.HotDealsList.Elements.CommentCount},
+		{"hot_deals_list.elements.comment_count_fallback", c.HotDealsList.Elements.CommentCountFallback},
+		{"hot_deals_list.elements.view_count", c.HotDealsList.Elements.ViewCount},
+		{"deal_details.primary_link", c.DealDetails.PrimaryLink},
+		{"deal_details.fallback_link", c.DealDetails.FallbackLink},
+		{"deal_details.category", c.DealDetails.Category},
+	}
+	for _, selector := range selectors {
+		if selector.value == "" {
+			continue
+		}
+		if _, err := cascadia.Compile(selector.value); err != nil {
+			return fmt.Errorf("invalid CSS selector %s: %w", selector.name, err)
+		}
 	}
 	return nil
 }

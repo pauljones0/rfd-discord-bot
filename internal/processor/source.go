@@ -49,6 +49,14 @@ func (p *DealProcessor) loadExistingDeals(ctx context.Context, validDeals []mode
 		logger.Error("Batch read failed", "error", err)
 		return nil, fmt.Errorf("failed to load existing deals: %w", err)
 	}
+	for i := range validDeals {
+		if canonical := existingDeals[validDeals[i].DocumentID]; canonical != nil {
+			// Storage may resolve a retained thread alias beyond the recent fuzzy
+			// history window. Keep the source alias in Threads for future lookups.
+			validDeals[i].DocumentID = canonical.DocumentID
+			existingDeals[canonical.DocumentID] = canonical
+		}
+	}
 	return existingDeals, nil
 }
 

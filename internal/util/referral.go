@@ -83,8 +83,10 @@ func cleanDecodedReferralTarget(rawUrl string, encodedTarget string, amazonTag s
 		return rawUrl, false
 	}
 
-	decodedTarget, decodeErr := url.QueryUnescape(encodedTarget)
-	if decodeErr != nil || !isHTTPURL(decodedTarget) {
+	// Query().Get already decoded the wrapper's parameter. A second unescape
+	// changes escaped path separators and query delimiters inside the destination.
+	decodedTarget := encodedTarget
+	if !isHTTPURL(decodedTarget) {
 		return rawUrl, false
 	}
 

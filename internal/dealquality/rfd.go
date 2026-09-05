@@ -14,9 +14,10 @@ const (
 )
 
 var (
-	currencyAmountRe = regexp.MustCompile(`(?i)(?:ca\$|c\$|us\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
-	amountRe         = regexp.MustCompile(`([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
-	percentRe        = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
+	currencyAmountRe  = regexp.MustCompile(`(?i)(?:ca\$|c\$|us\$|\$)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
+	amountRe          = regexp.MustCompile(`([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
+	percentRe         = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*%`)
+	discountPercentRe = regexp.MustCompile(`(?i)(?:[0-9]+(?:\.[0-9]+)?\s*%\s*(?:off|cashback|coupon|discount|rebate)\b|\b(?:save|savings|discount|cashback|coupon|rebate)\s+[0-9]+(?:\.[0-9]+)?\s*%)`)
 
 	rfdNegativeDealPhrases = []string{
 		"above market",
@@ -120,7 +121,9 @@ func EvaluateRFDWarmHotDiscount(deal models.DealInfo) RFDDiscountEvidence {
 	if amount, ok := parseAmount(deal.Savings); ok && amount >= rfdMinSavingsAmount {
 		return RFDDiscountEvidence{Eligible: true, Reason: "savings field has discount amount", SavingsAmount: amount}
 	}
-	if pct, ok := parsePercent(deal.Title + " " + deal.Summary); ok && pct >= rfdMinDiscountPct {
+	// Product attributes such as "100% cotton" or "99% alcohol" do not
+	// establish a discount. Free-form percentages need explicit value context.
+	if pct, ok := parsePercent(discountPercentRe.FindString(deal.Title + " " + deal.Summary)); ok && pct >= rfdMinDiscountPct {
 		return RFDDiscountEvidence{Eligible: true, Reason: "title or summary has discount percent", DiscountPercent: pct}
 	}
 

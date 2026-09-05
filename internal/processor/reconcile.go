@@ -24,6 +24,7 @@ func (p *DealProcessor) reconcileDeal(existing *models.DealInfo, observations []
 		}
 		deal := cloneDeal(live[0])
 		for _, duplicate := range live[1:] {
+			fillMissingDetails(&deal, duplicate)
 			for _, thread := range duplicate.Threads {
 				p.mergeThread(&deal, thread)
 			}
@@ -172,16 +173,31 @@ func contentBaseForExistingDeal(existing *models.DealInfo, scrapedDuplicates []m
 }
 
 func scrapeForExistingThread(existing *models.DealInfo, scrapedDuplicates []models.DealInfo) *models.DealInfo {
-	existingThreadKeys := make(map[string]struct{}, len(existing.Threads))
+	// A grouped duplicate is a known thread after its first poll, but it must
+	// never become the source of the canonical title, price, or publication time.
+	canonicalKeys := make(map[string]struct{})
 	for _, thread := range existing.Threads {
-		if key := threadKey(thread.PostURL); key != "" {
-			existingThreadKeys[key] = struct{}{}
+		if existing.DocumentID != "" && thread.DocumentID == existing.DocumentID {
+			if key := threadKey(thread.PostURL); key != "" {
+				canonicalKeys[key] = struct{}{}
+			}
+		}
+	}
+	// Older imports can lack per-thread identities. The canonical post URL is
+	// retained separately from the thread popularity order.
+	if len(canonicalKeys) == 0 {
+		canonicalURL := existing.PostURL
+		if canonicalURL == "" && len(existing.Threads) > 0 {
+			canonicalURL = existing.Threads[0].PostURL
+		}
+		if key := threadKey(canonicalURL); key != "" {
+			canonicalKeys[key] = struct{}{}
 		}
 	}
 
 	for i := range scrapedDuplicates {
 		for _, thread := range scrapedDuplicates[i].Threads {
-			if _, ok := existingThreadKeys[threadKey(thread.PostURL)]; ok {
+			if _, ok := canonicalKeys[threadKey(thread.PostURL)]; ok {
 				return &scrapedDuplicates[i]
 			}
 		}

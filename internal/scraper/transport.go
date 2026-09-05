@@ -54,16 +54,12 @@ func isTransientDNSFailure(err error) bool {
 		strings.Contains(errText, "try again"))
 }
 
-// resolveLink finds an <a> element within the selection (or the selection itself),
-// returning the href (resolved to absolute if relative) and text content.
-func (c *Client) fetchHTMLContent(ctx context.Context, urlStr string) (*goquery.Document, error) {
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse URL %s: %w", urlStr, err)
-	}
-
+func (c *Client) validateFetchURL(parsedURL *url.URL) error {
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return nil, fmt.Errorf("invalid URL scheme %s: only http and https allowed", parsedURL.Scheme)
+		return fmt.Errorf("invalid URL scheme %s: only http and https allowed", parsedURL.Scheme)
+	}
+	if parsedURL.User != nil {
+		return errors.New("security violation: URL credentials are not allowed")
 	}
 
 	hostname := parsedURL.Hostname()
@@ -75,7 +71,18 @@ func (c *Client) fetchHTMLContent(ctx context.Context, urlStr string) (*goquery.
 		}
 	}
 	if !allowed {
-		return nil, fmt.Errorf("security violation: URL hostname %s is not in allowlist", hostname)
+		return fmt.Errorf("security violation: URL hostname %s is not in allowlist", hostname)
+	}
+	return nil
+}
+
+func (c *Client) fetchHTMLContent(ctx context.Context, urlStr string) (*goquery.Document, error) {
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse URL %s: %w", urlStr, err)
+	}
+	if err := c.validateFetchURL(parsedURL); err != nil {
+		return nil, err
 	}
 	if c.httpClient == nil {
 		return nil, errors.New("RFD HTTP client is not configured")
@@ -150,8 +157,37 @@ func (c *Client) fetchHTMLResponse(ctx context.Context, urlStr string, profile b
 
 	applyStealthHeaders(req, profile)
 
-	res, err := c.httpClient.Do(req)
+	// Apply the same boundary before every redirect, including for injected test
+	// clients. Copying the client avoids changing shared state during detail fetches.
+	client := *c.httpClient
+	previousRedirectCheck := client.CheckRedirect
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if err := c.validateFetchURL(next.URL); err != nil {
+			return err
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if err := next.Context().Err(); err != nil {
+			return err
+		}
+		if previousRedirectCheck != nil {
+			return previousRedirectCheck(next, via)
+		}
+		return nil
+	}
+	res, err := client.Do(req)
 	if err != nil {
+		// net/http includes the rejected redirect target in url.Error, including
+		// any password it contained. Preserve the cause without logging that value.
+		var requestErr *url.Error
+		if errors.As(err, &requestErr) {
+			if target, parseErr := url.Parse(requestErr.URL); parseErr == nil && target.User != nil {
+				redacted := *requestErr
+				redacted.URL = target.Redacted()
+				err = &redacted
+			}
+		}
 		return nil, fmt.Errorf("failed to fetch URL %s: %w", urlStr, err)
 	}
 	return res, nil

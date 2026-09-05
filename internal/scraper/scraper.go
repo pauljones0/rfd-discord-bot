@@ -160,9 +160,15 @@ func (c *Client) FetchDealDetails(ctx context.Context, deals []*models.DealInfo)
 			deal.Description = detail.Description
 			deal.Comments = detail.Comments
 			deal.Summary = detail.Summary
-			deal.Price = detail.Price
-			deal.OriginalPrice = detail.OriginalPrice
-			deal.Savings = detail.Savings
+			if detail.Price != "" {
+				deal.Price = detail.Price
+			}
+			if detail.OriginalPrice != "" {
+				deal.OriginalPrice = detail.OriginalPrice
+			}
+			if detail.Savings != "" {
+				deal.Savings = detail.Savings
+			}
 			if detail.Retailer != "" {
 				deal.Retailer = detail.Retailer
 			}

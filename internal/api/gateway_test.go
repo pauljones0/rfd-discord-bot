@@ -102,6 +102,7 @@ func TestGatewayReceivesCommandAndResumesAfterDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	g.openTimeout = 100 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { g.Run(ctx); close(done) }()
@@ -129,6 +130,16 @@ func TestGatewayReceivesCommandAndResumesAfterDisconnect(t *testing.T) {
 		t.Fatal(err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("Gateway did not reconnect and resume")
+	}
+	// A completed READY/RESUMED handshake must disarm the open timeout; the
+	// same live connection remains usable until runtime cancellation below.
+	select {
+	case err := <-serverErrors:
+		t.Fatal(err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if !g.ready.Load() || connections.Load() != 2 {
+		t.Fatal("healthy resumed socket was closed by handshake timeout")
 	}
 	if g.received.Load() != 1 || g.responded.Load() != 1 || g.failed.Load() != 0 {
 		t.Fatalf("unexpected counters: received=%d responded=%d failed=%d", g.received.Load(), g.responded.Load(), g.failed.Load())

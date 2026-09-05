@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/pauljones0/rfd-discord-bot/internal/models"
@@ -14,7 +15,9 @@ import (
 var (
 	// Matches sequences of digits or letters, potentially including a decimal point in between.
 	// Covers things like "40", "250gb", "5g", "3.14", "4k", "144hz"
-	tokenRegex = regexp.MustCompile(`[a-z0-9]+(?:\.[a-z0-9]+)*`)
+	tokenRegex       = regexp.MustCompile(`[a-z0-9]+(?:\.[a-z0-9]+)*`)
+	capacityRegex    = regexp.MustCompile(`(?i)\b([0-9]+(?:\.[0-9]+)?)\s*(tb|gb|mb|mah)\b`)
+	modelNumberRegex = regexp.MustCompile(`[0-9]+`)
 
 	// urlDelimReplacer replaces common URL delimiters with spaces for tokenization.
 	urlDelimReplacer = strings.NewReplacer("/", " ", "?", " ", "&", " ", "=", " ", "-", " ", "_", " ", ".", " ")
@@ -148,8 +151,12 @@ func canonicalDealURL(raw string) string {
 	if parsed.Path != "/" {
 		parsed.Path = strings.TrimRight(parsed.Path, "/")
 	}
-
-	if isCanonicalProductHost(parsed.Hostname()) {
+	// CleanProductURL normalizes a recognized Amazon product to /dp/<ASIN>.
+	// Its optional display/seller parameters do not change that product key;
+	// search and category query parameters remain part of their identity.
+	host := parsed.Hostname()
+	if (host == "amazon.ca" || strings.HasSuffix(host, ".amazon.ca") || host == "amazon.com" || strings.HasSuffix(host, ".amazon.com")) &&
+		strings.HasPrefix(parsed.Path, "/dp/") && !strings.Contains(strings.TrimPrefix(parsed.Path, "/dp/"), "/") {
 		parsed.RawQuery = ""
 	}
 
@@ -180,25 +187,12 @@ func unwrapReferralURL(raw string) string {
 		if target == "" {
 			return raw
 		}
-		if decoded, err := url.QueryUnescape(target); err == nil {
-			target = decoded
-		}
 		if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
 			return raw
 		}
 		raw = target
 	}
 	return raw
-}
-
-func isCanonicalProductHost(host string) bool {
-	host = strings.ToLower(host)
-	return strings.Contains(host, "amazon.") ||
-		host == "ebay.ca" ||
-		host == "ebay.com" ||
-		strings.HasSuffix(host, ".ebay.ca") ||
-		strings.HasSuffix(host, ".ebay.com") ||
-		strings.Contains(host, "bestbuy.ca")
 }
 
 func sameCanonicalDealURL(left, right string) bool {
@@ -283,8 +277,8 @@ func tokenOverlapCount(tokensA, tokensB []string) int {
 }
 
 func isFuzzyDealMatch(tokensA, tokensB []string) bool {
-	// Title-only dedupe runs before outbound product links are available, so it
-	// must be conservative. A one- or two-token subset match is too easy to hit
+	// Fuzzy dedupe also covers posts without outbound product links, so it must
+	// be conservative. A one- or two-token subset match is too easy to hit
 	// accidentally on deal-board titles that share prices, sale words, or brands.
 	if tokenOverlapCount(tokensA, tokensB) < 3 {
 		return false
@@ -302,6 +296,63 @@ func normalizeRetailerForDedupe(retailer string) string {
 	retailer = strings.ToLower(strings.TrimSpace(retailer))
 	retailer = strings.Join(strings.Fields(retailer), " ")
 	return retailer
+}
+
+func fuzzyDealsCompatible(left, right *models.DealInfo) bool {
+	leftURL, rightURL := canonicalDealURL(left.ActualDealURL), canonicalDealURL(right.ActualDealURL)
+	if leftURL != "" && rightURL != "" && leftURL != rightURL {
+		return false
+	}
+	return retailersCompatible(left.Retailer, right.Retailer) &&
+		!titleVariantsConflict(left.Title, right.Title) &&
+		isFuzzyDealMatch(left.SearchTokens, right.SearchTokens)
+}
+
+// Only explicit capacity units and alphanumeric model identifiers can veto a
+// title match. Prices and other bare numbers may legitimately change per post.
+func titleVariantsConflict(left, right string) bool {
+	leftVariants, rightVariants := titleVariants(left), titleVariants(right)
+	for family, leftValues := range leftVariants {
+		rightValues := rightVariants[family]
+		leftOnly, rightOnly := false, false
+		for value := range leftValues {
+			if !rightValues[value] {
+				leftOnly = true
+			}
+		}
+		for value := range rightValues {
+			if !leftValues[value] {
+				rightOnly = true
+			}
+		}
+		if leftOnly && rightOnly {
+			return true
+		}
+	}
+	return false
+}
+
+func titleVariants(title string) map[string]map[string]bool {
+	variants := make(map[string]map[string]bool)
+	add := func(family, value string) {
+		if variants[family] == nil {
+			variants[family] = make(map[string]bool)
+		}
+		variants[family][value] = true
+	}
+	for _, match := range capacityRegex.FindAllStringSubmatch(title, -1) {
+		amount, err := strconv.ParseFloat(match[1], 64)
+		if err == nil {
+			add("capacity:"+strings.ToLower(match[2]), strconv.FormatFloat(amount, 'f', -1, 64))
+		}
+	}
+	for _, token := range extractWords(title) {
+		if token[0] < 'a' || token[0] > 'z' || !modelNumberRegex.MatchString(token) {
+			continue
+		}
+		add("model:"+modelNumberRegex.ReplaceAllString(token, "#"), token)
+	}
+	return variants
 }
 
 // deduplicateDeals merges valid scraped deals with existing recent deals or other scraped deals.
@@ -355,7 +406,7 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 			}
 
 			// Fuzzy Match
-			if retailersCompatible(dealA.Retailer, rDeal.Retailer) && isFuzzyDealMatch(dealA.SearchTokens, rDeal.SearchTokens) {
+			if fuzzyDealsCompatible(dealA, rDeal) {
 				matchedExisting = rDeal
 				break
 			}
@@ -387,7 +438,7 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 			if sameCanonicalDealURL(dealA.ActualDealURL, dealB.ActualDealURL) {
 				isMatch = true
 			} else {
-				if retailersCompatible(dealA.Retailer, dealB.Retailer) && isFuzzyDealMatch(dealA.SearchTokens, dealB.SearchTokens) {
+				if fuzzyDealsCompatible(dealA, dealB) {
 					isMatch = true
 				}
 			}
@@ -415,10 +466,9 @@ func (p *DealProcessor) deduplicateDeals(ctx context.Context, scrapedDeals []mod
 	return dedupedScraped
 }
 
-// deduplicateDealsByDetailedURL runs after detail pages are fetched, when
-// ActualDealURL is finally available for new RFD posts. The initial list-page
-// dedupe can only use title/thread metadata, so this pass catches same-product
-// duplicates whose titles were too different to fuzzy match.
+// deduplicateDealsByDetailedURL consolidates canonical URL identities after
+// fuzzy matches and exact document matches, including previously stored duplicate
+// rows and differently titled observations in the same poll.
 func (p *DealProcessor) deduplicateDealsByDetailedURL(ctx context.Context, deals []models.DealInfo, existingDeals map[string]*models.DealInfo, recentDeals []models.DealInfo, logger *slog.Logger) []models.DealInfo {
 	if ctx.Err() != nil || len(deals) == 0 {
 		return deals

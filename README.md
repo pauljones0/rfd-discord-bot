@@ -6,6 +6,7 @@ follows engagement, and updates existing Discord messages as deals change.
 
 The [architecture and rewrite record](ARCHITECTURE.md) explains the Go/SQLite
 choice, module boundaries, delivery guarantees, and compatibility limits.
+The [release review](REVIEW.md) records the audit findings, fixes, and validation.
 
 Choose all deals, tech deals, warm/hot deals, or hot deals. Optional Gemini title
 cleanup is available; ordinary alerts work without an AI account.

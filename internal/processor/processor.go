@@ -74,11 +74,14 @@ func (p *DealProcessor) ProcessDeals(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	observed = p.deduplicateDeals(ctx, observed, existing, recent, logger)
 	stats := p.enrichDealsWithDetails(ctx, observed, existing, logger)
 	if rfdDetailFetchUnhealthy(stats) {
 		return fmt.Errorf("rfd detail fetch unhealthy: attempted=%d succeeded=%d failed=%d not_found=%d", stats.Attempted, stats.Succeeded, stats.Failed, stats.NotFound)
 	}
+	// Resolve product identity before a fuzzy title match can group observations.
+	// Different product links must veto a match instead of being discovered only
+	// after the original document identities have already been overwritten.
+	observed = p.deduplicateDeals(ctx, observed, existing, recent, logger)
 	observed = p.deduplicateDealsByDetailedURL(ctx, observed, existing, recent, logger)
 
 	groups := make(map[string][]models.DealInfo)

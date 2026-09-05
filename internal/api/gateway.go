@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -26,13 +27,30 @@ type Gateway struct {
 	responded    atomic.Uint64
 	failed       atomic.Uint64
 	lastReceived atomic.Int64
+	connection   atomic.Pointer[gatewayConnection]
+	openTimeout  time.Duration
+}
+
+// Open holds DiscordGo's session lock while awaiting HELLO and READY, so
+// Session.Close cannot interrupt a stalled handshake. Own the underlying
+// connection instead, with cancellation and a timer that stops once ready.
+type gatewayConnection struct {
+	net.Conn
+	stopCancellation func() bool
+	handshakeTimer   *time.Timer
+}
+
+func (c *gatewayConnection) Close() error {
+	c.stopCancellation()
+	c.handshakeTimer.Stop()
+	return c.Conn.Close()
 }
 
 func NewGateway(token string, handler *Handler) (*Gateway, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, errors.New("DISCORD_BOT_TOKEN is required")
 	}
-	s, err := discordgo.New("Bot " + token)
+	s, err := newSession(token)
 	if err != nil {
 		return nil, errors.New("could not initialize Discord Gateway session")
 	}
@@ -41,9 +59,8 @@ func NewGateway(token string, handler *Handler) (*Gateway, error) {
 	s.StateEnabled = false
 	s.ShouldReconnectOnError = false
 	s.SyncEvents = true
-	s.Client.Timeout = 10 * time.Second
 	s.LogLevel = discordgo.LogError
-	g := &Gateway{session: s, handler: handler, disconnected: make(chan struct{}, 1)}
+	g := &Gateway{session: s, handler: handler, disconnected: make(chan struct{}, 1), openTimeout: 20 * time.Second}
 	s.AddHandler(func(_ *discordgo.Session, _ *discordgo.Ready) { g.markReady("ready") })
 	s.AddHandler(func(_ *discordgo.Session, _ *discordgo.Resumed) { g.markReady("resumed") })
 	s.AddHandler(func(_ *discordgo.Session, _ *discordgo.Disconnect) {
@@ -65,11 +82,34 @@ func NewGateway(token string, handler *Handler) (*Gateway, error) {
 }
 
 func (g *Gateway) markReady(state string) {
+	if conn := g.connection.Load(); conn != nil {
+		conn.handshakeTimer.Stop()
+	}
 	g.ready.Store(true)
 	slog.Info("Discord Gateway connected", "state", state, "transport", "outbound websocket")
 }
 
 func (g *Gateway) Run(ctx context.Context) {
+	dialer := *g.session.Dialer
+	dialer.HandshakeTimeout = g.openTimeout
+	dialer.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+		dialCtx, cancel := context.WithCancel(dialCtx)
+		stop := context.AfterFunc(ctx, cancel)
+		defer stop()
+		defer cancel()
+		conn, err := (&net.Dialer{}).DialContext(dialCtx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		owned := &gatewayConnection{
+			Conn:             conn,
+			stopCancellation: context.AfterFunc(ctx, func() { conn.Close() }),
+			handshakeTimer:   time.AfterFunc(g.openTimeout, func() { conn.Close() }),
+		}
+		g.connection.Store(owned)
+		return owned, nil
+	}
+	g.session.Dialer = &dialer
 	defer g.session.Close()
 	defer g.ready.Store(false)
 	delay := 5 * time.Second
@@ -132,6 +172,10 @@ func safeDiscordError(err error) error {
 	var rest *discordgo.RESTError
 	if errors.As(err, &rest) && rest.Response != nil {
 		return fmt.Errorf("Discord HTTP status %d", rest.Response.StatusCode)
+	}
+	var limited *discordgo.RateLimitError
+	if errors.As(err, &limited) {
+		return fmt.Errorf("Discord HTTP status %d", http.StatusTooManyRequests)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return errors.New("Discord request deadline exceeded")

@@ -179,7 +179,8 @@ func isExternalDealLink(raw string) bool {
 		return false
 	}
 
-	return !strings.Contains(strings.ToLower(parsed.Hostname()), "redflagdeals.com")
+	host := strings.ToLower(parsed.Hostname())
+	return host != "redflagdeals.com" && !strings.HasSuffix(host, ".redflagdeals.com")
 }
 
 // dealDetailResult holds the fields scraped from an RFD deal detail page.
@@ -200,25 +201,19 @@ func (c *Client) parseDetailPage(doc *goquery.Document) (dealDetailResult, error
 	ds := c.selectors.DealDetails
 	var dealLink string
 
-	// Try primary link first
-	if btn := doc.Find(ds.PrimaryLink); btn.Length() > 0 {
-		if href, found := btn.Attr("href"); found && strings.TrimSpace(href) != "" {
-			trimmed := strings.TrimSpace(href)
-			if isExternalDealLink(trimmed) {
-				dealLink = trimmed
+	// Select the first usable destination, rather than letting an earlier forum
+	// reference or placeholder hide later product links.
+	for _, selector := range []string{ds.PrimaryLink, ds.FallbackLink} {
+		doc.Find(selector).EachWithBreak(func(_ int, link *goquery.Selection) bool {
+			href, _ := link.Attr("href")
+			if href = strings.TrimSpace(href); isExternalDealLink(href) {
+				dealLink = href
+				return false
 			}
-		}
-	}
-
-	// Fallback link
-	if dealLink == "" {
-		if link := doc.Find(ds.FallbackLink); link.Length() > 0 {
-			if href, found := link.Attr("href"); found {
-				trimmed := strings.TrimSpace(href)
-				if isExternalDealLink(trimmed) {
-					dealLink = trimmed
-				}
-			}
+			return true
+		})
+		if dealLink != "" {
+			break
 		}
 	}
 
@@ -235,8 +230,15 @@ func (c *Client) parseDetailPage(doc *goquery.Document) (dealDetailResult, error
 	doc.Find("script[type='application/ld+json']").Each(func(i int, s *goquery.Selection) {
 		text := s.Text()
 		var postings []JSONLDDiscussionForumPosting
-		// Try parsing as array first
-		if err := json.Unmarshal([]byte(text), &postings); err == nil && len(postings) > 0 {
+		// JSON-LD permits both a single posting object and an array of objects.
+		if err := json.Unmarshal([]byte(text), &postings); err != nil {
+			var posting JSONLDDiscussionForumPosting
+			if err := json.Unmarshal([]byte(text), &posting); err != nil {
+				return
+			}
+			postings = []JSONLDDiscussionForumPosting{posting}
+		}
+		if len(postings) > 0 {
 			for _, p := range postings {
 				if p.Type == "DiscussionForumPosting" { // Case sensitive check might be needed, usually PascalCase
 					description = cleanHTMLText(p.Text)

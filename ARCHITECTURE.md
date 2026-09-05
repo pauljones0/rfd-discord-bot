@@ -31,15 +31,17 @@ Relevant primary references: [Go's small interfaces](https://go.dev/doc/effectiv
 [F#](https://learn.microsoft.com/en-us/dotnet/fsharp/what-is-fsharp).
 
 The core workflow, title-cleaning client, and delivery/command boundaries were
-rewritten. Proven HTML selectors, URL normalization, deduplication rules, and
-migration validation were retained where their behavior was already useful.
-Replacing every line would add verification work without fixing another problem.
+rewritten. Useful HTML selectors, migration validation, and numeric thresholds
+were retained. The release review corrected explicit product-identity, URL, and
+discount-evidence bugs. Replacing every line would add verification work without
+fixing another problem.
 
 ## Measured code size
 
-Physical lines of Go, measured from `907ebc8` and this rewrite; generated files,
-Python setup helpers, fixtures, and documentation are excluded. Moving a function
-between files does not count as a reduction.
+Physical lines of Go, measured from `907ebc8` and `a5ddec1`. The after column is
+the rewrite snapshot **before the release-review fixes**, not the final release
+size. Generated files, Python setup helpers, fixtures, and documentation are
+excluded. Moving a function between files does not count as a reduction.
 
 | Scope | Before | After |
 | --- | ---: | ---: |
@@ -48,16 +50,20 @@ between files does not count as a reduction.
 | Gemini adapter | 1,137 | 426 |
 | Processor including deduplication | 1,460 | 1,278 |
 
-Production code is about 16% smaller. Test line counts describe size, not coverage;
-obsolete tests for removed features were replaced with behavioral regressions.
+Production code in that snapshot is about 16% smaller. Test line counts describe
+size, not coverage; obsolete tests for removed features were replaced with
+behavioral regressions. [The release review](REVIEW.md) records the subsequent
+corrections and their verification.
 
 ## One service, explicit boundaries
 
 ```mermaid
 flowchart TD
     Poll[Scheduled poll] --> Source[RFD HTTP transport and HTML parsing]
-    Source --> Reconcile[Reconcile observations with saved deals]
-    DB[(Local SQLite)] --> Reconcile
+    Source --> Details[Load retained identities and fetch or reuse details]
+    DB[(Local SQLite)] --> Details
+    Details --> Match[Product identity and conservative fuzzy matching]
+    Match --> Reconcile[Reconcile observations with saved deals]
     Reconcile --> Titles[Optional bounded title cleanup]
     Titles --> Rules[Category, discount evidence, engagement rules]
     Rules --> Delivery[Missing channel sends and pending edits]
@@ -75,7 +81,7 @@ flowchart TD
 | `internal/scraper/scraper.go` | Fetch orchestration, bounded detail concurrency, retries |
 | `internal/processor/source.go` | Validate observations, load matching history, reuse/fetch details |
 | `internal/processor/reconcile.go` | Detached deal reconciliation and thread merging |
-| `internal/processor/dedupe.go` | Existing thread/product/token matching rules |
+| `internal/processor/dedupe.go` | Thread/product identity, explicit variant conflicts, conservative token matching |
 | `internal/processor/titles.go` | Poll-local batches of ten, canonical deal mapping, 30-second cleanup budget |
 | `internal/processor/processor.go` | Poll stages, per-channel delivery reconciliation, immediate per-deal persistence |
 | `internal/dealquality` and `internal/dealtypes` | Pure engagement/discount rules and six subscription filters |
@@ -89,6 +95,13 @@ The processor no longer asks Discord transport to decide whether a deal is warm
 or hot. Both filtering and presentation use the same pure engagement functions.
 Title queues cannot survive a poll. Reconciliation copies maps and slices before
 changing a deal, so failed processing cannot mutate the storage snapshot in memory.
+
+Detail enrichment precedes fuzzy matching. Different known product URLs veto a
+title match; explicit capacity or model conflicts also prevent grouping when
+product links are absent. Search and category URLs retain meaningful query
+parameters, and referral destinations are decoded only once. Repeated duplicate
+observations update their threads without taking over canonical content or
+message ownership; available duplicate details can fill missing source evidence.
 
 The service does not need a broker, Redis, Postgres, a web framework, another bot,
 or a microservice for each stage. New abstractions should answer a concrete need.
@@ -107,6 +120,13 @@ receipts; indexed columns support history and retention. The application reads
 whole deals, so keeping this aggregate avoids joins and a disruptive migration.
 Strict schema checks reject another bot's database. Application binding prevents
 using this history with an unintended Discord application.
+
+Reads also verify that deal IDs and subscription scope agree between SQL columns
+and JSON payloads. Inconsistency stops processing instead of silently selecting
+another identity or destination. Missing direct IDs can resolve through retained
+thread aliases beyond the 48-hour fuzzy-history window, including after restart.
+Aliases last only as long as their canonical row is retained; ambiguous alias
+ownership is an error. This uses the existing thread payload, without a new table.
 
 Exported model field names remain unchanged. Old `docstore` tags were unused by
 SQLite's JSON encoding and have been removed. Historical fields remain readable
@@ -137,7 +157,19 @@ reason to add a database server now.
 - Actual Gemini requests, retries, parsing failures, tokens, and successful
   channel sends are counted. Cooldown skips are not reported as network requests.
 - An explicit `SELECTORS_CONFIG_PATH` now takes precedence and fails visibly if
-  invalid. The embedded JSON is the single default selector definition.
+  invalid, including malformed CSS. The embedded JSON is the single default
+  selector definition.
+- RFD fetching applies the scheme and hostname allowlist to every redirect hop,
+  rejects URL credentials, and preserves the redirect limit and cancellation.
+- Detail parsing accepts object or array JSON-LD, finds the first usable external
+  product link, and preserves list-card prices when detail fields are absent.
+- Free-form percentages require discount context: “100% cotton” alone cannot
+  qualify a warm/hot alert. Structured savings evidence and numeric thresholds
+  remain unchanged.
+- Discord Gateway sockets close on cancellation or a stalled handshake timeout;
+  READY/RESUMED disarms that timeout for healthy connections. Short command and
+  preflight REST operations surface rate limits without the SDK's uncancellable
+  retry or cached bucket sleeps. Delivery keeps its separate context-aware limiter.
 
 Removed inherited features include unused Vertex/grounding/general generation
 APIs, image upload machinery that no RFD message used, unrelated bot metrics,
@@ -147,7 +179,7 @@ explicit in `go.mod` and was not silently upgraded.
 
 ## Compatibility and limits
 
-The six filters, category/discount/engagement thresholds, title-only AI role,
+The six filters, category rules, numeric discount/engagement thresholds, title-only AI role,
 command names, management permissions, private replies, outbound Gateway,
 application checks, imported message ownership, offline import, Docker volume,
 and health endpoints remain supported. Other bots and reverse proxy configuration
@@ -182,13 +214,15 @@ credential-helper tests. All automated verification uses disposable SQLite and
 local HTTP/WebSocket fixtures, including the complete scrape-to-Discord pipeline,
 restart deduplication, imported ownership, quota persistence, partial sends,
 pending edits, cancellation, corrupt history, and selector overrides.
+See [REVIEW.md](REVIEW.md) for release-review findings, focused verification,
+and the status of the final release checks.
 
 Build the canonical Dockerfile and run `check-config` and `check-storage` with
 fixture credentials and a disposable volume under `--network none`. The scratch
 image runs as UID/GID 65532. Tests must never mount production data or send to real
 Discord channels.
 
-The rewrite is developed on `codex/rfd-architecture-rewrite` for review. Deploy it
+The rewrite was developed on `codex/rfd-architecture-rewrite` for review. Deploy it
 by building its image, stopping the existing standalone process, taking a
 consistent database backup, selecting the new image, and starting that one
 process on the same volume and application. Verify ordinary scheduled polls and

@@ -169,7 +169,7 @@ func Command() *discordgo.ApplicationCommand {
 }
 
 func Register(ctx context.Context, token, appID, guildID string) error {
-	s, err := discordgo.New("Bot " + token)
+	s, err := newSession(token)
 	if err != nil {
 		return err
 	}
@@ -186,7 +186,7 @@ func safeDiscordErrorOrNil(err error) error {
 // CheckApplication catches the common configuration that silently routes all
 // interactions to an old webhook instead of this outbound Gateway connection.
 func CheckApplication(ctx context.Context, token, expectedID string) error {
-	s, err := discordgo.New("Bot " + token)
+	s, err := newSession(token)
 	if err != nil {
 		return err
 	}
