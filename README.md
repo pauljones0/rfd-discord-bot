@@ -4,16 +4,54 @@ RedFlagDeals alerts for your Discord server, running as one small Go service wit
 its own SQLite database. It watches RFD Hot Deals, groups duplicate threads,
 follows engagement, and updates existing Discord messages as deals change.
 
-The [architecture and rewrite record](ARCHITECTURE.md) explains the Go/SQLite
-choice, module boundaries, delivery guarantees, and compatibility limits.
-The [release review](REVIEW.md) records the audit findings, fixes, and validation.
-
 Choose all deals, tech deals, warm/hot deals, or hot deals. Optional Gemini title
 cleanup is available; ordinary alerts work without an AI account.
 
-## Run with Docker
+**[Add the hosted bot to your server](https://discord.com/oauth2/authorize?client_id=1545646915943927828&scope=bot%20applications.commands&permissions=19456&integration_type=0)**
+· [Host your own copy](#host-your-own-copy-with-docker)
+· [Commands and filters](#commands-and-filters)
+
+## Get alerts in your server
+
+The maintainer-hosted **rfdSOLO** bot can serve multiple Discord servers. You only
+need Discord and **Manage Server** or administrator permission in your server;
+the maintainer runs the service and supplies its credentials.
+
+1. Use **Add the hosted bot to your server** above and select your server. The
+   invite requests **View Channels**, **Send Messages**, and **Embed Links**.
+2. Create or choose a text channel such as `#rfd-deals`. Make sure the bot has
+   those three permissions in that channel, including any private-channel overrides.
+3. Run `/rfd subscribe`, select that channel, and choose a filter from the menu,
+   such as **Warm + Hot (tech)**. Use **All deals** for the broadest feed.
+4. Run `/rfd list` to confirm the saved subscription. Matching deals from the
+   currently observed feed arrive on a subsequent poll, normally within a few
+   minutes. A filter with no qualifying deals will stay quiet. The confirmation
+   means the subscription was saved; it does not verify channel permissions.
+
+Subscriptions deliver **server channel posts**, not personal DMs. Everyone who
+can view the channel can read its alerts. For personal notifications, set that
+channel's Discord notification preference to **All Messages** (or **All**);
+alerts do not ping `@everyone` or individual members. Discord's
+[notification guide](https://support.discord.com/hc/en-us/articles/215253258-Notifications-Settings-101)
+explains channel overrides and device settings. Members without Manage Server
+can ask a server admin to set up the channel.
+
+Use `/rfd unsubscribe` to stop a channel/filter subscription. Several channels
+or servers can subscribe independently. The hosted option depends on the
+maintainer's running service; you can also [host your own copy](#host-your-own-copy-with-docker).
+
+If installation only adds commands and no bot member, use the invite above: it
+explicitly requests both the `bot` and `applications.commands` scopes and a server
+installation. A commands-only or personal-account installation cannot deliver
+these scheduled channel alerts. See Discord's
+[bot installation flow](https://docs.discord.com/developers/topics/oauth2#bot-authorization-flow).
+
+## Host your own copy with Docker
 
 You need Docker with Compose and a Discord application of your own.
+These steps run an independent bot under your control. The
+[architecture record](ARCHITECTURE.md) explains the Go/SQLite design, and the
+[release review](REVIEW.md) records the audit findings and validation.
 
 Clone the public project:
 
@@ -29,7 +67,10 @@ cd rfd-discord-bot
 2. Under Installation, enable **Guild Install** with the `bot` and
    `applications.commands` scopes. Give the bot **View Channels**, **Send
    Messages**, and **Embed Links** permissions. Use the install link to add it to
-   your server. Privileged intents can remain disabled. Discord's
+   your server. If others will install your instance, enable **Public Bot** on
+   the Bot page and register commands globally (leave `DISCORD_GUILD_ID` blank).
+   This bot uses server installation; personal **User Install** is not needed.
+   Privileged intents can remain disabled. Discord's
    [app setup guide](https://docs.discord.com/developers/quick-start/getting-started)
    explains the portal settings; this project uses Gateway rather than the HTTP
    transport in that tutorial.
@@ -228,7 +269,12 @@ belong to the separately maintained `homelab-bots` project; do not pull this
 repository into an existing combined deployment. See [migration differences](ORIGIN.md)
 and [the cutover procedure](MIGRATION.md).
 
-Share this repository or its source archive. Recipients supply their own Discord
-application and `.env`; no credentials or existing subscriptions are included.
-The Git and Docker ignore rules exclude local environment files, databases, and
-logs. The existing [license](LICENSE) and source attribution are preserved.
+For people who want alerts, share the **Add the hosted bot to your server** link
+at the top and the [subscription steps](#get-alerts-in-your-server). They use the
+running service; each server manages its own channel subscriptions.
+
+For people who want to run an independent instance, share this repository or its
+source archive. They supply their own Discord application and `.env`; no
+credentials or existing subscriptions are included. The Git and Docker ignore
+rules exclude local environment files, databases, and logs. The existing
+[license](LICENSE) and source attribution are preserved.
