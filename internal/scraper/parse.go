@@ -1,0 +1,390 @@
+package scraper
+
+import (
+	"encoding/json"
+	"fmt"
+	"github.com/PuerkitoBio/goquery"
+	"github.com/pauljones0/rfd-discord-bot/internal/models"
+	"github.com/pauljones0/rfd-discord-bot/internal/util"
+	"log/slog"
+	"net/url"
+	"strings"
+	"time"
+)
+
+func (c *Client) resolveLink(s *goquery.Selection, selector string) (href, text string) {
+	sel := s.Find(selector)
+	if sel.Length() == 0 {
+		return "", ""
+	}
+
+	link := sel
+	if !sel.Is("a") {
+		link = sel.Find("a").First()
+	}
+	if link.Length() == 0 {
+		return "", ""
+	}
+
+	text = strings.TrimSpace(link.Text())
+	rawHref, exists := link.Attr("href")
+	if !exists {
+		return "", text
+	}
+
+	href = rawHref
+	if strings.HasPrefix(href, "/") {
+		href = c.config.RFDBaseURL + href
+	}
+	return href, text
+}
+
+func (c *Client) parseDealFromSelection(s *goquery.Selection, elems ListElements) models.DealInfo {
+	var deal models.DealInfo
+	var thread models.ThreadContext
+	var parseErrors []string
+
+	// Published Timestamp from <time datetime="...">
+	timeSelection := s.Find(elems.PostedTime)
+	if timeSelection.Length() > 0 {
+		actualTime := timeSelection
+		if !timeSelection.Is("time") {
+			actualTime = timeSelection.Find("time").First()
+		}
+		if actualTime.Length() > 0 {
+			if datetimeStr, exists := actualTime.Attr("datetime"); exists {
+				if parsed, err := time.Parse(time.RFC3339, datetimeStr); err == nil {
+					deal.PublishedTimestamp = parsed
+				} else {
+					parseErrors = append(parseErrors, fmt.Sprintf("failed to parse datetime '%s': %v", datetimeStr, err))
+				}
+			}
+		}
+	} else {
+		parseErrors = append(parseErrors, "posted time element not found")
+	}
+
+	// Title & Post URL
+	postURL, title := c.resolveLink(s, elems.TitleLink)
+	if elems.TitleText != "" {
+		titleSel := s.Find(elems.TitleText)
+		if titleSel.Length() > 0 {
+			title = strings.TrimSpace(titleSel.Text())
+		} else {
+			title = ""
+		}
+	}
+
+	if title != "" {
+		deal.Title = title
+		if postURL != "" {
+			normalized, err := util.NormalizeURL(postURL, c.config.AllowedDomains)
+			if err == nil {
+				postURL = normalized
+			} else {
+				slog.Warn("Failed to normalize URL, using raw URL", "processor", "rfd", "url", postURL, "error", err)
+			}
+		}
+		deal.PostURL = postURL
+		thread.PostURL = postURL
+	} else {
+		parseErrors = append(parseErrors, "title/post URL element not found")
+	}
+
+	// Retailer (Store)
+	retailerSel := s.Find(elems.Retailer)
+	if retailerSel.Length() > 0 {
+		deal.Retailer = cleanRetailerName(retailerSel.First().Text())
+	}
+	if deal.Retailer == "" {
+		if retailerAttr, exists := s.Attr("data-dealer-name"); exists {
+			deal.Retailer = cleanRetailerName(retailerAttr)
+		}
+	}
+	if deal.Retailer == "" {
+		if retailerAttr, exists := s.Find("[data-dealer-name]").First().Attr("data-dealer-name"); exists {
+			deal.Retailer = cleanRetailerName(retailerAttr)
+		}
+	}
+
+	// Thread Image — only accept http/https URLs
+	imgSelection := s.Find(elems.ThreadImage)
+	if imgSelection.Length() > 0 {
+		if src, exists := imgSelection.Attr("src"); exists {
+			if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+				deal.ThreadImageURL = src
+			}
+		}
+	}
+
+	// Like Count
+	likeCountSelection := s.Find(elems.LikeCount)
+	if likeCountSelection.Length() > 0 {
+		thread.LikeCount = util.SafeAtoi(util.ParseSignedNumericString(likeCountSelection.First().Text()))
+	}
+
+	// Comment Count (with fallback)
+	commentCountSelection := s.Find(elems.CommentCount)
+	if commentCountSelection.Length() > 0 {
+		thread.CommentCount = util.SafeAtoi(util.CleanNumericString(commentCountSelection.First().Text()))
+	} else {
+		fallback := s.Find(elems.CommentCountFallback)
+		if fallback.Length() > 0 {
+			thread.CommentCount = util.SafeAtoi(util.CleanNumericString(fallback.First().Text()))
+		}
+	}
+
+	// View Count
+	if elems.ViewCount != "" {
+		viewCountSelection := s.Find(elems.ViewCount)
+		if viewCountSelection.Length() > 0 {
+			thread.ViewCount = util.SafeAtoi(util.CleanNumericString(viewCountSelection.First().Text()))
+			thread.ViewCountAvailable = true
+		}
+	}
+
+	// List price/savings fallback (if available on card)
+	if priceSel := s.Find(".savings"); priceSel.Length() > 0 {
+		cardPrice := strings.TrimSpace(priceSel.First().Contents().Not("span").Text())
+		if cardPrice != "" {
+			deal.Price = cardPrice
+		}
+		if savingsSel := priceSel.Find("span"); savingsSel.Length() > 0 {
+			deal.OriginalPrice = strings.TrimSpace(savingsSel.Text())
+		}
+	}
+
+	deal.Threads = []models.ThreadContext{thread}
+
+	if len(parseErrors) > 0 {
+		slog.Warn("Parsing issues for deal", "processor", "rfd", "title", deal.Title, "url", deal.PrimaryPostURL(), "errors", strings.Join(parseErrors, "; "))
+	}
+	return deal
+}
+
+func isExternalDealLink(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return false
+	}
+	if parsed.Hostname() == "" {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	return host != "redflagdeals.com" && !strings.HasSuffix(host, ".redflagdeals.com")
+}
+
+// dealDetailResult holds the fields scraped from an RFD deal detail page.
+type dealDetailResult struct {
+	DealLink      string
+	Description   string
+	Comments      string
+	Summary       string
+	Price         string
+	OriginalPrice string
+	Savings       string
+	Retailer      string
+	Category      string
+}
+
+func (c *Client) parseDetailPage(doc *goquery.Document) (dealDetailResult, error) {
+	// 1. Get Deal Link
+	ds := c.selectors.DealDetails
+	var dealLink string
+
+	// Select the first usable destination, rather than letting an earlier forum
+	// reference or placeholder hide later product links.
+	for _, selector := range []string{ds.PrimaryLink, ds.FallbackLink} {
+		doc.Find(selector).EachWithBreak(func(_ int, link *goquery.Selection) bool {
+			href, _ := link.Attr("href")
+			if href = strings.TrimSpace(href); isExternalDealLink(href) {
+				dealLink = href
+				return false
+			}
+			return true
+		})
+		if dealLink != "" {
+			break
+		}
+	}
+
+	// No early return — continue extracting metadata (description, category, etc.)
+	// even when no external deal link exists. Many RFD posts (coupons, in-store deals,
+	// discussions) don't have external links but still have useful metadata.
+
+	var retailer, category string
+
+	// 2. Extract JSON-LD for Description and Comments
+	var description, commentsStr string
+	var ldPrice, ldRetailer string
+
+	doc.Find("script[type='application/ld+json']").Each(func(i int, s *goquery.Selection) {
+		text := s.Text()
+		var postings []JSONLDDiscussionForumPosting
+		// JSON-LD permits both a single posting object and an array of objects.
+		if err := json.Unmarshal([]byte(text), &postings); err != nil {
+			var posting JSONLDDiscussionForumPosting
+			if err := json.Unmarshal([]byte(text), &posting); err != nil {
+				return
+			}
+			postings = []JSONLDDiscussionForumPosting{posting}
+		}
+		if len(postings) > 0 {
+			for _, p := range postings {
+				if p.Type == "DiscussionForumPosting" { // Case sensitive check might be needed, usually PascalCase
+					description = cleanHTMLText(p.Text)
+
+					var commentTexts []string
+					for _, c := range p.Comment {
+						commentTexts = append(commentTexts, fmt.Sprintf("- %s", cleanHTMLText(c.Text)))
+					}
+					// Truncate comments to avoid huge tokens
+					maxCommentsLen := 2000
+					fullComments := strings.Join(commentTexts, "\n")
+					if len(fullComments) > maxCommentsLen {
+						fullComments = fullComments[:maxCommentsLen] + "...(truncated)"
+					}
+					commentsStr = fullComments
+
+					// Fallback from Product schema in JSON-LD
+					if p.About != nil {
+						if p.About.Offers != nil && p.About.Offers.Price != "" {
+							ldPrice = p.About.Offers.Price
+							if p.About.Offers.PriceCurrency == "CAD" {
+								ldPrice = "$" + ldPrice
+							}
+						}
+						if p.About.Brand != nil && p.About.Brand.Name != "" {
+							ldRetailer = p.About.Brand.Name
+						}
+					}
+					return // Found the main posting
+				}
+			}
+		}
+	})
+
+	// 3. Extract Summary (if available)
+	// Try finding the element by ID even if it's dynamic, sometimes it's SSR.
+	summary := strings.TrimSpace(doc.Find("#rfd_topic_summary").Text())
+
+	// 4. Extract Price and Retailer
+	var price, originalPrice, savings string
+
+	// Extract Price
+	doc.Find("dt").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		if text == "Price:" {
+			price = strings.TrimSpace(s.Next().Text())
+		} else if text == "Original Price:" {
+			originalPrice = strings.TrimSpace(s.Next().Text())
+		} else if text == "Savings:" {
+			savings = strings.TrimSpace(s.Next().Text())
+		}
+	})
+
+	// JSON-LD Fallback for Price
+	if price == "" && ldPrice != "" {
+		price = ldPrice
+	}
+
+	// Extract Retailer and Category
+	if badge := doc.Find(".retailer_badge"); badge.Length() > 0 {
+		retailer = cleanRetailerName(badge.First().Text())
+	}
+	if retailer == "" {
+		doc.Find("dt").Each(func(i int, s *goquery.Selection) {
+			if strings.TrimSpace(s.Text()) == "Retailer:" {
+				retailer = cleanRetailerName(s.Next().Text())
+			}
+		})
+	}
+
+	// JSON-LD Fallback for Retailer
+	if retailer == "" && ldRetailer != "" {
+		retailer = cleanRetailerName(ldRetailer)
+	}
+
+	// Extract Category
+	if categoryBtn := doc.Find(ds.Category); categoryBtn.Length() > 0 {
+		category = strings.TrimSpace(categoryBtn.Text())
+		// Strip "Category:" prefix if present
+		category = strings.TrimPrefix(category, "Category:")
+		category = strings.TrimSpace(category)
+	}
+	if category == "" {
+		doc.Find("dt").Each(func(i int, s *goquery.Selection) {
+			if strings.TrimSpace(s.Text()) == "Category:" {
+				category = strings.TrimSpace(s.Next().Text())
+			}
+		})
+	}
+
+	return dealDetailResult{
+		DealLink:      dealLink,
+		Description:   description,
+		Comments:      commentsStr,
+		Summary:       summary,
+		Price:         price,
+		OriginalPrice: originalPrice,
+		Savings:       savings,
+		Retailer:      retailer,
+		Category:      category,
+	}, nil
+}
+
+func cleanRetailerName(raw string) string {
+	retailer := strings.TrimSpace(raw)
+	retailer = strings.Join(strings.Fields(retailer), " ")
+	for {
+		if !strings.HasPrefix(strings.ToLower(retailer), "at ") {
+			break
+		}
+		retailer = strings.TrimSpace(retailer[3:])
+	}
+	return collapseRepeatedRetailer(retailer)
+}
+
+func collapseRepeatedRetailer(retailer string) string {
+	if retailer == "" {
+		return ""
+	}
+
+	if len(retailer)%2 == 0 {
+		half := len(retailer) / 2
+		if strings.EqualFold(retailer[:half], retailer[half:]) {
+			return strings.TrimSpace(retailer[:half])
+		}
+	}
+
+	parts := strings.Fields(retailer)
+	if len(parts)%2 == 0 {
+		half := len(parts) / 2
+		left := strings.Join(parts[:half], " ")
+		right := strings.Join(parts[half:], " ")
+		if strings.EqualFold(left, right) {
+			return left
+		}
+	}
+
+	return retailer
+}
+
+// cleanHTMLText allows stripping HTML tags from a string.
+// It uses goquery to parse the fragment and return text.
+func cleanHTMLText(htmlStr string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlStr))
+	if err != nil {
+		return htmlStr // fallback
+	}
+	return strings.TrimSpace(doc.Text())
+}

@@ -53,3 +53,31 @@ func TestEvaluateRFDWarmHotDiscount(t *testing.T) {
 		})
 	}
 }
+
+func TestFreeFormPercentagesRequireDiscountContext(t *testing.T) {
+	for _, title := range []string{"100% cotton bath towels", "99% alcohol cleaner", "100% organic oats"} {
+		for _, inSummary := range []bool{false, true} {
+			deal := models.DealInfo{Title: title, Price: "$50"}
+			if inSummary {
+				deal.Title, deal.Summary = "Product", title
+			}
+			if evidence := EvaluateRFDWarmHotDiscount(deal); evidence.Eligible {
+				t.Errorf("product attribute qualified without discount evidence: %+v evidence=%+v", deal, evidence)
+			}
+			deal.OriginalPrice = "$100"
+			if evidence := EvaluateRFDWarmHotDiscount(deal); !evidence.Eligible {
+				t.Errorf("product attribute blocked a real structured discount: %+v evidence=%+v", deal, evidence)
+			}
+		}
+	}
+	for _, title := range []string{"20% off towels", "20%off towels", "Save 20% on towels", "Towels with 20% cashback", "Towels with 20% coupon", "Towels with a 20% discount", "100% cotton towels, now 20% off"} {
+		if evidence := EvaluateRFDWarmHotDiscount(models.DealInfo{Title: title}); !evidence.Eligible || evidence.DiscountPercent != 20 {
+			t.Errorf("explicit discount percentage was lost: title=%q evidence=%+v", title, evidence)
+		}
+	}
+	for _, savings := range []string{"20%", "$20"} {
+		if evidence := EvaluateRFDWarmHotDiscount(models.DealInfo{Title: "100% cotton bath towels", Savings: savings}); !evidence.Eligible {
+			t.Errorf("structured savings stopped qualifying: savings=%q evidence=%+v", savings, evidence)
+		}
+	}
+}

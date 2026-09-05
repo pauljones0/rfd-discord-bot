@@ -45,9 +45,6 @@ func TestProcessDealsWithoutAIKeepsTitlesAndReceiptsAcrossPolls(t *testing.T) {
 		if len(notifications.sentDeals) != len(scraper.deals) || len(store.deals) != len(scraper.deals) {
 			t.Fatalf("poll %d: want %d total sends and saved deals, got %d sends and %d deals", poll, len(scraper.deals), len(notifications.sentDeals), len(store.deals))
 		}
-		if len(p.titleQueue) != 0 || len(p.titleQueueDeals) != 0 || !p.titleQueueStart.IsZero() {
-			t.Fatalf("poll %d left a title queue while AI is disabled", poll)
-		}
 		for _, input := range scraper.deals {
 			stored := store.deals[generateDealID(input.PublishedTimestamp)]
 			if stored == nil || stored.Title != input.Title || stored.CleanTitle != "" || stored.AIProcessed {
@@ -116,9 +113,6 @@ func TestProcessDealsWithoutAIInvalidatesOnlyChangedCleanTitles(t *testing.T) {
 			}
 			if len(notifications.sentDeals) != 0 || len(notifications.updatedIDs) != 1 || stored.DiscordMessageIDs["channel1"] != "300" || stored.DiscordMessageApplicationIDs["channel1"] != "200" {
 				t.Fatalf("existing notification should be updated with its receipt preserved: sends=%d updates=%v deal=%+v", len(notifications.sentDeals), notifications.updatedIDs, stored)
-			}
-			if len(p.titleQueue) != 0 {
-				t.Fatal("disabled AI still queued an existing deal")
 			}
 		})
 	}

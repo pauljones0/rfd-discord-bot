@@ -105,7 +105,7 @@ func (m *mockStore) Ping(ctx context.Context) error {
 func (m *mockStore) GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error) {
 	// Return a default test subscription so the notifier actually sends
 	return []models.Subscription{
-		{GuildID: "guild1", ChannelID: "channel1"},
+		{GuildID: "guild1", ChannelID: "channel1", DealType: dealtypes.RFDAll},
 	}, nil
 }
 
@@ -265,6 +265,7 @@ func TestIsDealEligibleForWarmHotRequiresDiscountEvidence(t *testing.T) {
 
 	discount := noDiscount
 	discount.OriginalPrice = "$1299.99"
+	discount.Threads = []models.ThreadContext{{LikeCount: 100}}
 	if !p.isDealEligibleForSubscription(discount, sub) {
 		t.Fatal("RFD warm/hot subscription rejected a discount-backed deal")
 	}
@@ -748,24 +749,6 @@ func TestEnrichDealsWithDetails_SubFunction(t *testing.T) {
 	}
 }
 
-func TestDealChanged_IgnoresCanonicalProductURLNoise(t *testing.T) {
-	p := &DealProcessor{}
-	existing := &models.DealInfo{
-		Title:          "Same title",
-		ThreadImageURL: "https://example.com/image.jpg",
-		ActualDealURL:  "https://www.amazon.ca/dp/B0DFLGW8MF?tag=example-20",
-	}
-	scraped := &models.DealInfo{
-		Title:          "Same title",
-		ThreadImageURL: "https://example.com/image.jpg",
-		ActualDealURL:  "https://www.amazon.ca/INIU-Portable-Charger-Fast-Charging/dp/B0DFLGW8MF?psc=1&th=1",
-	}
-
-	if p.dealChanged(existing, scraped) {
-		t.Fatal("dealChanged should ignore affiliate/variant URL noise for the same product ID")
-	}
-}
-
 func TestProcessExistingDeal_DuplicateThreadDoesNotOverwriteCanonicalContent(t *testing.T) {
 	p := newTestProcessor(newMockStore(), newMockNotifier(), &mockScraper{})
 	originalTime := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -790,10 +773,7 @@ func TestProcessExistingDeal_DuplicateThreadDoesNotOverwriteCanonicalContent(t *
 			},
 		},
 	}
-	var updates []models.DealInfo
-	if err := p.processExistingDeal(context.Background(), existing, scrapedDuplicates, &updates, nil); err != nil {
-		t.Fatalf("processExistingDeal returned error: %v", err)
-	}
+	existing = p.reconcileDeal(existing, scrapedDuplicates)
 	if existing.Title != "Original INIU power bank post" {
 		t.Fatalf("duplicate thread overwrote canonical title: %q", existing.Title)
 	}
@@ -805,9 +785,6 @@ func TestProcessExistingDeal_DuplicateThreadDoesNotOverwriteCanonicalContent(t *
 	}
 	if len(existing.Threads) != 2 {
 		t.Fatalf("duplicate thread should still be merged, got %d threads", len(existing.Threads))
-	}
-	if len(updates) != 1 {
-		t.Fatalf("expected merged duplicate to be persisted, got %d updates", len(updates))
 	}
 }
 
@@ -833,10 +810,7 @@ func TestProcessExistingDeal_SameThreadTitleEditPreservesExistingLinkWhenDetailM
 			},
 		},
 	}
-	var updates []models.DealInfo
-	if err := p.processExistingDeal(context.Background(), existing, scrapedDuplicates, &updates, nil); err != nil {
-		t.Fatalf("processExistingDeal returned error: %v", err)
-	}
+	existing = p.reconcileDeal(existing, scrapedDuplicates)
 	if existing.Title != "Updated title" {
 		t.Fatalf("same-thread title edit was not applied: %q", existing.Title)
 	}
@@ -875,10 +849,7 @@ func TestProcessExistingDeal_CorrectsStoredRetailerMetadata(t *testing.T) {
 			},
 		},
 	}
-	var updates []models.DealInfo
-	if err := p.processExistingDeal(context.Background(), existing, scrapedDuplicates, &updates, nil); err != nil {
-		t.Fatalf("processExistingDeal returned error: %v", err)
-	}
+	existing = p.reconcileDeal(existing, scrapedDuplicates)
 	if existing.Retailer != "Amazon.ca" {
 		t.Fatalf("Retailer = %q, want Amazon.ca", existing.Retailer)
 	}
@@ -890,9 +861,6 @@ func TestProcessExistingDeal_CorrectsStoredRetailerMetadata(t *testing.T) {
 	}
 	if existing.PostURL != "https://forums.redflagdeals.com/good-slug-111111" {
 		t.Fatalf("PostURL = %q, want corrected slug", existing.PostURL)
-	}
-	if len(updates) != 1 {
-		t.Fatalf("expected corrected metadata to be persisted, got %d updates", len(updates))
 	}
 }
 

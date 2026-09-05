@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
@@ -59,27 +60,79 @@ func (s *Store) GetDealByID(ctx context.Context, id string) (*models.DealInfo, e
 	if err != nil {
 		return nil, err
 	}
+	return decodeDeal(id, data)
+}
+
+func decodeDeal(id string, data []byte) (*models.DealInfo, error) {
 	var d models.DealInfo
-	if err = json.Unmarshal(data, &d); err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &d); err != nil {
+		return nil, fmt.Errorf("decode deal %q: %w", id, err)
+	}
+	if id == "" || d.DocumentID != id {
+		return nil, fmt.Errorf("deal %q has inconsistent stored identity", id)
 	}
 	return &d, nil
 }
 func (s *Store) GetDealsByIDs(ctx context.Context, ids []string) (map[string]*models.DealInfo, error) {
 	out := make(map[string]*models.DealInfo, len(ids))
-	for _, id := range ids {
-		d, err := s.GetDealByID(ctx, id)
+	// Bound bind parameters for large imports, without issuing one query per
+	// scraped item. Values are parameters, never interpolated into SQL.
+	for start := 0; start < len(ids); start += 900 {
+		batch := ids[start:min(start+900, len(ids))]
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		query := "SELECT id,payload FROM deals WHERE id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",") + ")"
+		deals, err := s.deals(ctx, query, args...)
 		if err != nil {
 			return nil, err
 		}
-		if d != nil {
-			out[id] = d
+		for _, d := range deals {
+			out[d.DocumentID] = &d
+		}
+	}
+	// Thread identities survive longer than the 48-hour fuzzy-match window.
+	// Resolve only missing IDs, so a retained duplicate cannot become a fresh
+	// alert merely because its canonical record is older than that window.
+	var missing []string
+	for _, id := range ids {
+		if out[id] == nil {
+			missing = append(missing, id)
+		}
+	}
+	for start := 0; start < len(missing); start += 900 {
+		batch := missing[start:min(start+900, len(missing))]
+		args := make([]any, len(batch))
+		wanted := make(map[string]bool, len(batch))
+		for i, id := range batch {
+			args[i], wanted[id] = id, true
+		}
+		query := "SELECT id,payload FROM deals WHERE EXISTS (SELECT 1 FROM json_each(deals.payload,'$.Threads') AS thread WHERE json_extract(thread.value,'$.DocumentID') IN (" + strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",") + "))"
+		deals, err := s.deals(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("load retained thread identities: %w", err)
+		}
+		for _, d := range deals {
+			for _, thread := range d.Threads {
+				if !wanted[thread.DocumentID] {
+					continue
+				}
+				if prior := out[thread.DocumentID]; prior != nil && prior.DocumentID != d.DocumentID {
+					return nil, fmt.Errorf("thread %q has ambiguous stored ownership", thread.DocumentID)
+				}
+				out[thread.DocumentID] = &d
+			}
 		}
 	}
 	return out, nil
 }
 func (s *Store) GetRecentDeals(ctx context.Context, age time.Duration) ([]models.DealInfo, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT payload FROM deals WHERE published_at>=? ORDER BY published_at", time.Now().Add(-age).UnixNano())
+	return s.deals(ctx, "SELECT id,payload FROM deals WHERE published_at>=? ORDER BY published_at,id", time.Now().Add(-age).UnixNano())
+}
+
+func (s *Store) deals(ctx context.Context, query string, args ...any) ([]models.DealInfo, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -87,14 +140,15 @@ func (s *Store) GetRecentDeals(ctx context.Context, age time.Duration) ([]models
 	var out []models.DealInfo
 	for rows.Next() {
 		var b []byte
-		var d models.DealInfo
-		if err = rows.Scan(&b); err != nil {
+		var id string
+		if err = rows.Scan(&id, &b); err != nil {
 			return nil, err
 		}
-		if err = json.Unmarshal(b, &d); err != nil {
+		d, err := decodeDeal(id, b)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, d)
+		out = append(out, *d)
 	}
 	return out, rows.Err()
 }
@@ -174,7 +228,7 @@ func (s *Store) RemoveSubscription(ctx context.Context, guild, channel, filter s
 	return err
 }
 func (s *Store) subscriptions(ctx context.Context, guild string) ([]models.Subscription, error) {
-	query := "SELECT payload FROM subscriptions"
+	query := "SELECT guild_id,channel_id,filter,payload FROM subscriptions"
 	var args []any
 	if guild != "" {
 		query += " WHERE guild_id=?"
@@ -190,11 +244,15 @@ func (s *Store) subscriptions(ctx context.Context, guild string) ([]models.Subsc
 	for rows.Next() {
 		var b []byte
 		var sub models.Subscription
-		if err = rows.Scan(&b); err != nil {
+		var guildID, channelID, filter string
+		if err = rows.Scan(&guildID, &channelID, &filter, &b); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(b, &sub); err != nil {
 			return nil, err
+		}
+		if sub.GuildID != guildID || sub.ChannelID != channelID || sub.DealType != filter || guildID == "" || channelID == "" || !sub.IsRFD() || !dealtypes.IsRFD(filter) {
+			return nil, fmt.Errorf("subscription has inconsistent stored scope")
 		}
 		out = append(out, sub)
 	}

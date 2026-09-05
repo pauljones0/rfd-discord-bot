@@ -4,6 +4,10 @@ RedFlagDeals alerts for your Discord server, running as one small Go service wit
 its own SQLite database. It watches RFD Hot Deals, groups duplicate threads,
 follows engagement, and updates existing Discord messages as deals change.
 
+The [architecture and rewrite record](ARCHITECTURE.md) explains the Go/SQLite
+choice, module boundaries, delivery guarantees, and compatibility limits.
+The [release review](REVIEW.md) records the audit findings, fixes, and validation.
+
 Choose all deals, tech deals, warm/hot deals, or hot deals. Optional Gemini title
 cleanup is available; ordinary alerts work without an AI account.
 
@@ -100,6 +104,7 @@ variables directly; it does not search other projects for configuration.
 | `DISCORD_UPDATE_INTERVAL` | `10m`, minimum spacing between edits |
 | `MAX_STORED_DEALS` | `2000`, retained deal limit |
 | `LOG_LEVEL` | `INFO` |
+| `SELECTORS_CONFIG_PATH` | Optional JSON selector override; blank uses the embedded configuration |
 | `SQLITE_PATH` | `data/rfd.sqlite` natively; `/data/rfd.sqlite` in Compose |
 | `LISTEN_ADDR` | `127.0.0.1:8080`, local health checks |
 | `GEMINI_API_KEY` | Optional title cleanup; blank disables it |
@@ -208,7 +213,10 @@ Gateway tests exercise command receipt, acknowledgement, disconnection, and resu
 | `internal/ai` | Optional Gemini title cleanup |
 
 The domain interfaces stay small: processor storage, scraper, notifier, validator,
-and optional title analyzer. Do not import another bot to reuse one formatter or
+and optional title analyzer. Deal reconciliation and title batches belong to one
+poll; transport does not own eligibility rules. Successful channel receipts are
+saved per deal even when another channel fails, and missing destinations retry
+on unchanged observed deals. Do not import another bot to reuse one formatter or
 storage method. See [the extraction record](ORIGIN.md) and [validation](VALIDATION.md).
 
 ## Sharing

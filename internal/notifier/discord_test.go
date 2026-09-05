@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"golang.org/x/time/rate"
 
@@ -61,10 +63,6 @@ func TestFormatDealToEmbed(t *testing.T) {
 		t.Errorf("Timestamp incorrect. Got: %s, Want: %s", embed.Timestamp, expectedTimestamp)
 	}
 
-	// Check Fields (should be empty now since Engagement was moved)
-	if len(embed.Fields) != 0 {
-		t.Errorf("Expected 0 fields, got %d fields", len(embed.Fields))
-	}
 }
 
 func TestFormatDealToEmbed_FallsBackToPostURLWhenActualDealURLInvalid(t *testing.T) {
@@ -285,93 +283,6 @@ func TestFormatDealToEmbed_DoesNotHeatNonDiscountedRFDDeal(t *testing.T) {
 	}
 }
 
-func TestCalculateHeatScore(t *testing.T) {
-	tests := []struct {
-		name     string
-		likes    int
-		comments int
-		views    int
-		want     float64
-	}{
-		{"zero views returns 0", 10, 5, 0, 0.0},
-		{"basic engagement", 10, 5, 100, 0.20},
-		{"high engagement", 50, 100, 500, 0.50},
-		{"low engagement", 2, 1, 1000, 0.004},
-		{"negative likes clamped", -10, 5, 100, 0.10},
-		{"negative comments clamped", 10, -5, 100, 0.10},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := CalculateHeatScore(tt.likes, tt.comments, tt.views)
-			if got != tt.want {
-				t.Errorf("CalculateHeatScore(%d, %d, %d) = %f, want %f",
-					tt.likes, tt.comments, tt.views, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestClient_IsWarm(t *testing.T) {
-	c := New("token")
-	tests := []struct {
-		name     string
-		likes    int
-		comments int
-		views    int
-		hasViews bool
-		want     bool
-	}{
-		{"warm: likes>=2 and score>0.05", 10, 5, 100, true, true},
-		{"cold: likes<2", 1, 100, 100, true, false},
-		{"cold: score<=0.05", 2, 0, 1000, true, false},
-		{"warm: exactly at floor", 2, 2, 50, true, true},
-		{"warm: no views fallback", 20, 4, 0, false, true},
-		{"cold: no views fallback below threshold", 3, 4, 0, false, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			deal := models.DealInfo{
-				Threads: []models.ThreadContext{
-					{LikeCount: tt.likes, CommentCount: tt.comments, ViewCount: tt.views, ViewCountAvailable: tt.hasViews},
-				},
-			}
-			if got := c.IsWarm(deal); got != tt.want {
-				t.Errorf("IsWarm() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestClient_IsHot(t *testing.T) {
-	c := New("token")
-	tests := []struct {
-		name     string
-		likes    int
-		comments int
-		views    int
-		hasViews bool
-		want     bool
-	}{
-		{"hot: score>0.20", 50, 100, 500, true, true},
-		{"not hot: score<=0.20", 10, 5, 100, true, false},
-		{"not hot: likes<2", 1, 500, 100, true, false},
-		{"hot: no views fallback", 40, 0, 0, false, true},
-		{"not hot: no views fallback below threshold", 20, 4, 0, false, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			deal := models.DealInfo{
-				Threads: []models.ThreadContext{
-					{LikeCount: tt.likes, CommentCount: tt.comments, ViewCount: tt.views, ViewCountAvailable: tt.hasViews},
-				},
-			}
-			if got := c.IsHot(deal); got != tt.want {
-				t.Errorf("IsHot() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestClient_Send(t *testing.T) {
 	// Mock Discord Server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -386,7 +297,7 @@ func TestClient_Send(t *testing.T) {
 		}
 
 		// Verify payload
-		var payload discordWebhookPayload
+		var payload discordMessagePayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("Failed to decode request body: %v", err)
 		}
@@ -427,7 +338,7 @@ func TestClient_Send(t *testing.T) {
 
 func TestClient_Send_UsesPostURLFallbackWhenActualDealURLInvalid(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload discordWebhookPayload
+		var payload discordMessagePayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("Failed to decode request body: %v", err)
 		}
@@ -601,8 +512,8 @@ func TestClient_Send_NoRetryOn4xx(t *testing.T) {
 	subs := []models.Subscription{{ChannelID: "67890"}}
 
 	ids, err := client.Send(ctx, deal, subs)
-	if err != nil {
-		t.Fatalf("Send() returned an unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("Send() swallowed the channel failure")
 	}
 	if len(ids) != 0 {
 		t.Errorf("Send() should have returned empty ID map for 400 response, got %v", ids)
@@ -658,5 +569,46 @@ func TestClient_Send_EmptyToken(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Errorf("Send() with empty token should return empty map, got %v", ids)
+	}
+}
+
+func TestRenderedTitleBoundsPreserveUnicodeAndStoredSource(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, clean string
+		hot, truncated   bool
+	}{
+		{"long raw", strings.Repeat("Café 📱 ", 80), "", false, true},
+		{"long cleanup", "Original title", strings.Repeat("AI 📱 ", 80), false, true},
+		{"hot suffix crosses limit", strings.Repeat("é", 254), "", true, true},
+		{"exact ASCII limit", strings.Repeat("a", 256), "", false, false},
+		{"exact emoji limit", strings.Repeat("📱", 128), "", false, false},
+		{"normal hot title", "A discounted phone", "Phone 📱", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deal := models.DealInfo{Title: tc.raw, CleanTitle: tc.clean, HasBeenHot: tc.hot,
+				Savings: "50% off", PostURL: "https://forums.redflagdeals.com/thread-123",
+				ActualDealURL: "https://example.com/product"}
+			embed := formatDealToEmbed(deal)
+			if !utf8.ValidString(embed.Title) || len(utf16.Encode([]rune(embed.Title))) > 256 {
+				t.Fatalf("invalid or oversized rendered title: %q", embed.Title)
+			}
+			expected := tc.raw
+			if tc.clean != "" {
+				expected = tc.clean
+			}
+			if tc.hot {
+				expected += " 🔥"
+			}
+			if tc.truncated {
+				if !strings.HasSuffix(embed.Title, "…") || !strings.HasPrefix(expected, strings.TrimSuffix(embed.Title, "…")) {
+					t.Fatalf("truncation corrupted the title: %q", embed.Title)
+				}
+			} else if embed.Title != expected {
+				t.Fatalf("in-limit title changed: %q", embed.Title)
+			}
+			if deal.Title != tc.raw || deal.CleanTitle != tc.clean || embed.URL != deal.ActualDealURL {
+				t.Fatal("rendering changed stored source or destination URL")
+			}
+		})
 	}
 }

@@ -98,9 +98,6 @@ func TestTitleCleaningPersistsShortPollsAndKeepsReorderedDealsMapped(t *testing.
 	for _, sent := range notifications.sentDeals {
 		assertCleanedTitle(t, &sent, sent)
 	}
-	if len(p.titleQueue) != 0 || len(p.titleQueueDeals) != 0 || !p.titleQueueStart.IsZero() {
-		t.Fatal("poll retained title requests or deal pointers")
-	}
 }
 
 func TestTitleCleaningBackfillsUnchangedHistoryOnceAndKeepsReceipts(t *testing.T) {
@@ -281,8 +278,5 @@ func TestTitleCleaningTimeoutStillPersistsAndNotifiesWithinPoll(t *testing.T) {
 	retained := store.deals[previous.DocumentID]
 	if retained.CleanTitle != previous.CleanTitle || !retained.AIProcessed || retained.DiscordMessageIDs["channel1"] != "300" || retained.DiscordMessageApplicationIDs["channel1"] != "100" {
 		t.Fatalf("timeout lost existing cleanup or receipt ownership: %+v", retained)
-	}
-	if len(p.titleQueue) != 0 || len(p.titleQueueDeals) != 0 || !p.titleQueueStart.IsZero() {
-		t.Fatal("cleanup timeout retained a stale title batch")
 	}
 }

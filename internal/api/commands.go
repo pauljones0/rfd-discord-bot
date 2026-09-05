@@ -28,11 +28,22 @@ func writeJSON(w http.ResponseWriter, v any) {
 		slog.Error("Could not encode command response", "error", err)
 	}
 }
-func reply(w http.ResponseWriter, content string) {
-	writeJSON(w, map[string]any{"type": 4, "data": map[string]any{"content": content, "flags": 64, "allowed_mentions": map[string]any{"parse": []string{}}}})
+
+// Management replies are always private and cannot mention users or roles.
+func privateReply(content string) *discordgo.InteractionResponse {
+	return &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content:         content,
+			Flags:           discordgo.MessageFlagsEphemeral,
+			AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
+		},
+	}
 }
 
 type interactionRequest struct {
+	ID      string `json:"id"`
+	Token   string `json:"token"`
 	Type    int    `json:"type"`
 	GuildID string `json:"guild_id"`
 	Member  *struct {
@@ -68,42 +79,32 @@ func optionValue(options []option, name string) string {
 	return ""
 }
 
-func (h *Handler) handleInteraction(w http.ResponseWriter, body []byte) {
-	var req interactionRequest
-	if json.Unmarshal(body, &req) != nil {
-		reply(w, "Could not read this command.")
-		return
-	}
+// handleInteraction returns command content; the Gateway owns acknowledgement.
+func (h *Handler) handleInteraction(ctx context.Context, req interactionRequest) string {
 	if req.Type != 2 || req.Data.Name != "rfd" {
-		reply(w, "Use an /rfd command.")
-		return
+		return "Use an /rfd command."
 	}
 	if req.GuildID == "" || req.Member == nil {
-		reply(w, "Use this command in a Discord server.")
-		return
+		return "Use this command in a Discord server."
 	}
 	permissions, err := strconv.ParseUint(req.Member.Permissions, 10, 64)
 	if err != nil || permissions&(discordgo.PermissionManageServer|discordgo.PermissionAdministrator) == 0 {
-		reply(w, "You need Manage Server permission to manage RFD alerts.")
-		return
+		return "You need Manage Server permission to manage RFD alerts."
 	}
 	if len(req.Data.Options) != 1 {
-		reply(w, "Choose subscribe, unsubscribe, or list.")
-		return
+		return "Choose subscribe, unsubscribe, or list."
 	}
 	subcommand := req.Data.Options[0]
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 	switch subcommand.Name {
 	case "list":
 		subs, err := h.store.GetSubscriptionsByGuild(ctx, req.GuildID)
 		if err != nil {
-			reply(w, "Could not read subscriptions. Please try again.")
-			return
+			return "Could not read subscriptions. Please try again."
 		}
 		if len(subs) == 0 {
-			reply(w, "No RFD subscriptions yet. Use /rfd subscribe to add one.")
-			return
+			return "No RFD subscriptions yet. Use /rfd subscribe to add one."
 		}
 		var out strings.Builder
 		for i, s := range subs {
@@ -114,40 +115,34 @@ func (h *Handler) handleInteraction(w http.ResponseWriter, body []byte) {
 			}
 			out.WriteString(line)
 		}
-		reply(w, out.String())
+		return out.String()
 	case "subscribe", "unsubscribe":
 		channel := optionValue(subcommand.Options, "channel")
 		filter := optionValue(subcommand.Options, "filter")
 		resolved, ok := req.Data.Resolved.Channels[channel]
 		if channel == "" || !ok || (resolved.Type != 0 && resolved.Type != 5) {
-			reply(w, "Select a text or announcement channel in this server.")
-			return
+			return "Select a text or announcement channel in this server."
 		}
 		if subcommand.Name == "subscribe" {
 			if !dealtypes.IsRFD(filter) {
-				reply(w, "Select one of the available RFD filters.")
-				return
+				return "Select one of the available RFD filters."
 			}
 			err = h.store.SaveSubscription(ctx, models.Subscription{GuildID: req.GuildID, ChannelID: channel, ChannelName: resolved.Name, DealType: filter, SubscriptionType: "rfd", AddedBy: req.Member.User.ID, AddedAt: time.Now()})
 			if err != nil {
-				reply(w, "Could not save this subscription. Please try again.")
-				return
+				return "Could not save this subscription. Please try again."
 			}
-			reply(w, fmt.Sprintf("RFD alerts enabled in <#%s>: %s.", channel, dealtypes.Label(filter)))
-		} else {
-			if filter != "" && !dealtypes.IsRFD(filter) {
-				reply(w, "Select a valid RFD filter, or omit it to remove all RFD filters for this channel.")
-				return
-			}
-			err = h.store.RemoveSubscription(ctx, req.GuildID, channel, filter)
-			if err != nil {
-				reply(w, "Could not remove this subscription. Please try again.")
-				return
-			}
-			reply(w, fmt.Sprintf("Removed the selected RFD subscription(s) from <#%s>.", channel))
+			return fmt.Sprintf("RFD alerts enabled in <#%s>: %s.", channel, dealtypes.Label(filter))
 		}
+		if filter != "" && !dealtypes.IsRFD(filter) {
+			return "Select a valid RFD filter, or omit it to remove all RFD filters for this channel."
+		}
+		err = h.store.RemoveSubscription(ctx, req.GuildID, channel, filter)
+		if err != nil {
+			return "Could not remove this subscription. Please try again."
+		}
+		return fmt.Sprintf("Removed the selected RFD subscription(s) from <#%s>.", channel)
 	default:
-		reply(w, "Unknown RFD subcommand.")
+		return "Unknown RFD subcommand."
 	}
 }
 
@@ -174,7 +169,7 @@ func Command() *discordgo.ApplicationCommand {
 }
 
 func Register(ctx context.Context, token, appID, guildID string) error {
-	s, err := discordgo.New("Bot " + token)
+	s, err := newSession(token)
 	if err != nil {
 		return err
 	}
@@ -191,7 +186,7 @@ func safeDiscordErrorOrNil(err error) error {
 // CheckApplication catches the common configuration that silently routes all
 // interactions to an old webhook instead of this outbound Gateway connection.
 func CheckApplication(ctx context.Context, token, expectedID string) error {
-	s, err := discordgo.New("Bot " + token)
+	s, err := newSession(token)
 	if err != nil {
 		return err
 	}

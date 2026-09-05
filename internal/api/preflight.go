@@ -38,12 +38,10 @@ func CheckChannels(ctx context.Context, token, expectedAppID string, subs []mode
 	if err := CheckApplication(ctx, token, expectedAppID); err != nil {
 		return fmt.Errorf("verify Discord application: %w", err)
 	}
-	s, err := discordgo.New("Bot " + token)
+	s, err := newSession(token)
 	if err != nil {
 		return fmt.Errorf("could not initialize Discord preflight")
 	}
-	s.MaxRestRetries = 0
-	s.ShouldRetryOnRateLimit = false
 	options := discordgo.WithContext(ctx)
 	user, err := s.User("@me", options)
 	if err != nil {

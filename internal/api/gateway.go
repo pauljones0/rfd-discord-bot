@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -26,13 +27,30 @@ type Gateway struct {
 	responded    atomic.Uint64
 	failed       atomic.Uint64
 	lastReceived atomic.Int64
+	connection   atomic.Pointer[gatewayConnection]
+	openTimeout  time.Duration
+}
+
+// Open holds DiscordGo's session lock while awaiting HELLO and READY, so
+// Session.Close cannot interrupt a stalled handshake. Own the underlying
+// connection instead, with cancellation and a timer that stops once ready.
+type gatewayConnection struct {
+	net.Conn
+	stopCancellation func() bool
+	handshakeTimer   *time.Timer
+}
+
+func (c *gatewayConnection) Close() error {
+	c.stopCancellation()
+	c.handshakeTimer.Stop()
+	return c.Conn.Close()
 }
 
 func NewGateway(token string, handler *Handler) (*Gateway, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, errors.New("DISCORD_BOT_TOKEN is required")
 	}
-	s, err := discordgo.New("Bot " + token)
+	s, err := newSession(token)
 	if err != nil {
 		return nil, errors.New("could not initialize Discord Gateway session")
 	}
@@ -41,9 +59,8 @@ func NewGateway(token string, handler *Handler) (*Gateway, error) {
 	s.StateEnabled = false
 	s.ShouldReconnectOnError = false
 	s.SyncEvents = true
-	s.Client.Timeout = 10 * time.Second
 	s.LogLevel = discordgo.LogError
-	g := &Gateway{session: s, handler: handler, disconnected: make(chan struct{}, 1)}
+	g := &Gateway{session: s, handler: handler, disconnected: make(chan struct{}, 1), openTimeout: 20 * time.Second}
 	s.AddHandler(func(_ *discordgo.Session, _ *discordgo.Ready) { g.markReady("ready") })
 	s.AddHandler(func(_ *discordgo.Session, _ *discordgo.Resumed) { g.markReady("resumed") })
 	s.AddHandler(func(_ *discordgo.Session, _ *discordgo.Disconnect) {
@@ -55,7 +72,6 @@ func NewGateway(token string, handler *Handler) (*Gateway, error) {
 	})
 	s.AddHandler(func(_ *discordgo.Session, event *discordgo.Event) {
 		if event.Type == "INTERACTION_CREATE" {
-			// Keep raw fields, including autocomplete, modal and component data.
 			// Never block Gateway heartbeat processing on a command handler.
 			body := append([]byte(nil), event.RawData...)
 			deadline := time.Now().Add(2800 * time.Millisecond)
@@ -66,11 +82,34 @@ func NewGateway(token string, handler *Handler) (*Gateway, error) {
 }
 
 func (g *Gateway) markReady(state string) {
+	if conn := g.connection.Load(); conn != nil {
+		conn.handshakeTimer.Stop()
+	}
 	g.ready.Store(true)
 	slog.Info("Discord Gateway connected", "state", state, "transport", "outbound websocket")
 }
 
 func (g *Gateway) Run(ctx context.Context) {
+	dialer := *g.session.Dialer
+	dialer.HandshakeTimeout = g.openTimeout
+	dialer.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+		dialCtx, cancel := context.WithCancel(dialCtx)
+		stop := context.AfterFunc(ctx, cancel)
+		defer stop()
+		defer cancel()
+		conn, err := (&net.Dialer{}).DialContext(dialCtx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		owned := &gatewayConnection{
+			Conn:             conn,
+			stopCancellation: context.AfterFunc(ctx, func() { conn.Close() }),
+			handshakeTimer:   time.AfterFunc(g.openTimeout, func() { conn.Close() }),
+		}
+		g.connection.Store(owned)
+		return owned, nil
+	}
+	g.session.Dialer = &dialer
 	defer g.session.Close()
 	defer g.ready.Store(false)
 	delay := 5 * time.Second
@@ -103,11 +142,8 @@ func (g *Gateway) Run(ctx context.Context) {
 }
 
 func (g *Gateway) handleEvent(body []byte, deadline time.Time) {
-	var envelope struct {
-		ID    string `json:"id"`
-		Token string `json:"token"`
-	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.ID == "" || envelope.Token == "" {
+	var req interactionRequest
+	if json.Unmarshal(body, &req) != nil || req.ID == "" || req.Token == "" {
 		g.failed.Add(1)
 		slog.Error("Invalid Discord Gateway interaction envelope")
 		return
@@ -116,26 +152,20 @@ func (g *Gateway) handleEvent(body []byte, deadline time.Time) {
 	g.lastReceived.Store(time.Now().Unix())
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	w := &gatewayResponseWriter{header: make(http.Header), send: func(payload json.RawMessage) error {
-		endpoint := discordgo.EndpointInteractionResponse(envelope.ID, envelope.Token)
-		_, err := g.session.RequestWithBucketID(http.MethodPost, endpoint, payload, endpoint, discordgo.WithContext(ctx))
-		if err != nil {
-			return safeDiscordError(err)
-		}
-		g.responded.Add(1)
-		return nil
-	}}
 	defer func() {
 		if recover() != nil {
 			g.failed.Add(1)
-			slog.Error("Discord Gateway command handler panicked", "interaction_id", envelope.ID)
+			slog.Error("Discord Gateway command handler panicked", "interaction_id", req.ID)
 		}
 	}()
-	g.handler.handleInteraction(w, body)
-	if w.err != nil || !w.sent {
+	response := privateReply(g.handler.handleInteraction(ctx, req))
+	endpoint := discordgo.EndpointInteractionResponse(req.ID, req.Token)
+	if _, err := g.session.RequestWithBucketID(http.MethodPost, endpoint, response, endpoint, discordgo.WithContext(ctx)); err != nil {
 		g.failed.Add(1)
-		slog.Error("Discord Gateway interaction response failed", "interaction_id", envelope.ID, "error", w.err)
+		slog.Error("Discord Gateway interaction response failed", "interaction_id", req.ID, "error", safeDiscordError(err))
+		return
 	}
+	g.responded.Add(1)
 }
 
 func safeDiscordError(err error) error {
@@ -143,51 +173,14 @@ func safeDiscordError(err error) error {
 	if errors.As(err, &rest) && rest.Response != nil {
 		return fmt.Errorf("Discord HTTP status %d", rest.Response.StatusCode)
 	}
+	var limited *discordgo.RateLimitError
+	if errors.As(err, &limited) {
+		return fmt.Errorf("Discord HTTP status %d", http.StatusTooManyRequests)
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return errors.New("Discord request deadline exceeded")
 	}
 	return errors.New("Discord transport request failed")
-}
-
-// gatewayResponseWriter sends the initial response during Write, before a
-// handler launches deferred follow-up work. Buffering until the handler returns
-// would let a follow-up race ahead of Discord's initial acknowledgement.
-type gatewayResponseWriter struct {
-	header http.Header
-	body   []byte
-	status int
-	sent   bool
-	err    error
-	send   func(json.RawMessage) error
-}
-
-func (w *gatewayResponseWriter) Header() http.Header { return w.header }
-func (w *gatewayResponseWriter) WriteHeader(status int) {
-	if w.status == 0 {
-		w.status = status
-	}
-}
-func (w *gatewayResponseWriter) Write(p []byte) (int, error) {
-	if w.err != nil {
-		return 0, w.err
-	}
-	if w.sent {
-		return 0, errors.New("initial Discord response already sent")
-	}
-	if w.status >= 400 {
-		w.err = fmt.Errorf("interaction handler returned HTTP %d", w.status)
-		return 0, w.err
-	}
-	w.body = append(w.body, p...)
-	if !json.Valid(w.body) {
-		return len(p), nil
-	}
-	w.sent = true
-	w.err = w.send(json.RawMessage(w.body))
-	if w.err != nil {
-		return 0, w.err
-	}
-	return len(p), nil
 }
 
 // ServeHTTP reports transport health separately from database/scheduler health.

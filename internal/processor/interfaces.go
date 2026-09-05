@@ -9,14 +9,10 @@ import (
 
 // DealStore abstracts the storage layer for deal data.
 type DealStore interface {
-	GetDealByID(ctx context.Context, id string) (*models.DealInfo, error)
 	GetDealsByIDs(ctx context.Context, ids []string) (map[string]*models.DealInfo, error)
 	GetRecentDeals(ctx context.Context, d time.Duration) ([]models.DealInfo, error)
-	TryCreateDeal(ctx context.Context, deal models.DealInfo) error
-	UpdateDeal(ctx context.Context, deal models.DealInfo) error
 	TrimOldDeals(ctx context.Context, maxDeals int) error
 	BatchWrite(ctx context.Context, creates []models.DealInfo, updates []models.DealInfo) error
-	Ping(ctx context.Context) error
 	GetAllSubscriptions(ctx context.Context) ([]models.Subscription, error)
 }
 
@@ -24,8 +20,6 @@ type DealStore interface {
 type DealNotifier interface {
 	Send(ctx context.Context, deal models.DealInfo, subs []models.Subscription) (map[string]string, error)
 	Update(ctx context.Context, deal models.DealInfo) error
-	IsWarm(deal models.DealInfo) bool
-	IsHot(deal models.DealInfo) bool
 }
 
 // DealScraper abstracts the web scraping layer.
