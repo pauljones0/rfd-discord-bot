@@ -29,9 +29,16 @@ cd rfd-discord-bot
    [app setup guide](https://docs.discord.com/developers/quick-start/getting-started)
    explains the portal settings; this project uses Gateway rather than the HTTP
    transport in that tutorial.
-3. In this repository, copy `.env.example` to `.env` and fill in
-   `DISCORD_APP_ID` and `DISCORD_BOT_TOKEN`. Optionally set `DISCORD_GUILD_ID` to
-   register commands immediately in one server. Leave it blank for global commands.
+3. Run `python3 scripts/configure_discord.py` to paste your **Application ID**,
+   optional **Public Key**, and **bot token** at the prompts. The helper accepts
+   raw values or labels such as `Application ID: 123456789012345678`. Token input
+   is hidden. It writes an owner-only `.env`, preserves other settings, and can
+   be rerun to update credentials. A public key is saved for reference; Gateway
+   commands need the bot token. You can press Enter to add the token later.
+   Use `--env-file /path/to/.env` for a different config location.
+   Alternatively, copy `.env.example` to `.env` and fill in `DISCORD_APP_ID` and
+   `DISCORD_BOT_TOKEN` manually. Optionally set `DISCORD_GUILD_ID` to register
+   commands immediately in one server. Leave it blank for global commands.
 4. Build, register the command, and start:
 
    ```sh

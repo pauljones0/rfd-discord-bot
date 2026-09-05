@@ -11,3 +11,4 @@ coverage*
 dist/
 /rfd-bot
 .DS_Store
+__pycache__/
