@@ -10,16 +10,28 @@ pub fn sort_threads(d: &mut DealInfo) {
             .then_with(|| b.comment_count.cmp(&a.comment_count))
     });
 }
+fn is_hot_deals_list(raw: &str) -> bool {
+    url::Url::parse(raw).is_ok_and(|u| {
+        matches!(
+            u.host_str(),
+            Some("forums.redflagdeals.com" | "redflagdeals.com" | "www.redflagdeals.com")
+        ) && u.path().trim_end_matches('/') == "/hot-deals-f9"
+    })
+}
 pub fn merge_thread(d: &mut DealInfo, new: &ThreadContext) {
     if new.not_found {
         return;
     }
     let key = urls::thread_key(&new.post_url);
-    if let Some(old) = d
-        .threads
-        .iter_mut()
-        .find(|t| urls::thread_key(&t.post_url) == key)
-    {
+    if let Some(old) = d.threads.iter_mut().find(|t| {
+        urls::thread_key(&t.post_url) == key
+                // Older Rust polls appended a relative href to the list query,
+                // then removed it as tracking. Repair only an observed identity.
+                || (!new.document_id.is_empty()
+                    && t.document_id == new.document_id
+                    && is_hot_deals_list(&t.post_url)
+                    && !is_hot_deals_list(&new.post_url))
+    }) {
         old.like_count = new.like_count;
         old.comment_count = new.comment_count;
         old.view_count = if new.view_count_available {

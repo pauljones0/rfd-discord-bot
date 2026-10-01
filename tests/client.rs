@@ -10,6 +10,73 @@ use std::{
     },
     time::Duration,
 };
+
+#[tokio::test(flavor = "current_thread")]
+async fn listing_query_does_not_leak_into_detail_fetches_or_discord_links() {
+    let paths = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let requests = paths.clone();
+    let server = support::server(move |r| {
+        requests.lock().unwrap().push(r.path.clone());
+        match r.path.as_str() {
+            "/hot-deals-f9/?sk=tt&rfd_sk=tt&sd=d" => (200, vec![], br#"
+                <li class="topic-card topic"><a class="topic-card-info thread_info" href="/with-product-12345"><h3 class="thread_title">Product sale</h3><time class="topic_time" datetime="2026-10-01T10:00:00Z"></time></a></li>
+                <li class="topic-card topic"><a class="topic-card-info thread_info" href="/without-product-23456"><h3 class="thread_title">Thread sale</h3><time class="topic_time" datetime="2026-10-01T11:00:00Z"></time></a></li>"#.to_vec()),
+            "/with-product-12345" => (200, vec![], br#"<div class="deal_link"><a href="https://example.invalid/product">Buy</a></div>"#.to_vec()),
+            "/without-product-23456" => (200, vec![], b"<p>No product link</p>".to_vec()),
+            _ => (404, vec![], vec![]),
+        }
+    }).await;
+    let client = Client::with_source(
+        Selectors::defaults(),
+        String::new(),
+        String::new(),
+        format!("{}/hot-deals-f9/?sk=tt&rfd_sk=tt&sd=d", server.base),
+        vec!["127.0.0.1".into()],
+    )
+    .unwrap();
+    let mut deals = client.list().await.unwrap();
+    for deal in &mut deals {
+        rfd_bot::parse::assign_id(deal).unwrap();
+    }
+    let (deals, stats) = client.details(deals).await;
+    assert_eq!(stats.succeeded, 2);
+    assert_eq!(stats.not_found, 0);
+    assert_eq!(stats.failed, 0);
+    assert_eq!(deals[0].actual_deal_url, "https://example.invalid/product");
+    assert!(deals[1].actual_deal_url.is_empty());
+    for (deal, path) in deals
+        .iter()
+        .zip(["/with-product-12345", "/without-product-23456"])
+    {
+        let thread = format!("{}{path}", server.base);
+        let payload = rfd_bot::notifier::payload(deal);
+        assert_eq!(
+            payload["embeds"][0]["url"].as_str().unwrap(),
+            if deal.actual_deal_url.is_empty() {
+                thread.as_str()
+            } else {
+                deal.actual_deal_url.as_str()
+            }
+        );
+        assert!(
+            payload["embeds"][0]["description"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("[RFD]({thread}) "))
+        );
+    }
+    let mut paths = paths.lock().unwrap().clone();
+    paths.sort();
+    assert_eq!(
+        paths,
+        [
+            "/hot-deals-f9/?sk=tt&rfd_sk=tt&sd=d",
+            "/with-product-12345",
+            "/without-product-23456"
+        ]
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn source_session_proof_of_work_body_limits_and_host_guard() {
     let count = Arc::new(AtomicUsize::new(0));

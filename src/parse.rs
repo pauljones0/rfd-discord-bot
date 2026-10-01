@@ -127,6 +127,7 @@ pub fn retailer(raw: &str) -> String {
     v
 }
 pub fn list(html: &str, base: &str, s: &Selectors) -> Result<Vec<DealInfo>> {
+    let base = url::Url::parse(base)?;
     let doc = Html::parse_document(html);
     let items: Vec<_> = doc.select(&s.values["item"]).collect();
     ensure!(
@@ -165,12 +166,11 @@ pub fn list(html: &str, base: &str, s: &Selectors) -> Result<Vec<DealInfo>> {
             }
             if link.value().name() == "a" {
                 d.title = text(link);
-                if let Some(href) = link.attr("href") {
-                    d.post_url = if href.starts_with('/') {
-                        format!("{}{href}", base.trim_end_matches('/'))
-                    } else {
-                        href.into()
-                    };
+                if let Some(href) = link.attr("href").map(str::trim).filter(|v| !v.is_empty()) {
+                    d.post_url = base
+                        .join(href)
+                        .map(|url| url.to_string())
+                        .unwrap_or_default();
                 }
             }
         }
