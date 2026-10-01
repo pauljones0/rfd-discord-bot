@@ -12,3 +12,6 @@ dist/
 /rfd-bot
 .DS_Store
 __pycache__/
+
+# Rust build artifacts
+/target/

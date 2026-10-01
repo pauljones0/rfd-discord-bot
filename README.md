@@ -1,8 +1,14 @@
 # RFD Discord Bot
 
-RedFlagDeals alerts for your Discord server, running as one small Go service with
+RedFlagDeals alerts for your Discord server, running as one small Rust service with
 its own SQLite database. It watches RFD Hot Deals, groups duplicate threads,
 follows engagement, and updates existing Discord messages as deals change.
+
+The Docker Compose profile caps the bot at 384 MiB, limits CPU/log growth, and
+clears Gemini credentials so ordinary alerts have no AI API cost. Optional AI
+can still be configured when running the binary directly or with an explicit
+Compose override. Free hosting depends on the provider's compute and networking
+allowances; a small container does not guarantee an indefinitely free VM.
 
 Choose all deals, tech deals, warm/hot deals, or hot deals. Optional Gemini title
 cleanup is available; ordinary alerts work without an AI account.
@@ -10,6 +16,14 @@ cleanup is available; ordinary alerts work without an AI account.
 **[Add the hosted bot to your server](https://discord.com/oauth2/authorize?client_id=1545646915943927828&scope=bot%20applications.commands&permissions=19456&integration_type=0)**
 · [Host your own copy](#host-your-own-copy-with-docker)
 · [Commands and filters](#commands-and-filters)
+
+
+For GCP, use the [Cloud Run deployment profile](docs/gcp-deployment.md): small
+request-driven Rust workers, separate signed-command services and durable
+Firestore checkpoints. Both scale to zero; the VM/Gateway instructions below
+remain available. The maintainer-hosted bot now uses this profile; see
+[the live migration record](docs/gcp-live-migration.md).
+
 
 ## Get alerts in your server
 
@@ -50,7 +64,7 @@ these scheduled channel alerts. See Discord's
 
 You need Docker with Compose and a Discord application of your own.
 These steps run an independent bot under your control. The
-[architecture record](ARCHITECTURE.md) explains the Go/SQLite design, and the
+[architecture record](ARCHITECTURE.md) explains the Rust/native SQLite design, and the
 [release review](REVIEW.md) records the audit findings and validation.
 
 Clone the public project:
@@ -172,10 +186,16 @@ and missing cleanup can retry later. An exhausted
 model/key configuration pauses cleanup for its saved cooldown instead of sending
 requests on every poll. Existing Discord message ownership is preserved.
 
+The [Cloud Run profile](docs/gcp-deployment.md) uses a dedicated unbilled Gemini
+project and one worker-only key instead of the native multi-key/model fallback.
+It verifies billing/key ownership, reserves a persistent 20-request daily cap,
+and continues ordinary alerts if optional cleanup fails. Crux and command
+services receive no Gemini key.
+
 There are no embedded personal affiliate IDs. eBay product links found inside
 RFD threads are normalized to direct item URLs. This does not run an eBay monitor.
 
-The scraper uses Go HTTP requests and HTML parsing. A browser, Python, Node,
+The scraper uses pooled Rust HTTP requests and HTML parsing. A browser, Python, Node,
 local LLM server, cloud database, and the original combined bot are not needed.
 
 ## Operations
@@ -229,12 +249,13 @@ history, including room for new deals.
 
 ## Develop and verify
 
-Requires Go 1.26 or later; the Docker build and CI use Go 1.27.
+Requires Rust 1.95 or later. Docker builds static musl binaries for amd64/Arm64.
 
 ```sh
-go test -race -tags=integration ./...
-go vet ./...
-go build -o rfd-bot ./cmd/rfd
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo build --release --locked
 ```
 
 Tests run against local HTTP/WebSocket fixtures and temporary SQLite databases.
@@ -245,13 +266,13 @@ Gateway tests exercise command receipt, acknowledgement, disconnection, and resu
 
 | Package | Responsibility |
 | --- | --- |
-| `cmd/rfd` | Startup, scheduling, registration, preflight, offline import, health checks |
-| `internal/api` | RFD commands and outbound Discord Gateway transport |
-| `internal/scraper` | RFD HTML and detail parsing |
-| `internal/processor` | Deduplication, enrichment, filtering, message updates |
-| `internal/notifier` | RFD Discord embeds and HTTP delivery |
-| `internal/storage` | This bot's SQLite tables and subscriptions |
-| `internal/ai` | Optional Gemini title cleanup |
+| `src/main.rs` | Startup, scheduling, registration, preflight, offline import, health checks |
+| `src/commands.rs`, `src/discord.rs` | RFD commands and outbound Discord Gateway transport |
+| `src/client.rs`, `src/parse.rs` | RFD HTML and detail parsing |
+| `src/processor.rs`, `src/dedupe.rs`, `src/reconcile.rs` | Deduplication, enrichment, filtering, message updates |
+| `src/notifier.rs` | RFD Discord embeds and HTTP delivery |
+| `src/storage.rs`, `src/db.rs` | This bot's SQLite tables and subscriptions |
+| `src/ai.rs` | Optional Gemini title cleanup |
 
 The domain interfaces stay small: processor storage, scraper, notifier, validator,
 and optional title analyzer. Deal reconciliation and title batches belong to one
@@ -278,3 +299,25 @@ source archive. They supply their own Discord application and `.env`; no
 credentials or existing subscriptions are included. The Git and Docker ignore
 rules exclude local environment files, databases, and logs. The existing
 [license](LICENSE) and source attribution are preserved.
+
+SQLite uses one connection, WAL with FULL commit synchronization, a 2 MiB page
+cache target, a 256-page automatic checkpoint threshold, and a 1 MiB retained
+WAL target after resets. Startup and daily maintenance enforce MAX_STORED_DEALS
+even without subscribers. Thread aliases have a transactional index that is
+backfilled when an older standalone database is first opened; row deletion also
+removes its aliases. Deleted database pages are reused rather than constantly
+vacuuming the file. External readers can pin a growing WAL, so keep read
+transactions short and monitor disk usage.
+
+Receipt/history retention uses the row cap rather than an age TTL: deleting a
+still-visible old thread's identity could repost it. Expiry metadata in old
+imports remains readable. A resurfacing thread whose record has been pruned can
+be considered new. Normal HTML responses are limited to 5 MiB decoded bytes.
+
+See [Oracle deployment](docs/oracle-deployment.md) for checked runtime bundles,
+consistent backups and moving the same setup between VMs. The retired optimized
+Go implementation is retained only in `benchmarks/go-reference` for reproducible
+CPU/RSS comparisons and parity fixture generation.
+
+See [Oracle validation](docs/oracle-validation.md) for the uploaded release bundles
+and current free-compute capacity blocker.

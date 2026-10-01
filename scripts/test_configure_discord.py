@@ -15,7 +15,7 @@ import configure_discord as setup
 
 APP = "123456789012345678"
 OTHER_APP = "234567890123456789"
-KEY = "abcdef0123456789" * 4
+KEY = "abcdef0123456789" * 4  # Deterministic public-key fixture; gitleaks:allow
 TOKEN = "synthetic.test_token.0123456789"
 
 

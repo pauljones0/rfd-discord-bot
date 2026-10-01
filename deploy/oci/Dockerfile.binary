@@ -1,0 +1,8 @@
+FROM scratch
+COPY runtime/ /
+COPY --chown=65532:65532 data/ /data/
+USER 65532:65532
+WORKDIR /data
+ENV SQLITE_PATH=/data/rfd.sqlite LISTEN_ADDR=127.0.0.1:8080
+ENTRYPOINT ["/rfd-bot"]
+CMD ["run"]

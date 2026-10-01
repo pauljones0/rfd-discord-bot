@@ -57,7 +57,7 @@ pull this repository into a combined bot's checkout.
    ```
 
    Replace the two ID placeholders with numeric application IDs. A native binary
-   can be built with `go build -o rfd-bot ./cmd/rfd`. The command prints a JSON
+   can be built with `cargo build --release --locked`. The command reports a JSON
    summary containing application IDs, export/import times, and counts of
    subscriptions, deals, and message receipts. Compare those counts with the
    source export. Do not start a polling service against the rehearsal database.
@@ -147,8 +147,8 @@ The outer JSON object has exactly these fields:
 | `deals` | Array of deal records; use `[]` when empty |
 
 Records use the exported Go field names in
-[`Subscription`](internal/models/subscription.go) and
-[`DealInfo`](internal/models/deal.go), including nested `ThreadContext` fields.
+[`Subscription`](src/models.rs) and
+[`DealInfo`](src/models.rs), including nested `ThreadContext` fields.
 Preserve `DocumentID`, timestamps, and `DiscordMessageIDs` rather than deriving
 new IDs. Supported `DealType` values are `rfd_all`, `rfd_tech`, `rfd_warm_hot`,
 `rfd_warm_hot_tech`, `rfd_hot`, and `rfd_hot_tech`; `SubscriptionType` is `rfd`

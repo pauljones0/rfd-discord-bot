@@ -1,0 +1,25 @@
+{
+  "date": "2026-09-30",
+  "region": "us-chicago-1",
+  "bucket": "discord-bots-rust-releases-20260930",
+  "access": "private",
+  "objects": [
+    {
+      "bot": "rfd",
+      "architecture": "amd64",
+      "object": "rust-20260930/rfd/linux-amd64.tar.gz",
+      "bytes": 5356781,
+      "sha256": "e8927691bf6972f6b4d1d5d564582ca5d06a53f47aef38bce8a1186f619ada5b",
+      "readback_verified": true
+    },
+    {
+      "bot": "rfd",
+      "architecture": "arm64",
+      "object": "rust-20260930/rfd/linux-arm64.tar.gz",
+      "bytes": 4756888,
+      "sha256": "88a55fc836c15fd1eff73a6b5accc7ecf37d4a55502b3b3cc5b81b0221c03fed",
+      "readback_verified": true
+    }
+  ],
+  "native_vm_status": "blocked: A1 out of host capacity; E2 micro unavailable/rejected"
+}
