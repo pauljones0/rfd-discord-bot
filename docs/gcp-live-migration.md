@@ -2,8 +2,8 @@
 
 Both independent Rust bots run in project `may2025-01`, Iowa (`us-central1`).
 Latest registry cleanup reclaimed stale layers manually; provider-reported
-storage was 11.089 MB after cleanup and is 16.806 MB after the category fix
-deployment. See the reclamation and category fix records below.
+storage was 11.089 MB after cleanup and is 33.623 MB after the thread-link fix
+deployment. See the reclamation and fix records below.
 The native VM/Gateway profile remains available. See [deployment and recovery](gcp-deployment.md).
 
 ## Live services
@@ -29,7 +29,7 @@ one static musl Rust executable, without compiler/browser/Go/cloud SDK.
 Immutable registry references under
 `us-central1-docker.pkg.dev/may2025-01/cloud-run-source-deploy`:
 
-- RFD: `rfd-rust@sha256:f1a8b2e396e3b488c6da0d877176125462517d017f1ce2bc45807a63ab37abe4`
+- RFD: `rfd-rust@sha256:ec5764fb73e9bfaa55a9ab9b79e55e175824f101d26fc99fcff019a3bf36dc51`
 - Crux: `crux-rust@sha256:6ee8fa0697c06faab2ebc7c01a9058199061588d2eadfa9c7b8a1067e7585697`
 
 ## State and previous deployment
@@ -385,7 +385,8 @@ history, its own build/deployment files, and no local credentials or databases.
 Both repositories passed native/GCP Rust checks, Python tests, Docker static
 and non-root checks, Go-reference race/vet checks, and staged secret scans.
 
-Both RFD services now use the immutable RFD digest listed above:
+Both RFD services at this rollout used
+`rfd-rust@sha256:f1a8b2e396e3b488c6da0d877176125462517d017f1ce2bc45807a63ab37abe4`:
 `rfd-bot-00005-nn4` and `rfd-commands-00005-mdl`. The first normal scheduled
 request on the worker completed at 04:09:23 UTC with HTTP 200. It observed and
 reconciled 39 deals, repaired 39 stored category values, and sent no new
@@ -402,3 +403,46 @@ were stopped and removed. Verification at 04:12 UTC showed zero remaining
 containers. Images and volumes were preserved. This includes the old RFD and
 combined bot containers; the GCP bots remain the active producers. The earlier
 disabled local bot watchdog remains disabled.
+
+### Thread-link parsing and stored-link repair — 2026-10-01 UTC
+
+The Rust scraper passed its full listing URL, including `?sk=tt&rfd_sk=tt&sd=d`,
+as the parser's base. Concatenating a root-relative thread href put the thread
+path inside the `sd` query parameter. Tracking cleanup then removed that
+parameter, leaving `https://forums.redflagdeals.com/hot-deals-f9`. This broke
+the title's RFD fallback, the description's `[RFD]` hyperlink and the detail-page
+fetch. Earlier fixtures passed only the forum origin, masking the production
+failure. Parsing now resolves hrefs with `Url::join` before normalization.
+
+Reconciliation replaces broken links using observed thread identities. Some
+stored records already contained both a correct original URL and a listing URL
+under the same identity. Normal poll maintenance now repairs those records
+transactionally and removes duplicate threads, including history outside the
+current source page. It requires an unambiguous, known RFD thread URL; it does
+not guess from titles or replace unrelated identities. Delivery receipts,
+application ownership, aliases and timestamps are preserved. Regression fixtures
+cover full listing queries, relative/protocol-relative/absolute hrefs, malformed
+links, product-link precedence, actual detail fetch paths, duplicate ordering,
+ambiguous identities and idempotent stored repairs.
+
+Native and GCP format, clippy (`-D warnings`) and full Rust suites passed, as did
+all six Python deployment tests. The static musl image passed non-root,
+read-only, network-disabled startup verification. No Discord test posts were
+sent. Each rollout paused the RFD schedule and confirmed the worker lease was
+released before changing its image, then resumed the existing schedule.
+
+Both RFD services now use the immutable digest listed above, with 100% traffic
+on `rfd-bot-00007-gmb` and `rfd-commands-00007-pkk`. Environment values,
+Firestore namespaces and resource/budget settings were verified unchanged.
+Command health returned HTTP 200. The first scheduled poll on the final image
+completed at 15:42:19 UTC with HTTP 200 in 19.440 seconds: 39 observations,
+38 reconciled deals, no sends or edits, and 21 stored duplicate-link repairs.
+
+A consistent checkpoint comparison across the rollout retained all 519 delivery
+receipts and repaired 53 of the 55 affected top-level deal URLs. The two remaining
+historical records have no delivery receipts and no known recoverable thread
+URL; they remain untouched until a matching thread is observed. No recoverable
+listing-link duplicates remain, and SQLite integrity is `ok`. Existing Discord
+posts were not bulk rewritten; normal message-update rules remain in effect.
+Registry storage is 33.623 MB, below the existing allowance, with previous image
+digests retained for rollback and the existing cleanup policy unchanged.
