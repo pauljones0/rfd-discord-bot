@@ -2,7 +2,8 @@
 
 Both independent Rust bots run in project `may2025-01`, Iowa (`us-central1`).
 Latest registry cleanup reclaimed stale layers manually; provider-reported
-storage is now 11.089 MB. See the final reclamation record below.
+storage was 11.089 MB after cleanup and is 16.806 MB after the category fix
+deployment. See the reclamation and category fix records below.
 The native VM/Gateway profile remains available. See [deployment and recovery](gcp-deployment.md).
 
 ## Live services
@@ -28,7 +29,7 @@ one static musl Rust executable, without compiler/browser/Go/cloud SDK.
 Immutable registry references under
 `us-central1-docker.pkg.dev/may2025-01/cloud-run-source-deploy`:
 
-- RFD: `rfd-rust@sha256:b4a26321816e0a0f11ea26e0499c88dfa0f31e5995cfb8de4888f44721f66e42`
+- RFD: `rfd-rust@sha256:f1a8b2e396e3b488c6da0d877176125462517d017f1ce2bc45807a63ab37abe4`
 - Crux: `crux-rust@sha256:6ee8fa0697c06faab2ebc7c01a9058199061588d2eadfa9c7b8a1067e7585697`
 
 ## State and previous deployment
@@ -364,3 +365,40 @@ and controls. This is not confirmation that the next invoice will be zero:
 previous SSD, query, AI and registry usage can still be billed. Free allowances
 and application budgets are not an account-wide hard spending cap. Billing
 reports after usage has settled are the final source for actual charges.
+
+### Category fix and repository publication — 2026-10-01 UTC
+
+RFD detail pages render the same `.thread_category` label in both desktop and
+mobile markup. Joining all matching nodes produced values such as
+`Home & GardenHome & Garden`, which missed the emoji mapping and used the
+unknown-category fallback. Parsing now uses the first nonempty category node.
+Category normalization also repairs known repeated labels when rendering and
+reconciling existing stored deals, without guessing unknown categories.
+Regression fixtures cover responsive markup, empty nodes, metadata fallback,
+the resulting Discord footer, and preservation of delivery receipts.
+
+The fix is published in the standalone
+[RFD repository](https://github.com/pauljones0/rfd-discord-bot).
+Crux has a separate private
+[Crux repository](https://github.com/pauljones0/crux-discord-bot), with clean
+history, its own build/deployment files, and no local credentials or databases.
+Both repositories passed native/GCP Rust checks, Python tests, Docker static
+and non-root checks, Go-reference race/vet checks, and staged secret scans.
+
+Both RFD services now use the immutable RFD digest listed above:
+`rfd-bot-00005-nn4` and `rfd-commands-00005-mdl`. The first normal scheduled
+request on the worker completed at 04:09:23 UTC with HTTP 200. It observed and
+reconciled 39 deals, repaired 39 stored category values, and sent no new
+notifications. A consistent checkpoint comparison retained all 514 preexisting
+delivery receipts. Existing Discord messages outside the normal update window
+were not rewritten. The command health endpoint also returned HTTP 200.
+Registry storage after deployment is 16,805,780 bytes, still below the free
+allowance; runtime and resource limits are unchanged.
+
+### Local Docker retirement — 2026-10-01 UTC
+
+At the user's request, all 37 containers on the local Unix-socket Docker engine
+were stopped and removed. Verification at 04:12 UTC showed zero remaining
+containers. Images and volumes were preserved. This includes the old RFD and
+combined bot containers; the GCP bots remain the active producers. The earlier
+disabled local bot watchdog remains disabled.
