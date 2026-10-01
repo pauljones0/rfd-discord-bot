@@ -61,6 +61,12 @@ impl Processor {
             return Ok(Metrics::default());
         };
         let mut metrics = Metrics::default();
+        let repaired = control
+            .run(self.db.call(|s| s.repair_thread_links()))
+            .await??;
+        if repaired > 0 {
+            tracing::info!(repaired, "repaired stored RFD thread links");
+        }
         let cutoff =
             Timestamp::from_datetime(chrono::Utc::now() - chrono::Duration::hours(48)).nanos()?;
         let mut recent = control

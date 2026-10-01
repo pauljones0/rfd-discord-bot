@@ -18,6 +18,58 @@ fn is_hot_deals_list(raw: &str) -> bool {
         ) && u.path().trim_end_matches('/') == "/hot-deals-f9"
     })
 }
+/// Recover only links whose thread identity already has an unambiguous RFD URL.
+/// Some older records contain both the original URL and the broken listing URL.
+pub fn repair_thread_links(d: &mut DealInfo) -> bool {
+    let mut known = BTreeMap::<String, Option<String>>::new();
+    for t in &d.threads {
+        if t.document_id.is_empty() || !urls::thread_key(&t.post_url).starts_with("rfd:") {
+            continue;
+        }
+        let valid = url::Url::parse(&t.post_url).is_ok_and(|u| {
+            matches!(u.scheme(), "http" | "https")
+                && matches!(
+                    u.host_str(),
+                    Some("forums.redflagdeals.com" | "redflagdeals.com" | "www.redflagdeals.com")
+                )
+                && u.username().is_empty()
+                && u.password().is_none()
+        });
+        if !valid {
+            continue;
+        }
+        known
+            .entry(t.document_id.clone())
+            .and_modify(|old| {
+                if old
+                    .as_ref()
+                    .is_some_and(|u| urls::thread_key(u) != urls::thread_key(&t.post_url))
+                {
+                    *old = None;
+                }
+            })
+            .or_insert_with(|| Some(t.post_url.clone()));
+    }
+    let mut changed = false;
+    if is_hot_deals_list(&d.post_url)
+        && let Some(Some(url)) = known.get(&d.document_id)
+    {
+        d.post_url = url.clone();
+        changed = true;
+    }
+    for t in &mut d.threads {
+        if is_hot_deals_list(&t.post_url)
+            && let Some(Some(url)) = known.get(&t.document_id)
+        {
+            t.post_url = url.clone();
+            changed = true;
+        }
+    }
+    if changed {
+        dedup_threads(d);
+    }
+    changed
+}
 pub fn merge_thread(d: &mut DealInfo, new: &ThreadContext) {
     if new.not_found {
         return;
@@ -170,6 +222,7 @@ pub fn reconcile(existing: Option<&DealInfo>, observations: &[DealInfo]) -> Opti
         return Some(d);
     };
     let mut d = existing.clone();
+    repair_thread_links(&mut d);
     dedup_threads(&mut d);
     let missing: BTreeSet<_> = observations
         .iter()
@@ -188,6 +241,7 @@ pub fn reconcile(existing: Option<&DealInfo>, observations: &[DealInfo]) -> Opti
             merge_thread(&mut d, thread);
         }
     }
+    repair_thread_links(&mut d);
     if d.title != base.title {
         d.clean_title.clear();
         d.ai_processed = false;

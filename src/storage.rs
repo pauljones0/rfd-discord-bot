@@ -112,6 +112,18 @@ impl Store {
             [since_nanos],
         )
     }
+    pub fn repair_thread_links(&mut self) -> Result<usize> {
+        let candidates = self.query_deals(
+            "SELECT id,payload FROM deals WHERE instr(payload,'/hot-deals-f9')>0",
+            [],
+        )?;
+        let repaired: Vec<_> = candidates
+            .into_iter()
+            .filter_map(|mut d| crate::reconcile::repair_thread_links(&mut d).then_some(d))
+            .collect();
+        self.batch_write(&[], &repaired)?;
+        Ok(repaired.len())
+    }
     pub fn by_ids(&self, ids: &[String]) -> Result<BTreeMap<String, DealInfo>> {
         let mut out = BTreeMap::new();
         for batch in ids.chunks(900) {
