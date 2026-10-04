@@ -434,7 +434,9 @@ impl CloudState {
     fn save(&mut self, db: &Connection) -> Result<()> {
         let raw = dump(db)?;
         ensure!(raw.len() <= MAX_RAW, "cloud checkpoint raw size exceeded");
-        let mut gzip = GzEncoder::new(Vec::new(), Compression::fast());
+        // Level 2 keeps recent-deal changes in a much smaller tail chunk without
+        // making compression a material part of the request runtime.
+        let mut gzip = GzEncoder::new(Vec::new(), Compression::new(2));
         gzip.write_all(&raw)?;
         let compressed = gzip.finish()?;
         ensure!(
